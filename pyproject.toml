@@ -1,0 +1,14 @@
+[project]
+name = "patent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mineru[all]>=2.7.0",
+    "openai>=2.14.0",
+    "paddleocr>=3.3.2",
+    "paddlepaddle>=3.2.2",
+    "python-dotenv>=1.2.1",
+    "tqdm>=4.67.1",
+]
