@@ -15,8 +15,8 @@ class ContentGenerator:
         """
         利用 LLM 提取专利元数据和核心功能总结
         """
-        # 截取前 8000 字符，确保覆盖摘要、权利要求书和部分说明书背景
-        truncated_content = full_md_content[:8000]
+        # 截取前 2000 字符，确保覆盖摘要、权利要求书和部分说明书背景
+        truncated_content = full_md_content[:2000]
         
         prompt = f"""
 # Role
