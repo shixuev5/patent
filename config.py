@@ -34,7 +34,7 @@ class Settings:
         根据 PDF文件名 生成该项目的特定路径结构
         """
         project_root = self.OUTPUT_DIR / pdf_filename_stem
-        mineru_output_dir = self.OUTPUT_DIR / self.MINERU_TEMP_FOLDER
+        mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
         return {
             "root": project_root,
             "mineru_dir": mineru_output_dir,
