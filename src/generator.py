@@ -1,7 +1,9 @@
 import os
 import json
+import markdown
 from typing import Dict, List
 from collections import defaultdict
+from playwright.sync_api import sync_playwright
 from openai import OpenAI
 from config import settings
 from loguru import logger
@@ -164,7 +166,7 @@ class ContentGenerator:
         except Exception:
             return "（系统正在维护，暂无法生成该图片的智能解说，请参考下方组件表。）"
 
-    def render_markdown(self, clusters, image_meta, output_path, summary_info: Dict):
+    def render_markdown(self, clusters, image_meta, output_md_path, output_pdf_path, summary_info: Dict):
         """生成 Markdown 文件 (保持结构，微调样式)"""
         
         title = summary_info.get("title", "未知专利")
@@ -174,8 +176,8 @@ class ContentGenerator:
         # 使用引用块样式增强头部可读性
         header = f"""# {title}
         
-> **专利号**: {number}  
-> **核心功能**: {core_func}
+**专利号**: {number}  
+**核心功能**: {core_func}
 
 ---
 """
@@ -206,7 +208,7 @@ class ContentGenerator:
             # 逐图展示
             for img_abs_path in images:
                 try:
-                    rel_path = os.path.relpath(img_abs_path, output_path.parent)
+                    rel_path = os.path.relpath(img_abs_path, output_md_path.parent)
                 except ValueError:
                     rel_path = img_abs_path
                 
@@ -229,6 +231,65 @@ class ContentGenerator:
                     lines.append("\n")
             
             lines.append("---\n")
+
+        full_md_text = "\n".join(lines)
+
+        # --- 写入 Markdown ---    
+        with open(output_md_path, "w", encoding="utf-8") as f:
+            f.write(full_md_text)
+        logger.success(f"Markdown generated: {output_md_path}")
+
+        # --- 生成 PDF (WeasyPrint) ---
+        self._export_pdf(full_md_text, output_md_path.parent, output_pdf_path)
+
+    def _export_pdf(self, md_text, base_path, output_path):
+        """
+        方案：Playwright (Headless Browser)
+        """
+        try:
+            logger.info("Converting to PDF using Playwright...")
             
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            # 1. MD -> HTML
+            html_body = markdown.markdown(md_text, extensions=['tables', 'fenced_code'])
+            
+            # 2. 构建完整 HTML
+            full_html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <style>
+                {settings.PDF_CSS}
+                </style>
+            </head>
+            <body>
+                {html_body}
+            </body>
+            </html>
+            """
+            
+            # 3. 保存临时 HTML 文件 (浏览器需要加载本地文件)
+            temp_html_path = base_path / "temp_report.html"
+            with open(temp_html_path, "w", encoding="utf-8") as f:
+                f.write(full_html)
+            
+            # 4. 调用浏览器生成 PDF
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                # 加载本地 HTML (使用 file:// 协议)
+                page.goto(f"file://{temp_html_path.absolute()}")
+                
+                # 生成 PDF
+                page.pdf(path=str(output_path), format="A4", margin={"top": "2cm", "bottom": "2cm", "left": "2cm", "right": "2cm"})
+                browser.close()
+            
+            # 清理临时文件
+            if temp_html_path.exists():
+                os.remove(temp_html_path)
+                
+            logger.success(f"PDF generated: {output_path}")
+
+        except Exception as e:
+            logger.error(f"PDF generation failed: {e}")
+

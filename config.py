@@ -28,6 +28,21 @@ class Settings:
 
     # Mineru 配置
     MINERU_TEMP_FOLDER = "mineru_raw"
+    
+    # PDF 生成时的 CSS 样式 (控制 A4 大小和图片自适应)
+    PDF_CSS = """
+    @page {{ size: A4; margin: 2cm; }}
+    body {{ 
+        font-family: "SimHei", "STHeiti", "Microsoft YaHei", sans-serif; 
+        font-size: 14px; line-height: 1.6; 
+    }}
+    h1 {{ text-align: center; color: #333; }}
+    h2 {{ border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 20px; color: #444; }}
+    img {{ max-width: 60%; height: auto; display: block; margin: 10px auto; border: 1px solid #ddd; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }}
+    th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+    th {{ background-color: #f4f4f4; }}
+    """
 
     def get_project_paths(self, pdf_filename_stem: str):
         """
@@ -42,7 +57,8 @@ class Settings:
             "raw_images_dir": mineru_output_dir / "images",
             "annotated_dir": project_root / "annotated_images",
             "parts_json": project_root / "parts.json",
-            "final_md": project_root / f"{pdf_filename_stem}_refined.md"
+            "final_md": project_root / f"{pdf_filename_stem}.md",
+            "final_pdf": project_root / f"{pdf_filename_stem}.pdf"
         }
 
 settings = Settings()

@@ -18,8 +18,6 @@ class PDFParser:
         :return: 生成的 Markdown 文件路径
         """
         pdf_name = pdf_path.stem
-        # 这里为了简化，直接复用你提供的 do_parse 核心逻辑的精简版
-        # 实际生产中建议使用 subprocess 调用 mineru 命令行工具，或者保持现在的内联调用
         
         logger.info(f"[Parser] Starting to parse: {pdf_path}")
         
