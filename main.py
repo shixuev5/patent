@@ -109,7 +109,7 @@ def main():
     generator = ContentGenerator(client, parts_db)
     summary_info = generator.generate_patent_summary(md_content, input_pdf.stem)
     clusters = generator.cluster_images(image_meta)
-    generator.render_markdown(clusters, image_meta, paths["final_md"], summary_info=summary_info)
+    generator.render_markdown(clusters, image_meta, paths["final_md"], paths["final_pdf"], summary_info=summary_info)
     
     logger.success(f"Pipeline Completed! Output: {paths['final_md']}")
 

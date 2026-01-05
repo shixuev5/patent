@@ -43,7 +43,6 @@ class VisualProcessor:
         result_img = processor.place_labels(labels)
         cv2.imwrite(output_path, result_img)
 
-
 class LabelPlacer:
     """保留你原有的避障绘图算法，稍作封装"""
     def __init__(self, image_path):
