@@ -57,6 +57,7 @@ class Settings:
             "raw_images_dir": mineru_output_dir / "images",
             "annotated_dir": project_root / "annotated_images",
             "parts_json": project_root / "parts.json",
+            "patent_json": project_root / "patent.json",
             "final_md": project_root / f"{pdf_filename_stem}.md",
             "final_pdf": project_root / f"{pdf_filename_stem}.pdf"
         }

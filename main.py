@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from config import settings
 from src.parser import PDFParser
+from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.generator import ContentGenerator
@@ -79,19 +80,30 @@ def main():
     
     md_content = paths["raw_md"].read_text(encoding="utf-8")
 
-    # --- Step 2: 知识提取 ---
+    # --- Step 2: 专利结构化转换 ---
+    patent_data = {}
+    if paths["patent_json"].exists():
+        logger.info("Step 2: Loading patent JSON...")
+        patent_data = json.loads(paths["patent_json"].read_text(encoding="utf-8"))
+    else:
+        logger.info("Step 2: Transforming MD to structured JSON...")
+        transformer = PatentTransformer(client)
+        patent_data = transformer.transform(md_content)
+        paths["patent_json"].write_text(json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # --- Step 3: 知识提取 ---
     parts_db = {}
     if paths["parts_json"].exists():
-        logger.info("Step 2: Loading parts DB...")
+        logger.info("Step 3: Loading parts DB...")
         parts_db = json.loads(paths["parts_json"].read_text(encoding="utf-8"))
     else:
-        logger.info("Step 2: Extracting knowledge...")
+        logger.info("Step 3: Extracting knowledge...")
         extractor = KnowledgeExtractor(client)
         parts_db = extractor.extract_entities(md_content)
         paths["parts_json"].write_text(json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # --- Step 3: 视觉处理 (OCR + Annotate) ---
-    logger.info("Step 3: Processing images...")
+    # --- Step 4: 视觉处理 (OCR + Annotate) ---
+    logger.info("Step 4: Processing images...")
     image_files = list(paths["raw_images_dir"].glob("*.*"))
     image_meta = {}
 
@@ -104,8 +116,8 @@ def main():
             # 记录结果
             image_meta[abs_path] = pids
 
-    # --- Step 4: 内容生成与组装 ---
-    logger.info("Step 4: Generating report...")
+    # --- Step 5: 内容生成与组装 ---
+    logger.info("Step 5: Generating report...")
     generator = ContentGenerator(client, parts_db)
     summary_info = generator.generate_patent_summary(md_content, input_pdf.stem)
     clusters = generator.cluster_images(image_meta)
