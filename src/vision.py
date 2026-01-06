@@ -36,14 +36,14 @@ class VisualProcessor:
         :param parts_db: 零部件知识库
         :param raw_img_dir: 原始图片目录
         :param out_dir: 输出目录 (annotated_dir)
-        :return: image_meta 字典 {图片绝对路径: [包含的组件ID列表]}
+        :return: image_parts 字典 {图片绝对路径: [包含的组件ID列表]}
         """
         # 1. 从 JSON 中提取需要处理的目标文件名集合
         target_filenames = VisualProcessor._extract_target_filenames(patent_data)
         logger.info(f"[Vision] Found {len(target_filenames)} target images to analyze.")
 
         # 2. 准备结果容器
-        image_meta = {}
+        image_parts = {}
         processed_files = set()
 
         # 3. 遍历原始目录下的所有图片
@@ -59,15 +59,15 @@ class VisualProcessor:
             
             # 如果是目标图片 (摘要图或附图)
             if filename in target_filenames:
-                pids = VisualProcessor._process_single_image(img_path, out_path, parts_db)
-                if pids:
-                    image_meta[str(out_path)] = pids
+                part_ids = VisualProcessor._process_single_image(img_path, out_path, parts_db)
+                if part_ids:
+                    image_parts[filename] = part_ids
                 processed_files.add(filename)
             else:
                 # 非目标图片，直接拷贝
                 shutil.copy2(img_path, out_path)
         
-        return image_meta
+        return image_parts
     
     @staticmethod
     def _extract_target_filenames(patent_data: Dict) -> Set[str]:

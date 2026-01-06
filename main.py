@@ -8,6 +8,7 @@ from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.generator import ContentGenerator
+from src.renderer import ReportRenderer
 
 def main():
     # 0. 检查输入
@@ -63,20 +64,43 @@ def main():
     # --- Step 4: 视觉处理 (OCR + Annotate) ---
     logger.info("Step 4: Processing images (OCR & Annotation)...")
 
-    # 传入：专利数据(获取目标图片)、知识库(用于标注)、原始图片目录、输出目录
-    image_meta = VisualProcessor.process_patent_images(
-        patent_data=patent_data,
-        parts_db=parts_db,
-        raw_img_dir=paths["raw_images_dir"],
-        out_dir=paths["annotated_dir"]
-    )
+    image_parts = {}
+    if paths["image_parts_json"].exists():
+        logger.info("Step 4: Loading image parts json...")
+        image_parts = json.loads(paths["image_parts_json"].read_text(encoding="utf-8"))
+    else:
+        logger.info("Step 4: Generating image parts json...")
+        # 传入：专利数据(获取目标图片)、知识库(用于标注)、原始图片目录、输出目录
+        image_parts = VisualProcessor.process_patent_images(
+            patent_data=patent_data,
+            parts_db=parts_db,
+            raw_img_dir=paths["raw_images_dir"],
+            out_dir=paths["annotated_dir"]
+        )
+        paths["image_parts_json"].write_text(json.dumps(image_parts, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # --- Step 5: 内容生成与组装 ---
+    # --- Step 5: 内容生成 ---
     logger.info("Step 5: Generating report...")
-    generator = ContentGenerator(client, patent_data, parts_db)
-    generator.render_markdown(image_meta, paths["final_md"], paths["final_pdf"])
+    report_json = {}
+    if paths["report_json"].exists():
+        logger.info("Step 5: Loading report json...")
+        report_json = json.loads(paths["report_json"].read_text(encoding="utf-8"))
+    else:
+        logger.info("Step 5: Generating report json...")
+        generator = ContentGenerator(client, patent_data, parts_db, image_parts)
+        report_json = generator.generate_report_json()
+        paths["report_json"].write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # --- Step 6: 渲染 MD 和 PDF ---
+    logger.info("Step 6: Rendering Report (MD & PDF)...")
+    renderer = ReportRenderer()
+    renderer.render(
+        report_data=report_json,
+        md_path=paths["final_md"],
+        pdf_path=paths["final_pdf"]
+    )
     
-    logger.success(f"Pipeline Completed! Output: {paths['final_md']}")
+    logger.success(f"Pipeline Completed! Output: {paths['final_pdf']}")
 
 if __name__ == "__main__":
     main()
