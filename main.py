@@ -73,10 +73,8 @@ def main():
 
     # --- Step 5: 内容生成与组装 ---
     logger.info("Step 5: Generating report...")
-    generator = ContentGenerator(client, parts_db)
-    summary_info = generator.generate_patent_summary(md_content, input_pdf.stem)
-    clusters = generator.cluster_images(image_meta)
-    generator.render_markdown(clusters, image_meta, paths["final_md"], paths["final_pdf"], summary_info=summary_info)
+    generator = ContentGenerator(client, patent_data, parts_db)
+    generator.render_markdown(image_meta, paths["final_md"], paths["final_pdf"])
     
     logger.success(f"Pipeline Completed! Output: {paths['final_md']}")
 

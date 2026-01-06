@@ -1,106 +1,175 @@
 import os
 import json
 import markdown
-from typing import Dict, List
-from collections import defaultdict
+from typing import Dict
 from playwright.sync_api import sync_playwright
 from openai import OpenAI
 from config import settings
 from loguru import logger
 
 class ContentGenerator:
-    def __init__(self, client: OpenAI, parts_db: Dict):
+    def __init__(self, client: OpenAI, patent_data: Dict, parts_db: Dict):
         self.client = client
+        self.patent_data = patent_data
         self.parts_db = parts_db
 
-    def generate_patent_summary(self, full_md_content: str, filename_stem: str) -> Dict[str, str]:
-        """
-        利用 LLM 提取专利元数据和核心功能总结
-        """
-        # 截取前 2000 字符，确保覆盖摘要、权利要求书和部分说明书背景
-        truncated_content = full_md_content[:2000]
+        # 预处理数据，方便后续调用
+        self.biblio = patent_data.get("bibliographic_data", {})
+        self.claims = patent_data.get("claims", [])
+        self.description = patent_data.get("description", {})
         
-        prompt = f"""
-# Role
-你是一位拥有 20 年经验的资深专利分析师。你擅长快速阅读晦涩的专利文档，并将其转化为高层管理者或工程师易读的摘要。
+        # 提取关键文本块 (为了节省 Token 并提高准确度，提前做简单的清洗)
+        self.text_background = self.description.get("background_art", "")
+        self.text_summary = self.description.get("summary_of_invention", "")
+        self.text_details = self.description.get("detailed_description", "")
 
-# Task
-请阅读以下专利文档片段，提取元数据并总结核心功能。
-
-# Input Text
-{truncated_content}
-
-# Constraints
-1. **title**: 提取专利名称。
-2. **number**: 提取专利公开号（通常类似 {filename_stem} 或 CN 开头）。如果文中未明确出现，使用 "{filename_stem}"。
-3. **core_function**: 
-   - 必须采用 **“背景痛点 + 解决方案 + 核心优势”** 的逻辑结构。
-   - 这是一个桥梁检测装置，请重点关注它如何解决“人工检测难”或“污垢影响精度”的问题。
-   - 字数控制在 80-120 字之间。
-   - 语言风格：专业、精炼、流畅。
-
-# Output Format (JSON Only)
-{{
-    "title": "专利名称字符串",
-    "number": "专利号字符串",
-    "core_function": "核心功能摘要字符串"
-}}
-"""
+        # 提取独立权利要求
+        self.independent_claims = [
+            c["claim_text"] for c in self.claims if c.get("claim_type") == "independent"
+        ]
+    
+    def generate_analysis(self) -> Dict[str, Any]:
+        """
+        执行全流程分析，返回包含5要素的结构化字典。
+        """
+        logger.info(f"开始分析专利: {self.biblio.get('application_number', 'Unknown')}")
 
         try:
-            res = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1, # 低温度确保提取准确
-                response_format={"type": "json_object"}
-            )
-            return json.loads(res.choices[0].message.content)
-        except Exception as e:
-            logger.error(f"Failed to generate summary: {e}")
-            return {
-                "title": filename_stem,
-                "number": filename_stem,
-                "core_function": "（自动总结失败，请手动补充）"
-            }
+            # Step 1: 宏观逻辑分析 (问题 & 方案 & 预期功效)
+            macro_result = self._analyze_macro_logic()
+            
+            # Step 2: 微观细节填充 (特征 & 手段 & 验证功效)
+            # 将 Step 1 的结果传给 Step 2 作为 Context
+            final_result = self._analyze_micro_details(macro_result)
+            
+            logger.info("专利分析完成")
+            return final_result
 
-    def cluster_images(self, image_meta: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        except Exception as e:
+            logger.error(f"分析过程中发生错误: {str(e)}")
+            return {
+                "technical_problem": "Analysis Failed",
+                "technical_scheme": "Analysis Failed",
+                "technical_features": [],
+                "technical_means": "Analysis Failed",
+                "technical_effects": []
+            }
+        
+    def _analyze_macro_logic(self) -> Dict[str, Any]:
         """
-        将图片按父系统聚类 (逻辑保持不变，依然非常有效)
+        阶段一：分析技术问题、技术方案概括。
+        输入：背景技术 + 发明内容(部分) + 独权
         """
-        clusters = defaultdict(list)
-        for img_path, part_ids in image_meta.items():
-            if not part_ids:
-                clusters["通用/未分类"].append(img_path)
-                continue
-            
-            parent_counts = defaultdict(int)
-            for pid in part_ids:
-                item = self.parts_db.get(pid, {})
-                parent = item.get('parent_system')
-                if parent:
-                    parent_counts[parent] += 1
-                else:
-                    parent_counts['root'] += 1
-            
-            if parent_counts:
-                top_parent_id = max(parent_counts, key=parent_counts.get)
-                if top_parent_id == 'root':
-                    # 尝试找到一个有意义的名字
-                    first_part_name = "组件"
-                    for pid in part_ids:
-                         name = self.parts_db.get(pid, {}).get('name')
-                         if name:
-                             first_part_name = name
-                             break
-                    group = f"整体/局部结构：{first_part_name}等"
-                else:
-                    p_name = self.parts_db.get(top_parent_id, {}).get('name', top_parent_id)
-                    group = f"核心子系统：{p_name}"
-            else:
-                group = "其他结构展示"
-            
-            clusters[group].append(img_path)
-        return dict(clusters)
+        logger.debug("正在执行阶段一：宏观逻辑分析...")
+
+        system_prompt = (
+            "你是一位资深专利审查员。请基于提供的专利片段，忽略具体实施细节，"
+            "仅从宏观逻辑上分析该发明的核心逻辑。请以严格的 JSON 格式输出。"
+        )
+
+        user_content = f"""
+        【背景技术】
+        {self.text_background[:2000]} 
+
+        【发明内容摘要】
+        {self.text_summary[:2000]}
+
+        【独立权利要求】
+        {json.dumps(self.independent_claims, ensure_ascii=False)}
+
+        请分析并提取：
+        1. technical_problem: 现有技术存在的客观缺陷或痛点（详细描述）。
+        2. technical_scheme_summary: 用通俗的技术语言概括本发明的核心解决方案（不要直接照抄权利要求）。
+        3. intended_effect: 发明声称要达到的主要宏观效果。
+
+        输出格式示例：
+        {{
+            "technical_problem": "...",
+            "technical_scheme_summary": "...",
+            "intended_effect": "..."
+        }}
+        """
+
+        return self._call_llm(system_prompt, user_content)
+    
+
+    def _analyze_micro_details(self, macro_context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        阶段二：分析技术特征、技术手段、具体功效。
+        输入：阶段一结果 + 全部权利要求 + 具体实施方式(截断)
+        """
+        logger.debug("正在执行阶段二：微观细节提取...")
+
+        # 截断详细描述以防止Token溢出 (保留前 5000 字符通常包含了核心原理)
+        # 对于更复杂的场景，建议使用 Embedding 检索相关段落
+        details_snippet = self.text_details[:6000]
+
+        system_prompt = (
+            "你是一位技术专家。基于已知的核心方案，深入挖掘专利的技术细节。"
+            "重点解释技术原理（手段）和验证数据。请以严格的 JSON 格式输出。"
+        )
+
+        user_content = f"""
+        已确定的【核心逻辑框架】：
+        {json.dumps(macro_context, ensure_ascii=False)}
+
+        请结合以下【具体实施方式】和【权利要求】，完善分析：
+        
+        【权利要求书】
+        {json.dumps(self.claims, ensure_ascii=False)}
+
+        【具体实施方式片段】
+        {details_snippet}
+
+        任务：
+        1. technical_features: 将技术方案拆解为关键的技术特征列表（包括结构组件、算法步骤、参数限定）。
+           - 必须包含特征名称 (name) 和具体描述 (description)。
+           - 标记是否为核心必要特征 (is_essential)。
+        2. technical_means: 深度解析【技术手段】。
+           - 解释核心特征是如何利用自然规律解决【technical_problem】的？
+           - 重点寻找“原理”、“通过...实现”、“机制”等描述。
+           - 如果涉及算法（如公式），请简要说明其物理意义。
+        3. technical_effects: 提取具体的【技术功效】。
+           - 寻找实施方式中的实验数据、对比结果或定性描述。
+           - 尝试将功效与对应的特征关联起来。
+
+        最终输出 JSON 结构：
+        {{
+            "technical_problem": "继承自上一步，可微调",
+            "technical_scheme": "继承自上一步，可微调",
+            "technical_features": [
+                {{"name": "...", "description": "...", "is_essential": true}},
+                ...
+            ],
+            "technical_means": "...",
+            "technical_effects": [
+                {{"effect": "...", "source_feature": "..."}},
+                ...
+            ]
+        }}
+        """
+
+        return self._call_llm(system_prompt, user_content)
+    
+    def _call_llm(self, system_prompt: str, user_content: str) -> Dict[str, Any]:
+        """
+        封装 LLM 调用，包含重试逻辑和 JSON 解析清洗。
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.1,
+                response_format={"type": "json_object"}  # 强制 JSON 模式
+            )
+            content = response.choices[0].message.content
+            return json.loads(content)
+        except Exception as e:
+            logger.error(f"LLM 调用失败: {e}")
+            raise e
 
     def generate_intro(self, group_name: str, part_ids: set) -> str:
         """
@@ -166,20 +235,12 @@ class ContentGenerator:
         except Exception:
             return "（系统正在维护，暂无法生成该图片的智能解说，请参考下方组件表。）"
 
-    def render_markdown(self, clusters, image_meta, output_md_path, output_pdf_path, summary_info: Dict):
+    def render_markdown(self, image_meta, output_md_path, output_pdf_path):
         """生成 Markdown 文件 (保持结构，微调样式)"""
         
-        title = summary_info.get("title", "未知专利")
-        number = summary_info.get("number", "")
-        core_func = summary_info.get("core_function", "暂无描述")
-        
         # 使用引用块样式增强头部可读性
-        header = f"""# {title}
-        
-**专利号**: {number}  
-**核心功能**: {core_func}
+        header = f"""
 
----
 """
         lines = [header.strip(), ""]
         
@@ -190,10 +251,8 @@ class ContentGenerator:
             if "组件" in k: return 2
             return 99
 
-        sorted_groups = sorted(clusters.keys(), key=sort_key)
         
         for group in sorted_groups:
-            images = clusters[group]
             lines.append(f"## {group}")
             
             # 聚合该组所有组件ID用于生成文本
