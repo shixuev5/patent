@@ -47,9 +47,12 @@ class KnowledgeExtractor:
         
         remaining_chars = max_chars - current_length
         if remaining_chars > 500 and detailed_desc:
-            # 截取剩余空间，但确保不截断得太离谱
-            truncated_detail = detailed_desc[:remaining_chars]
-            text = f"### 【具体实施方式】(用于提取 function 描述)\n{truncated_detail}...\n(下文已截断)"
+            if remaining_chars < len(detailed_desc):
+                # 截取剩余空间，但确保不截断得太离谱
+                truncated_detail = detailed_desc[:remaining_chars]
+                text = f"### 【具体实施方式】(用于提取 function 描述)\n{truncated_detail}...\n(下文已截断)"
+            else:
+                text = f"### 【具体实施方式】(用于提取 function 描述)\n{detailed_desc}\n"
             parts.append(text)
         
         return "\n".join(parts)
