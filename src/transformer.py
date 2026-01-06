@@ -27,12 +27,16 @@ class BibliographicData(BaseModel):
     applicants: List[EntityInfo] = Field(..., description="[INID 71] 申请人列表")
     inventors: List[str] = Field(..., description="[INID 72] 发明人姓名列表")
     agency: Optional[PatentAgency] = Field(None, description="[INID 74] 专利代理机构与代理人")
-    abstract: str = Field(..., description="[INID 57] 摘要文本")
+    abstract: str = Field(..., description="[INID 57] 摘要纯文本，不包含图片链接")
+    abstract_figure: Optional[str] = Field(
+        None, 
+        description="摘要附图的图片链接，通常位于摘要文字下方"
+    )
 
 class PatentClaim(BaseModel):
     """单项权利要求"""
     claim_number: int = Field(..., description="权利要求编号")
-    claim_text: str = Field(..., description="权利要求的内容文本（必须去除开头的编号）")
+    claim_text: str = Field(..., description="权利要求内容。保留所有数学公式(LaTeX/$$)和特殊符号，去除开头编号。")
     claim_type: Literal["independent", "dependent"] = Field(
         ..., 
         description="类型判定：内容包含'根据权利要求...所述'为 dependent (从属)，否则为 independent (独立)"
@@ -42,15 +46,15 @@ class DescriptionSection(BaseModel):
     """说明书各章节内容"""
     technical_field: str = Field(..., description="技术领域")
     background_art: str = Field(..., description="背景技术")
-    summary_of_invention: str = Field(..., description="发明内容")
+    summary_of_invention: str = Field(..., description="发明内容，保留公式")
     brief_description_of_drawings: str = Field(..., description="附图说明（仅提取文字描述）")
-    detailed_description: str = Field(..., description="具体实施方式")
+    detailed_description: str = Field(..., description="具体实施方式，保留段落编号[00xx]和公式")
 
 class DrawingResource(BaseModel):
     """附图资源引用"""
-    file_path: str = Field(..., description="Markdown图片链接地址")
-    figure_label: str = Field(..., description="图号标签（如'图1'）")
-    caption: Optional[str] = Field(None, description="从'附图说明'中匹配到的该图的具体解释")
+    file_path: str = Field(..., description="Markdown图片链接")
+    figure_label: str = Field(..., description="图号标签（如'图1'），从图片下方文字或附图说明中提取")
+    caption: Optional[str] = Field(None, description="从'附图说明'章节匹配到的该图的具体文字解释")
 
 class PatentDocument(BaseModel):
     """
@@ -63,22 +67,34 @@ class PatentDocument(BaseModel):
 
 
 class PatentTransformer:
-    # 系统提示词主要负责“清洗逻辑”和“边界情况处理”，结构定义交给 Pydantic
-    SYSTEM_PROMPT = """你是一位资深的知识产权数据专家。你的任务是将输入的专利 Markdown 文本解析为结构化数据。
+    def __init__(self, client: OpenAI):
+        self.client = client
+        # 预先生成 JSON Schema 字符串
+        self.json_schema = json.dumps(PatentDocument.model_json_schema(), ensure_ascii=False, indent=2)
+
+    def _get_system_prompt(self):
+        return f"""你是一个精通专利文档结构的AI助手。请将Markdown文本解析为JSON。
 
 ### 处理原则：
 1. **去噪**：忽略所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
-2. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
-3. **文本清洗**：
-   - 在提取 `detailed_description` (具体实施方式) 时，保留段落编号（如 [0023]）。
-   - 在提取 `claim_text` 时，必须移除开头的数字编号。
-4. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
+2. **公式保留**：严禁修改或删除文本中的 LaTeX 公式（如 $$...$$）或数学符号。
+3. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
+4. **文本清洗**：
+    - `abstract`: 仅提取文本，不要包含 Markdown 图片链接。
+    - `claim_text`: 必须去除行首的序号（如 "1."），但保留内部引用的序号。
+5. **图像识别**：
+   - 如果图片出现在【摘要】部分，提取到 `bibliographic_data.abstract_figure`。
+   - 如果图片出现在【附图说明】或【文档末尾】，提取到 `drawings` 列表。
+   - 图片链接（仅提取URL，不包含![]部分）。
+6. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
-请严格根据提供的 Schema 提取信息。
+### 输出格式要求
+请严格遵守以下 JSON Schema 输出 JSON 数据：
+
+```json
+{self.json_schema}
+```
 """
-
-    def __init__(self, client: OpenAI):
-        self.client = client
 
     def transform(self, md_content: str) -> dict:
         """
@@ -87,30 +103,37 @@ class PatentTransformer:
         logger.info("[Transformer] Starting Structured Output parsing...")
         
         try:
-            # 使用 beta.chat.completions.parse 接口
-            completion = self.client.beta.chat.completions.parse(
+            response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
+                    {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
                 ],
-                response_format=PatentDocument, # 直接传入 Pydantic 类
+                response_format={"type": "json_object"},
                 temperature=0.1, # 低温度保持精确
             )
 
-            # 获取解析后的 Pydantic 对象
-            patent_obj = completion.choices[0].message.parsed
+            # 1. 获取原始内容
+            content = response.choices[0].message.content
             
-            # 转为字典返回
+            # 2. 解析 JSON 字符串
+            try:
+                json_data = json.loads(content)
+            except json.JSONDecodeError:
+                logger.error("Model output is not valid JSON")
+                raise ValueError("Model output is not valid JSON")
+
+            # 3. 使用 Pydantic 进行结构校验和类型转换
+            patent_obj = PatentDocument.model_validate(json_data)
+            
+            # 4. 转回字典
             result_dict = patent_obj.model_dump()
-            
+                
             logger.success(f"[Transformer] Successfully parsed patent: {patent_obj.bibliographic_data.application_number}")
             return result_dict
 
         except Exception as e:
-            # 注意：如果模型输出拒绝解析（refusal），这里也会捕获
             logger.error(f"[Transformer] Parsing failed: {e}")
-            # 这里的 fallback 逻辑可以根据需求处理，比如降级为普通 JSON 模式
             raise e
 
 # 使用示例

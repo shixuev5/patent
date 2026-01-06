@@ -22,8 +22,7 @@ class Settings:
     LLM_TEMPERATURE = 0.1
 
     # --- 视觉处理配置 ---
-    MAX_WORKERS = 4      # 图像处理并行线程数
-    FONT_SIZE = 20       # 标注字体大小
+    FONT_SIZE = 16       # 标注字体大小
     LABEL_COLOR = (0, 0, 255) # 标注颜色 (B, G, R) - 蓝色
 
     # Mineru 配置
@@ -50,6 +49,7 @@ class Settings:
         """
         project_root = self.OUTPUT_DIR / pdf_filename_stem
         mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
+        
         return {
             "root": project_root,
             "mineru_dir": mineru_output_dir,

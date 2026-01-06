@@ -43,7 +43,7 @@ class PDFParser:
             parse_method = "hybrid_auto"
             
             # 4. Hybrid 分析
-            middle_json = hybrid_doc_analyze(
+            middle_json, infer_result, _vlm_ocr_enable = hybrid_doc_analyze(
                 pdf_bytes,
                 image_writer=image_writer,
                 backend=backend,
