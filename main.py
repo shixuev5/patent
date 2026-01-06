@@ -1,9 +1,6 @@
 import json
-import shutil
-from pathlib import Path
 from loguru import logger
 from openai import OpenAI
-from tqdm import tqdm
 
 from config import settings
 from src.parser import PDFParser
@@ -11,45 +8,6 @@ from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.generator import ContentGenerator
-
-def process_single_image(img_path: Path, annotated_dir: Path, parts_db: dict):
-    """单个图片的 OCR + 标注 任务"""
-    try:
-        # 1. OCR 识别
-        ocr_results = VisualProcessor.run_ocr(str(img_path))
-        
-        # 2. 匹配知识库
-        valid_labels = []
-        found_pids = []
-        
-        for item in ocr_results:
-            text = item['text']
-            # 简单清洗：只留数字
-            clean_text = "".join(filter(str.isdigit, text))
-            
-            if clean_text in parts_db:
-                # 准备标注数据：替换 OCR 文本为 组件名
-                valid_labels.append({
-                    'text': parts_db[clean_text]['name'],
-                    'box': item['box']
-                })
-                found_pids.append(clean_text)
-        
-        # 3. 绘图或复制
-        out_filename = f"annotated_{img_path.name}"
-        out_path = annotated_dir / out_filename
-        
-        if valid_labels:
-            VisualProcessor.annotate_image(str(img_path), valid_labels, str(out_path))
-            return str(out_path), found_pids
-        else:
-            # 无有效信息，复制原图
-            shutil.copy(img_path, out_path)
-            return str(out_path), []
-
-    except Exception as e:
-        logger.error(f"Image process failed {img_path}: {e}")
-        return None, []
 
 def main():
     # 0. 检查输入
@@ -99,22 +57,19 @@ def main():
     else:
         logger.info("Step 3: Extracting knowledge...")
         extractor = KnowledgeExtractor(client)
-        parts_db = extractor.extract_entities(md_content)
+        parts_db = extractor.extract_entities(patent_data)
         paths["parts_json"].write_text(json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # --- Step 4: 视觉处理 (OCR + Annotate) ---
-    logger.info("Step 4: Processing images...")
-    image_files = list(paths["raw_images_dir"].glob("*.*"))
-    image_meta = {}
+    logger.info("Step 4: Processing images (OCR & Annotation)...")
 
-    for img_path in tqdm(image_files, desc="OCR Processing"):
-        # 直接调用处理函数
-        res = process_single_image(img_path, paths["annotated_dir"], parts_db)
-        
-        if res and res[0]:
-            abs_path, pids = res
-            # 记录结果
-            image_meta[abs_path] = pids
+    # 传入：专利数据(获取目标图片)、知识库(用于标注)、原始图片目录、输出目录
+    image_meta = VisualProcessor.process_patent_images(
+        patent_data=patent_data,
+        parts_db=parts_db,
+        raw_img_dir=paths["raw_images_dir"],
+        out_dir=paths["annotated_dir"]
+    )
 
     # --- Step 5: 内容生成与组装 ---
     logger.info("Step 5: Generating report...")
