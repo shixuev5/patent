@@ -2,8 +2,7 @@ import json
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from loguru import logger
-from openai import OpenAI
-from config import settings
+from src.llm import get_llm_service
 
 class EntityInfo(BaseModel):
     """个人或机构实体信息"""
@@ -54,7 +53,7 @@ class DrawingResource(BaseModel):
     """附图资源引用"""
     file_path: str = Field(..., description="Markdown图片链接")
     figure_label: str = Field(..., description="图号标签（如'图1'），从图片下方文字或附图说明中提取")
-    caption: Optional[str] = Field(None, description="从'附图说明'章节匹配到的该图的具体文字解释")
+    caption: Optional[str] = Field(None, description="图的文字解释。必须去除开头的图号（如'图1'）及连接词（如'是'、'为'），只保留描述内容")
 
 class PatentDocument(BaseModel):
     """
@@ -67,8 +66,8 @@ class PatentDocument(BaseModel):
 
 
 class PatentTransformer:
-    def __init__(self, client: OpenAI):
-        self.client = client
+    def __init__(self):
+        self.llm_service = get_llm_service()
         # 预先生成 JSON Schema 字符串
         self.json_schema = json.dumps(PatentDocument.model_json_schema(), ensure_ascii=False, indent=2)
 
@@ -103,30 +102,18 @@ class PatentTransformer:
         logger.info("[Transformer] Starting Structured Output parsing...")
         
         try:
-            response = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
+            json_data = self.llm_service.chat_completion_json(
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.1, # 低温度保持精确
+                temperature=0.1  # 低温度保持精确
             )
 
-            # 1. 获取原始内容
-            content = response.choices[0].message.content
-            
-            # 2. 解析 JSON 字符串
-            try:
-                json_data = json.loads(content)
-            except json.JSONDecodeError:
-                logger.error("Model output is not valid JSON")
-                raise ValueError("Model output is not valid JSON")
-
-            # 3. 使用 Pydantic 进行结构校验和类型转换
+            # 使用 Pydantic 进行结构校验和类型转换
             patent_obj = PatentDocument.model_validate(json_data)
-            
-            # 4. 转回字典
+
+            # 转回字典
             result_dict = patent_obj.model_dump()
                 
             logger.success(f"[Transformer] Successfully parsed patent: {patent_obj.bibliographic_data.application_number}")
@@ -137,9 +124,8 @@ class PatentTransformer:
             raise e
 
 # 使用示例
-if __name__ == "__main__":    
-    # 模拟客户端
-    # client = OpenAI(api_key="...")
-    # transformer = PatentTransformer(client)
+if __name__ == "__main__":
+    # 模拟使用
+    # transformer = PatentTransformer()
     # data = transformer.transform(md_content="...")
     pass

@@ -1,15 +1,12 @@
 import os
 import json
-import markdown
 from typing import Dict, List, Any
-from playwright.sync_api import sync_playwright
-from openai import OpenAI
-from config import settings
 from loguru import logger
+from src.llm import get_llm_service
 
 class ContentGenerator:
-    def __init__(self, client: OpenAI, patent_data: Dict, parts_db: Dict, image_parts: Dict):
-        self.client = client
+    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict):
+        self.llm_service = get_llm_service()
         self.parts_db = parts_db
         self.image_parts = image_parts
 
@@ -55,7 +52,7 @@ class ContentGenerator:
             final_report = {
                 # 基础信息
                 "ai_title": macro_data.get("ai_title", self.biblio.get("invention_title")),
-                "abstract": self.biblio.get("abstract", ""),
+                "ai_abstract": macro_data.get("ai_abstract", self.biblio.get("abstract", "")),
                 "abstract_figure": abstract_figure.replace('images', 'annotated_images'),
                 
                 # 核心逻辑五要素
@@ -104,7 +101,7 @@ class ContentGenerator:
         {json.dumps(self.independent_claims, ensure_ascii=False)}
 
         # 2. 分析任务
-        请分析上述材料，为审查员提取以下三个核心要素：
+        请分析上述材料，为审查员提取以下四个核心要素：
 
         ### A. 核心技术标签 (ai_title)
         - **目标**：生成一个简练的**技术主题词**，帮助审查员一眼识别该专利的**核心创新点**。
@@ -117,6 +114,13 @@ class ContentGenerator:
           - 原标题：一种基于神经网络的风机叶片故障检测方法
           - 优化后：基于神经网络的风机叶片故障检测
           - 更好(如果核心是剪枝算法)：神经网络剪枝优化的叶片故障检测
+
+        ### A2. 智能摘要 (ai_abstract)
+        - **目标**：生成一段结构清晰、重点突出的技术摘要，帮助审查员快速掌握方案全貌。
+        - **要求**：
+          1. **结构化**：包含“本发明涉及[技术领域]，旨在解决[技术问题]。其方案包括[核心步骤/结构]。该方案能够[主要技术效果]。”
+          2. **精炼**：去除冗余修饰词，保留关键技术参数。
+          3. **字数**：200-300字。
 
         ### B. 客观技术问题 (technical_problem)
         - **目标**：准确界定发明要解决的**客观技术问题**。
@@ -137,12 +141,19 @@ class ContentGenerator:
         仅输出 JSON 对象：
         {{
             "ai_title": "...",
+            "ai_abstract": "...",
             "technical_problem": "...",
             "technical_scheme": "..."
         }}
         """
 
-        return self._call_llm(system_prompt, user_content)
+        return self.llm_service.chat_completion_json(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.1
+        )
     
 
     def _analyze_micro_details(self, macro_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,7 +234,13 @@ class ContentGenerator:
         }}
         """
 
-        return self._call_llm(system_prompt, user_content)
+        return self.llm_service.chat_completion_json(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=0.1
+        )
     
     def _generate_figures_analysis(self) -> List[Dict[str, Any]]:
         """
@@ -231,7 +248,7 @@ class ContentGenerator:
         遍历 drawings，为每一张图生成：AI解说 + 结构化部件表。
         """
         results = []
-        
+
         # 预处理：建立段落索引，方便查找图片引用的上下文
         paragraphs = self.text_details.split("\n")
 
@@ -239,17 +256,17 @@ class ContentGenerator:
             file_path = drawing.get("file_path")
             label = drawing.get("figure_label", "") # 如 "图1"
             caption = drawing.get("caption", "")    # 如 "系统流程图"
-            
+
             part_ids = []
             if file_path:
                 # 提取文件名进行匹配 (忽略路径差异)
                 filename = os.path.basename(file_path)
                 part_ids = self.image_parts.get(filename, [])
-            
+
             # 构建部件上下文
             parts_context_str = ""
             parts_table_data = [] # 用于 JSON 输出的结构化数据
-            
+
             if part_ids:
                 temp_desc_list = []
                 for pid in part_ids:
@@ -278,11 +295,12 @@ class ContentGenerator:
                 # 取相关度最高的前 3 个段落
                 matches = [p.strip() for p in paragraphs if search_key in p.replace(" ", "")]
                 related_text = "\n".join(matches[:3])
-            
+
             if not related_text:
                 related_text = caption # 降级使用标题
 
             # 3. 生成图片解说
+            # 无论是否有部件信息，都生成解说
             image_explanation = self._generate_single_figure_caption(
                 label, caption, parts_context_str, related_text
             )
@@ -292,9 +310,9 @@ class ContentGenerator:
                 "image_path": file_path.replace('images', 'annotated_images'),
                 "image_title": f"{label} {caption}".strip(),
                 "image_explanation": image_explanation,
-                "parts_info": parts_table_data # 结构化部件数据
+                "parts_info": parts_table_data # 结构化部件数据（可能为空列表）
             })
-            
+
         return results
 
     def _generate_single_figure_caption(self, label: str, caption: str, parts_context: str, text_context: str) -> str:
@@ -340,37 +358,14 @@ class ContentGenerator:
         """
 
         try:
-            res = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
+            content = self.llm_service.chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3, # 降低温度，减少幻觉，保证准确性
+                temperature=0.3  # 降低温度，减少幻觉，保证准确性
             )
-            return res.choices[0].message.content.strip()
+            return content.strip()
         except Exception as e:
             logger.warning(f"图片解说生成失败 {label}: {e}")
             return f"图{label}展示了{caption}的示意图。{parts_context.replace('- ', '')[:50]}..."
-
-    
-    def _call_llm(self, system_prompt: str, user_content: str) -> Dict[str, Any]:
-        """
-        封装 LLM 调用，包含重试逻辑和 JSON 解析清洗。
-        """
-        try:
-            response = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"}  # 强制 JSON 模式
-            )
-            content = response.choices[0].message.content
-            return json.loads(content)
-        except Exception as e:
-            logger.error(f"LLM 调用失败: {e}")
-            raise e
-

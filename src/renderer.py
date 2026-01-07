@@ -43,7 +43,7 @@ class ReportRenderer:
 
         # --- 2. 摘要 ---
         lines.append("## 摘要")
-        abstract = data.get("abstract", "暂无摘要")
+        abstract = data.get("ai_abstract", "暂无摘要")
         lines.append(f"{abstract}\n")
 
         # --- 3. 主图 ---
@@ -51,14 +51,19 @@ class ReportRenderer:
         main_fig = data.get("abstract_figure")
         if main_fig:
             lines.append(f"![Main Figure]({main_fig})\n")
-        
+
         # --- 4. 技术问题 ---
         lines.append("## 1. 现有技术问题 (Technical Problem)")
         problem = data.get("technical_problem", "未提取到技术问题")
         lines.append(f"{problem}\n")
 
+        # --- 4.5 技术方案 ---
+        lines.append("## 2. 技术方案概要 (Technical Scheme)")
+        scheme = data.get("technical_scheme", "未提取到技术方案")
+        lines.append(f"{scheme}\n")
+
         # --- 5. 技术手段 (Technical Means) ---
-        lines.append("## 2. 核心技术手段 (Technical Means)")
+        lines.append("## 3. 核心技术手段 (Technical Means)")
         means = data.get("technical_means", "未提取到技术手段")
         lines.append(f"{means}\n")
 
@@ -69,7 +74,7 @@ class ReportRenderer:
 
             lines.append("### 关键技术特征")
             # Markdown 表格头
-            lines.append("| 特征名称 | 详细描述 | 核心特征? |")
+            lines.append("| 特征名称 | 详细描述 | 核心特征 |")
             lines.append("| :--- | :--- | :---: |")
             for feat in features:
                 name = feat.get("name", "-")
@@ -79,7 +84,7 @@ class ReportRenderer:
             lines.append("\n")
 
         # --- 6. 技术效果 (Technical Effects) ---
-        lines.append("## 3. 技术效果 (Technical Effects)")
+        lines.append("## 4. 技术效果 (Technical Effects)")
         effects = data.get("technical_effects", [])
         if effects:
             for idx, eff in enumerate(effects, 1):
@@ -92,12 +97,12 @@ class ReportRenderer:
             lines.append("未提取到具体效果描述。\n")
 
         # --- 7. 图解说明 (Figure Explanations) ---
-        lines.append("## 4. 图解说明 (Figure Analysis)")
+        lines.append("## 5. 图解说明 (Figure Analysis)")
         figures = data.get("figure_explanations", [])
-        
+
         if not figures:
             lines.append("暂无图片分析。\n")
-        
+
         for fig in figures:
             img_path = fig.get("image_path")
             img_title = fig.get("image_title", "图片")
@@ -105,14 +110,15 @@ class ReportRenderer:
             parts = fig.get("parts_info", [])
 
             lines.append(f"### {img_title}")
-            
+
             if img_path:
                 lines.append(f"![{img_title}]({img_path})")
-            
-            lines.append(f"\n**【AI 解说】**\n{explanation}\n")
+
+            if explanation:
+                lines.append(f"\n**【AI 解说】**\n\n{explanation}\n")
 
             if parts:
-                lines.append("**【部件清单】**")
+                lines.append("\n**【部件清单】**\n")
                 lines.append("| 标号 | 名称 | 功能/作用 |")
                 lines.append("| :---: | :--- | :--- |")
                 for p in parts:
@@ -120,7 +126,8 @@ class ReportRenderer:
                     pname = p.get("name", "-")
                     pfunc = p.get("function", "-")
                     lines.append(f"| {pid} | {pname} | {pfunc} |")
-            
+                lines.append("\n")
+
             lines.append("\n---\n") # 分隔线
 
         return "\n".join(lines)

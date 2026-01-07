@@ -21,6 +21,10 @@ class Settings:
     LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
     LLM_TEMPERATURE = 0.1
 
+    # --- 视觉模型配置 (GLM-4V) ---
+    GLM_API_KEY = os.getenv("GLM_API_KEY")
+    GLM_VISION_MODEL = os.getenv("GLM_VISION_MODEL", "glm-4.6v-flash")
+
     # --- 视觉处理配置 ---
     FONT_SIZE = 16       # 标注字体大小
     LABEL_COLOR = (0, 0, 255) # 标注颜色 (B, G, R) - 蓝色
