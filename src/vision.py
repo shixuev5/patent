@@ -1,5 +1,7 @@
 import cv2
 import re
+import os
+import json
 import shutil
 import numpy as np
 from pathlib import Path
@@ -9,9 +11,8 @@ from paddleocr import PaddleOCR
 from tqdm import tqdm
 from config import settings
 from loguru import logger
+from src.llm import get_llm_service
 
-# 全局初始化 OCR 模型，避免多线程中重复加载
-# 注意：PaddleOCR 实例在多进程下可能需要放在函数内部，但在 ThreadPool 下全局即可
 ocr_engine = PaddleOCR(
     text_detection_model_name="PP-OCRv5_server_det",
     text_recognition_model_name="PP-OCRv5_server_rec",
@@ -140,6 +141,19 @@ class VisualProcessor:
     
     @staticmethod
     def run_ocr(img_path: str):
+        """
+        根据环境变量选择 OCR 引擎
+        返回格式: [{'text': str, 'box': [x1, y1, x2, y2]}, ...]
+        """
+        engine_type = os.getenv("OCR_ENGINE", "local").lower()
+        
+        if engine_type == "local":
+            return VisualProcessor._run_local_ocr(img_path)
+        else:
+            return VisualProcessor._run_glm_ocr(img_path)
+        
+    
+    def _run_local_ocr(img_path: str)-> List[Dict]:
         """运行 OCR 返回原始结果"""
         result = ocr_engine.predict(img_path, text_rec_score_thresh=0.9)
 
@@ -158,6 +172,57 @@ class VisualProcessor:
             })
         
         return formatted
+    
+    def _run_glm_ocr(img_path: str) -> List[Dict]:
+        """使用 ZhipuAI GLM-4V"""
+        try:
+            llm_service = get_llm_service()
+
+            # 读取图片尺寸用于坐标反归一化
+            img = cv2.imread(img_path)
+            if img is None:
+                logger.error(f"[GLM] Failed to read image: {img_path}")
+                return []
+            h, w = img.shape[:2]
+
+            prompt = """
+            请识别这张专利附图中的所有零部件编号（通常是数字）。
+
+            要求：
+            1. 返回一个纯 JSON 列表，不要包含 markdown 格式（如 ```json）。
+            2. 每个项目包含 "text" (识别到的数字字符串) 和 "box" (该数字的边界框)。
+            3. "box" 必须使用 [xmin, ymin, xmax, ymax] 格式。
+            4. "box" 的坐标请使用 0-1000 的归一化坐标系 (即左上角0,0 右下角1000,1000)。
+
+            返回示例：
+            [{"text": "10", "box": [100, 100, 150, 120]}, {"text": "2", "box": [500, 500, 520, 520]}]
+            """
+
+            content = llm_service.analyze_image_with_thinking(img_path, prompt)
+
+            data = json.loads(content)
+
+            formatted = []
+            for item in data:
+                norm_box = item.get('box', [])
+                if len(norm_box) == 4:
+                    # 将 0-1000 的归一化坐标转换为绝对像素坐标
+                    x1 = int(norm_box[0] / 1000 * w)
+                    y1 = int(norm_box[1] / 1000 * h)
+                    x2 = int(norm_box[2] / 1000 * w)
+                    y2 = int(norm_box[3] / 1000 * h)
+
+                    formatted.append({
+                        'text': str(item.get('text', '')),
+                        'box': [x1, y1, x2, y2]
+                    })
+
+            logger.info(f"[GLM] Successfully extracted {len(formatted)} labels from {Path(img_path).name}")
+            return formatted
+
+        except Exception as e:
+            logger.error(f"[GLM] Error processing {Path(img_path).name}: {e}")
+            return []
 
     @staticmethod
     def annotate_image(img_path: str, labels: list, output_path: str):

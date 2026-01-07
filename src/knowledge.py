@@ -1,12 +1,10 @@
-import json
 from typing import Dict
-from openai import OpenAI
-from config import settings
 from loguru import logger
+from src.llm import get_llm_service
 
 class KnowledgeExtractor:
-    def __init__(self, client: OpenAI):
-        self.client = client
+    def __init__(self):
+        self.llm_service = get_llm_service()
 
     def _construct_context(self, patent_data: Dict, max_chars: int = 20000) -> str:
         """
@@ -122,26 +120,17 @@ class KnowledgeExtractor:
 
         try:
             logger.info("[Knowledge] Sending request to LLM...")
-            response = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
+            data = self.llm_service.chat_completion_json(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": refined_content}
                 ],
-                temperature=0.1, 
-                response_format={"type": "json_object"}
+                temperature=0.1
             )
-            
-            content = response.choices[0].message.content
-            
-            data = json.loads(content)
-            
+
             logger.success(f"[Knowledge] Successfully extracted {len(data)} entities.")
             return data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"[Knowledge] JSON Decode Error. Raw content: {content[:100]}...")
-            return {}
+
         except Exception as e:
             logger.error(f"[Knowledge] Extraction failed: {e}")
             return {}

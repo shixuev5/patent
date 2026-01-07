@@ -1,6 +1,5 @@
 import json
 from loguru import logger
-from openai import OpenAI
 
 from config import settings
 from src.parser import PDFParser
@@ -21,9 +20,6 @@ def main():
     paths = settings.get_project_paths(input_pdf.stem)
     paths["root"].mkdir(parents=True, exist_ok=True)
     paths["annotated_dir"].mkdir(exist_ok=True)
-    
-    # 初始化 AI 客户端
-    client = OpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
 
     # --- Step 1: 解析 PDF ---
     if not paths["raw_md"].exists():
@@ -46,7 +42,7 @@ def main():
         patent_data = json.loads(paths["patent_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 2: Transforming MD to structured JSON...")
-        transformer = PatentTransformer(client)
+        transformer = PatentTransformer()
         patent_data = transformer.transform(md_content)
         paths["patent_json"].write_text(json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -57,7 +53,7 @@ def main():
         parts_db = json.loads(paths["parts_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 3: Extracting knowledge...")
-        extractor = KnowledgeExtractor(client)
+        extractor = KnowledgeExtractor()
         parts_db = extractor.extract_entities(patent_data)
         paths["parts_json"].write_text(json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -87,7 +83,7 @@ def main():
         report_json = json.loads(paths["report_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 5: Generating report json...")
-        generator = ContentGenerator(client, patent_data, parts_db, image_parts)
+        generator = ContentGenerator(patent_data, parts_db, image_parts)
         report_json = generator.generate_report_json()
         paths["report_json"].write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
