@@ -18,7 +18,7 @@ ocr_engine = PaddleOCR(
     text_recognition_model_name="PP-OCRv5_server_rec",
     use_doc_orientation_classify=False, # 通过 use_doc_orientation_classify 参数指定不使用文档方向分类模型
     use_doc_unwarping=False, # 通过 use_doc_unwarping 参数指定不使用文本图像矫正模型
-    use_textline_orientation=False, # 通过 use_textline_orientation 参数指定不使用文本行方向分类模型
+    use_textline_orientation=False  # 通过 use_textline_orientation 参数指定不使用文本行方向分类模型
 )
 
 class VisualProcessor:
@@ -124,7 +124,7 @@ class VisualProcessor:
                     found_pids.append(clean_text)
             
             # 3. 绘图或复制
-            if len(valid_labels) / len(ocr_results) > 0.3:
+            if len(ocr_results) and len(valid_labels) / len(ocr_results) > 0.3:
                 VisualProcessor.annotate_image(str(img_path), valid_labels, str(out_path))
             else:
                 # 无有效信息，复制原图
@@ -186,19 +186,23 @@ class VisualProcessor:
             h, w = img.shape[:2]
 
             prompt = """
-            请识别这张专利附图中的所有零部件编号（通常是数字）。
-
+            任务：找出图片中所有的零部件编号（数字）。
+            
             要求：
-            1. 返回一个纯 JSON 列表，不要包含 markdown 格式（如 ```json）。
-            2. 每个项目包含 "text" (识别到的数字字符串) 和 "box" (该数字的边界框)。
-            3. "box" 必须使用 [xmin, ymin, xmax, ymax] 格式。
-            4. "box" 的坐标请使用 0-1000 的归一化坐标系 (即左上角0,0 右下角1000,1000)。
-
+            1. 返回纯 JSON 列表。
+            2. 格式：[{"text": "数字内容", "box": [ymin, xmin, ymax, xmax]}]。
+            3. 坐标系：使用 0-1000 的归一化坐标。
+            4. 精度要求：box 必须【紧致地包裹】数字像素，不要包含过多空白背景。
+            5. 如果数字周围有引线，box 不要包含引线，只包含数字本身。
+            6. "box" 顺序：注意通常是 [xmin, ymin, xmax, ymax]。
+            
             返回示例：
-            [{"text": "10", "box": [100, 100, 150, 120]}, {"text": "2", "box": [500, 500, 520, 520]}]
+            [{"text": "10", "box": [100, 100, 150, 120]}]
             """
 
             content = llm_service.analyze_image_with_thinking(img_path, prompt)
+
+            content = content.replace("```json", "").replace("```", "").strip()
 
             data = json.loads(content)
 
@@ -206,7 +210,6 @@ class VisualProcessor:
             for item in data:
                 norm_box = item.get('box', [])
                 if len(norm_box) == 4:
-                    # 将 0-1000 的归一化坐标转换为绝对像素坐标
                     x1 = int(norm_box[0] / 1000 * w)
                     y1 = int(norm_box[1] / 1000 * h)
                     x2 = int(norm_box[2] / 1000 * w)
