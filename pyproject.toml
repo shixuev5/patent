@@ -14,5 +14,4 @@ dependencies = [
     "pydantic>=2.11.10",
     "python-dotenv>=1.2.1",
     "tqdm>=4.67.1",
-    "zai-sdk>=0.2.0",
 ]

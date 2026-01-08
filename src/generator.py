@@ -1,14 +1,16 @@
 import os
 import json
+from pathlib import Path
 from typing import Dict, List, Any
 from loguru import logger
 from src.llm import get_llm_service
 
 class ContentGenerator:
-    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict):
+    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict, annotated_dir: Path):
         self.llm_service = get_llm_service()
         self.parts_db = parts_db
         self.image_parts = image_parts
+        self.annotated_dir = annotated_dir
 
         # 预处理数据，方便后续调用
         self.biblio = patent_data.get("bibliographic_data", {})
@@ -19,6 +21,7 @@ class ContentGenerator:
         # 提取关键文本块 (为了节省 Token 并提高准确度，提前做简单的清洗)
         self.text_background = self.description.get("background_art", "")
         self.text_summary = self.description.get("summary_of_invention", "")
+        self.text_effect =  self.description.get("technical_effect", "")
         self.text_details = self.description.get("detailed_description", "")
 
         # 提取独立权利要求
@@ -41,7 +44,12 @@ class ContentGenerator:
             micro_data  = self._analyze_micro_details(macro_data)
 
             # 3. 图解生成 (遍历每一张图，生成解说和部件表)
-            figures_data = self._generate_figures_analysis()
+            global_context = {
+                "title": macro_data.get("ai_title"),
+                "problem": macro_data.get("technical_problem"),
+                "effects": micro_data.get("technical_effects", [])
+            }
+            figures_data = self._generate_figures_analysis(global_context)
             
             # 4. 组装最终 JSON
             # 寻找主图：通常是第一张图，或者摘要附图
@@ -79,25 +87,27 @@ class ContentGenerator:
         目标受众：专利审查员/技术专家。
         输入：背景技术 + 发明内容(部分) + 独权
         """
-        logger.debug("正在执行阶段一：宏观逻辑分析 (审查员模式)...")
+        logger.debug("正在执行阶段一：宏观逻辑分析...")
 
         # System Prompt: 设定为协助审查员快速抓住重点的角色
         system_prompt = (
             "你是一位经验丰富的专利审查员助理。你的任务是协助审查员快速理解专利的核心实质。"
             "请基于‘问题-解决方案’的逻辑（Problem-Solution Approach），客观、精准地提炼信息。"
-            "严禁使用营销、夸张或非技术性的描述语言。"
             "请以严格的 JSON 格式输出。"
         )
 
         user_content = f"""
         # 1. 待分析文本
-        【背景技术片段】
+        【背景技术 (Background Art)】
         {self.text_background[:2500] if self.text_background else "（背景技术为空，请根据发明内容推断现有技术的缺陷）"}
 
-        【发明内容片段】
+        【发明内容-技术方案 (Technical Solution)】
         {self.text_summary[:2500]}
 
-        【独立权利要求】
+        【发明内容-有益效果 (Beneficial Effects)】
+        {self.text_effect if self.text_effect else "（文中未明确单独列出有益效果，请根据技术方案推断）"}
+
+        【独立权利要求 (Independent Claims)】
         {json.dumps(self.independent_claims, ensure_ascii=False)}
 
         # 2. 分析任务
@@ -116,19 +126,24 @@ class ContentGenerator:
           - 更好(如果核心是剪枝算法)：神经网络剪枝优化的叶片故障检测
 
         ### A2. 智能摘要 (ai_abstract)
-        - **目标**：生成一段结构清晰、重点突出的技术摘要，帮助审查员快速掌握方案全貌。
-        - **要求**：
-          1. **结构化**：包含“本发明涉及[技术领域]，旨在解决[技术问题]。其方案包括[核心步骤/结构]。该方案能够[主要技术效果]。”
-          2. **精炼**：去除冗余修饰词，保留关键技术参数。
-          3. **字数**：200-300字。
+        - **目标**：生成一段高信息密度的技术摘要。
+        - **核心要求**：
+          1. **直接切入**：禁止使用“本发明涉及...”、“公开了...”等废话作为开头。直接描述“针对[现有问题]，提出一种基于[核心手段]的[方案名称]。”
+          2. **参数为王**：如果权利要求中包含具体的温度、比例、算法公式等关键参数，必须保留在摘要中。
+          3. **效果闭环**：结尾必须说明该方案带来的核心指标提升（如效率提升20%）。
 
         ### B. 客观技术问题 (technical_problem)
-        - **目标**：准确界定发明要解决的**客观技术问题**。
-        - **思考逻辑**：
-          1. 现有技术（Closest Prior Art）存在什么具体缺陷？（如：计算量大、信号信噪比低、结构强度不足）。
-          2. 这个缺陷导致了什么直接后果？
-        - **输出要求**：直接陈述技术缺陷，不要包含“本发明旨在解决”等套话。
-        - **示例**：现有声发射监测方法受环境噪声影响大，导致微小磨损的特征提取困难，响应滞后。
+        - **核心逻辑**：基于“有益效果”反推“客观问题”。
+        - **思考路径**：
+          1. **看效果**：阅读【有益效果】，找出本发明最核心的性能提升点（如：响应速度、精度、成本）。
+          2. **找差异**：对比【背景技术】，确定现有技术因缺乏什么手段而无法达到上述效果。
+          3. **定问题**：将“现有技术的具体缺陷”转化为“本发明要解决的任务”。
+        - **要求**：
+          - **具体化**：拒绝泛泛而谈（如“解决效率低的问题”）。必须指出是**什么原因**导致的效率低（如“解决因XX算法复杂度高导致的计算效率低问题”）。
+          - **客观性**：不要直接复制申请人声称的“主观问题”（有时申请人会夸大），要基于技术事实总结。
+        - **格式范例**：
+          - *差*：解决风机监测难的问题。
+          - *好*：解决现有声发射监测技术在强背景噪声下特征提取困难，导致对早期磨损响应滞后的问题。
 
         ### C. 技术方案概要 (technical_scheme)
         - **目标**：用**工程语言**重述独立权利要求，阐明**技术手段**如何解决上述问题。
@@ -160,26 +175,27 @@ class ContentGenerator:
         """
         阶段二：分析技术特征、技术手段、具体效果。
         目标受众：专利审查员/技术专家。
-        输入：阶段一结果 + 全部权利要求 + 具体实施方式(截断)
+        输入：阶段一结果 + 全部权利要求 + 具体实施方式(截断) + 声称的技术效果
         """
-        logger.debug("正在执行阶段二：微观细节提取 (审查员模式)...")
+        logger.debug("正在执行阶段二：微观细节提取...")
 
         # 截断策略：保留前 6000 字符。
         # 优化建议：如果有条件，最好使用 embedding 检索包含 "原理"、"实验"、"数据" 关键词的段落
         details_snippet = self.text_details[:6000]
 
-        # System Prompt: 设定为精通“权利要求解释”和“技术验证”的专家
         system_prompt = (
-            "你是一位精通机械/电子/算法原理的专利技术专家。你的任务是将法律化的权利要求"
-            "与具体化的实施方式相结合，进行深度的技术拆解。"
-            "你需要识别核心创新点，并从物理或逻辑层面解释其运作机理。"
+            "你是一位精通技术验证的专利审查专家。你的核心任务是进行‘特征-效果’的归因分析。"
+            "你需要验证申请人声称的效果是否有实施例数据支撑，并找出产生该效果的关键技术特征。"
             "请以严格的 JSON 格式输出。"
         )
 
         user_content = f"""
         # 1. 输入上下文
-        【宏观逻辑（问题与方案）】
+        【宏观逻辑框架】
         {json.dumps(macro_context, ensure_ascii=False)}
+
+        【申请人声称的有益效果 (Target Effects)】
+        {self.text_effect}
 
         【权利要求书 (Claims)】
         {json.dumps(self.claims, ensure_ascii=False)}
@@ -205,12 +221,12 @@ class ContentGenerator:
           3. **因果链**：描述 "结构/步骤 -> 机理 -> 结果" 的完整链条。
         - **篇幅**：200-300字，形成一段逻辑连贯的技术短文。
 
-        ### C. 技术效果与证据 (technical_effects)
-        - **目标**：提取支撑创造性的**实证数据**或**具体结论**。
-        - **优先级**：
-          1. **定量数据**（最高）：如“效率提升15%”、“响应时间缩短至0.02s”。
-          2. **定性结论**（次之）：如“显著降低了误报率”。
-        - **关联性**：必须指出该效果是由哪个特征带来的（Source Feature）。
+        ### C. 效果归因与验证 (technical_effects)
+        - **目标**：将【声称的有益效果】与【技术特征】和【实施例数据】进行关联。
+        - **操作步骤**：
+          1. 阅读【声称的有益效果】，列出核心优点（如：响应快、抗干扰）。
+          2. **找原因 (Source)**：在【权利要求】中寻找，是哪个具体特征（结构/步骤）导致了这个优点？
+          3. **找证据 (Evidence)**：在【具体实施方式】中寻找，是否有实验数据、仿真结果或对比案例支持这个优点？如果实施方式中仅重复了定性描述而无具体数据/案例，请填写“仅有定性描述，无实验数据支持”。
 
         # 3. 输出格式
         仅输出 JSON 对象：
@@ -226,9 +242,15 @@ class ContentGenerator:
             "technical_means": "...",
             "technical_effects": [
                 {{
-                    "effect": "效果描述 (优先提取数据)",
-                    "source_feature": "对应特征 (如: 0.02s短时间窗)"
+                    "effect": "高响应速度",
+                    "source_feature": "空窗密度特征提取",
+                    "evidence": "图7对比显示，空窗时间分辨率达到0.02s，优于传统RMS方法的1s响应时间。"
                 }},
+                {{
+                    "effect": "结构强度高",
+                    "source_feature": "加强筋结构",
+                    "evidence": "仅有定性描述，无实验数据支持"  <-- 注意这种负面反馈
+                }}
                 ...
             ]
         }}
@@ -242,7 +264,7 @@ class ContentGenerator:
             temperature=0.1
         )
     
-    def _generate_figures_analysis(self) -> List[Dict[str, Any]]:
+    def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """
         Step 3: 图解生成。
         遍历 drawings，为每一张图生成：AI解说 + 结构化部件表。
@@ -257,6 +279,20 @@ class ContentGenerator:
             label = drawing.get("figure_label", "") # 如 "图1"
             caption = drawing.get("caption", "")    # 如 "系统流程图"
 
+            # 处理图片路径
+            image_abs_path = None
+            if file_path:
+                # 提取文件名 (忽略原始的 images/ 前缀)
+                filename = os.path.basename(file_path)
+                # 拼接标注图片目录的绝对路径
+                target_path = self.annotated_dir / filename
+                
+                if target_path.exists():
+                    image_abs_path = str(target_path)
+                else:
+                    logger.warning(f"Annotated image not found: {target_path}, skipping vision analysis.")
+
+            # 匹配图片 OCR 识别部件
             part_ids = []
             if file_path:
                 # 提取文件名进行匹配 (忽略路径差异)
@@ -300,9 +336,8 @@ class ContentGenerator:
                 related_text = caption # 降级使用标题
 
             # 3. 生成图片解说
-            # 无论是否有部件信息，都生成解说
             image_explanation = self._generate_single_figure_caption(
-                label, caption, parts_context_str, related_text
+                label, caption, parts_context_str, related_text, global_context, image_abs_path
             )
 
             # 4. 存入结果
@@ -315,55 +350,75 @@ class ContentGenerator:
 
         return results
 
-    def _generate_single_figure_caption(self, label: str, caption: str, parts_context: str, text_context: str) -> str:
+    def _generate_single_figure_caption(self, label: str, caption: str, parts_context: str, text_context: str, global_context: Dict, image_path: str) -> str:
         """
         生成单张图片的“看图说话”
         """
-        system_prompt = (
-            "你是一位拥有10年经验的专利技术解说专家。你的特长是将晦涩的专利图纸和文字，"
-            "转化为直观、逻辑流畅的工程技术解说词。"
-        )
-        
-        user_prompt = f"""
-        # 1. 待分析对象
+
+        effects_str = "\n".join([f"- {e['effect']}: {e['source_feature']}" for e in global_context.get('effects', [])[:3]])
+
+        vlm_prompt = f"""
+        # 角色设定
+        你是一位顶尖的专利可视化分析师。你的受众是**非本技术领域的专利审查员**。
+        审查员面临大量的阅读压力，你的任务是**降低他们的认知负荷**，通过一段通俗、逻辑严密的解说，让他们一眼看懂这张图的核心含义。
+
+        # 0. 全局认知 (Global Knowledge)
+        在分析图片前，请先理解本专利的核心逻辑，这将作为你**解读图片意图的唯一指引**：
+        - **核心发明点**：{global_context.get('title')}
+        - **要解决的客观问题**：{global_context.get('problem')}
+        - **预期达到的效果**：
+        {effects_str}
+
+        # 1. 输入数据
         - **图号与标题**：{label} - {caption}
-        - **包含部件 (Visual Clues)**：
-        {parts_context if parts_context else "（未检测到具体部件标号，可能是流程图、数据图或整体概览图）"}
+        - **视觉线索 (Visual Clues)**：
+          图片经过了机器视觉标注，请将图中的**显眼文字（蓝色/红色文本）、数字标号或指示箭头**视为最高优先级的锚点。
+          这些视觉标记对应以下部件信息（未在图中明确指出的部件请勿强行描述）：
+          {parts_context}
+        - **局部描述 (Context)**：
+          {text_context}
 
-        # 2. 原文参考 (Context)
-        {text_context}
+        # 2. 思考步骤 (请在内心执行，无需输出)
+        1. **锚点对齐**：首先锁定图中的【视觉线索】，确认关键部件在图中的具体位置，构建空间坐标系。
+        2. **意图解码**：结合【全局认知】，问自己：申请人为什么要放这张图？
+           - *如果是结构图：* 哪个部件是解决【客观问题】的“金钥匙”？
+           - *如果是数据图：* 曲线的哪个“拐点”或“极值”证明了【预期效果】？
+        3. **逻辑串联**：用一条看不见的线（力流、数据流、时间流）将静态部件串联起来。
 
-        # 3. 生成指令
-        请根据图片类型采用不同的解说策略，编写一段 **150字左右** 的解说段落：
+        # 3. 生成策略 (根据图片类型选择)
+        **[类型 A：机械/结构/装置图]**
+        - **拒绝清单体**：严禁写成“1是A，2是B”的说明书列表。
+        - **关注交互与传递**：描述力的传递、流体的走向或动作的触发。例如：“电机(1)输出的扭矩，经由减速器(2)放大后，驱动...”
+        - **空间方位**：使用“位于...上游”、“紧贴于...内壁”等词建立清晰的空间感。
 
-        **场景 A：如果是机械/物理结构图（存在部件标号）**
-        - **空间构建**：拒绝清单式罗列（如“1是A，2是B”）。必须描述部件的**装配关系**（如“嵌套于”、“连接至”、“支撑着”）。
-        - **动态逻辑**：描述**力的传递**或**动作序列**（如“电机(1)驱动齿轮(2)旋转，从而带动...”）。
-        - **标号规范**：提及具体部件时，**必须**在名称后紧跟括号和标号，格式为 `部件名(ID)`。
+        **[类型 B：流程图/时序图/算法逻辑]**
+        - **关注变化**：描述数据流经各步骤时发生了什么“质变”。例如：“原始信号经过降噪(S1)后变得纯净，随即进入判定模块(S2)...”
+        - **因果链条**：强调步骤之间的逻辑必要性。
 
-        **场景 B：如果是流程图/算法图/数据曲线**
-        - **逻辑流转**：描述步骤的先后顺序、数据的处理流程或判断逻辑。
-        - **数据含义**：如果是曲线图，解释横纵坐标代表什么，以及曲线变化说明了什么结论（如“随着X增加，Y呈现指数级下降，证明了...”）。
+        **[类型 C：数据曲线/仿真图/对比图]**
+        - **不仅读轴，更要读点**：不要只描述趋势，必须指出**“关键转折点”**或**“最大差异区”**。
+        - **数据翻译**：将抽象的坐标轴含义翻译为具体性能。例如：“纵坐标的下降并不只代表数值减小，更意味着系统延迟的显著降低。”
 
-        # 4. 写作要求
-        - **风格去噪**：将“所述”、“设置有”替换为“该”、“位于”、“包含”等自然语言。
-        - **结构清晰**：
-          1. 开篇：一句话概括该图展示的核心模块或原理。
-          2. 中段：按逻辑/空间/时间顺序展开细节。
-          3. 结尾：(可选) 点明该设计带来的最终效果。
-        - **严禁**：不要使用 Markdown 标题（如 ###），不要出现“如图所示”、“好的”等废话。
+        # 4. 写作规范 (必须严格遵守)
+        - **三段式微结构**：
+          1. **一句话定位**：开篇直接点明这张图展示了本发明的哪个核心模块、原理或实验结果。
+          2. **动态推演**：中间部分按顺序描述工作过程、受力传递或数据变化规律。
+          3. **价值闭环**：结尾必须显式关联到【全局认知】中的某项效果（如“这一设计直接解决了[客观问题]...”）。
+        - **语言风格**：
+          - **通俗化**：用“起到...作用”代替“被配置为”。
+          - **规范引用**：提及部件时必须使用 `名称(标号)` 格式，如 `传动轴(12)`。
+        - **篇幅**：控制在 150-200 字之间，紧凑且高密度。
 
-        # 5. 输出
-        直接输出生成的解说段落。
+        # 5. 输出指令
+        直接输出最终的解说段落，不要包含任何标题、Markdown标记或“好的”等客套话。
         """
 
         try:
-            content = self.llm_service.chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3  # 降低温度，减少幻觉，保证准确性
+            logger.info(f"正在进行视觉思考分析: {label} ({os.path.basename(image_path)})")
+
+            content = self.llm_service.analyze_image_with_thinking(
+                image_path=image_path,
+                prompt=vlm_prompt
             )
             return content.strip()
         except Exception as e:

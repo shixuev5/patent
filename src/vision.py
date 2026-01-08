@@ -150,7 +150,7 @@ class VisualProcessor:
         if engine_type == "local":
             return VisualProcessor._run_local_ocr(img_path)
         else:
-            return VisualProcessor._run_glm_ocr(img_path)
+            return VisualProcessor._run_vlm_ocr(img_path)
         
     
     def _run_local_ocr(img_path: str)-> List[Dict]:
@@ -173,15 +173,15 @@ class VisualProcessor:
         
         return formatted
     
-    def _run_glm_ocr(img_path: str) -> List[Dict]:
-        """使用 ZhipuAI GLM-4V"""
+    def _run_vlm_ocr(img_path: str) -> List[Dict]:
+        """使用视觉模型"""
         try:
             llm_service = get_llm_service()
 
             # 读取图片尺寸用于坐标反归一化
             img = cv2.imread(img_path)
             if img is None:
-                logger.error(f"[GLM] Failed to read image: {img_path}")
+                logger.error(f"[VLM] Failed to read image: {img_path}")
                 return []
             h, w = img.shape[:2]
 
@@ -220,11 +220,11 @@ class VisualProcessor:
                         'box': [x1, y1, x2, y2]
                     })
 
-            logger.info(f"[GLM] Successfully extracted {len(formatted)} labels from {Path(img_path).name}")
+            logger.info(f"[VLM] Successfully extracted {len(formatted)} labels from {Path(img_path).name}")
             return formatted
 
         except Exception as e:
-            logger.error(f"[GLM] Error processing {Path(img_path).name}: {e}")
+            logger.error(f"[VLM] Error processing {Path(img_path).name}: {e}")
             return []
 
     @staticmethod

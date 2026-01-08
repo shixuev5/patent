@@ -45,7 +45,8 @@ class DescriptionSection(BaseModel):
     """说明书各章节内容"""
     technical_field: str = Field(..., description="技术领域")
     background_art: str = Field(..., description="背景技术")
-    summary_of_invention: str = Field(..., description="发明内容，保留公式")
+    summary_of_invention: str = Field(..., description="发明内容（技术方案部分）。**注意**：请在此处截断，不要包含'有益效果'或'技术效果'的相关段落。")
+    technical_effect: str = Field(..., description="有益效果/技术效果。提取'发明内容'章节末尾关于'本发明具有如下有益效果'或'技术效果'的描述段落。若无明确描述则为null。")
     brief_description_of_drawings: str = Field(..., description="附图说明（仅提取文字描述）")
     detailed_description: str = Field(..., description="具体实施方式，保留段落编号[00xx]和公式")
 
@@ -82,9 +83,9 @@ class PatentTransformer:
     - `abstract`: 仅提取文本，不要包含 Markdown 图片链接。
     - `claim_text`: 必须去除行首的序号（如 "1."），但保留内部引用的序号。
 5. **图像识别**：
-   - 如果图片出现在【摘要】部分，提取到 `bibliographic_data.abstract_figure`。
-   - 如果图片出现在【附图说明】或【文档末尾】，提取到 `drawings` 列表。
-   - 图片链接（仅提取URL，不包含![]部分）。
+   - 摘要图片 -> `bibliographic_data.abstract_figure`
+   - 附图说明/文末图片 -> `drawings`
+   - 仅提取URL。
 6. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
 ### 输出格式要求
