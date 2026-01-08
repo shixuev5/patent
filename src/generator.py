@@ -237,7 +237,7 @@ class ContentGenerator:
                 }},
                 ...
             ],
-            "technical_means": "...",
+            "technical_means": "本技术方案的核心创新在于引入空窗密度和峰度作为特征值，以解决风机齿轮箱中噪声干扰导致的监测滞后问题。其核心机制在于...",
             "technical_effects": [
                 {{
                     "effect": "高响应速度",
