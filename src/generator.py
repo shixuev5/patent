@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from pathlib import Path
 from typing import Dict, List, Any
@@ -179,10 +180,6 @@ class ContentGenerator:
         """
         logger.debug("正在执行阶段二：微观细节提取...")
 
-        # 截断策略：保留前 6000 字符。
-        # 优化建议：如果有条件，最好使用 embedding 检索包含 "原理"、"实验"、"数据" 关键词的段落
-        details_snippet = self.text_details[:6000]
-
         system_prompt = (
             "你是一位精通技术验证的专利审查专家。你的核心任务是进行‘特征-效果’的归因分析。"
             "你需要验证申请人声称的效果是否有实施例数据支撑，并找出产生该效果的关键技术特征。"
@@ -201,7 +198,7 @@ class ContentGenerator:
         {json.dumps(self.claims, ensure_ascii=False)}
 
         【具体实施方式片段 (Embodiments)】
-        {details_snippet}
+        {self.text_details}
 
         # 2. 分析任务
         请结合上述材料，完成以下深度分析：
@@ -219,6 +216,7 @@ class ContentGenerator:
           1. 核心区别特征（Novelty）是如何工作的？
           2. 涉及什么物理原理（如杠杆、热传导）、化学反应或算法逻辑（如FFT变换、阈值判定）？
           3. **因果链**：描述 "结构/步骤 -> 机理 -> 结果" 的完整链条。
+        - **约束**：严禁简单重复 `technical_scheme` 的步骤流程。必须侧重于解释背后的物理原理、算法逻辑或因果机制。
         - **篇幅**：200-300字，形成一段逻辑连贯的技术短文。
 
         ### C. 效果归因与验证 (technical_effects)
@@ -326,11 +324,14 @@ class ContentGenerator:
             # 2. 获取说明书上下文
             # 查找包含 "图1" 或 "Fig.1" 的段落
             related_text = ""
-            search_key = label.replace(" ", "") # 去空格匹配
-            if search_key:
-                # 取相关度最高的前 3 个段落
-                matches = [p.strip() for p in paragraphs if search_key in p.replace(" ", "")]
-                related_text = "\n".join(matches[:3])
+            clean_label = label.replace(" ", "") # 去空格匹配
+
+            if clean_label:
+                pattern = re.compile(rf"{clean_label}(?!\d)")
+
+                matches = [p.strip() for p in paragraphs if pattern.search(p.replace(" ", ""))]
+                matches.sort(key=len, reverse=True)
+                related_text = "\n---\n".join(matches[:2])
 
             if not related_text:
                 related_text = caption # 降级使用标题
