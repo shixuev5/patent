@@ -165,11 +165,10 @@ class ReportRenderer:
         lines = []
         lines.append("# 专利审查检索策略建议书\n")
         
-        meta = data.get("meta", {})
         analysis = data.get("analysis", {})
         
         lines.append("## 1. 检索背景分析")
-        lines.append(f"- **目标专利**: {meta.get('target_patent', 'Unknown')}")
+        lines.append(f"- **目标专利**: {analysis.get('target_patent', 'Unknown')}")
         lines.append(f"- **申请人类型**: {analysis.get('applicant_type', '-')} (策略依据)")
         lines.append(f"- **领域判读**: {analysis.get('technical_field', '-')}")
         lines.append(f"- **审查员提示**: \n> {analysis.get('key_judgment', '-')}\n")
