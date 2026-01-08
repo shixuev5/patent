@@ -113,15 +113,35 @@ class SearchStrategyGenerator:
         - Step 1 (Semantic): 忽略分类号，直接检索原理关键词。Query: `((ANHYDROUS 1W COPPER 1W SULFATE) OR (CUSO4)) AND (SEAL+ OR LEAK+)`.
         - Step 2 (Cross-Domain): 联合 G01M3/00 (密封测试) AND H01M (电池).
 
-        ### 输出格式要求 (JSON)
-        请输出 JSON，包含：
-        1. `analysis`: 简短分析（申请人类型、技术难点、分类号精准度预判）。
-        2. `keywords`: { "en": [], "zh": [], "expansion": [] } (中英文关键词及同义词扩展)。
-        3. `search_steps`: 列表，每个步骤包含：
-           - `type`: 策略类型 (Classification / Structural / Semantic / NPL / Cross-Domain)。
-           - `objective`: 该步骤的目的。
-           - `databases`: 推荐数据库 (如 CNTXT, DWPI, IEEE)。
-           - `queries`: [ "表达式1", "表达式2" ] (**关键：每个步骤至少给出 3 个不同构造的表达式**)。
+        ### 输出格式要求 (Strict JSON)
+        请严格按照以下 JSON 结构输出，不要包含 markdown 代码块标记：
+
+        {
+            "analysis": {
+                "applicant_type": "判定申请人类型 (如: 高校/企业/个人)",
+                "technical_field": "技术领域简述 (如: 风电-齿轮箱监测)",
+                "key_judgment": "审查员策略判断 (如: 申请人涉及高校且包含算法特征，重点在于NPL检索及语义去噪)"
+            },
+            "keywords": {
+                "en": ["keyword1", "keyword2"],
+                "zh": ["关键词1", "关键词2"],
+                "expansion": ["扩展词1", "扩展词2 (同义词/下位概念)"]
+            },
+            "search_steps": [
+                {
+                    "type": "Classification / Structural / Semantic / NPL / Cross-Domain",
+                    "objective": "该步骤的具体目的",
+                    "databases": ["CNTXT", "DWPI", "IEEE", "CNKI"],
+                    "queries": [
+                        "检索式1",
+                        "检索式2",
+                        "检索式3",
+                        "检索式4",
+                        "检索式5 (关键：每个步骤必须提供至少 5 条不同构造的检索式，覆盖不同关键词组合、不同算符或不同字段)"
+                    ]
+                }
+            ]
+        }
         """
 
     def _build_user_prompt(self) -> str:

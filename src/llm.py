@@ -15,19 +15,12 @@ class LLMService:
             api_key=settings.LLM_API_KEY,
             base_url=settings.LLM_BASE_URL
         )
-        self.text_model = settings.LLM_MODEL
 
         # 2. 初始化视觉模型客户端 (如 GLM-4V)
-        if settings.VLM_API_KEY:
-            self.vlm_client = OpenAI(
-                api_key=settings.VLM_API_KEY,
-                base_url=settings.VLM_BASE_URL
-            )
-            self.vlm_model = settings.VLM_MODEL
-        else:
-            self.vlm_client = None
-            self.vlm_model = None
-            logger.warning("[LLM] VLM_API_KEY not configured, vision features will be unavailable")
+        self.vlm_client = OpenAI(
+            api_key=settings.VLM_API_KEY,
+            base_url=settings.VLM_BASE_URL
+        )
 
     def chat_completion_json(
         self,
@@ -46,6 +39,7 @@ class LLMService:
         """
         try:
             response = self.text_client.chat.completions.create(
+                model=settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
                 response_format={"type": "json_object"}
@@ -88,7 +82,7 @@ class LLMService:
 
             # 调用视觉模型
             response = self.vlm_client.chat.completions.create(
-                model=self.vlm_model,
+                model=settings.VLM_MODEL,
                 messages=[
                     {
                         "role": "user",
@@ -98,7 +92,10 @@ class LLMService:
                         ]
                     }
                 ],
-                thinking={"type": "enabled"}
+                extra_body={
+                    "thinking": {"type": "enabled"}
+                },
+                temperature=0.6
             )
             return response.choices[0].message.content
         except Exception as e:

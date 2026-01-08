@@ -67,17 +67,17 @@ class ReportRenderer:
             lines.append(f"![Main Figure]({main_fig})\n")
 
         # --- 4. 技术问题 ---
-        lines.append("## 1. 现有技术问题 (Technical Problem)")
+        lines.append("## 1. 现有技术问题")
         problem = data.get("technical_problem", "未提取到技术问题")
         lines.append(f"{problem}\n")
 
         # --- 4.5 技术方案 ---
-        lines.append("## 2. 技术方案概要 (Technical Scheme)")
+        lines.append("## 2. 技术方案概要")
         scheme = data.get("technical_scheme", "未提取到技术方案")
         lines.append(f"{scheme}\n")
 
         # --- 5. 技术手段 (Technical Means) ---
-        lines.append("## 3. 核心技术手段 (Technical Means)")
+        lines.append("## 3. 核心技术手段")
         means = data.get("technical_means", "未提取到技术手段")
         lines.append(f"{means}\n")
 
@@ -98,7 +98,7 @@ class ReportRenderer:
             lines.append("\n")
 
         # --- 6. 技术效果 (Technical Effects) ---
-        lines.append("## 4. 技术效果 (Technical Effects)")
+        lines.append("## 4. 技术效果")
         effects = data.get("technical_effects", [])
         if effects:
             for idx, eff in enumerate(effects, 1):
@@ -120,7 +120,7 @@ class ReportRenderer:
             lines.append("未提取到具体效果描述。\n")
 
         # --- 7. 图解说明 (Figure Explanations) ---
-        lines.append("## 5. 图解说明 (Figure Analysis)")
+        lines.append("## 5. 图解说明")
         figures = data.get("figure_explanations", [])
 
         if not figures:
@@ -174,7 +174,7 @@ class ReportRenderer:
         lines.append(f"- **领域判读**: {analysis.get('technical_field', '-')}")
         lines.append(f"- **审查员提示**: \n> {analysis.get('key_judgment', '-')}\n")
 
-        lines.append("## 2. 关键词构建 (Keywords)")
+        lines.append("## 2. 关键词构建")
         kw = data.get("keywords", {})
         lines.append("| 维度 | 关键词集合 |")
         lines.append("| :--- | :--- |")
@@ -183,7 +183,7 @@ class ReportRenderer:
         lines.append(f"| **扩展/下位** | {', '.join(kw.get('expansion', []))} |")
         lines.append("\n")
 
-        lines.append("## 3. 分步检索策略 (Search Steps)")
+        lines.append("## 3. 分步检索策略")
         steps = data.get("search_steps", [])
         
         for i, step in enumerate(steps, 1):
