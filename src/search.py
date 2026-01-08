@@ -1,5 +1,4 @@
-import json
-from typing import Dict, Any, List
+from typing import Dict, Any
 from loguru import logger
 from src.llm import get_llm_service
 
@@ -49,12 +48,8 @@ class SearchStrategyGenerator:
                 temperature=0.3  # 保持一定的创造性以生成多样的关键词
             )
             
-            # 4. 补充元数据
-            response["meta"] = {
-                "target_patent": self.title,
-                "applicant_type": "University/Institute" if self._check_is_university() else "Company",
-                "strategy_basis": "G01M Guide + Standard Query Syntax"
-            }
+            # 4. 补充基本信息
+            response["target_patent"] = self.title
             
             logger.success("检索策略生成完成")
             return response
@@ -62,14 +57,6 @@ class SearchStrategyGenerator:
         except Exception as e:
             logger.error(f"生成检索策略失败: {str(e)}")
             return {"error": str(e), "status": "failed"}
-
-    def _check_is_university(self) -> bool:
-        """简单的规则判断是否为高校或科研院所"""
-        keywords = ["大学", "学院", "研究所", "研究院", "University", "Institute"]
-        for app in self.applicants:
-            if any(k in app for k in keywords):
-                return True
-        return False
 
     def _build_system_prompt(self) -> str:
         return """
