@@ -68,7 +68,6 @@ class KnowledgeExtractor:
             logger.warning("[Knowledge] Context is empty.")
             return {}
 
-        # --- 优化后的 Prompt ---
         system_prompt = """
 **角色与任务：**
 你是一个精通专利结构拆解的专家。请分析提供的专利片段，构建一个精确的“技术构件实体关系映射表”。

@@ -33,8 +33,8 @@ python main.py
 - Copy `.env.example` to `.env` and configure:
   - `LLM_API_KEY` and `LLM_BASE_URL`: Main LLM for structured extraction (supports OpenAI-compatible APIs)
   - `LLM_MODEL`: Model name (default: deepseek-chat)
-  - `OCR_ENGINE`: Choose "local" (PaddleOCR) or "glm" (ZhipuAI GLM-4V)
-  - `GLM_API_KEY` and `GLM_VISION_MODEL`: Required if using GLM for OCR
+  - `OCR_ENGINE`: Choose "local" (PaddleOCR) or "vlm" (ZhipuAI GLM-4V)
+  - `VLM_API_KEY` and `VLM_MODEL`: Required if using GLM for OCR
   - `MINERU_MODEL_SOURCE`: Model source for MinerU (default: modelscope)
 
 ### Input/Output Structure

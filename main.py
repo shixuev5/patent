@@ -7,6 +7,7 @@ from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.generator import ContentGenerator
+from src.search import SearchStrategyGenerator
 from src.renderer import ReportRenderer
 
 def main():
@@ -83,15 +84,41 @@ def main():
         report_json = json.loads(paths["report_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 5: Generating report json...")
-        generator = ContentGenerator(patent_data, parts_db, image_parts)
+        generator = ContentGenerator(
+            patent_data=patent_data, 
+            parts_db=parts_db, 
+            image_parts=image_parts,
+            annotated_dir=paths["annotated_dir"]
+        )
         report_json = generator.generate_report_json()
         paths["report_json"].write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # --- Step 6: 渲染 MD 和 PDF ---
-    logger.info("Step 6: Rendering Report (MD & PDF)...")
+    # --- Step 6: 检索策略生成 ---
+    logger.info("Step 6: Generating Search Strategy & Queries...")
+    search_json = {}
+    if paths["search_strategy_json"].exists():
+        logger.info("Step 6: Loading search strategy json...")
+        search_json = json.loads(paths["search_strategy_json"].read_text(encoding="utf-8"))
+    else:
+        logger.info("Step 6: Generating search strategy json...")
+        # 初始化生成器
+        search_gen = SearchStrategyGenerator(report_json, patent_data)
+        
+        # 执行生成
+        search_json = search_gen.generate_search_plan()
+        
+        # 4. 写入独立的 JSON 文件
+        paths["search_strategy_json"].write_text(
+            json.dumps(search_json, ensure_ascii=False, indent=2), 
+            encoding="utf-8"
+        )
+
+    # --- Step 7: 渲染 MD 和 PDF ---
+    logger.info("Step 7: Rendering Report (MD & PDF)...")
     renderer = ReportRenderer()
     renderer.render(
         report_data=report_json,
+        search_data=search_json,
         md_path=paths["final_md"],
         pdf_path=paths["final_pdf"]
     )

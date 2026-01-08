@@ -1,7 +1,7 @@
 import os
 import markdown
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from loguru import logger
 from playwright.sync_api import sync_playwright
 
@@ -11,28 +11,42 @@ class ReportRenderer:
     def __init__(self):
         pass
 
-    def render(self, report_data: Dict[str, Any], md_path: Path, pdf_path: Path):
+    def render(self, report_data: Dict[str, Any], search_data: Optional[Dict[str, Any]], md_path: Path, pdf_path: Path):
         """
-        主入口：生成 Markdown 并导出 PDF
+        主入口：组装分析报告和检索策略，生成 MD 和 PDF
         """
-        # 1. 生成 Markdown 内容
-        md_content = self._generate_markdown_text(report_data)
+        logger.info("Starting rendering process...")
+
+        parts = []
+
+        # 1. 渲染分析报告部分
+        if report_data:
+            parts.append(self._render_analysis_section(report_data))
+
+        # 2. 渲染检索策略部分
+        if search_data:
+            # 添加分页符，确保检索策略从新页面开始
+            parts.append("\n<div style='page-break-before: always;'></div>\n")
+            parts.append(self._render_search_section(search_data))
+
+        full_md_content = "\n".join(parts)
         
-        # 2. 写入 .md 文件
+        # 3. 写入 .md 文件
         try:
             md_path.parent.mkdir(parents=True, exist_ok=True)
-            md_path.write_text(md_content, encoding="utf-8")
+            md_path.write_text(full_md_content, encoding="utf-8")
             logger.success(f"Markdown report generated: {md_path}")
         except Exception as e:
             logger.error(f"Failed to write markdown: {e}")
             return
 
-        # 3. 导出 .pdf 文件
-        self._export_pdf(md_content, pdf_path)
+        # 4. 导出 .pdf 文件
+        self._export_pdf(full_md_content, pdf_path)
 
-    def _generate_markdown_text(self, data: Dict[str, Any]) -> str:
+
+    def _render_analysis_section(self, data: Dict[str, Any]) -> str:
         """
-        根据指定顺序组装 Markdown 文本
+        渲染第一部分：专利技术分析报告
         顺序：AI标题 -> 摘要 -> 主图 -> 技术问题 -> 技术手段(含特征) -> 技术效果 -> 图解说明
         """
         lines = []
@@ -90,9 +104,18 @@ class ReportRenderer:
             for idx, eff in enumerate(effects, 1):
                 desc = eff.get("effect", "")
                 src = eff.get("source_feature", "")
+                evidence = eff.get("evidence", "") # 获取证据字段
+
                 lines.append(f"**{idx}. {desc}**")
-                if src:
-                    lines.append(f"> *源于特征：{src}*\n")
+                
+                # 使用引用列表格式展示归因和证据
+                if src or evidence:
+                    if src:
+                        lines.append(f"> - **归因特征**: {src}")
+                    if evidence:
+                        # 简单的颜色标记或加粗，让证据更显眼
+                        lines.append(f"> - **验证证据**: {evidence}")
+                    lines.append("") # 增加空行，保证 Markdown 渲染间距
         else:
             lines.append("未提取到具体效果描述。\n")
 
@@ -109,10 +132,14 @@ class ReportRenderer:
             explanation = fig.get("image_explanation", "")
             parts = fig.get("parts_info", [])
 
-            lines.append(f"### {img_title}")
-
             if img_path:
-                lines.append(f"![{img_title}]({img_path})")
+                figure_html = f"""
+<figure>
+    <img src="{img_path}" alt="{img_title}">
+    <figcaption>{img_title}</figcaption>
+</figure>
+"""
+                lines.append(figure_html)
 
             if explanation:
                 lines.append(f"\n**【AI 解说】**\n\n{explanation}\n")
@@ -132,6 +159,51 @@ class ReportRenderer:
 
         return "\n".join(lines)
 
+
+    def _render_search_section(self, data: Dict[str, Any]) -> str:
+        """渲染第二部分：检索策略"""
+        lines = []
+        lines.append("# 专利审查检索策略建议书\n")
+        
+        meta = data.get("meta", {})
+        analysis = data.get("analysis", {})
+        
+        lines.append("## 1. 检索背景分析")
+        lines.append(f"- **目标专利**: {meta.get('target_patent', 'Unknown')}")
+        lines.append(f"- **申请人类型**: {analysis.get('applicant_type', '-')} (策略依据)")
+        lines.append(f"- **领域判读**: {analysis.get('technical_field', '-')}")
+        lines.append(f"- **审查员提示**: \n> {analysis.get('key_judgment', '-')}\n")
+
+        lines.append("## 2. 关键词构建 (Keywords)")
+        kw = data.get("keywords", {})
+        lines.append("| 维度 | 关键词集合 |")
+        lines.append("| :--- | :--- |")
+        lines.append(f"| **中文核心** | {', '.join(kw.get('zh', []))} |")
+        lines.append(f"| **英文扩展** | {', '.join(kw.get('en', []))} |")
+        lines.append(f"| **扩展/下位** | {', '.join(kw.get('expansion', []))} |")
+        lines.append("\n")
+
+        lines.append("## 3. 分步检索策略 (Search Steps)")
+        steps = data.get("search_steps", [])
+        
+        for i, step in enumerate(steps, 1):
+            s_type = step.get("type", "General")
+            s_obj = step.get("objective", "-")
+            s_db = step.get("databases", "All")
+            queries = step.get("queries", [])
+
+            lines.append(f"### Step {i}: {s_type}")
+            lines.append(f"**目的**: {s_obj}")
+            lines.append(f"**推荐库**: `{s_db}`\n")
+            lines.append("**检索表达式参考**:")
+            # 使用 text 代码块，配合 CSS 渲染出好的效果
+            code_block = "\n".join(queries)
+            lines.append(f"```text\n{code_block}\n```\n")
+            lines.append("---\n")
+
+        return "\n".join(lines)
+
+
     def _export_pdf(self, md_text: str, output_path: Path):
         """
         使用 Playwright 将 Markdown (转HTML后) 打印为 PDF
@@ -141,7 +213,7 @@ class ReportRenderer:
         # 1. Markdown -> HTML
         html_body = markdown.markdown(
             md_text, 
-            extensions=['tables', 'fenced_code', 'nl2br']
+            extensions=['tables', 'fenced_code', 'nl2br', 'sane_lists']
         )
         
         # 2. 构建完整 HTML
@@ -177,7 +249,10 @@ class ReportRenderer:
                     path=str(output_path),
                     format="A4",
                     print_background=True,
-                    margin={"top": "2cm", "bottom": "2cm", "left": "1.5cm", "right": "1.5cm"}
+                    margin={"top": "2cm", "bottom": "2cm", "left": "1.5cm", "right": "1.5cm"},
+                    display_header_footer=True,
+                    footer_template='<div style="font-size: 10px; text-align: center; width: 100%;">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>',
+                    header_template='<div></div>'
                 )
                 browser.close()
             
