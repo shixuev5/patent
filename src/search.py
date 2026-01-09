@@ -1,159 +1,238 @@
-from typing import Dict, Any
+import json
+from typing import Dict, Any, List
 from loguru import logger
 from src.llm import get_llm_service
+from config import settings
 
-class SearchStrategyGenerator:
-    """
-    专利审查检索策略生成器
-    
-    功能：
-    1. 结合 G01M 审查指南和查询语法，制定分步检索策略。
-    2. 针对 IPC/CPC、关键词、结构关系、非专利文献生成多维度的检索表达式。
-    3. 支持 Few-Shot 学习，利用指南中的案例作为范本。
-    """
-    
-    def __init__(self, report_json: Dict[str, Any], patent_data: Dict[str, Any]):
+class SearchAgent:
+    def __init__(self):
         self.llm_service = get_llm_service()
-        self.report = report_json
-        self.biblio = patent_data
-        
-        # 提取关键字段
-        self.title = self.biblio.get("invention_title", "")
-        self.abstract = self.biblio.get("abstract", "")
-        self.applicants = [a.get("name", "") for a in self.biblio.get("applicants", [])]
-        self.ipcs = self.biblio.get("ipc_classifications", [])
-        
-        # 提取分析报告中的深层理解
-        self.problem = self.report.get("technical_problem", "")
-        self.means = self.report.get("technical_means", "")
-        self.features = self.report.get("technical_features", [])
 
-    def generate_search_plan(self) -> Dict[str, Any]:
-        """执行生成流程"""
-        logger.info(f"开始生成检索策略: {self.title}")
+    def generate_strategy(self, patent_data: Dict, report_data: Dict) -> Dict[str, Any]:
+        """
+        主入口：执行两阶段检索策略生成
+        """
+        logger.info("开始构建检索策略...")
         
+        # 0. 准备通用上下文
+        context_text = self._build_base_context(patent_data, report_data)
+
         try:
-            # 1. 构建包含 Few-Shot 案例的 System Prompt
-            system_prompt = self._build_system_prompt()
+            # Stage 1: 检索要素表 (Search Matrix) - 深度扩展
+            search_matrix = self._build_search_matrix(context_text)
             
-            # 2. 构建包含当前专利具体信息的 User Prompt
-            user_prompt = self._build_user_prompt()
-            
-            # 3. 调用 LLM
-            response = self.llm_service.chat_completion_json(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3  # 保持一定的创造性以生成多样的关键词
-            )
-            
-            # 4. 补充基本信息
-            response["target_patent"] = self.title
-            
-            logger.success("检索策略生成完成")
-            return response
+            # Stage 2: 检索式构建 (Query Formulation)
+            strategy_plan = self._build_queries(context_text, search_matrix)
+
+            # 合并结果
+            return {
+                "search_matrix": search_matrix, # 对应你要求的中文、中文扩展、英文翻译
+                "search_plan": strategy_plan    # 具体的检索步骤和分析
+            }
 
         except Exception as e:
-            logger.error(f"生成检索策略失败: {str(e)}")
-            return {"error": str(e), "status": "failed"}
+            logger.error(f"Search strategy generation failed: {e}")
+            return { "search_matrix": [], "search_plan": {} }
 
-    def _build_system_prompt(self) -> str:
-        return """
-        你是一位精通 G01M 领域（测试与测量）的专利审查员检索专家。
-        你的任务是制定专业的检索策略，并编写符合标准通用检索语法（Common Query Syntax）的检索表达式。
+    def _build_base_context(self, patent_data: Dict, report_data: Dict) -> str:
+        biblio = patent_data.get("bibliographic_data", {})
 
-        ### 核心指引 (Guidelines)
-        1. **数据库选择**：
-           - 若申请人是**高校/研究所**，或涉及**算法/模型/标准**：必须包含非专利库（NPL, 如 CNKI/IEEE）的检索步骤。
-           - 若涉及具体机械结构：重点在专利库（CNTXT/DWPI）。
+        essential_features = [
+            f"- {f['name']}: {f['description']}" 
+            for f in report_data.get("technical_features", []) 
+            if f.get("is_essential", True)
+        ]
         
-        2. **G01M 专用策略**：
-           - **分类号优先**：对于 G01M3 (密封)、G01M13 (机器部件)、G01M1 (平衡) 等准确分类，使用 `IPC/CPC AND 关键词`。
-           - **语义/功能改写**：对于分类不准（如 G01M99）或应用跑偏（如电池测试分入 H01M），不要依赖分类号，而是提取“测试原理”或“具体应用场景”进行文本改写检索。
-           - **交叉领域**：涉及图像处理加 G06T，涉及材料测试加 G01N。
+        return f"""
+        [发明名称] {biblio.get('invention_title')}
+        [申请人] {', '.join([a['name'] for a in biblio.get('applicants', [])])}
+        [发明人] {', '.join(biblio.get('inventors', []))}
+        [IPC分类] {', '.join(biblio.get('ipc_classifications', []))}
+        [技术问题] {report_data.get('technical_problem')}
+        [技术方案] {report_data.get('technical_scheme')}
+        [必要技术特征(必须检索点)]:
+        {chr(10).join(essential_features)}
+        """
 
-        3. **查询语法规范 (Syntax Rules)**：
-           - **截词**：`+` (任意多字符, electric+), `?` (0/1字符, colo?r), `#` (正好1个)。
-           - **逻辑**：`AND`, `OR`, `NOT`, `XOR`。
-           - **邻近算符**：
-             - `nW`: 顺序固定 (Wind 1W Turbine)。
-             - `nD`: 顺序不限 (Sensor 5D Temperature)。
-             - `S` / `P`: 同句 / 同段。
-           - **字段**：`/TI`, `/AB`, `/CL` (权利要求), `/IC`, `/CC` (CPC)。
-           - **范围**：`:` (2010:2025)。
+    def _build_search_matrix(self, context: str) -> List[Dict]:
+        """
+        阶段一：概念拆解与多语言扩展
+        """
+        logger.info("[SearchAgent] Step 1: Building Search Matrix...")
+        
+        system_prompt = """
+        你是一位经验丰富的专利检索专家，精通中英文专利术语。请提取 3-5 个核心检索要素，并构建一份**全要素扩展检索词表**。
 
-        ### Few-Shot Examples (学习案例)
+        ### 核心原则：最大限度涵盖“规避设计”的术语
+        1.  **不仅仅是翻译**：要思考竞争对手可能使用的“同义词”、“近义词”、“上位/下位概念”、“行业俗称”，甚至“规避性描述”。
+        2.  **中文扩展 (针对 CNTXT)**：
+            - 必须包含：原文术语，同义词，常见缩写。
+            - 建议包含：上位概念 (如“紧固件”对“螺钉”)，下位概念 (如“螺钉”对“螺栓”)，行业俗称。
+            - 必须提供至少 3-5 个中文扩展词。
+        3.  **英文扩展 (针对 VEN)**：
+            - 必须使用**专业专利英语 (Patentese)**。
+            - 包含：美式/英式拼写变体，词根截断 (如 `comput+`, `connect+`, `test+`)，常用缩写。
+            - 必须提供至少 3-5 个英文扩展词。
+        4.  **CPC 关联**：如果可能，请联想到相关的 CPC 分类号关键词。
 
-        **案例 1：涉及算法的轴承故障诊断**
-        *输入*：基于卷积神经网络(CNN)的风机轴承故障检测，申请人：XX大学。
-        *思考*：高校申请，涉及算法，G01M13与G06交叉。
-        *输出策略*：
-        - Step 1 (Broad): G01M13/045 (声学诊断) AND (Neural Network OR CNN OR Deep Learning).
-        - Step 2 (NPL): 在 IEEE/CNKI 中检索 "Bearing fault diagnosis" AND "Convolutional Neural Network".
-        - Step 3 (Semantic): 检索式构造为 `(BEARING S FAULT S DIAGNOS+) AND (IMAGE 3D PROCESS+)`.
+        ### 输出格式 (JSON List Only)
+        仅输出 JSON 列表，无 Markdown 标记：
+        [
+          {
+            "concept_key": "核心概念A (如: 减速器)",
+            "zh_expand": ["减速器", "减速机", "齿轮箱", "变速箱", "传动机构"], 
+            "en_expand": ["reducer", "gear box", "gearbox", "transmission", "speed reduc+"]
+          },
+          ...
+        ]
+        """
+        
+        response = self.llm_service.chat_completion_json(
+            config=settings.LLM_MODEL_REASONING,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context}
+            ]
+        )
+        
+        # 确保返回的是列表
+        return response if isinstance(response, list) else []
 
-        **案例 2：锂电池密封性检测**
-        *输入*：一种利用无水硫酸铜变色原理检测软包电池密封性的方法。
-        *思考*：可能被分入 H01M (电池)，分类号不准。原理特殊。
-        *输出策略*：
-        - Step 1 (Semantic): 忽略分类号，直接检索原理关键词。Query: `((ANHYDROUS 1W COPPER 1W SULFATE) OR (CUSO4)) AND (SEAL+ OR LEAK+)`.
-        - Step 2 (Cross-Domain): 联合 G01M3/00 (密封测试) AND H01M (电池).
+    def _build_queries(self, context: str, matrix: List[Dict]) -> Dict:
+        """
+        阶段二：构建逻辑检索式（逻辑专家模式）
+        """
+        logger.info("[SearchAgent] Step 2: Formulating Queries...")
 
-        ### 输出格式要求 (Strict JSON)
-        请严格按照以下 JSON 结构输出，不要包含 markdown 代码块标记：
+        matrix_str = json.dumps(matrix, ensure_ascii=False, indent=2) 
 
+        role_definition = """
+        你是一位经验丰富的专利审查员，拥有 10 年以上在中国国家知识产权局 (CNTXT) 和全球专利数据库 (VEN) 的检索实战经验。
+        你的任务是基于提供的【待审专利档案】和【检索要素表】，生成一份**详尽、实战、可直接复制粘贴**的检索策略。
+        """   
+
+        syntax_rules = """
+        ### 数据库语法规范 (必须严格遵守)
+        **通用逻辑算符**：
+        - OR: `+` (如: `A + B`) | AND: `*` (如: `A * B`) | NOT: `-`
+
+        **CNTXT (中文) 规范**：
+        - **位置算符**：必须使用 `S` (同句) 来提高核心特征组合的精度。格式: `(词A S 词B)`。仅在宽松检索时使用 `*`。
+        - **字段标识**：
+          - `/TI` (标题), `/AB` (摘要), `/CLMS` (权利要求), `/KW` (关键词), `/TXT` (全文)。
+          - 关键词位置: 放在关键词之后，例如 `(螺钉 + 螺栓)/TI/KW`。
+        
+        **VEN (英文) 规范**：
+        - **截词符**：词根后加 `?` 或 `+` (例如 `comput+`, `rotat?`)。
+        - **位置算符**：使用 `*` (AND) 为主，必要时使用 `nW` (n个词距)。
+        - **字段标识**：`/TI` (Title), `/AB` (Abstract), `/KW` (Keywords), `/CPC` (CPC分类)。
+
+        **CPC/IPC 格式要求**: 
+        - 必须精确到**大组或小组** (Subgroup Level)，例如 `G06F 16/30` 或 `H04L 5/00`。
+        - 严禁只给出部级或大类 (如 `G` 或 `G06F`)，除非该技术非常宽泛。
+        """
+
+        process_steps = """
+        ### 检索策略生成流程 (按顺序执行)
+
+        #### Step 1: 语义/智能检索 (Semantic Search First)
+        - **目标**：利用智能系统（如专利局内部的智能检索平台、或第三方 AI 检索工具）的语义分析能力，快速圈定最相关的 X 类文献。
+        - **核心动作**：输入专利的“发明名称”、“摘要”或“核心特征描述”作为查询文本，并**限定**到最相关的 IPC/CPC 分类号。
+        - **输出**: 提取一段最能代表技术方案的文本（200字以内），并给出建议限制的主分类号。
+
+        #### Step 2: 追踪检索 (Inventor/Assignee Trace)
+        - **目标**：排查申请人 (PA) 和发明人 (IN) 的自引、同族申请或既往技术。
+        - **数据库**：CNTXT, VEN。
+        - **语法**：
+            - CNTXT: `/PA=XXX` (申请人), `/IN=XXX` (发明人)。
+            - VEN: `PA=(XXX)` (Assignee), `IN=(XXX)` (Inventor)。
+        - **策略**：将申请人/发明人名称与核心关键词结合。
+
+        #### Step 3: 布尔逻辑检索 (Boolean Logic Search) - 核心
+        请分别针对 **X类文献 (新颖性)** 和 **Y类文献 (创造性)** 构建策略：
+
+        **A. 精确检索 (Precision Search) - [针对 X 类文献]**
+        - **逻辑**：选取 2-3 个**最核心的必要技术特征**，进行高精度组合。
+        - **CNTXT 策略**：强行使用 `S` (同句) 算符。
+          - *Template*: `(核心特征A扩展 + 特征A2) S (核心特征B扩展 + 特征B2)/CLMS/TXT`
+        - **VEN 策略**：限定在 `/TI` 或 `/AB` 字段。
+          - *Template*: `(termA+ + termA2) * (termB+ + termB2)/TI/AB`
+
+        **B. 扩展检索 (Expansion Search) - [针对 Y 类文献]**
+        - **逻辑**：块检索 (Block Search)。假设某个特征被替换或隐藏，每次只保留 1-2 个核心特征，放宽其他限制，或结合分类号。
+        - **CNTXT 策略**：使用全文 `/TXT` 配合 `*` (AND)，或结合 IPC。
+          - *Template*: `(核心特征A) * (IPC分类号)` 或 `(特征A) * (特征B)`
+        - **VEN 策略**：使用 `/IW` 或 `/TXT`，配合截词符。
+
+        #### Step 4: 非专利文献检索 (NPL Search)
+        - **目标**：查找技术原理、测试方法、标准法规。
+        - **数据库**：CNKI (期刊、学位论文), Google Scholar, 标准数据库 (如 GB/T)。
+        - **策略**：不使用具体的结构词（如“丝杆”），改用功能词（如“直线驱动”）+ 效果词（如“精度”）。
+        - **语法**：`(IPC分类号) * (功能词 + 效果词)`。
+        """
+
+        output_format = """
+        ### 输出格式 (JSON Only)
+        必须返回合法的 JSON 格式，不要包含 Markdown 标记。结构如下：
         {
-            "analysis": {
-                "applicant_type": "判定申请人类型 (如: 高校/企业/个人)",
-                "technical_field": "技术领域简述 (如: 风电-齿轮箱监测)",
-                "key_judgment": "审查员策略判断 (如: 申请人涉及高校且包含算法特征，重点在于NPL检索及语义去噪)"
-            },
-            "keywords": {
-                "en": ["keyword1", "keyword2"],
-                "zh": ["关键词1", "关键词2"],
-                "expansion": ["扩展词1", "扩展词2 (同义词/下位概念)"]
-            },
-            "search_steps": [
+            "cpc_suggestion": ["G06F 16/33", "G06F 40/20"],  // 顶层字段：用于前端展示完整的分类号建议列表（精确到组）
+            "strategies": [
                 {
-                    "type": "Classification / Structural / Semantic / NPL / Cross-Domain",
-                    "objective": "该步骤的具体目的",
-                    "databases": ["CNTXT", "DWPI", "IEEE", "CNKI"],
+                    "name": "语义检索",
+                    "description": "语义文本输入与分类号限定",
                     "queries": [
-                        "检索式1",
-                        "检索式2",
-                        "检索式3",
-                        "检索式4",
-                        "检索式5 (关键：每个步骤必须提供至少 5 条不同构造的检索式，覆盖不同关键词组合、不同算符或不同字段)"
+                        { "db": "Semantic_Input", "query": "在此处生成用于输入的200字技术摘要..." },
+                        { "db": "Limit_IPC", "query": "G06F" }  // 策略字段：仅用于限定范围，通常比建议列表宽泛，避免漏检
                     ]
+                },
+               {
+                    "name": "追踪检索",
+                    "description": "申请人与发明人追踪",
+                    "queries": [
+                        { "db": "CNTXT", "query": "/PA=..." },
+                        { "db": "VEN", "query": "PA=(...)" }
+                    ]
+                },
+                {
+                    "name": "精确检索",
+                    "description": "核心特征精确去噪 (X类)",
+                    "queries": [
+                        { "db": "CNTXT", "query": "(...) S (...)/CLMS" },
+                        { "db": "VEN", "query": "(...) * (...)/TI/AB" }
+                    ]
+                },
+                {
+                    "name": "扩展检索",
+                    "description": "特征扩展与块检索 (Y类)",
+                    "queries": [
+                        { "db": "CNTXT", "query": "..." }
+                    ]
+                },
+                {
+                    "name": "NPL 非专利检索",
+                    "description": "...",
+                    "queries": []
                 }
             ]
         }
         """
 
-    def _build_user_prompt(self) -> str:
-        # 格式化特征列表
-        features_str = "\n".join([f"- {f['name']}: {f['description']}" for f in self.features])
-        
-        prompt = f"""
-        # 待检索专利详情
-        **标题**: {self.title}
-        **申请人**: {', '.join(self.applicants)}
-        **当前 IPC**: {', '.join(self.ipcs)}
-        
-        **摘要**: {self.abstract}
-        
-        **核心技术问题**: {self.problem}
-        **技术手段**: {self.means}
-        **关键特征**: 
-        {features_str}
+        system_prompt = f"{role_definition}\n\n{syntax_rules}\n\n{process_steps}\n\n{output_format}"
 
-        # 任务指令
-        请根据上述信息，生成一套完整的检索策略。
-        特别注意：
-        1. 如果申请人是高校，必须生成 **NPL (非专利文献)** 检索步骤。
-        2. 针对 "{self.title}" 中的具体结构（如传感器位置、连接方式），请使用 **邻近算符 (nW/nD)** 编写精确检索式。
-        3. 考虑到 IPC {self.ipcs}，请判断其准确性，如果太宽泛，请在策略中体现 CPC 或关键词限定。
-        4. 检索式请主要以 **英文 (通用语法)** 为主，适配 DWPI/VEN 等国际库，必要时提供中文关键词组合适配 CNTXT。
+        user_content = f"""
+        【待审专利档案】:
+        {context}
+        
+        【检索要素表】:
+        {matrix_str}
+
+        请根据以上信息生成 JSON 格式的检索策略。
         """
-        return prompt
+
+        return self.llm_service.chat_completion_json(
+            config=settings.LLM_MODEL_REASONING,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ]
+        )
