@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Any
 from loguru import logger
 from src.llm import get_llm_service
+from config import Settings
 
 class ContentGenerator:
     def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict, annotated_dir: Path):
@@ -164,6 +165,7 @@ class ContentGenerator:
         """
 
         return self.llm_service.chat_completion_json(
+            model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
@@ -197,7 +199,7 @@ class ContentGenerator:
         【权利要求书 (Claims)】
         {json.dumps(self.claims, ensure_ascii=False)}
 
-        【具体实施方式片段 (Embodiments)】
+        【具体实施方式 (Embodiments)】
         {self.text_details}
 
         # 2. 分析任务
@@ -255,6 +257,7 @@ class ContentGenerator:
         """
 
         return self.llm_service.chat_completion_json(
+            model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
