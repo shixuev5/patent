@@ -35,41 +35,33 @@ class Settings:
     
     PDF_CSS = """    
     @page { 
-        size: A4; 
-        margin: 2cm; 
+        size: A4;
+        margin: 2cm 1.5cm; 
     }
     
     body {
-        /* 增加 Arial 优化英文显示，SimHei 负责中文 */
         font-family: "Arial", "SimHei", "STHeiti", "Microsoft YaHei", sans-serif !important; 
         font-size: 14px; 
         line-height: 1.6; 
         color: #333;
-        -webkit-print-color-adjust: exact; /* 强制打印背景色 */
+        -webkit-print-color-adjust: exact; 
         print-color-adjust: exact;
     }
     
-    /* --- 1. 分页控制 (关键) --- */
-    
-    /* 标题防孤立 */
+    /* --- 1. 分页控制 --- */
     h1, h2, h3, h4 { 
         page-break-after: avoid; 
         break-after: avoid; 
     }
     
-    /* 强制分页类 (用于分割不同报告章节) */
-    .page-break {
-        page-break-before: always;
-    }
+    .page-break { page-break-before: always; }
     
-    /* 防截断通用类 */
-    .no-break, figure, blockquote, .strategy-step {
+    .no-break, figure, blockquote, pre, tr {
         page-break-inside: avoid;
         break-inside: avoid;
     }
 
-    /* --- 2. 基础元素样式 --- */
-    
+    /* --- 2. 基础元素 --- */
     h1 {
         text-align: center;
         color: #2c3e50;
@@ -81,7 +73,7 @@ class Settings:
     h2 { 
         border-bottom: 2px solid #eee; 
         padding-bottom: 8px; 
-        margin-top: 30px; 
+        margin-top: 30px;
         margin-bottom: 15px;
         color: #2c3e50; 
         font-size: 18px;
@@ -89,7 +81,7 @@ class Settings:
     
     h3 { 
         margin-top: 25px; 
-        margin-bottom: 12px;
+        margin-bottom: 10px;
         border-left: 4px solid #3498db; 
         padding-left: 10px;
         color: #34495e;
@@ -98,46 +90,41 @@ class Settings:
     
     p {
         margin-bottom: 10px;
-        text-align: justify; /* 两端对齐更像正式文档 */
+        text-align: justify; 
     }
 
-    /* 列表优化 */
     ul, ol {
         padding-left: 20px;
         margin-bottom: 15px;
     }
-    li {
-        margin-bottom: 6px;
-    }
+    li { margin-bottom: 6px; }
 
-    /* --- 3. 组件样式 --- */
-
-    /* 表格：防截断，更紧凑的边框 */
+    /* --- 3. 表格 --- */
     table {
         width: 100%;
         border-collapse: collapse;
         margin-bottom: 20px;
-        page-break-inside: auto; 
-        font-size: 13px; /* 稍微调小表格字号 */
-    }
-    
-    tr {
-        page-break-inside: avoid;
+        font-size: 12px; 
+        table-layout: auto;
     }
     
     th, td { 
         border: 1px solid #dfe2e5; 
-        padding: 8px 12px; 
+        padding: 6px 8px;
         text-align: left; 
+        vertical-align: top;
+        word-break: break-word; 
+        overflow-wrap: break-word;
     }
     
     th { 
         background-color: #f2f6f9; 
         color: #2c3e50; 
         font-weight: bold; 
+        white-space: nowrap;
     }
 
-    /* 图片：限制大小，居中，边框 */
+    /* --- 4. 图片 --- */
     figure {
         margin: 20px auto;
         text-align: center;
@@ -146,7 +133,7 @@ class Settings:
     
     img { 
         max-width: 95%; 
-        max-height: 400px; /* 稍微放宽高度限制 */
+        max-height: 400px; 
         object-fit: contain; 
         border: 1px solid #e1e4e8; 
         border-radius: 4px;
@@ -161,7 +148,6 @@ class Settings:
         font-weight: bold;
     }
     
-    /* 引用块 (用于证据、审查员提示) */
     blockquote {
         border-left: 4px solid #3498db;
         background-color: #f8f9fa;
@@ -171,44 +157,28 @@ class Settings:
         font-style: italic;
     }
 
-    /* --- 4. 代码块样式 --- */
-    
-    /* 外层容器 */
+    /* --- 5. 代码块 (用于检索式) --- */
     pre {
-        background-color: #f6f8fa;
-        border: 1px solid #e1e4e8;
-        border-radius: 6px;
-        padding: 12px;
-        margin: 15px 0;
-        overflow-x: hidden; /* 防止超出打印纸张宽度 */
-        white-space: pre-wrap; /* 核心：允许长代码自动换行，防止打印截断 */
+        background-color: #f0f4f8;
+        border: 1px solid #d1d9e6;
+        border-radius: 4px;
+        padding: 10px;
+        margin: 10px 0;
+        white-space: pre-wrap; 
         word-wrap: break-word;
-    }
-
-    /* 代码文字 */
-    code {
-        font-family: "Consolas", "Monaco", "Courier New", monospace; /* 等宽字体 */
+        font-family: "Consolas", "Monaco", "Courier New", monospace;
         font-size: 12px;
         color: #24292e;
-        background-color: transparent; /* 避免内联代码和块级代码背景冲突 */
-    }
-    
-    /* 内联代码 (如文中提到的 `AND` 算符) */
-    p code, li code, td code {
-        background-color: #f0f0f0;
-        padding: 2px 4px;
-        border-radius: 3px;
-        color: #e83e8c; /* 醒目的粉红色 */
     }
 
-    /* --- 5. 检索策略专用样式 (可选优化) --- */
-    
-    .strategy-meta {
-        background-color: #fff;
-        border: 1px solid #eee;
-        padding: 15px;
-        border-radius: 4px;
-        margin-bottom: 20px;
+    /* 行内代码 */
+    code {
+        font-family: "Consolas", "Monaco", "Courier New", monospace;
+        font-size: 12px;
+        color: #e83e8c;
+        background-color: #fdf2f6;
+        padding: 2px 4px;
+        border-radius: 3px;
     }
     """
 

@@ -161,47 +161,87 @@ class ReportRenderer:
 
 
     def _render_search_section(self, data: Dict[str, Any]) -> str:
-        """渲染第二部分：检索策略"""
+        """
+        渲染第二部分：检索策略
+        """
         lines = []
         lines.append("# 专利审查检索策略建议书\n")
-        
-        analysis = data.get("analysis", {})
-        
-        lines.append("## 1. 检索背景分析")
-        lines.append(f"- **目标专利**: {analysis.get('target_patent', 'Unknown')}")
-        lines.append(f"- **申请人类型**: {analysis.get('applicant_type', '-')} (策略依据)")
-        lines.append(f"- **领域判读**: {analysis.get('technical_field', '-')}")
-        lines.append(f"- **审查员提示**: \n> {analysis.get('key_judgment', '-')}\n")
 
-        lines.append("## 2. 关键词构建")
-        kw = data.get("keywords", {})
-        lines.append("| 维度 | 关键词集合 |")
-        lines.append("| :--- | :--- |")
-        lines.append(f"| **中文核心** | {', '.join(kw.get('zh', []))} |")
-        lines.append(f"| **英文扩展** | {', '.join(kw.get('en', []))} |")
-        lines.append(f"| **扩展/下位** | {', '.join(kw.get('expansion', []))} |")
-        lines.append("\n")
-
-        lines.append("## 3. 分步检索策略")
-        steps = data.get("search_steps", [])
+        # 获取数据源
+        matrix = data.get("search_matrix", [])
+        plan = data.get("search_plan", {})
         
-        for i, step in enumerate(steps, 1):
-            s_type = step.get("type", "General")
-            s_obj = step.get("objective", "-")
-            s_db = step.get("databases", "All")
-            queries = step.get("queries", [])
+        # --- 1. 检索要素表 (包含分类号) ---
+        lines.append("## 1. 检索要素与分类号映射表")
+        lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
+        
+        if matrix:
+            # Markdown 表格构建：增加分类号列
+            # 使用 HTML 换行符 <br> 在单元格内区分 IPC 和 CPC，或区分太长的词
+            lines.append("| 核心概念 (Key Concept) | 中文扩展 (CNTXT) | 英文扩展 (VEN) | 分类号 (IPC/CPC) |")
+            lines.append("| :--- | :--- | :--- | :--- |")
+            
+            for item in matrix:
+                concept = item.get("concept_key", "-").replace("|", "\|")
+                
+                # 处理列表转字符串
+                zh_list = item.get("zh_expand", [])
+                en_list = item.get("en_expand", [])
+                ipc_list = item.get("ipc", [])
+                cpc_list = item.get("cpc", [])
 
-            lines.append(f"### Step {i}: {s_type}")
-            lines.append(f"**目的**: {s_obj}")
-            lines.append(f"**推荐库**: `{s_db}`\n")
-            lines.append("**检索表达式参考**:")
-            # 使用 text 代码块，配合 CSS 渲染出好的效果
-            code_block = "\n".join(queries)
-            lines.append(f"```text\n{code_block}\n```\n")
-            lines.append("---\n")
+                zh_str = ", ".join(zh_list) if zh_list else "-"
+                en_str = ", ".join(en_list) if en_list else "-"
+                
+                # 构建分类号单元格，使用 HTML 换行使 IPC 和 CPC 分行显示
+                class_parts = []
+                if ipc_list:
+                    class_parts.append(f"**IPC**: {', '.join(ipc_list)}")
+                if cpc_list:
+                    class_parts.append(f"**CPC**: {', '.join(cpc_list)}")
+                
+                class_str = "<br>".join(class_parts) if class_parts else "-"
+
+                # 组装表格行
+                lines.append(f"| **{concept}** | {zh_str} | {en_str} | {class_str} |")
+            lines.append("\n")
+        else:
+            lines.append("> 未生成检索要素表。\n")
+
+        # --- 2. 分步检索策略 (Strategies) ---
+        lines.append("## 2. 分步检索策略构建")
+        strategies = plan.get("strategies", [])
+
+        if not strategies:
+            lines.append("未生成具体的检索策略步骤。\n")
+        
+        for idx, strategy in enumerate(strategies, 1):
+            s_name = strategy.get("name", f"策略 {idx}")
+            s_desc = strategy.get("description", "暂无描述")
+            queries = strategy.get("queries", [])
+
+            lines.append(f"### Step {idx}: {s_name}")
+            lines.append(f"> **策略逻辑**: {s_desc}\n")
+
+            if queries:
+                for q_item in queries:
+                    db_name = q_item.get("db", "General")
+                    query_str = q_item.get("query", "").strip()
+                    
+                    if not query_str:
+                        continue
+
+                    # 为每个数据库生成独立的代码块
+                    # 使用 text/plain 避免 markdown 错误的高亮逻辑算符
+                    lines.append(f"**[{db_name}]** 检索式参考:")
+                    lines.append(f"```text\n{query_str}\n```\n")
+            else:
+                lines.append("*本步骤无需特定检索式 (如人工浏览或语义输入)*\n")
+            
+            lines.append("---\n") # 分隔线
 
         return "\n".join(lines)
-
+    
 
     def _export_pdf(self, md_text: str, output_path: Path):
         """
