@@ -193,14 +193,14 @@ class ContentGenerator:
         【宏观逻辑框架】
         {json.dumps(macro_context, ensure_ascii=False)}
 
-        【申请人声称的有益效果 (Target Effects)】
-        {self.text_effect}
-
         【权利要求书 (Claims)】
         {json.dumps(self.claims, ensure_ascii=False)}
 
         【具体实施方式 (Embodiments)】
         {self.text_details}
+
+        【申请人声称的有益效果 (Target Effects)】
+        {self.text_effect}
 
         # 2. 分析任务
         请结合上述材料，完成以下深度分析：

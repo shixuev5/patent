@@ -102,10 +102,10 @@ def main():
     else:
         logger.info("Step 6: Generating search strategy json...")
         # 初始化生成器
-        search_gen = SearchStrategyGenerator(report_json, patent_data)
+        search_gen = SearchStrategyGenerator(patent_data, report_json)
         
         # 执行生成
-        search_json = search_gen.generate_search_plan()
+        search_json = search_gen.generate_strategy()
         
         # 4. 写入独立的 JSON 文件
         paths["search_strategy_json"].write_text(
