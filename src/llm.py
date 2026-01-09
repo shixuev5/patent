@@ -25,7 +25,8 @@ class LLMService:
     def chat_completion_json(
         self,
         messages: List[Dict[str, str]],
-        temperature: float = 0.1
+        temperature: float = 0.1,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         JSON 格式对话，自动解析返回的 JSON
@@ -33,13 +34,14 @@ class LLMService:
         Args:
             messages: 对话消息列表
             temperature: 温度参数，默认 0.1 保持精确
+            model: 模型
 
         Returns:
             解析后的 JSON 字典
         """
         try:
             response = self.text_client.chat.completions.create(
-                model=settings.LLM_MODEL,
+                model=model or settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
                 response_format={"type": "json_object"}
@@ -56,6 +58,23 @@ class LLMService:
         except Exception as e:
             logger.error(f"[LLM] JSON completion failed: {e}")
             raise
+
+    def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: float = 0.7
+    ) -> Dict[str, Any]:
+        """
+        普通对话接口
+        """
+        response = self.text_client.chat.completions.create(
+            model=model or settings.LLM_MODEL,
+            messages=messages,
+            temperature=temperature
+        )
+
+        return response.choices[0].message.content
 
     def analyze_image_with_thinking(
         self,

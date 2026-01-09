@@ -3,6 +3,7 @@ from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from loguru import logger
 from src.llm import get_llm_service
+from config import Settings
 
 class EntityInfo(BaseModel):
     """个人或机构实体信息"""
@@ -52,7 +53,7 @@ class DescriptionSection(BaseModel):
 
 class DrawingResource(BaseModel):
     """附图资源引用"""
-    file_path: str = Field(..., description="Markdown图片链接")
+    file_path: str = Field(..., description="附图的图片链接")
     figure_label: str = Field(..., description="图号标签（如'图1'），从图片下方文字或附图说明中提取")
     caption: Optional[str] = Field(None, description="图的文字解释。必须去除开头的图号（如'图1'）及连接词（如'是'、'为'），只保留描述内容")
 
@@ -82,11 +83,7 @@ class PatentTransformer:
 4. **文本清洗**：
     - `abstract`: 仅提取文本，不要包含 Markdown 图片链接。
     - `claim_text`: 必须去除行首的序号（如 "1."），但保留内部引用的序号。
-5. **图像识别**：
-   - 摘要图片 -> `bibliographic_data.abstract_figure`
-   - 附图说明/文末图片 -> `drawings`
-   - 仅提取URL。
-6. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
+5. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
 ### 输出格式要求
 请严格遵守以下 JSON Schema 输出 JSON 数据：
@@ -104,6 +101,7 @@ class PatentTransformer:
         
         try:
             json_data = self.llm_service.chat_completion_json(
+                model=Settings.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
