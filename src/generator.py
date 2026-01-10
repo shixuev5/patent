@@ -66,11 +66,11 @@ class ContentGenerator:
                 "abstract_figure": abstract_figure.replace('images', 'annotated_images'),
                 
                 # 核心逻辑五要素
-                "technical_problem": macro_data.get("technical_problem"),
-                "technical_scheme": macro_data.get("technical_scheme"), 
-                "technical_means": micro_data.get("technical_means"), 
-                "technical_features": micro_data.get("technical_features", []),
-                "technical_effects": micro_data.get("technical_effects", []),
+                "technical_problem": macro_data.get("technical_problem"),   # 技术问题
+                "technical_scheme": macro_data.get("technical_scheme"),     # 技术方案
+                "technical_means": micro_data.get("technical_means"),       # 技术手段
+                "technical_features": micro_data.get("technical_features", []),   # 技术特征
+                "technical_effects": micro_data.get("technical_effects", []),     # 技术效果
                 
                 # 图解详细信息
                 "figure_explanations": figures_data

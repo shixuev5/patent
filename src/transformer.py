@@ -39,7 +39,10 @@ class PatentClaim(BaseModel):
     claim_text: str = Field(..., description="权利要求内容。保留所有数学公式(LaTeX/$$)和特殊符号，去除开头编号。")
     claim_type: Literal["independent", "dependent"] = Field(
         ..., 
-        description="类型判定：内容包含'根据权利要求...所述'为 dependent (从属)，否则为 independent (独立)"
+        description="""类型判定规则：
+        1. independent (独立)：通常以 '一种...' (A/An...) 开头。注意：即使内容中提到了其他权利要求（例如'一种用于权利要求1所述装置的制造方法'），只要它定义的是一个新的技术主题且不以'根据...'开头，它就是独立权利要求。
+        2. dependent (从属)：通常以 '根据权利要求X所述的...' (According to claim X...) 或 '如权利要求X所述的...' 开头，是对在前权利要求的进一步限定。
+        """
     )
 
 class DescriptionSection(BaseModel):
@@ -49,7 +52,7 @@ class DescriptionSection(BaseModel):
     summary_of_invention: str = Field(..., description="发明内容（技术方案部分）。**注意**：请在此处截断，不要包含'有益效果'或'技术效果'的相关段落。")
     technical_effect: str = Field(..., description="有益效果/技术效果。提取'发明内容'章节末尾关于'本发明具有如下有益效果'或'技术效果'的描述段落。若无明确描述则为null。")
     brief_description_of_drawings: str = Field(..., description="附图说明（仅提取文字描述）")
-    detailed_description: str = Field(..., description="具体实施方式，保留段落编号[00xx]和公式")
+    detailed_description: str = Field(..., description="具体实施方式。保留所有数学公式(LaTeX/$$)和特殊符号，去除开头编号。")
 
 class DrawingResource(BaseModel):
     """附图资源引用"""
@@ -80,10 +83,7 @@ class PatentTransformer:
 1. **去噪**：忽略所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
 2. **公式保留**：严禁修改或删除文本中的 LaTeX 公式（如 $$...$$）或数学符号。
 3. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
-4. **文本清洗**：
-    - `abstract`: 仅提取文本，不要包含 Markdown 图片链接。
-    - `claim_text`、`detailed_description`: 必须去除行首的序号（如 "1." 或 "[0026]"），但保留内部引用的序号。
-5. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
+4. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
 ### 输出格式要求
 请严格遵守以下 JSON Schema 输出 JSON 数据：
