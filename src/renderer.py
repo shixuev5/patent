@@ -66,61 +66,78 @@ class ReportRenderer:
         if main_fig:
             lines.append(f"![Main Figure]({main_fig})\n")
 
-        # --- 4. 技术问题 ---
-        lines.append("## 1. 现有技术问题")
+        # --- 4. 技术领域 ---
+        lines.append('## 1. 技术领域')
+        domain = data.get("technical_field", "未提取到技术领域")
+        lines.append(f"{domain}\n")
+
+        # --- 5. 技术问题 ---
+        lines.append("## 2. 现有技术问题")
         problem = data.get("technical_problem", "未提取到技术问题")
         lines.append(f"{problem}\n")
 
-        # --- 4.5 技术方案 ---
-        lines.append("## 2. 技术方案概要")
+        # --- 6 技术方案 ---
+        lines.append("## 3. 技术方案概要")
         scheme = data.get("technical_scheme", "未提取到技术方案")
         lines.append(f"{scheme}\n")
 
-        # --- 5. 技术手段 (Technical Means) ---
-        lines.append("## 3. 核心技术手段")
+        # --- 7. 技术手段 (Technical Means) ---
+        lines.append("## 4. 核心技术手段")
         means = data.get("technical_means", "未提取到技术手段")
         lines.append(f"{means}\n")
 
-        # 5.1 技术特征列表
+        # 7.1 技术特征列表
         features = data.get("technical_features", [])
         if features:
             features.sort(key=lambda x: x.get("is_essential", False), reverse=True)
 
             lines.append("### 关键技术特征")
             # Markdown 表格头
-            lines.append("| 特征名称 | 详细描述 | 核心特征 |")
-            lines.append("| :--- | :--- | :---: |")
+            lines.append("| 特征名称 | 详细描述 | 属性 | 来源 |")
+            lines.append("| :--- | :--- | :---: | :---: |")
             for feat in features:
                 name = feat.get("name", "-")
                 desc = feat.get("description", "-").replace("\n", " ") # 表格内不能换行
-                is_essential = "✅" if feat.get("is_essential") else ""
-                lines.append(f"| {name} | {desc} | {is_essential} |")
+                
+                # 视觉化属性
+                is_essential = feat.get("is_essential", False)
+                attr_str = "🔴 必要特征" if is_essential else "🔵 附加特征"
+
+                # 来源简化
+                source_raw = feat.get("claim_source", "")
+                source_str = "独权" if "independent" in source_raw else "从权"
+
+                lines.append(f"| {name} | {desc} | {attr_str} | {source_str } |")
             lines.append("\n")
 
-        # --- 6. 技术效果 (Technical Effects) ---
-        lines.append("## 4. 技术效果")
+        # --- 8. 技术效果 (Technical Effects) ---
+        lines.append("## 5. 技术效果")
         effects = data.get("technical_effects", [])
         if effects:
             for idx, eff in enumerate(effects, 1):
                 desc = eff.get("effect", "")
-                src = eff.get("source_feature", "")
+                src = eff.get("source_feature_name", "")
                 evidence = eff.get("evidence", "") # 获取证据字段
 
-                lines.append(f"**{idx}. {desc}**")
+                # 判断核心效果
+                is_core = eff.get("is_ind_claim_feature", False)
+                title_prefix = "🌟 [核心效果]" if is_core else "🔹 [进一步效果]"
+
+                lines.append(f"**{idx}. {title_prefix} {desc}**")
                 
-                # 使用引用列表格式展示归因和证据
-                if src or evidence:
-                    if src:
-                        lines.append(f"> - **归因特征**: {src}")
-                    if evidence:
-                        # 简单的颜色标记或加粗，让证据更显眼
-                        lines.append(f"> - **验证证据**: {evidence}")
-                    lines.append("") # 增加空行，保证 Markdown 渲染间距
+                # 使用引用块展示证据链
+                lines.append(f"> - **归因特征**: {src}")
+                if evidence and "无实验数据" not in evidence:
+                    lines.append(f"> - **验证证据**: **{evidence}**") # 加粗强证据
+                else:
+                    lines.append(f"> - **验证证据**: {evidence}")
+                
+                lines.append("") # 空行分隔
         else:
             lines.append("未提取到具体效果描述。\n")
 
-        # --- 7. 图解说明 (Figure Explanations) ---
-        lines.append("## 5. 图解说明")
+        # --- 9. 图解说明 (Figure Explanations) ---
+        lines.append("## 6. 图解说明")
         figures = data.get("figure_explanations", [])
 
         if not figures:
@@ -142,10 +159,10 @@ class ReportRenderer:
                 lines.append(figure_html)
 
             if explanation:
-                lines.append(f"\n**【AI 解说】**\n\n{explanation}\n")
+                lines.append(f"\n**【智能解说】**\n\n{explanation}\n")
 
             if parts:
-                lines.append("\n**【部件清单】**\n")
+                lines.append("\n**【可见部件清单】**\n")
                 lines.append("| 标号 | 名称 | 功能/作用 |")
                 lines.append("| :---: | :--- | :--- |")
                 for p in parts:

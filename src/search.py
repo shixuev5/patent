@@ -155,7 +155,7 @@ class SearchStrategyGenerator:
         """
         
         response = self.llm_service.chat_completion_json(
-            config=settings.LLM_MODEL_REASONING,
+            model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context}
@@ -275,7 +275,7 @@ class SearchStrategyGenerator:
         system_prompt = f"{role_definition}\n\n{syntax_rules}\n\n{process_steps}\n\n{output_format}"
 
         return self.llm_service.chat_completion_json(
-            config=settings.LLM_MODEL_REASONING,
+            model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context}
