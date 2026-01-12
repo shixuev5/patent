@@ -356,7 +356,9 @@ class ContentGenerator:
         # 3. 分析任务
         ### A. 技术机理深度解析 (technical_means)
         - **问题**：Why it works? 
-        - **要求**：结合物理原理（如力学、热学、电磁学）或算法逻辑，重点聚焦于输入列表中的 **`is_distinguishing=true` (区别技术特征)**。请解释这些核心创新点是如何协同工作，从而解决“{core_logic.get('technical_problem')}”的。
+        - **核心要求**：
+          1. 请撰写一段连贯的、符合工程逻辑的段落，解释**区别技术特征 (即列表中 is_distinguishing为true 的项)** 是如何通过物理原理（力学、热学、电磁学等）协同工作，从而解决“{core_logic.get('technical_problem')}”的。
+          2. **负向约束 (CRITICAL)**：生成的文本必须是自然的工程技术语言。**严禁在正文中出现 "is_distinguishing=true"、"claim_source"、"JSON" 或 "布尔值" 等代码层面的变量名称。
         - **注意**：对于前序部分（Preamble）的通用部件，除非它们参与了核心互动，否则无需详细解释。
         - **风格**：逻辑严密，避免空洞的套话。
 

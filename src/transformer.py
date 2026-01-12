@@ -43,7 +43,6 @@ class BibliographicData(BaseModel):
 
 class PatentClaim(BaseModel):
     """单项权利要求"""
-    claim_number: int = Field(..., description="权利要求编号")
     claim_text: str = Field(..., description="权利要求内容。保留所有数学公式(LaTeX/$$)和特殊符号，去除开头编号。")
     claim_type: Literal["independent", "dependent"] = Field(
         ..., 
@@ -89,7 +88,11 @@ class PatentTransformer:
 
 ### 核心指令 (Critical Instructions)
 1. **去噪**：忽略所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
-2. **公式保留**：严禁修改或删除文本中的 LaTeX 公式（如 $$...$$）或数学符号。
+2. **公式转义与保留**：
+   - 严禁修改或删除文本中的 LaTeX 公式（如 `$$...$$` 或 `$...$`）。
+   - **JSON转义铁律**：在生成 JSON 字符串时，原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\\\`。
+     - 错误示例：`"content": "$120 \mathrm{{mm}}$"` (会导致 JSON 解析错误)
+     - 正确示例：`"content": "$120 \\\\mathrm{{mm}}$"`
 3. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
 4. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
@@ -134,6 +137,6 @@ class PatentTransformer:
 # 使用示例
 if __name__ == "__main__":
     # 模拟使用
-    # transformer = PatentTransformer()
+    #transformer = PatentTransformer()
     # data = transformer.transform(md_content="...")
     pass
