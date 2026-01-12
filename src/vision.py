@@ -112,17 +112,22 @@ class VisualProcessor:
             
             for item in ocr_results:
                 text = item['text']
-                # 简单清洗：只留数字
-                clean_text = "".join(filter(str.isdigit, text))
+
+                # 步骤 A: 正则清洗，只保留 数字 和 字母 (移除标点、括号等干扰)
+                # 例如: "(16a)" -> "16a", "10." -> "10", "11-A" -> "11A"
+                clean_text = re.sub(r'[^a-zA-Z0-9]', '', text)
+
+                # 步骤 B: 强制转小写（既然 parts_db key 不包含大写，这里统一转小写以兼容图纸上的大写标注）
+                # 例如: "11A" -> "11a"
+                match_key = clean_text.lower()
                 
-                if clean_text in parts_db:
+                if match_key in parts_db:
                     # 准备标注数据：替换 OCR 文本为 组件名
                     valid_labels.append({
-                        'text': parts_db[clean_text]['name'], # 使用组件名称标注
-                        # 'text': f"{clean_text}-{parts_db[clean_text]['name']}", # 可选：使用 ID-名称 格式
+                        'text': parts_db[match_key]['name'], # 使用组件名称标注
                         'box': item['box']
                     })
-                    found_pids.append(clean_text)
+                    found_pids.append(match_key)
             
             # 3. 绘图或复制
             if len(ocr_results) and len(valid_labels) / len(ocr_results) > 0.3:

@@ -26,7 +26,7 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.1,
-        max_token: int = 8192,
+        max_tokens: int = 8192,
         model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -35,7 +35,7 @@ class LLMService:
         Args:
             messages: 对话消息列表
             temperature: 温度参数，默认 0.1 保持精确
-            max_token: 最大 token 数，deepseek-chat 支持 8k，deepseek-reasoner 支持 32k
+            max_tokens: 最大 token 数，deepseek-chat 支持 8k，deepseek-reasoner 支持 32k
             model: 模型
 
         Returns:
@@ -46,7 +46,7 @@ class LLMService:
                 model=model or settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_token,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"}
             )
 

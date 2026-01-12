@@ -52,10 +52,11 @@ class SearchStrategyGenerator:
                         npl_strategies = future_npl.result()
 
                     # 合并所有策略
-                    combined_strategies = []
-                    combined_strategies.extend(cntxt_strategies)
-                    combined_strategies.extend(ven_strategies)
-                    combined_strategies.extend(npl_strategies)
+                    combined_strategies = self._merge_strategies(
+                        cntxt_strategies, 
+                        ven_strategies, 
+                        npl_strategies
+                    )
                     
                     # 包装为最终对象
                     strategy_plan = {"strategies": combined_strategies}
@@ -73,6 +74,41 @@ class SearchStrategyGenerator:
             "search_matrix": search_matrix, # 对应你要求的中文、中文扩展、英文翻译
             "search_plan": strategy_plan    # 具体的检索步骤和分析
         }
+    
+    def _merge_strategies(self, *strategy_lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        辅助函数：合并来自不同源的策略列表。
+        逻辑：
+        1. 保持输入列表的顺序 (例如 CNTXT -> VEN -> NPL)。
+        2. 如果策略名称 (name) 相同，则将后续的 queries 追加到已有策略中。
+        3. 如果策略名称不同，则视为新策略添加。
+        """
+        merged_map = {}
+        
+        # 遍历所有传入的策略列表（按参数顺序）
+        for strategy_list in strategy_lists:
+            for strategy in strategy_list:
+                name = strategy.get("name")
+                if not name:
+                    continue
+                
+                if name not in merged_map:
+                    # 首次遇到该名称：初始化新的策略对象
+                    # 注意：构造新字典以避免引用污染
+                    merged_map[name] = {
+                        "name": name,
+                        "description": strategy.get("description", ""), # 保留首次出现的描述
+                        "queries": list(strategy.get("queries", []))    # 复制查询列表
+                    }
+                else:
+                    # 再次遇到该名称：仅合并 queries
+                    current_queries = merged_map[name]["queries"]
+                    new_queries = strategy.get("queries", [])
+                    if new_queries:
+                        current_queries.extend(new_queries)
+        
+        # 返回合并后的列表
+        return list(merged_map.values())
 
     def _build_matrix_context(self) -> str:
         """
@@ -196,13 +232,15 @@ class SearchStrategyGenerator:
         1. **逻辑算符**: 仅使用 `AND`, `OR`, `NOT`。严禁使用 `+`, `-`。
         2. **位置算符 (核心武器)**:
            - `S` (同句): 用于强相关的【结构+修饰】或【结构+功能】。例: `(活塞 S 螺旋槽)`。
-           - `D` (同段): 用于组合不同的技术组件。例: `(雷达 D 摄像头 D 融合)`。
-           - **禁止**在全文(`/TXT`)中直接使用 `AND` 连接通用词，必须用 `D`。
+           - `nD` (词距): 限定两词间隔不超过 n 个词 (n=1-20)。比 `S` 灵活，用于应对修饰语较长的情况。例: `(神经网络 5D 训练)`。
+           - `P` (同段): 用于组合不同的技术组件。例: `(雷达 P 摄像头 P 融合)`。
+           - **禁止**在全文(`/TXT`)中直接使用 `AND` 连接通用词，必须用 `P`或`S`。
         3. **字段**: `/TI` (名称), `/AB` (摘要), `/CLMS` (权利要求), `/TXT` (全文), `/PA` (申请人), `/IN` (发明人)。
         4. **长复合词拆解策略**：
             - 对于核心概念或其中文扩展过长的情况（如“谐波减速器柔性轴承试验台”），**严禁直接全词检索**。
-            - **必须**拆解为多个核心词，并使用 `S` 或 `D` 算符连接。
-            - *示例*: `(谐波 OR 柔轮) S/D (柔性轴承 OR 轴承) S/D (试验台 OR 测试装置)`。
+            - **必须**拆解为多个核心词，并使用 `S` 或 `nD` 算符连接。
+            - **优先嵌套使用**：先用 `nD` 将修饰词与核心名词组合，再用 `S` 连接功能/测试词。
+            - *示例*: `((谐波 OR 柔性) nD (轴承)) S (试验 OR 测试)`。
 
         ### 检索策略生成流程 (按顺序执行，体现“由严到宽，层层递进”的逻辑)
 
@@ -242,8 +280,8 @@ class SearchStrategyGenerator:
           - **战术**: 假设对比文件中有一个具体的实施例段落描述了你的方案。
           - **场景**: 全文 (`/TXT`) 或 说明书 (`/DESC`)。
           - **语法**: 
-            - **必须使用 D (同段) 算符**。严禁在全文检索中使用 `AND` 连接通用词。
-            - 格式: `((要素A扩展) D (要素B扩展) D (要素C扩展))/TXT`
+            - **必须使用 P (同段) 算符**。严禁在全文检索中使用 `AND` 连接通用词。
+            - 格式: `((要素A扩展) P (要素B扩展) P (要素C扩展))/TXT`
           - *逻辑*: 只有当 Feature A, B, C 出现在同一自然段时，它们才更有可能属于同一个技术实施例。
            
         #### Step 3: 扩展检索 (Expansion Search) - [针对 Y 类文献](创造性)
@@ -295,7 +333,7 @@ class SearchStrategyGenerator:
                     { 
                         "db": "CNTXT", 
                         "step": "全文段落级组合", 
-                        "query": "((特征A) D (特征B))/TXT"
+                        "query": "((特征A) P (特征B))/TXT"
                     }
                 ]
             },
@@ -339,12 +377,12 @@ class SearchStrategyGenerator:
         1.  **语言要求**：检索式内容必须全部为**英文** (包含拼音)。
         2.  **截词符 (查全率核心)**：
             -   **必须使用 `+`**：表示无限截断。例如 `detect+` 可命中 detect, detector, detection, detecting。
-            -   **必须使用 `?`**：表示0-1个字符。注意**英美拼写差异** (e.g. `fiber` vs `fibre`, `mold` vs `mould`)，必须使用 `?` 覆盖，例如 `fib?r`, `mo?ld`。
+            -   **必须使用 `?`**：表示0-1个字符。注意**英美拼写差异** (e.g. `fiber` vs `fibre`, `mold` vs `mould`)，必须使用 `?` 覆盖，例如 `fib??`, `mo?ld`。
             -   **规则**：几乎所有实词词根后都应加 `+` 以覆盖复数和动名词形式。
         3.  **逻辑与位置算符**：
             -   `AND`, `OR`, `NOT`。
             -   `S` (Same Sentence): 词与词在同一句。用于强关联 (e.g., `(piston+ S seal+)`).
-            -   `D` (Same Paragraph): 词与词在同一段。用于组合不同组件 (e.g., `(motor+ D sensor+ D control+)`).
+            -   `P` (Same Paragraph): 词与词在同一段。用于组合不同组件 (e.g., `(motor+ P sensor+ P control+)`).
         4.  **字段标识**：`/TI` (标题), `/AB` (摘要), `/CLM` (权利要求), `/DESC` (说明书全文), `PA` (申请人).
 
         ### 策略生成任务 (Step-by-Step)
