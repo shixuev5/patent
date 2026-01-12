@@ -8,8 +8,8 @@ from playwright.sync_api import sync_playwright
 from config import settings
 
 class ReportRenderer:
-    def __init__(self):
-        pass
+    def __init__(self, patent_data: Dict[str, Any]):
+        self.patent_data = patent_data
 
     def render(self, report_data: Dict[str, Any], search_data: Optional[Dict[str, Any]], md_path: Path, pdf_path: Path):
         """
@@ -89,22 +89,37 @@ class ReportRenderer:
         # 7.1 技术特征列表
         features = data.get("technical_features", [])
         if features:
-            features.sort(key=lambda x: x.get("is_essential", False), reverse=True)
+            # 排序逻辑：
+            # 1. 区别特征 (is_distinguishing=True) 排最前
+            # 2. 其次是前序特征 (claim_source="independent")
+            # 3. 最后是从权特征
+            features.sort(key=lambda x: (
+                x.get("is_distinguishing", False),
+                x.get("claim_source", "") == "independent"
+            ), reverse=True)
+
 
             lines.append("### 关键技术特征")
             # Markdown 表格头
-            lines.append("| 特征名称 | 详细描述 | 属性 | 来源 |")
+            lines.append("| 特征名称 | 详细描述 | 属性分类 | 来源 |")
             lines.append("| :--- | :--- | :---: | :---: |")
             for feat in features:
                 name = feat.get("name", "-")
                 desc = feat.get("description", "-").replace("\n", " ") # 表格内不能换行
                 
                 # 视觉化属性
-                is_essential = feat.get("is_essential", False)
-                attr_str = "🔴 必要特征" if is_essential else "🔵 附加特征"
+                is_distinguishing = feat.get("is_distinguishing", False)
+                source_raw = feat.get("claim_source", "unknown")
+
+                # 判定显示属性
+                if is_distinguishing:
+                    attr_str = "🌟 区别特征"  # 核心创新点
+                elif "independent" in source_raw:
+                    attr_str = "⚪ 前序特征"  # 独权里的公知部分
+                else:
+                    attr_str = "🔵 从权特征"  # 补充细节
 
                 # 来源简化
-                source_raw = feat.get("claim_source", "")
                 source_str = "独权" if "independent" in source_raw else "从权"
 
                 lines.append(f"| {name} | {desc} | {attr_str} | {source_str } |")
@@ -119,9 +134,15 @@ class ReportRenderer:
                 src = eff.get("source_feature_name", "")
                 evidence = eff.get("evidence", "") # 获取证据字段
 
-                # 判断核心效果
-                is_core = eff.get("is_ind_claim_feature", False)
-                title_prefix = "🌟 [核心效果]" if is_core else "🔹 [进一步效果]"
+                # 使用新字段 feature_type 进行视觉区分
+                ft_type = eff.get("feature_type", "")
+
+                if "Distinguishing" in ft_type:
+                    title_prefix = "🌟 [核心效果]" # 对应区别特征
+                elif "Preamble" in ft_type:
+                    title_prefix = "⚪ [基础效果]" # 对应前序特征
+                else:
+                    title_prefix = "🔹 [进一步效果]" # 对应从权特征/Dependent
 
                 lines.append(f"**{idx}. {title_prefix} {desc}**")
                 
@@ -184,6 +205,17 @@ class ReportRenderer:
         lines = []
         lines.append("# 专利审查检索策略建议书\n")
 
+        # --- 0. 基础信息与时间截点 ---
+        # 获取著录项目信息
+        biblio = self.patent_data.get("bibliographic_data", {})
+        title = biblio.get("invention_title", "未知标题")
+        app_date = biblio.get("application_date", "未知")
+        
+        lines.append("## 0. 检索基础信息")
+        lines.append(f"- **发明名称**: {title}")
+        lines.append(f"- **申请日**: {app_date}")
+        lines.append("> *注：检索操作应限定在申请日之前，以排除抵触申请和相关公开文献。*\n")
+
         # 获取数据源
         matrix = data.get("search_matrix", [])
         plan = data.get("search_plan", {})
@@ -204,20 +236,11 @@ class ReportRenderer:
                 # 处理列表转字符串
                 zh_list = item.get("zh_expand", [])
                 en_list = item.get("en_expand", [])
-                ipc_list = item.get("ipc", [])
-                cpc_list = item.get("cpc", [])
+                ref_list = item.get("ipc_cpc_ref", [])
 
                 zh_str = ", ".join(zh_list) if zh_list else "-"
                 en_str = ", ".join(en_list) if en_list else "-"
-                
-                # 构建分类号单元格，使用 HTML 换行使 IPC 和 CPC 分行显示
-                class_parts = []
-                if ipc_list:
-                    class_parts.append(f"**IPC**: {', '.join(ipc_list)}")
-                if cpc_list:
-                    class_parts.append(f"**CPC**: {', '.join(cpc_list)}")
-                
-                class_str = "<br>".join(class_parts) if class_parts else "-"
+                class_str = ", ".join(ref_list) if ref_list else "-"
 
                 # 组装表格行
                 lines.append(f"| **{concept}** | {zh_str} | {en_str} | {class_str} |")
@@ -243,14 +266,19 @@ class ReportRenderer:
             if queries:
                 for q_item in queries:
                     db_name = q_item.get("db", "General")
+                    step_info = q_item.get("step", "") # 获取具体步骤描述
                     query_str = q_item.get("query", "").strip()
                     
                     if not query_str:
                         continue
 
-                    # 为每个数据库生成独立的代码块
-                    # 使用 text/plain 避免 markdown 错误的高亮逻辑算符
-                    lines.append(f"**[{db_name}]** 检索式参考:")
+                    # 标题格式：[数据库] 步骤描述
+                    header_text = f"**[{db_name}]**"
+                    if step_info:
+                        header_text += f" - *{step_info}*"
+                    
+                    lines.append(f"{header_text}")
+                    # 使用 text 格式代码块，避免 markdown 对逻辑算符的错误高亮
                     lines.append(f"```text\n{query_str}\n```\n")
             else:
                 lines.append("*本步骤无需特定检索式 (如人工浏览或语义输入)*\n")

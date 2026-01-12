@@ -285,23 +285,28 @@ class ContentGenerator:
             -   **坚决剔除**：未做特殊限定的通用支撑件（如“机架”、“底座”）、通用连接件（如“螺栓”、“导线”）、通用驱动源（如“市电”、“普通电机”）或通用控制模块（如“控制器”、“PC机”）。
             -   **例外情况**：只有当这些部件具有**特殊的结构改进**（例如“具有蜂窝状吸能结构的机架”）并直接有助于解决上述【技术问题】时，才可保留。
         2.  **独权二分法**：
-            -   仔细审视独立权利要求。将其拆分为“前序部分”（现有技术）和“特征部分”（创新点）。重点提取“特征部分”的内容。
+            -   仔细阅读独立权利要求。
+            -   **Pre-amble (前序部分)**：描述现有技术或通用环境的部分（通常在“其特征在于”之前）。
+            -   **Characterizing Portion (特征部分)**：描述本发明核心改进的部分（通常在“其特征在于”之后）。
+            -   重点提取特征部分内容。
 
         ### B. 字段填写指南
         -   `name`: 特征名称。必须精炼、标准（例如使用“弧面加载块”而非“那个带有弧面的块”）。
-        -   `description`: 简要说明该特征在权利要求中的定义（暂不需要实施例细节）。
-        -   `claim_source`: 标记最早出现的权利要求类型 (`independent` 或 `dependent`)。
-        -   `is_essential`: 
-            -   `true`: **核心特征**。直接解决核心技术问题、且属于独立权利要求“特征部分”的特征。
-            -   `false`: **附加特征**。仅起辅助作用、优化作用，或仅出现在从属权利要求中的特征。
+        -   `description`: 简要说明该特征在权利要求中的定义。
+        -   `claim_source`:
+            -   `independent`: 该特征**首次出现**在独立权利要求中。
+            -   `dependent`: 该特征**首次出现**在从属权利要求中。
+        -   `is_distinguishing`: 
+            -   `true`: **区别特征**。该特征位于独立权利要求的“特征部分” (Characterizing Portion)，是解决核心技术问题的关键改进。
+            -   `false`: **非区别特征**。包括独立权利要求的“前序部分” (Preamble Portion，如通用底座、常规电机)，或所有的从属权利要求特征。
 
         ### C. 质量自检 (Self-Correction)
-        -   在输出前，请对每个 `is_essential=true` 的特征进行**“删减测试”**：如果删掉这个特征，核心技术原理是否还能成立？如果还能成立（例如删掉机架，系统只是没法固定但原理不变），则该特征不是 Essential。
+        -   在输出前，请对每个 `is_distinguishing=true` 的特征进行**“删减测试”**：如果删掉这个特征，核心技术原理是否还能成立？如果还能成立（例如删掉机架，系统只是没法固定但原理不变），则该特征不是 Distinguishing。
 
         # 4. 输出 JSON Schema
         {{
             "technical_features": [
-                {{ "name": "string", "description": "string", "is_essential": boolean, "claim_source": "independent" | "dependent" }}
+                {{ "name": "string", "description": "string", "is_distinguishing": boolean, "claim_source": "independent" | "dependent" }}
             ]
         }}
         """
@@ -324,7 +329,11 @@ class ContentGenerator:
 
         # 将特征列表序列化，作为约束条件
         features_context = json.dumps(
-            [{'name': f['name'], 'is_essential': f['is_essential']} for f in feature_list], 
+            [{
+                'name': f['name'], 
+                'is_distinguishing': f['is_distinguishing'],  # 逻辑核心：是否为区别特征
+                'claim_source': f.get('claim_source')         # 定位辅助：来自独权还是从权
+            } for f in feature_list], 
             ensure_ascii=False
         )
 
@@ -347,20 +356,25 @@ class ContentGenerator:
         # 3. 分析任务
         ### A. 技术机理深度解析 (technical_means)
         - **问题**：Why it works? 
-        - **要求**：结合物理原理（如力学、热学、电磁学）或算法逻辑，将上述 `is_essential=true` 的核心特征串联起来，解释它们是如何协同工作以解决“{core_logic.get('technical_problem')}”的。
+        - **要求**：结合物理原理（如力学、热学、电磁学）或算法逻辑，重点聚焦于输入列表中的 **`is_distinguishing=true` (区别技术特征)**。请解释这些核心创新点是如何协同工作，从而解决“{core_logic.get('technical_problem')}”的。
+        - **注意**：对于前序部分（Preamble）的通用部件，除非它们参与了核心互动，否则无需详细解释。
         - **风格**：逻辑严密，避免空洞的套话。
 
         ### B. 效果归因与证据核查 (technical_effects)
         - **核心逻辑**：Effect -> Caused by Feature -> Proven by Evidence.
         - **排序规则 (CRITICAL)**：
           必须严格按照**重要性递减**排序：
-          1.  **第一梯队（核心效果）**：由 `is_essential=true` 的特征带来的效果。
-          2.  **第二梯队（进一步效果）**：由 `is_essential=false` 的特征带来的改进效果。
+          1.  **第一梯队（核心创新）**：由 `is_distinguishing=true` 的特征带来的效果。这是证明创造性的关键。
+          2.  **第二梯队（具体优化）**：由 `claim_source="dependent"` 的从权特征带来的进一步有益效果。
+          3.  **第三梯队（基础功能）**：由 `is_distinguishing=false` 且 `claim_source="independent"` (前序特征) 带来的基础效果。
         
         - **字段填写规范**：
           - `effect`: 效果描述（如“降低了测试数据的方差”）。
           - `source_feature_name`: **必须**完全匹配上述“已确定的技术特征”中的 `name`。
-          - `is_ind_claim_feature`: 对应特征表中的 `is_essential` 值。
+          - `feature_type`: **严格基于输入数据判断**，禁止主观臆断。判断逻辑如下：
+            - 如果 `is_distinguishing` 为 true，填 "Distinguishing Feature" (区别特征)。
+            - 如果 `is_distinguishing` 为 false 且 `claim_source` 为 "independent"，填 "Preamble Feature" (前序特征)。
+            - 如果 `claim_source` 为 "dependent"，填 "Dependent Feature" (从权特征)。
           - `evidence`: **证据提取**。
             - *优选*：定量数据（如“表2显示磨损量减少了30%”）。
             - *次选*：定性描述（如“实施例中提到，相比于图1的现有技术，震动明显减弱”）。
@@ -370,7 +384,7 @@ class ContentGenerator:
         {{
             "technical_means": "string",
             "technical_effects": [
-                {{ "effect": "string", "source_feature_name": "string", "is_ind_claim_feature": boolean, "evidence": "string" }}
+                {{ "effect": "string", "source_feature_name": "string", "feature_type": "Distinguishing Feature" | "Preamble Feature" | "Dependent Feature", "evidence": "string" }}
             ]
         }}
         """
@@ -384,14 +398,19 @@ class ContentGenerator:
             temperature=0.1
         )
 
-        # Python 侧兜底排序：确保核心效果一定在前面
-        if "technical_effects" in result and isinstance(result["technical_effects"], list):
-            # 第一优先级：是否核心特征 (True在前)
-            # 第二优先级：证据长度 (通常有数据的证据更长，但这只是辅助)
-            result["technical_effects"].sort(
-                key=lambda x: (x.get("is_ind_claim_feature", False), len(x.get("evidence", ""))), 
-                reverse=True
-            )
+        type_priority = {
+            "Distinguishing Feature": 3, # 最重要
+            "Dependent Feature": 2,      # 其次（因为可能含有具体的优选参数）
+            "Preamble Feature": 1        # 最不重要
+        }
+
+        result["technical_effects"].sort(
+            key=lambda x: (
+                type_priority.get(x.get("feature_type"), 0), 
+                len(x.get("evidence", ""))
+            ), 
+            reverse=True
+        )
         
         return result
         
