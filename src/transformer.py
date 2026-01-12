@@ -21,7 +21,15 @@ class BibliographicData(BaseModel):
     对应 INID 码标准
     """
     application_number: str = Field(..., description="[INID 21] 申请号，需去除空格和CN前缀")
-    filing_date: str = Field(..., description="[INID 22] 申请日，统一格式为 YYYY.MM.DD")
+    application_date: str = Field(..., description="[INID 22] 申请日，统一格式为 YYYY.MM.DD")
+    publication_number: Optional[str] = Field(
+        None, 
+        description="[INID 10] 申请公布号 (如 CN 116793681 A) 或 授权公告号"
+    )
+    publication_date: Optional[str] = Field(
+        None,
+        description="[INID 43] 申请公布日 或 [INID 45] 授权公告日。统一格式为 YYYY.MM.DD"
+    )
     invention_title: str = Field(..., description="[INID 54] 发明名称")
     ipc_classifications: List[str] = Field(..., description="[INID 51] IPC 国际专利分类号列表")
     applicants: List[EntityInfo] = Field(..., description="[INID 71] 申请人列表")
@@ -79,7 +87,7 @@ class PatentTransformer:
     def _get_system_prompt(self):
         return f"""你是一个精通专利文档结构的AI助手。请将Markdown文本解析为JSON。
 
-### 处理原则：
+### 核心指令 (Critical Instructions)
 1. **去噪**：忽略所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
 2. **公式保留**：严禁修改或删除文本中的 LaTeX 公式（如 $$...$$）或数学符号。
 3. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
@@ -101,11 +109,12 @@ class PatentTransformer:
         
         try:
             json_data = self.llm_service.chat_completion_json(
-                model=Settings.LLM_MODEL,
+                model=Settings.LLM_MODEL_REASONING,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
                 ],
+                max_tokens=64000,
                 temperature=0.1  # 低温度保持精确
             )
 

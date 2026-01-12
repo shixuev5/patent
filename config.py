@@ -175,8 +175,8 @@ class Settings:
     code {
         font-family: "Consolas", "Monaco", "Courier New", monospace;
         font-size: 12px;
-        color: #e83e8c;
-        background-color: #fdf2f6;
+        color: #2c3e50; 
+        background-color: #f0f4f8; 
         padding: 2px 4px;
         border-radius: 3px;
     }

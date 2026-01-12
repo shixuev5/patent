@@ -115,7 +115,7 @@ def main():
 
     # --- Step 7: 渲染 MD 和 PDF ---
     logger.info("Step 7: Rendering Report (MD & PDF)...")
-    renderer = ReportRenderer()
+    renderer = ReportRenderer(patent_data)
     renderer.render(
         report_data=report_json,
         search_data=search_json,
