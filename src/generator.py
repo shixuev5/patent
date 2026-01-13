@@ -50,7 +50,7 @@ class ContentGenerator:
             # === Step 1: 领域定位与问题定义 ===
             # 输入：背景技术、技术效果
             # 输出：technical_field, technical_problem
-            domain_problem_data = self.cache._run_step(
+            domain_problem_data = self.cache.run_step(
                 "step1_domain_problem", 
                 self._analyze_domain_and_problem
             )
@@ -58,7 +58,7 @@ class ContentGenerator:
             # === Step 2: 解决方案封装 ===
             # 输入：Step 1的结果、独立权利要求、发明内容
             # 输出：ai_title, ai_abstract, technical_scheme
-            solution_data = self.cache._run_step(
+            solution_data = self.cache.run_step(
                 "step2_solution", 
                 self._synthesize_solution_package, 
                 domain_problem_data
@@ -70,7 +70,7 @@ class ContentGenerator:
             # === Step 3: 权利要求解构与特征定义 ===
             # 输入：核心逻辑、全部权利要求
             # 输出：technical_features
-            features_data = self.cache._run_step(
+            features_data = self.cache.run_step(
                 "step3_features", 
                 self._extract_features, 
                 core_logic
@@ -80,7 +80,7 @@ class ContentGenerator:
             # === Step 4: 实施例取证与效果验证 ===
             # 输入：核心逻辑、技术特征、具体实施方式
             # 输出：technical_means, technical_effects
-            verification_data = self.cache._run_step(
+            verification_data = self.cache.run_step(
                 "step4_verification", 
                 self._verify_evidence, 
                 core_logic, 
@@ -93,7 +93,7 @@ class ContentGenerator:
                 "problem": domain_problem_data.get("technical_problem"),
                 "effects": verification_data.get("technical_effects", [])
             }
-            figures_data = self.cache._run_step(
+            figures_data = self.cache.run_step(
                 "step5_figures", 
                 self._generate_figures_analysis, 
                 global_context

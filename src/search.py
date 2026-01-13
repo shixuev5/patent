@@ -33,7 +33,7 @@ class SearchStrategyGenerator:
             return self._build_search_matrix(matrix_context)
 
         # 使用通用方法运行 Step 1
-        search_matrix = self.cache.run_step("step1_matrix", _execute_stage1, default=[])
+        search_matrix = self.cache.run_step("step1_matrix", _execute_stage1)
         
         if not search_matrix:
             logger.warning("Search Matrix 为空，后续策略生成可能受限。")
