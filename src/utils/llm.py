@@ -82,14 +82,16 @@ class LLMService:
     def analyze_image_with_thinking(
         self,
         image_path: str,
-        prompt: str
+        system_prompt: str,
+        user_prompt: str
     ) -> str:
         """
         使用思考模式的视觉模型图片理解
 
         Args:
             image_path: 图片路径
-            prompt: 分析提示词
+            system_prompt: 静态指令（用于缓存）
+            user_prompt: 动态上下文描述（结合图片）
 
         Returns:
             模型返回的分析结果
@@ -107,10 +109,14 @@ class LLMService:
                 model=settings.VLM_MODEL,
                 messages=[
                     {
+                        "role": "system",
+                        "content": system_prompt 
+                    },
+                    {
                         "role": "user",
                         "content": [
                             {"type": "image_url", "image_url": {"url": img_b64}},
-                            {"type": "text", "text": prompt},
+                            {"type": "text", "text": user_prompt},
                         ]
                     }
                 ],
