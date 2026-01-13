@@ -117,7 +117,6 @@ class PatentTransformer:
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
                 ],
-                max_tokens=64000,
                 temperature=0.1  # 低温度保持精确
             )
 
