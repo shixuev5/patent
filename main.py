@@ -84,11 +84,14 @@ def main():
         report_json = json.loads(paths["report_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 5: Generating report json...")
+
+        cache_file = paths["root"].with_name("report_intermediate.json")
         generator = ContentGenerator(
             patent_data=patent_data, 
             parts_db=parts_db, 
             image_parts=image_parts,
-            annotated_dir=paths["annotated_dir"]
+            annotated_dir=paths["annotated_dir"],
+            cache_file=cache_file
         )
         report_json = generator.generate_report_json()
         paths["report_json"].write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -101,8 +104,10 @@ def main():
         search_json = json.loads(paths["search_strategy_json"].read_text(encoding="utf-8"))
     else:
         logger.info("Step 6: Generating search strategy json...")
+        
         # 初始化生成器
-        search_gen = SearchStrategyGenerator(patent_data, report_json)
+        cache_file = paths["root"].with_name("search_strategy_intermediate.json")
+        search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
         
         # 执行生成
         search_json = search_gen.generate_strategy()

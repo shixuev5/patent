@@ -4,15 +4,19 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any
 from loguru import logger
-from src.llm import get_llm_service
+from src.utils.llm import get_llm_service
+from src.utils.cache import StepCache
 from config import Settings
 
 class ContentGenerator:
-    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict, annotated_dir: Path):
+    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict, annotated_dir: Path, cache_file: Path = None):
         self.llm_service = get_llm_service()
         self.parts_db = parts_db
         self.image_parts = image_parts
         self.annotated_dir = annotated_dir
+
+        # 初始化缓存管理器
+        self.cache = StepCache(cache_file) if cache_file else None
 
         # 预处理数据，方便后续调用
         self.biblio = patent_data.get("bibliographic_data", {})
@@ -34,16 +38,11 @@ class ContentGenerator:
 
         # 3. 用于验证细节：看具体实施方式
         self.text_details = self.description.get("detailed_description", "")
-
-        # 提取独立权利要求
-        self.independent_claims = [
-            c["claim_text"] for c in self.claims if c.get("claim_type") == "independent"
-        ]
     
     def generate_report_json(self) -> Dict[str, Any]:
         """
         执行专利逻辑分析流水线。
-        Flow: [Domain/Problem] -> [Solution/Title] -> [Implementation/Verification] -> [Visuals]
+        Flow: [Domain/Problem] -> [Solution/Title] -> [Features] -> [Verification] -> [Visuals]
         """
         logger.info(f"开始生成专利分析报告: {self.biblio.get('application_number', 'Unknown')}")
 
@@ -51,12 +50,19 @@ class ContentGenerator:
             # === Step 1: 领域定位与问题定义 ===
             # 输入：背景技术、技术效果
             # 输出：technical_field, technical_problem
-            domain_problem_data = self._analyze_domain_and_problem()
+            domain_problem_data = self.cache._run_step(
+                "step1_domain_problem", 
+                self._analyze_domain_and_problem
+            )
             
             # === Step 2: 解决方案封装 ===
             # 输入：Step 1的结果、独立权利要求、发明内容
             # 输出：ai_title, ai_abstract, technical_scheme
-            solution_data = self._synthesize_solution_package(domain_problem_data)
+            solution_data = self.cache._run_step(
+                "step2_solution", 
+                self._synthesize_solution_package, 
+                domain_problem_data
+            )
             
             # 合并核心逻辑数据 (Core Logic Context)
             core_logic = {**domain_problem_data, **solution_data}
@@ -64,14 +70,22 @@ class ContentGenerator:
             # === Step 3: 权利要求解构与特征定义 ===
             # 输入：核心逻辑、全部权利要求
             # 输出：technical_features
-            features_data = self._extract_features(core_logic)
+            features_data = self.cache._run_step(
+                "step3_features", 
+                self._extract_features, 
+                core_logic
+            )
             feature_list = features_data.get("technical_features", [])
 
             # === Step 4: 实施例取证与效果验证 ===
             # 输入：核心逻辑、技术特征、具体实施方式
             # 输出：technical_means, technical_effects
-            verification_data = self._verify_evidence(core_logic, feature_list)
-
+            verification_data = self.cache._run_step(
+                "step4_verification", 
+                self._verify_evidence, 
+                core_logic, 
+                feature_list
+            )
 
             # 图解生成 (遍历每一张图，生成解说和部件表)
             global_context = {
@@ -79,7 +93,11 @@ class ContentGenerator:
                 "problem": domain_problem_data.get("technical_problem"),
                 "effects": verification_data.get("technical_effects", [])
             }
-            figures_data = self._generate_figures_analysis(global_context)
+            figures_data = self.cache._run_step(
+                "step5_figures", 
+                self._generate_figures_analysis, 
+                global_context
+            )
             
             # 组装最终 JSON
             # 寻找主图：通常是第一张图，或者摘要附图
@@ -98,7 +116,7 @@ class ContentGenerator:
                 "technical_problem": domain_problem_data.get("technical_problem"),          # 技术问题
                 "technical_scheme": solution_data.get("technical_scheme"),                  # 技术方案
                 "technical_means": verification_data.get("technical_means"),                # 技术手段
-                "technical_features": verification_data.get("technical_features", []),      # 技术特征
+                "technical_features": features_data.get("technical_features", []),      # 技术特征
                 "technical_effects": verification_data.get("technical_effects", []),        # 技术效果
                 
                 # 图解详细信息
@@ -111,6 +129,35 @@ class ContentGenerator:
         except Exception as e:
             logger.error(f"生成报告过程中发生错误: {str(e)}")
             return {"error": str(e), "status": "failed"}
+        
+    def _format_claims_to_text(self, only_independent: bool = False) -> str:
+        """
+        通用辅助函数：将权利要求列表格式化为层级分明的 Markdown 文本。
+        适配 claim_text/claim_type 结构。
+        """
+        lines = []
+        # 自动生成编号 (如果原始数据没有 id 字段)
+        for idx, claim in enumerate(self.claims):
+            # 1. 类型过滤
+            c_type_raw = claim.get('claim_type', 'dependent').lower()
+            is_indep = 'independent' in c_type_raw
+            
+            if only_independent and not is_indep:
+                continue
+
+            # 2. 获取内容 (兼容不同字段名)
+            content = claim.get('claim_text') or claim.get('content') or ""
+            
+            # 3. 构建标题
+            # 假设 idx+1 为权利要求编号，实际项目中建议尽量使用原始编号
+            claim_id = claim.get('id', str(idx + 1))
+            type_label = "独立权利要求 (Independent)" if is_indep else "从属权利要求 (Dependent)"
+            
+            lines.append(f"### Claim {claim_id} [{type_label}]")
+            lines.append(content.strip())
+            lines.append("---")
+            
+        return "\n".join(lines)
         
     def _analyze_domain_and_problem(self) -> Dict[str, str]:
         """
@@ -182,6 +229,9 @@ class ContentGenerator:
         """
         logger.debug("Step 2: Synthesizing Solution Package...")
 
+        # 筛选出独立权利要求并格式化为 Markdown
+        indep_claims_text = self._format_claims_to_text(only_independent=True)
+
         system_prompt = (
             "你是一名顶级科技期刊的编辑。你的任务是将晦涩的法律文档（专利权利要求）重写为"
             "高信息密度的技术摘要和工程方案。你的读者是该领域的技术专家，不要使用法律套话。"
@@ -199,7 +249,8 @@ class ContentGenerator:
         {self.text_title}
 
         【独立权利要求 (Independent Claims)】
-        {json.dumps(self.independent_claims, ensure_ascii=False)}
+        *** 请基于以下文本提取核心技术方案 ***
+        {indep_claims_text}
 
         【发明内容 (Summary of Invention)】
         {self.text_summary[:3000]}
@@ -224,14 +275,13 @@ class ContentGenerator:
           2. **背景切入** (1句): "针对[...的问题]，本方案..."
           3. **技术内核** (3-4句): 提取独权步骤。**关键约束**：如果文中包含具体的**数字参数**（温度、比例、阈值公式）、**特定材料**或**算法名称**，必须保留！这是技术专家的关注点。
           4. **性能闭环** (1句): "最终实现了[...的具体指标提升]。"
-        - **Negative Constraints**:
-          - 禁止使用 "所述"、"其特征在于" 等法律词汇。
+        - **Negative Constraints**: 禁止使用 "所述"、"其特征在于" 等法律词汇。
 
         ### C. 技术方案概要 (technical_scheme)
         - **任务**：将独立权利要求翻译为“工程实施手册”。
         - **多独权处理逻辑**：
-          - 检查输入的独立权利要求数量。
-          - 如果有多个独立权利要求（例如 Claim 1 是装置，Claim 7 是方法），必须分条目描述。
+          - 上方【独立权利要求】区域中，每个以 `### Claim X` 开头的区块代表一个独立的技术方案。
+          - 如果存在多个 `### Claim` 区块，（例如 Claim 1 是装置，Claim 7 是方法），必须分条目描述。
           - **格式示例**：
             "1) 装置主体：由加载块和环带组成，加载块通过...；\n2) 计算方法：建立柔轮与轴承的几何模型，通过CAE分析求解..."
         - **逻辑重组**：如果是方法，按步骤描述；如果是装置，按连接关系描述。
@@ -263,52 +313,68 @@ class ContentGenerator:
         """
         logger.debug("Step 3: Analyzing Claims structure...")
 
+        # 1. 格式化权利要求 (比 JSON dump 更易于语义理解)
+        claims_text = self._format_claims_to_text()
+
         system_prompt = (
-            "你是一名资深的专利实质审查员。你的核心能力是基于‘三步法’（Problem-Solution Approach）"
-            "准确识别‘区别技术特征’（Distinguishing Technical Features）。\n"
-            "你需要透过权利要求的法律措辞，识别出真正对技术问题做出贡献的核心结构或步骤。"
+            "你是一名资深的专利实质审查员（Patent Examiner）。"
+            "你的核心任务是基于‘三步法’（Problem-Solution Approach）对权利要求书进行解构。"
+            "你需要精准识别出哪些是现有的‘前序特征’，哪些是真正承载发明点的‘区别技术特征’。"
         )
 
         user_content = f"""
-        # 1. 审查背景 (Examination Basis)
+        # 1. 审查背景 (Examination Context)
         【待解决的技术问题】: {core_logic.get('technical_problem')}
-        【技术方案概要】: {core_logic.get('technical_scheme')}
+        【技术方案核心】: {core_logic.get('technical_scheme')}
 
-        # 2. 权利要求书 (Claims)
-        {json.dumps(self.claims, ensure_ascii=False)}
+        # 2. 权利要求书 (Claims Text)
+        {claims_text}
 
-        # 3. 分析任务：构建技术特征列表 (BOM)
-        请扫描所有权利要求，提取技术特征，并按照以下严格标准进行分类和清洗：
+        # 3. 分析指令 (Step-by-Step Reasoning)
+        请严格遵循以下思维路径进行分析，不要跳过步骤：
 
-        ### A. 筛选与过滤规则 (CRITICAL)
-        1.  **剔除“公知常识”与“通用部件”**：
-            -   **坚决剔除**：未做特殊限定的通用支撑件（如“机架”、“底座”）、通用连接件（如“螺栓”、“导线”）、通用驱动源（如“市电”、“普通电机”）或通用控制模块（如“控制器”、“PC机”）。
-            -   **例外情况**：只有当这些部件具有**特殊的结构改进**（例如“具有蜂窝状吸能结构的机架”）并直接有助于解决上述【技术问题】时，才可保留。
-        2.  **独权二分法**：
-            -   仔细阅读独立权利要求。
-            -   **Pre-amble (前序部分)**：描述现有技术或通用环境的部分（通常在“其特征在于”之前）。
-            -   **Characterizing Portion (特征部分)**：描述本发明核心改进的部分（通常在“其特征在于”之后）。
-            -   重点提取特征部分内容。
+        **Step 1: 锁定独立权利要求 (Scope Definition)**
+        - 找到编号最小的独立权利要求（通常是 Claim 1）。
+        - 在该文本中，寻找关键词“其特征在于” (characterized in that)。
+        - **界定范围**：
+            - 关键词**之前**的内容 = **前序部分 (Preamble)** = 现有技术/通用部件。
+            - 关键词**之后**的内容 = **特征部分 (Characterizing Portion)** = 潜在的区别特征。
 
-        ### B. 字段填写指南
-        -   `name`: 特征名称。必须精炼、标准（例如使用“弧面加载块”而非“那个带有弧面的块”）。
-        -   `description`: 简要说明该特征在权利要求中的定义。
-        -   `claim_source`:
-            -   `independent`: 该特征**首次出现**在独立权利要求中。
-            -   `dependent`: 该特征**首次出现**在从属权利要求中。
-        -   `is_distinguishing`: 
-            -   `true`: **区别特征**。该特征位于独立权利要求的“特征部分” (Characterizing Portion)，是解决核心技术问题的关键改进。
-            -   `false`: **非区别特征**。包括独立权利要求的“前序部分” (Preamble Portion，如通用底座、常规电机)，或所有的从属权利要求特征。
+        **Step 2: 粒度拆解与标准化 (Granularity & Normalization)**
+        - 将长句拆解为独立的技术手段（Feature）。
+        - **命名规范**：使用标准工程术语（如用“第一传动齿轮”代替“那个转动的轮子”）。
+        - **合并同类项**：如果 Claim 1 提到了“电机”，Claim 2 提到了“伺服电机”，且 Claim 2 是对 Claim 1 的具体化，在提取 Claim 1 特征时仅需提取“电机”。
 
-        ### C. 质量自检 (Self-Correction)
-        -   在输出前，请对每个 `is_distinguishing=true` 的特征进行**“删减测试”**：如果删掉这个特征，核心技术原理是否还能成立？如果还能成立（例如删掉机架，系统只是没法固定但原理不变），则该特征不是 Distinguishing。
+        **Step 3: 属性判定 (Classification)**
+        对每个提取的特征进行分类：
+        - **is_distinguishing (是否区别特征)**:
+            - 必须满足两个条件：1. 位于独立权利要求的“特征部分”； 2. 直接贡献于解决上述【技术问题】。
+            - 纯结构性的支撑件（如“外壳”、“机架”）即使在特征部分，如果未做特殊限定，通常标记为 False。
+        - **claim_source (来源)**:
+            - 如果特征首次出现在独立权 -> "independent"。
+            - 如果特征仅作为对独立权的进一步限定出现在从属权 -> "dependent"。
 
-        # 4. 输出 JSON Schema
+        **Step 4: 负向过滤 (Negative Filter)**
+        - 剔除纯功能性描述（如“用于工作”、“为了省电”），只保留“结构/步骤”。
+        - 剔除无创造性的通用连接词（如“通过螺丝固定”）。
+
+        # 4. 输出格式 (JSON)
+        请输出 JSON，包含 `technical_features` 列表。
+        **关键**：在 `rationale` 字段中简要说明为什么你将其判定为 True 或 False (例如：“位于Claim 1特征部分，且是实现减震的核心结构”)。
+
+        ```json
         {{
             "technical_features": [
-                {{ "name": "string", "description": "string", "is_distinguishing": boolean, "claim_source": "independent" | "dependent" }}
+                {{
+                    "name": "特征名称",
+                    "description": "原文中的定义描述",
+                    "is_distinguishing": true/false,
+                    "claim_source": "independent" | "dependent",
+                    "rationale": "简短的判定理由，辅助逻辑自检"
+                }}
             ]
         }}
+        ```
         """
 
         return self.llm_service.chat_completion_json(
@@ -327,15 +393,20 @@ class ContentGenerator:
         """
         logger.debug("Step 4: Mining evidence from embodiments...")
 
-        # 将特征列表序列化，作为约束条件
-        features_context = json.dumps(
-            [{
-                'name': f['name'], 
-                'is_distinguishing': f['is_distinguishing'],  # 逻辑核心：是否为区别特征
-                'claim_source': f.get('claim_source')         # 定位辅助：来自独权还是从权
-            } for f in feature_list], 
-            ensure_ascii=False
-        )
+        # --- 将特征列表格式化为 Markdown 表格，便于 LLM 阅读 ---
+        header = "| 特征名称 (name) | 是否区别特征 | 权利要求来源 |"
+        separator = "| :--- | :--- | :--- |"
+        rows = []
+        for f in feature_list:
+            # 防止名称中包含 '|' 破坏表格结构
+            safe_name = str(f.get('name', '')).replace('|', '\\|')
+            # 确保布尔值转为字符串显示，或者使用 'True'/'False'
+            is_dist = str(f.get('is_distinguishing', False))
+            claim_src = str(f.get('claim_source', ''))
+            rows.append(f"| {safe_name} | {is_dist} | {claim_src} |")
+        
+        features_context = "\n".join([header, separator] + rows)
+        # -----------------------------------------------------------
 
         system_prompt = (
             "你是一名精通技术验证的法医级分析师。你的任务是将‘声称的技术效果’与‘实施例中的客观证据’进行对账。"
@@ -344,7 +415,9 @@ class ContentGenerator:
 
         user_content = f"""
         # 1. 已确定的技术特征 (Input Constraints)
-        **注意：在后续分析中，你提到的所有特征名称必须严格取自下表，禁止自造新词。**
+        **注意：在后续分析中，你提到的所有特征名称必须严格取自下方的【特征列表表格】中的“特征名称”列，禁止自造新词。**
+        
+        【特征列表表格】：
         {features_context}
 
         # 2. 审查材料
@@ -357,8 +430,8 @@ class ContentGenerator:
         ### A. 技术机理深度解析 (technical_means)
         - **问题**：Why it works? 
         - **核心要求**：
-          1. 请撰写一段连贯的、符合工程逻辑的段落，解释**区别技术特征 (即列表中 is_distinguishing为true 的项)** 是如何通过物理原理（力学、热学、电磁学等）协同工作，从而解决“{core_logic.get('technical_problem')}”的。
-          2. **负向约束 (CRITICAL)**：生成的文本必须是自然的工程技术语言。**严禁在正文中出现 "is_distinguishing=true"、"claim_source"、"JSON" 或 "布尔值" 等代码层面的变量名称。
+          1. 请撰写一段连贯的、符合工程逻辑的段落，解释**区别技术特征**是如何通过物理原理（力学、热学、电磁学等）协同工作，从而解决“{core_logic.get('technical_problem')}”的。
+          2. **识别逻辑**：请关注表格中 **“是否为区别特征”列为 True** 的那些特征。
         - **注意**：对于前序部分（Preamble）的通用部件，除非它们参与了核心互动，否则无需详细解释。
         - **风格**：逻辑严密，避免空洞的套话。
 
@@ -366,17 +439,17 @@ class ContentGenerator:
         - **核心逻辑**：Effect -> Caused by Feature -> Proven by Evidence.
         - **排序规则 (CRITICAL)**：
           必须严格按照**重要性递减**排序：
-          1.  **第一梯队（核心创新）**：由 `is_distinguishing=true` 的特征带来的效果。这是证明创造性的关键。
-          2.  **第二梯队（具体优化）**：由 `claim_source="dependent"` 的从权特征带来的进一步有益效果。
-          3.  **第三梯队（基础功能）**：由 `is_distinguishing=false` 且 `claim_source="independent"` (前序特征) 带来的基础效果。
+          1.  **第一梯队（核心创新）**：表格中 **“是否为区别特征”列为 True** 的特征带来的效果。这是证明创造性的关键。
+          2.  **第二梯队（具体优化）**：表格中 **“权利要求来源”列为 'dependent'** 的特征带来的进一步有益效果。
+          3.  **第三梯队（基础功能）**：表格中 **“是否为区别特征”列为 False** 且 **“权利要求来源”列为 'independent'** (前序特征) 带来的基础效果。
         
         - **字段填写规范**：
           - `effect`: 效果描述（如“降低了测试数据的方差”）。
-          - `source_feature_name`: **必须**完全匹配上述“已确定的技术特征”中的 `name`。
-          - `feature_type`: **严格基于输入数据判断**，禁止主观臆断。判断逻辑如下：
-            - 如果 `is_distinguishing` 为 true，填 "Distinguishing Feature" (区别特征)。
-            - 如果 `is_distinguishing` 为 false 且 `claim_source` 为 "independent"，填 "Preamble Feature" (前序特征)。
-            - 如果 `claim_source` 为 "dependent"，填 "Dependent Feature" (从权特征)。
+          - `source_feature_name`: **必须**完全匹配上述表格第一列的 `name`。
+          - `feature_type`: **严格基于表格列值判断**，禁止主观臆断。判断逻辑如下：
+            - 若 “是否为区别特征”列为 `True` -> 填 "Distinguishing Feature" (区别特征)。
+            - 若 “是否为区别特征”列为 `False` 且 “权利要求来源”列为 `independent` -> 填 "Preamble Feature" (前序特征)。
+            - 若 “权利要求来源”列为 `dependent` -> 填 "Dependent Feature" (从权特征)。
           - `evidence`: **证据提取**。
             - *优选*：定量数据（如“表2显示磨损量减少了30%”）。
             - *次选*：定性描述（如“实施例中提到，相比于图1的现有技术，震动明显减弱”）。
@@ -406,13 +479,20 @@ class ContentGenerator:
             "Preamble Feature": 1        # 最不重要
         }
 
-        result["technical_effects"].sort(
+        # 容错：防止 LLM 返回非预期结构
+        effects_list = result.get("technical_effects", [])
+        if not isinstance(effects_list, list):
+            effects_list = []
+
+        effects_list.sort(
             key=lambda x: (
                 type_priority.get(x.get("feature_type"), 0), 
                 len(x.get("evidence", ""))
             ), 
             reverse=True
         )
+
+        result["technical_effects"] = effects_list
         
         return result
         
