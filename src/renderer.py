@@ -98,14 +98,19 @@ class ReportRenderer:
                 x.get("claim_source", "") == "independent"
             ), reverse=True)
 
-
             lines.append("### 关键技术特征")
+            
             # Markdown 表格头
-            lines.append("| 特征名称 | 详细描述 | 属性分类 | 来源 |")
-            lines.append("| :--- | :--- | :---: | :---: |")
+            lines.append("| 特征名称 | 详细描述 | 属性分类 | 判定理由 | 来源 |")
+            lines.append("| :--- | :--- | :---: | :--- | :---: |")
+            
             for feat in features:
                 name = feat.get("name", "-")
-                desc = feat.get("description", "-").replace("\n", " ") # 表格内不能换行
+                # 表格内不能有换行符，需替换为空格
+                desc = feat.get("description", "-").replace("\n", " ") 
+                
+                # 获取 rationale 并处理换行 ---
+                rationale = feat.get("rationale", "-").replace("\n", " ")
                 
                 # 视觉化属性
                 is_distinguishing = feat.get("is_distinguishing", False)
@@ -122,7 +127,8 @@ class ReportRenderer:
                 # 来源简化
                 source_str = "独权" if "independent" in source_raw else "从权"
 
-                lines.append(f"| {name} | {desc} | {attr_str} | {source_str } |")
+                lines.append(f"| {name} | {desc} | {attr_str} | {rationale} | {source_str} |")
+            
             lines.append("\n")
 
         # --- 8. 技术效果 (Technical Effects) ---
