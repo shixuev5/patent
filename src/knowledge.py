@@ -50,9 +50,9 @@ class KnowledgeExtractor:
         logger.info("[Knowledge] Constructing optimized context...")
         
         # 构建上下文
-        refined_content = self._construct_context(patent_data)
+        user_content = self._construct_context(patent_data)
         
-        if not refined_content.strip():
+        if not user_content.strip():
             logger.warning("[Knowledge] Context is empty.")
             return {}
 
@@ -104,7 +104,7 @@ class KnowledgeExtractor:
                 model=Settings.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": refined_content}
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.1
             )
