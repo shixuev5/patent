@@ -544,6 +544,10 @@ class ContentGenerator:
 
             if part_ids:
                 temp_desc_list = []
+
+                # 去重并升序排列
+                part_ids = sorted(set(part_ids))
+
                 for pid in part_ids:
                     # 兼容 pid 是 int 或 str 的情况
                     info = self.parts_db.get(str(pid)) or self.parts_db.get(int(pid))

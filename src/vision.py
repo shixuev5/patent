@@ -136,8 +136,7 @@ class VisualProcessor:
                 # 无有效信息，复制原图
                 shutil.copy2(img_path, out_path)
 
-            # 去重和排序
-            return sorted(set(found_pids))
+            return found_pids
 
         except Exception as e:
             logger.error(f"[Vision] Failed to process {img_path.name}: {e}")
