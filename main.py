@@ -85,7 +85,7 @@ def main():
     else:
         logger.info("Step 5: Generating report json...")
 
-        cache_file = paths["root"].with_name("report_intermediate.json")
+        cache_file = paths["root"].joinpath('report_intermediate.json')
         generator = ContentGenerator(
             patent_data=patent_data, 
             parts_db=parts_db, 
@@ -106,7 +106,7 @@ def main():
         logger.info("Step 6: Generating search strategy json...")
         
         # 初始化生成器
-        cache_file = paths["root"].with_name("search_strategy_intermediate.json")
+        cache_file = paths["root"].joinpath("search_strategy_intermediate.json")
         search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
         
         # 执行生成
