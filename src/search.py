@@ -1,14 +1,19 @@
 import concurrent.futures
+from pathlib import Path
 from typing import Dict, Any, List
 from loguru import logger
-from src.llm import get_llm_service
+from src.utils.llm import get_llm_service
+from src.utils.cache import StepCache
 from config import settings
 
 class SearchStrategyGenerator:
-    def __init__(self, patent_data: Dict, report_data: Dict):
+    def __init__(self, patent_data: Dict, report_data: Dict, cache_file: Path = None):
         self.llm_service = get_llm_service()
         self.patent_data = patent_data
         self.report_data = report_data
+
+        # 初始化缓存管理器
+        self.cache = StepCache(cache_file) if cache_file else None
 
         self.base_ipcs = self.patent_data.get("bibliographic_data", {}).get("ipc_classifications", [])
 
@@ -22,50 +27,63 @@ class SearchStrategyGenerator:
         search_matrix = []
         strategy_plan = {"strategies": []}
 
-        try:
-            # Stage 1: 检索要素表 (Search Matrix) - 深度扩展
+        # Stage 1: 检索要素表 (Search Matrix) - 深度扩展
+        def _execute_stage1():
             matrix_context = self._build_matrix_context()
-            search_matrix = self._build_search_matrix(matrix_context)
+            return self._build_search_matrix(matrix_context)
 
-            if not search_matrix:
-                logger.warning("Search Matrix generation returned empty.")
-            
-            try:
-                if search_matrix:
-                    # Stage 2: 检索式构建 (Query Formulation) - 分库分治
-                    query_context = self._build_query_context(search_matrix)
-                    
-                    # 使用 ThreadPoolExecutor 进行并行调用
-                    # max_workers=3 对应三个独立的数据库策略生成任务
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                        logger.info("启动并行任务生成各库检索策略...")
-                        
-                        # 提交任务
-                        future_cntxt = executor.submit(self._generate_cntxt_strategies, query_context)
-                        future_ven = executor.submit(self._generate_ven_strategies, query_context)
-                        future_npl = executor.submit(self._generate_npl_strategies, query_context)
-
-                        # 获取结果 (result() 会阻塞直到任务完成)
-                        # 注意：这里按顺序获取结果，以保证最终列表的顺序符合逻辑 (CNTXT -> VEN -> NPL)
-                        cntxt_strategies = future_cntxt.result()
-                        ven_strategies = future_ven.result()
-                        npl_strategies = future_npl.result()
-
-                    # 合并所有策略
-                    combined_strategies = self._merge_strategies(
-                        cntxt_strategies, 
-                        ven_strategies, 
-                        npl_strategies
-                    )
-                    
-                    # 包装为最终对象
-                    strategy_plan = {"strategies": combined_strategies}
-
-            except Exception as e_stage2:
-                logger.error(f"Stage 2 Query generation failed: {e_stage2}")
+        # 使用通用方法运行 Step 1
+        search_matrix = self.cache.run_step("step1_matrix", _execute_stage1, default=[])
         
-        except Exception as e_stage1:
-            logger.error(f"Stage 1 Matrix generation failed: {e_stage1}")
+        if not search_matrix:
+            logger.warning("Search Matrix 为空，后续策略生成可能受限。")
+        
+        # Stage 2: 检索式构建 (Query Formulation) - 分库分治
+        query_context = self._build_query_context(search_matrix)
+
+        # 定义任务映射
+        tasks_map = {
+            "step2_cntxt": self._generate_cntxt_strategies,
+            "step2_ven": self._generate_ven_strategies,
+            "step2_npl": self._generate_npl_strategies
+        }
+
+        results_map = {}
+        futures_map = {}
+        
+        # 使用 ThreadPoolExecutor 进行并行调用
+        # max_workers=3 对应三个独立的数据库策略生成任务
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            for key, func in tasks_map.items():
+                if self.cache.get(key):
+                    logger.info(f"Step [{key}]: 跳过 (命中缓存)")
+                    results_map[key] = self.cache.get(key)
+                else:
+                    logger.info(f"Step [{key}]: 提交并行任务...")
+                    # 提交任务
+                    futures_map[executor.submit(func, query_context)] = key
+
+            # 2. 等待并行任务完成并保存缓存
+            for future in concurrent.futures.as_completed(futures_map):
+                key = futures_map[future]
+                try:
+                    res = future.result()
+                    results_map[key] = res
+                    # 线程安全地写入缓存
+                    self.cache.save(key, res)
+                except Exception as e:
+                    logger.error(f"Step [{key}] failed: {e}")
+                    results_map[key] = []
+
+        # 合并所有策略
+        combined_strategies = self._merge_strategies(
+            results_map.get("step2_cntxt", []),
+            results_map.get("step2_ven", []),
+            results_map.get("step2_npl", [])
+        )
+        
+        # 包装为最终对象
+        strategy_plan = {"strategies": combined_strategies}
 
         self._inject_semantic_strategy(strategy_plan)
 

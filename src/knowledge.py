@@ -1,6 +1,6 @@
 from typing import Dict
 from loguru import logger
-from src.llm import get_llm_service
+from src.utils.llm import get_llm_service
 from config import Settings
 
 class KnowledgeExtractor:

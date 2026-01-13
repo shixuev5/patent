@@ -11,7 +11,7 @@ from paddleocr import PaddleOCR
 from tqdm import tqdm
 from config import settings
 from loguru import logger
-from src.llm import get_llm_service
+from src.utils.llm import get_llm_service
 
 ocr_engine = PaddleOCR(
     text_detection_model_name="PP-OCRv5_server_det",
