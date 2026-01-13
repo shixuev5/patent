@@ -65,7 +65,7 @@ class DrawingResource(BaseModel):
     """附图资源引用"""
     file_path: str = Field(..., description="附图的图片链接")
     figure_label: str = Field(..., description="图号标签（如'图1'），从图片下方文字或附图说明中提取")
-    caption: Optional[str] = Field(None, description="图的文字解释。必须去除开头的图号（如'图1'）及连接词（如'是'、'为'），只保留描述内容")
+    caption: Optional[str] = Field(None, description="图的文字解释。必须去除开头的图号（如“图1”）及紧跟图号的谓语动词或连接词（包括但不限于：“为”、“是”、“示出”、“示出了”、“显示”、“表示”、“：”），只保留描述内容。")
 
 class PatentDocument(BaseModel):
     """
