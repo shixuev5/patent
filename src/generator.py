@@ -571,7 +571,10 @@ class ContentGenerator:
                 temp_desc_list = []
 
                 # 去重并升序排列
-                part_ids = sorted(set(part_ids))
+                def natural_key(string_):
+                    return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_)]
+
+                part_ids = sorted(set(part_ids), key=natural_key)
 
                 for pid in part_ids:
                     # 兼容 pid 是 int 或 str 的情况
