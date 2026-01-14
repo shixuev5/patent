@@ -168,8 +168,11 @@ class SearchStrategyGenerator:
         
         [IPC参考] {', '.join(self.base_ipcs[:3])}
 
-        [技术领域 (Subject - Block A)]
+        [技术领域 (Subject - Block A 宽泛背景)]
         {report.get('technical_field', '未定义')}
+
+        [保护主题 (Subject - Block A 核心定义)]
+        {report.get("claim_subject_matter", "未定义")}
 
         [技术问题 (Problem)]
         {report.get('technical_problem', '未定义')}
@@ -250,32 +253,44 @@ class SearchStrategyGenerator:
 
         ### 你的核心任务：
         请采用 **ABC 块检索策略 (Block Search Strategy)** 提取 4-6 个核心检索要素：
-        1.  **Block A - 技术领域 (Subject)**: 确定本发明的基础产品或应用场景（如“无人机”、“显示面板”）。
-        2.  **Block B - 核心创新点 (Key Features)**: **这是最重要的部分**。基于上下文中的“核心区别特征”，提取具体的结构或方法步骤。
-        3.  **Block C - 功能/效果/修饰 (Functional)**: 提取关键的技术效果或解决的问题（如“散热”、“防滑”），用于限定检索范围。
+        1.  **Block A - 技术领域 (Subject)**: (1-2 个) 
+            - **首选来源**：参考上下文中的 **[保护主题]**，确定最准确的基础产品名称或方法载体（如“显示面板”、“图像处理方法”）。
+            - **次选来源**：参考 **[技术领域]** 获取更宽泛的应用场景。
+        2.  **Block B - 核心创新点 (Key Features)**: (2-3 个, **核心**) 必须源于“核心区别特征”。关注具体的结构构造、材料组分或独特的方法步骤。
+        3.  **Block C - 功能/效果/修饰 (Functional)**: (1-2 个) 提取关键的技术效果（如“散热”）或功能限定（如“可拆卸”）。
 
         ### 扩展原则 (Expansion Rules)：
         对于每个提取的要素，必须进行全方位的“检索语言翻译”：
+        
         1.  **中文扩展 (CN)**:
-            - 同义词/近义词 (Synonyms)
-            - 上位概念 (Hypernyms): 用于防止漏检（如 用“紧固件”扩展“螺钉”）。
-            - 变换表达: 结构特征需考虑功能性描述（如“无摩擦”可能描述为“磁悬浮”）。
-        2.  **英文扩展 (EN - Critical)**:
-            - 使用 **Patentese (专利法律英语)**。
-            - 包含美式/英式拼写 (fiber/fibre)。
-            - 必须使用**截词符** (Stemming): 如 `comput+`, `absorb+`, `anti-skid`。
+            - 语域转换 (关键): 必须同时覆盖 **口语/俗称** (如“手机”、“猫眼”) 和 **专利法律/学术术语** (如“移动终端”、“光电窥孔”、“图像采集装置”)。
+            - 缩略语与全称: 包含常见的中文简称及混合写法 (如“无人机” <-> “UAV” <-> “无人驾驶飞行器”)。
+            - 结构-功能互换: 
+                - 若是结构词，扩展其功能描述 (如“弹簧” -> “弹性件”、“偏置部件”)。
+                - 若是功能词，扩展其常见实现载体 (如“显示” -> “屏幕”、“面板”、“显示器”)。
+            - 适度上位化: 仅扩展至**本领域通用**的上位概念，禁止无限泛化 (如“锂电池”可扩展为“二次电池”，但不可扩展为“能源设备”)。
+        2.  **英文扩展 (EN)**:
+            - 使用 **Patentese (专利法律英语)**。如 `plurality`, `configured to`, `assembly`, `means` 等专业表达。
+            - 强制使用截词符: 如 `sensor+` (涵盖 sensors, sensory), `configur+`。
+            - 词性变化: 动词/名词形式必须同时包含 (e.g., `mix+` for mixing, mixer, mixture)。
+            - 美式/英式拼写: 如 `colo?r`, `alumini?um` (若支持正则) 或列出两种拼写。
         3.  **分类号 (IPC/CPC)**:
-            - 仅在置信度极高时提供精确到小组的分类号（如 `H01M 10/0525`）。
-            - 如果不确定，请基于“IPC参考”字段给出大组（Main Group）。
+            - 维度区分:
+                - 对于 **Block A (技术领域)**: 提供 **应用类** 分类号 (如: 车辆 B60)。
+                - 对于 **Block B/C (功能部件)**: 提供 **功能类** 分类号 (如: 电池 H01M, 数据处理 G06F)。
+            - 精度控制:
+                - 默认级别：**大组 (Main Group)** (如 `H01M 10/00`)。
+                - 仅当且仅当上下文中有明确的具体技术术语（如“锂离子”）时，才精确到 **小组 (Subgroup)** (如 `H01M 10/0525`)。
+            - 格式: 严格使用标准格式，包含斜杠和空格 (如 `G06F 17/30`, `H04W 72/04`)。
 
-        ### 输出格式 (JSON List Only):
-        严格输出 JSON 列表，禁止 Markdown 代码块标记：
+        ### 输出格式 (JSON List Only)
+        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         [
           {
             "concept_key": "核心概念词 (如: 柔性屏幕)",
             "role": "KeyFeature",           // 选项: Subject, KeyFeature, Functional
             "feature_type": "Apparatus",    // 选项: Apparatus (侧重名词), Method (侧重动词)
-            "zh_expand": ["柔性屏幕", "柔性显示器", "可折叠屏", "柔性面板"], 
+            "zh_expand": ["柔性屏幕", "柔性显示器", "可折叠屏", "柔性面板", "AMOLED"], 
             "en_expand": ["flex+ screen", "flex+ display", "foldable panel", "bendable display"],
             "ipc_cpc_ref": ["G09F 9/30"]
           },
@@ -379,8 +394,8 @@ class SearchStrategyGenerator:
             - **语法**: `((Block A 扩展) S (Block C 扩展)) AND (IPC)/IPC`
             - *场景*: 用“吸震”代替“橡胶垫”进行检索。
 
-        ### 输出格式 (JSON Only)
-        必须返回合法的 JSON 格式，不要包含 Markdown 标记。结构如下：
+        ### 输出格式 (JSON List Only)
+        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         [
             {
                 "name": "追踪检索",
@@ -484,7 +499,7 @@ class SearchStrategyGenerator:
             -   *语法*: `((Block A EN_Terms) AND (Block C EN_Terms))/TI/AB/CLM`
 
         ### 输出格式 (JSON List Only)
-        必须返回 JSON 列表，结构如下：
+        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         [
             {
                 "name": "追踪检索",
@@ -599,7 +614,7 @@ class SearchStrategyGenerator:
             - Query: `(Block A) AND (Block C)` (重点关注综述 Review 类文章)。
 
         ### 输出格式 (JSON List Only)
-        必须返回 JSON 列表，结构如下：
+        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         [
             {
                 "name": "NPL 非专利检索",
