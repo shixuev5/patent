@@ -69,7 +69,7 @@ class ContentGenerator:
 
             # === Step 3: 权利要求解构与特征定义 ===
             # 输入：核心逻辑、全部权利要求
-            # 输出：technical_features
+            # 输出：claim_subject_matter、technical_features
             features_data = self.cache.run_step(
                 "step3_features", 
                 self._extract_features, 
@@ -112,11 +112,12 @@ class ContentGenerator:
                 "abstract_figure": main_fig.replace('images', 'annotated_images')  if main_fig else None,
                 
                 # 核心逻辑六要素
-                "technical_field": domain_problem_data.get("technical_field"),              # 技术领域     
+                "technical_field": domain_problem_data.get("technical_field"),              # 技术领域
+                "claim_subject_matter": features_data.get("claim_subject_matter", ""),      # 保护主题
                 "technical_problem": domain_problem_data.get("technical_problem"),          # 技术问题
                 "technical_scheme": solution_data.get("technical_scheme"),                  # 技术方案
                 "technical_means": verification_data.get("technical_means"),                # 技术手段
-                "technical_features": features_data.get("technical_features", []),      # 技术特征
+                "technical_features": features_data.get("technical_features", []),          # 技术特征
                 "technical_effects": verification_data.get("technical_effects", []),        # 技术效果
                 
                 # 图解详细信息
@@ -330,24 +331,35 @@ class ContentGenerator:
         system_prompt = """
         你是一名资深的专利实质审查员（Patent Examiner）。
         你的核心任务是基于‘三步法’（Problem-Solution Approach）对权利要求书进行解构。
-        你需要精准识别出哪些是现有的‘前序特征’，哪些是真正承载发明点的‘区别技术特征’。
+        你需要精准识别出权利要求的“保护主题”，并区分哪些是现有的‘前序特征’，哪些是真正承载发明点的‘区别技术特征’。
 
         # 分析指令 (Step-by-Step Reasoning)
         请严格遵循以下思维路径对用户提供的【审查背景】和【权利要求书】进行分析：
 
-        ### Step 1: 锁定独立权利要求 (Scope Definition)
+        ### Step 1: 提取保护主题 (Subject Matter Extraction)
+        - **目标**：从独立权利要求（通常是 Claim 1）的开头，提取该发明保护的核心产品或方法名称。
+        - **位置**：通常位于 "一种..." 之后，"其特征在于..." 之前。
+        - **处理规则**：
+            1. 去除通用的量词前缀（如“一种”）。
+            2. 保留完整的技术定语（如“矿用救援WSN节点...”）。
+        - **对应关系**：这是检索策略中的 **Block A (核心产品)**。
+        - **示例**：
+            - 原文："一种基于深度学习的图像处理方法，其特征在于..." -> 提取："基于深度学习的图像处理方法"
+            - 原文："一种矿用救援WSN节点抗灾变性能测试系统，其特征在于..." -> 提取："矿用救援WSN节点抗灾变性能测试系统"
+
+        ### Step 2: 锁定独立权利要求 (Scope Definition)
         - 找到编号最小的独立权利要求（通常是 Claim 1）。
-        - **范围界定**：以“其特征在于/characterized in that”为界。
-            - 之前的特征默认为“前序特征”（除非该特征显然是本发明的核心改进点，属于撰写错误）。
-            - 之后的特征默认为“特征部分”。
+        - **界定边界**：以“其特征在于/characterized in that”为界。
+            - 之前的特征默认为“前序特征”（Preamble）。
+            - 之后的特征默认为“特征部分”（Characterizing portion）。
         - **扩展扫描**：快速扫描从属权利要求。如果从属权中出现了**对核心技术问题有重大贡献**的具体参数、算法或结构细节，也应将其提取为独立特征。
 
-        ### Step 2: 粒度拆解与标准化 (Granularity & Normalization)
-        - 将长句拆解为独立的技术手段（Feature）。
+        ### Step 3: 粒度拆解与标准化 (Granularity & Normalization)
+        - **拆解**：将长难句拆解为单一的技术特征（Feature）。
         - **命名规范**：使用标准工程术语（如用“第一传动齿轮”代替“那个转动的轮子”）。
-        - **合并同类项**：如果 Claim 1 定义了上位概念（如“紧固件”），Claim 2 定义了下位概念（如“螺栓”），**优先保留下位概念**（如果它是解决问题的关键），或者保留上位概念并在描述中备注。
+        - **合并同类项**：如果 Claim 1 提到了“电机”，Claim 2 提到了“伺服电机”，且 Claim 2 是对 Claim 1 的具体化，在提取 Claim 1 特征时仅需提取“电机”。
 
-        ### Step 3: 属性判定 (Classification)
+        ### Step 4: 属性判定 (Classification)
         对每个提取的特征进行分类：
         - **is_distinguishing (是否区别特征)**:
             - 判定标准：
@@ -359,17 +371,15 @@ class ContentGenerator:
             - 如果特征首次出现在独立权 -> "independent"。
             - 如果特征仅作为对独立权的进一步限定出现在从属权 -> "dependent"。
 
-        ### Step 4: 负向过滤 (Negative Filter)
+        ### Step 5: 负向过滤 (Negative Filter)
         - 保留功能性限定结构（如“用于...的数据处理模块”、“配置为...的钩爪”）。这些是合法的技术特征。
         - 剔除非技术性的效果描述（如“为了通过测试”、“为了降低成本”），只保留“结构/步骤”。
         - 剔除无创造性的通用连接词（如“通过螺丝固定”）。
 
-        # 输出要求
-        1. 严格遵守 JSON 格式。
-        2. 在 `rationale` 字段中简要说明为什么你将其判定为 True 或 False。
-
-        # JSON Schema
+        ### 输出格式 (JSON Only)
+        必须严格输出标准的 JSON 对象，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         {
+            "claim_subject_matter": "提取的保护主题名称",
             "technical_features": [
                 {
                     "name": "特征名称",

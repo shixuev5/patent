@@ -78,6 +78,13 @@ class ReportRenderer:
 
         # --- 6 技术方案 ---
         lines.append("## 3. 技术方案概要")
+
+        # 优先展示保护主题，作为方案的定性描述
+        subject_matter = data.get("claim_subject_matter")
+        if subject_matter:
+            # 使用引用块或加粗形式，使其在视觉上区别于正文
+            lines.append(f"> **🛡️ 保护主题**：{subject_matter}\n")
+
         scheme = data.get("technical_scheme", "未提取到技术方案")
         lines.append(f"{scheme}\n")
 
