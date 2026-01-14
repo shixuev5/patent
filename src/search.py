@@ -156,19 +156,17 @@ class SearchStrategyGenerator:
 
         # 提取技术效果，用于构建功能性检索词
         effects = []
-        for e in report.get("technical_effects", [])[:5]: # 取前5个，避免过长
-            effect_desc = e.get('effect', '')
-            source_feat = e.get('source_feature_name', '整体方案')
-            f_type = e.get('feature_type', '')
+        for e in report.get("technical_effects", []):
+            if e.get("feature_type", "") == "Distinguishing Feature":
+                effect_desc = e.get('effect', '')
+                source_feat = e.get('source_feature_name', '整体方案')
 
-            type_tag = "[核心]" if f_type == "Distinguishing Feature" else "[细节]"
-
-            effects.append(f"- {type_tag} {effect_desc} (源于: {source_feat})")
+                effects.append(f"- 【核心效果】{effect_desc} (源于: {source_feat})")
 
         return f"""
         [发明名称] {biblio.get('invention_title')}
         
-        [IPC参考] {', '.join(self.base_ipcs[:5])}
+        [IPC参考] {', '.join(self.base_ipcs[:3])}
 
         [技术领域 (Subject - Block A)]
         {report.get('technical_field', '未定义')}
@@ -454,7 +452,8 @@ class SearchStrategyGenerator:
 
         ### 策略生成任务 (Step-by-Step)
 
-        #### 1. [Trace] 申请人/发明人追踪
+        #### 1. [Trace] 追踪检索
+        -   **场景**: 申请人/发明人追踪。
         -   **难点**: 中文名在海外通常使用拼音，或特定的英文商号。
         -   **动作**:
             -   将中文名转换为 **拼音 (Pinyin)**。
@@ -474,7 +473,7 @@ class SearchStrategyGenerator:
             -   利用 `P` 算符模拟实施例段落。
             -   *语法*: `((Block A EN_Terms) P (Block B EN_Terms) P (Block C EN_Terms))/DESC`
 
-        #### 3. [Expansion] 扩展检索 (Block B + CPC/IPC)
+        #### 3. [Expansion] 扩展检索 (Block B/C + CPC/IPC)
         -   **场景**: Y类文献（创造性）及跨领域搜索。
         -   **策略 3.1: 核心特征跨类 (Broad Class)**:
             -   忽略 Block A (主语)，仅搜索 Block B (特征) + 分类号。
@@ -493,7 +492,7 @@ class SearchStrategyGenerator:
                 "queries": [
                     { 
                         "db": "VEN", 
-                        "step": "Assignee_Trace", 
+                        "step": "申请人与发明人组合追踪", 
                         "query": "PA=(Huawei OR Hua Wei) AND IN=(Ren Zhengfei)" 
                     }
                 ]
@@ -504,12 +503,12 @@ class SearchStrategyGenerator:
                 "queries": [
                     { 
                         "db": "VEN", 
-                        "step": "Claim_Structure_S",
+                        "step": "权利要求同句检索(S算符)",
                         "query": "((piston+ S groove+) S (seal+))/CLM" 
                     },
                     { 
                         "db": "VEN", 
-                        "step": "TI_AB_KeyFeature",
+                        "step": "标题摘要特征组合",
                         "query": "((drone+ OR UAV) AND (fold+ S wing+))/TI/AB" 
                     }
                 ]
@@ -520,7 +519,7 @@ class SearchStrategyGenerator:
                 "queries": [
                     {
                         "db": "VEN",
-                        "step": "Broad_CPC_Search",
+                        "step": "核心特征加分类号跨类搜索",
                         "query": "((unique_feature+) AND (B64C))/IPC"
                     }
                 ]
@@ -541,12 +540,12 @@ class SearchStrategyGenerator:
     def _generate_npl_strategies(self, context: str) -> List[Dict]:
         """
         Step 2.3: 生成 NPL 非专利文献策略
-        侧重：学术术语翻译、去专利化、CNKI/IEEE/Scholar 专用语法
+        侧重：学术术语翻译、去专利化、CNKI/Scholar 专用语法
         """
         logger.info("[SearchAgent] Generating NPL Strategies...")
 
         system_prompt = """
-        你是一位 **CNKI / IEEE / Google Scholar 的资深学术检索专家**。
+        你是一位 **CNKI / Google Scholar 的资深学术检索专家**。
         你的任务是将专利检索要素（Building Blocks）“翻译”为学术检索式。
 
         ### 输入数据说明 (积木定义)
@@ -566,11 +565,10 @@ class SearchStrategyGenerator:
             - "Conductive material" -> "Graphene", "CNT", "Ag Nanowire".
 
         ### 数据库语法规范
-        1. **结构化数据库 (CNKI, WanFang, IEEE, ACM)**:
+        1. **结构化数据库 (CNKI, WanFang)**:
             - 支持布尔逻辑 (`AND`, `OR`).
             - 字段: `TI` (篇名), `KY`/`KW` (关键词), `AB` (摘要).
             - *CNKI语法*: `TI=('词A' * '词B')` (注: * 表示 AND).
-            - *IEEE语法*: `("Document Title":"Term A" AND "Document Title":"Term B")`.
         2. **非结构化引擎 (Google Scholar)**:
             - **不支持** `TI=` 或 `KY=`.
             - 使用自然语言关键词组合。
@@ -584,14 +582,13 @@ class SearchStrategyGenerator:
         - **组合**: **Block A (学术词)** + **Block B (学术词)**。
         - **策略**: 
             - CNKI: `TI=(Block A * Block B)`
-            - IEEE: `("Document Title":Block A AND "Document Title":Block B)`
             - Scholar: `intitle:"Block B" "Block A"` (Block B 更重要，放前面)
 
         #### 2. [Algo/Material] 算法或材料专项检索
         - **目标**: 针对 Block B 是具体算法或材料的情况，忽略应用场景，查原理性文献。
         - **组合**: **Block B (具体的算法名/化学式)**。
         - **策略**:
-            - CNKI/IEEE: `KY=(Block B Extended)` (搜关键词字段)
+            - CNKI: `KY=(Block B Extended)` (搜关键词字段)
             - Scholar: `"Specific Algorithm Name" OR "Specific Material"`
 
         #### 3. [Problem/Solution] 问题导向检索
@@ -612,11 +609,6 @@ class SearchStrategyGenerator:
                         "db": "CNKI", 
                         "step": "题名精准(学术词)", 
                         "query": "TI=('无人机' + 'UAV') * ('卡尔曼滤波' + 'Kalman Filter')" 
-                    },
-                    { 
-                        "db": "IEEE/ACM", 
-                        "step": "Title Focus (Specific Algo)", 
-                        "query": "(\"Document Title\":\"UAV\") AND (\"Document Title\":\"SLAM\")" 
                     },
                     { 
                         "db": "Google Scholar", 
