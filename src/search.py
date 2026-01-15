@@ -130,61 +130,83 @@ class SearchStrategyGenerator:
 
     def _build_matrix_context(self) -> str:
         """
-        阶段一上下文：构建全维度的技术理解环境
-        引入“技术三要素”和“区别特征”的详细描述，为检索要素提取提供上下文。
+        阶段一上下文：构建全维度的技术理解环境 (基于 TCS 评分分级)
+        将 Step 4 的评分结果直接映射为检索块 (Block B/C)，指导检索策略生成。
         """
         biblio = self.patent_data.get("bibliographic_data", {})
         report = self.report_data
         
-        # 提取区别特征，并附带类型（装置/方法）和描述，这对关键词扩展至关重要
-        # 专家思路：如果是装置特征，侧重结构名词；如果是方法特征，侧重动作动词。
-        distinguishing_features = []
-        for f in report.get("technical_features", []):
-            if f.get("is_distinguishing", False) is True:
-                f_name = f.get("name", "未命名特征")
-                f_desc = f.get("description", "无描述")
-                f_rationale = f.get("rationale", "无详细依据")
-                f_source = f.get("claim_source", "unknown")
-                
-                # 格式构建：[名称] (来源) -> 描述 -> 核心依据
-                feature_str = (
-                    f"- 【核心特征】{f_name} ({f_source})\n"
-                    f"   描述: {f_desc}\n"
-                    f"   地位: {f_rationale}"
-                )
-                distinguishing_features.append(feature_str)
+        # 1. 建立特征详细信息查询表 (Feature Lookup Map)
+        feature_details = {
+            f.get("name", "").strip(): f 
+            for f in report.get("technical_features", [])
+        }
 
-        # 提取技术效果，用于构建功能性检索词
-        effects = []
+        # 2. 基于 TCS 评分对特征进行桶排序 (Bucket Sort by Score)
+        # 逻辑：一个特征可能贡献多个效果，取其最高得分作为定位依据
+        feature_max_scores = {} # {feature_name: max_score}
+        
+        for effect in report.get("technical_effects", []):
+            score = effect.get("tcs_score", 0)
+            contributors = effect.get("contributing_features", [])
+            
+            for feat_name in contributors:
+                feat_name = str(feat_name).strip()
+                current_max = feature_max_scores.get(feat_name, 0)
+                if score > current_max:
+                    feature_max_scores[feat_name] = score
+
+        # 3. 构建分块内容列表
+        block_b_content = [] # Score 5 (Vital)
+        block_c_content = [] # Score 4 (Enabler) & 3 (Improver)
+        block_a_candidates = [] # Score < 3 or Subject Matter
+
+        # --- 基于 TCS 评分的精确逻辑 ---
+        for feat_name, info in feature_details.items():
+            score = feature_max_scores.get(feat_name, 0)
+            desc = info.get("description", "无描述")
+            
+            # 格式: [名称] - [描述] (TCS Score: X)
+            entry = f"- {feat_name}: {desc} (TCS Score: {score})"
+
+            if score >= 5:
+                block_b_content.append(entry)
+            elif score >= 3:
+                block_c_content.append(entry)
+            else:
+                block_a_candidates.append(entry)
+
+        # 4. 提取效果描述 (用于 Block C 的补充)
+        effects_summary = []
         for e in report.get("technical_effects", []):
-            if e.get("feature_type", "") == "Distinguishing Feature":
-                effect_desc = e.get('effect', '')
-                source_feat = e.get('source_feature_name', '整体方案')
-
-                effects.append(f"- 【核心效果】{effect_desc} (源于: {source_feat})")
+            score = e.get("tcs_score", 0)
+            if score >= 3: # 只关注有价值的效果
+                effects_summary.append(f"- [Score {score}] {e.get('effect')} (源于: {e.get('contributing_features')})")
 
         return f"""
         [发明名称] {biblio.get('invention_title')}
-        
         [IPC参考] {', '.join(self.base_ipcs[:3])}
 
-        [技术领域 (Subject - Block A 宽泛背景)]
-        {report.get('technical_field', '未定义')}
-
-        [保护主题 (Subject - Block A 核心定义)]
+        === 1. Block A: 技术领域 (Subject) ===
+        [保护主题 (检索主语)]
         {report.get("claim_subject_matter", "未定义")}
+        
+        [背景/通用特征 (仅作参考)]
+        {chr(10).join(block_a_candidates[:5])}
 
-        [技术问题 (Problem)]
-        {report.get('technical_problem', '未定义')}
+        === 2. Block B: 核心创新点 (Key Features - Vital) ===
+        *** TCS Score 5分特征 (必须作为核心检索词) ***
+        {chr(10).join(block_b_content) if block_b_content else "（未识别到5分特征，请从技术手段中提取）"}
 
-        [技术手段 (Solution Overview)]
+        === 3. Block C: 功能与限定 (Functional - Enabler/Improver) ===
+        *** TCS Score 3-4分特征 (作为限定条件或降噪词) ***
+        {chr(10).join(block_c_content)}
+
+        [预期技术效果 (Effects)]
+        {chr(10).join(effects_summary)}
+        
+        === 4. 整体技术手段综述 ===
         {report.get('technical_means', '未定义')}
-
-        [核心区别特征 (Key Features - Block B - 检索重点)]
-        {chr(10).join(distinguishing_features)}
-
-        [预期技术效果 (Effects - Block C - 辅助筛选)]
-        {chr(10).join(effects)}
         """
     
     def _build_query_context(self, matrix: List[Dict]) -> str:
@@ -246,18 +268,26 @@ class SearchStrategyGenerator:
         """
         阶段一：基于专家策略构建检索要素表 (Search Matrix)
         """
-        logger.info("[SearchAgent] Step 1: Building Search Matrix with Expert Strategy...")
+        logger.info("[SearchAgent] Step 1: Building Search Matrix with TCS-Guided Strategy...")
         
         system_prompt = """
-        你是一位拥有 20 年经验的专利检索专家。请基于提供的技术交底信息，拆解技术方案并构建**检索要素表（Search Matrix）**。
+        你是一位拥有 20 年经验的专利检索专家。请基于提供的**经过 TCS (技术贡献评分) 预处理**的技术交底信息，拆解技术方案并构建**检索要素表（Search Matrix）**。
 
-        ### 你的核心任务：
-        请采用 **ABC 块检索策略 (Block Search Strategy)** 提取 4-6 个核心检索要素：
-        1.  **Block A - 技术领域 (Subject)**: (1-2 个) 
-            - **首选来源**：参考上下文中的 **[保护主题]**，确定最准确的基础产品名称或方法载体（如“显示面板”、“图像处理方法”）。
-            - **次选来源**：参考 **[技术领域]** 获取更宽泛的应用场景。
-        2.  **Block B - 核心创新点 (Key Features)**: (2-3 个, **核心**) 必须源于“核心区别特征”。关注具体的结构构造、材料组分或独特的方法步骤。
-        3.  **Block C - 功能/效果/修饰 (Functional)**: (1-2 个) 提取关键的技术效果（如“散热”）或功能限定（如“可拆卸”）。
+        ### 核心任务：ABC 映射 (基于输入上下文的评分)
+        输入信息已经将特征按 TCS 分数进行了分组，请严格遵循以下映射逻辑提取 4-6 个检索要素：
+
+        1.  **Block A - 技术领域 (Subject)**: (1 个) 
+            - **来源**: 直接提取上下文中的 **[保护主题]**。
+            - **作用**: 检索式的主语（基础产品）。
+            
+        2.  **Block B - 核心创新点 (Key Features)**: (2-3 个, **最高优先级**) 
+            - **来源**: 必须且只能来自上下文的 **[Block B: 核心创新点 (Score 5)]** 区域。
+            - **指令**: 忽略所有 TCS Score < 5 的特征，除非 Block B 为空。
+            - **定义**: 这是区别于现有技术的根本特征。如果 Block B 为空，请从 Block C 中提拔得分最高的特征。
+            
+        3.  **Block C - 功能/效果/修饰 (Functional)**: (1-2 个) 
+            - **来源**: 优先从 **[Block C (Score 3-4)]** 中提取。
+            - **指令**: 选择那些能解释 Block B "为什么能起作用" 的关键参数或效果（如“db02小波”、“Shannon熵”）。
 
         ### 扩展原则 (Expansion Rules)：
         对于每个提取的要素，必须进行全方位的“检索语言翻译”：
@@ -288,7 +318,7 @@ class SearchStrategyGenerator:
         [
           {
             "concept_key": "核心概念词 (如: 柔性屏幕)",
-            "role": "KeyFeature",           // 选项: Subject, KeyFeature, Functional
+            "role": "KeyFeature",           // 必须准确对应: Subject, KeyFeature (对应 Block B), Functional (对应 Block C)
             "feature_type": "Apparatus",    // 选项: Apparatus (侧重名词), Method (侧重动词)
             "zh_expand": ["柔性屏幕", "柔性显示器", "可折叠屏", "柔性面板", "AMOLED"], 
             "en_expand": ["flex+ screen", "flex+ display", "foldable panel", "bendable display"],

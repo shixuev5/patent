@@ -386,7 +386,7 @@ class ContentGenerator:
                     "description": "原文中的定义描述",
                     "is_distinguishing": true,
                     "claim_source": "independent",
-                    "rationale": "简短的判定理由，辅助逻辑自检"
+                    "rationale": "必须遵循格式：'[Claim X] <位置标记> - <逻辑判定>'。\n1. [Claim X]: 指明来源权利要求编号。\n2. <位置标记>: 标记为 '前序部分'、'特征部分' 或 '从属限定'。\n3. <逻辑判定>: 说明该特征是否贡献于解决【待解决的技术问题】，或是否为公知常识。"
                 }
             ]
         }
@@ -409,127 +409,123 @@ class ContentGenerator:
             ],
             temperature=0.0 # 保持零温度，追求最严谨的逻辑
         )
-    
+
     def _verify_evidence(self, core_logic: Dict[str, Any], feature_list: List[Dict]) -> Dict[str, Any]:
         """
-        Step 4: 证据挖掘。
-        目标：基于已定义的特征，去实施例中找证据，并解释机理。
+        Step 4: TCS 贡献度评分与证据验证
+        目标：基于 TCS 模型，建立【特征-原理-效果-证据】的闭环验证体系。
         """
-        logger.debug("Step 4: Mining evidence from embodiments...")
+        logger.debug("Step 4: Running TCS Analysis (Deep Evidence Verification)...")
 
-        # --- 将特征列表格式化为 Markdown 表格，便于 LLM 阅读 ---
-        header = "| 特征名称 (name) | 是否区别特征 | 权利要求来源 |"
-        separator = "| :--- | :--- | :--- |"
-        rows = []
+        # 1. 预处理特征列表，供 LLM 选词 (避免 LLM 编造特征名称)
+        # 格式：[ID] 特征名称 (来源)
+        feature_menu = []
         for f in feature_list:
-            # 防止名称中包含 '|' 破坏表格结构
-            safe_name = str(f.get('name', '')).replace('|', '\\|')
-            # 确保布尔值转为字符串显示，或者使用 'True'/'False'
-            is_dist = str(f.get('is_distinguishing', False))
-            claim_src = str(f.get('claim_source', ''))
-            rows.append(f"| {safe_name} | {is_dist} | {claim_src} |")
+            name = f.get('name', 'unknown').strip()
+            # 标记是否为区别特征，引导模型重点关注
+            status = "★区别特征" if f.get('is_distinguishing') else "前序/通用特征"
+            feature_menu.append(f"- {name} [{status}]")
         
-        features_context = "\n".join([header, separator] + rows)
-        # -----------------------------------------------------------
+        feature_menu_str = "\n".join(feature_menu)
 
         system_prompt = """
-        你是一名精通技术验证的法医级分析师。你的任务是将‘声称的技术效果’与‘实施例中的客观证据’进行对账。
-        你需要解释技术机理，并用数据说话，验证方案的可行性。
+        你是一名以“技术深度”和“逻辑严谨”著称的高级专利审查员。
+        你的任务是基于**TCS（技术贡献评分）模型**和**第一性原理**，对专利方案进行深度剖析。
 
-        # 分析任务 (Analysis Tasks)
+        # 任务一：揭示技术机理 (The "Black Box" Revelation)
+        **字段**: `technical_means`
+        **指令**：请撰写一段约 200 字的深度技术综述，揭示该发明**“如何从根本上起作用”**。
+        **写作要求**：
+        1.  **拒绝表象**：不要写“A连接B，B连接C”。
+        2.  **第一性原理**：从物理学（受力、热传导）、信息论（熵、信噪比）、控制论（反馈、收敛）或化学（反应动力学）角度解释。
+        3.  **动态视图**：描述“流”（能量流、数据流、控制流）是如何在**★区别特征**之间流转，并最终化解【核心技术问题】的。
+        4.  **示例风格**：
+            *   *Bad:* "系统包含传感器和控制器，控制器接收信号。"
+            *   *Good:* "通过引入差分电容结构(区别特征)，将微小的机械位移转化为高信噪比的电信号，利用共模抑制原理消除环境噪声干扰(核心问题)，实现了微米级的动态测量。"
 
-        ### A. 技术机理深度解析 (technical_means)
-        - **目标**：解释 Why it works?
-        - **核心要求**：
-            1. 请撰写一段连贯的、符合工程逻辑的段落，解释**区别技术特征**是如何通过物理原理（力学、热学、电磁学等）协同工作，从而解决输入数据中指定的【待解决的技术问题】的。
-            2. **识别逻辑**：请关注表格中 **“是否区别特征”列为 True** 的那些特征。
-        - **注意**：对于前序部分（Preamble）的通用部件，除非它们参与了核心互动，否则无需详细解释。
-        - **风格**：逻辑严密，避免空洞的套话。
+        # 任务二：效果验证与 TCS 评分 (The Strict Audit)
+        **字段**: `technical_effects`
+        **指令**：对申请人声称的每一个效果进行“创造性审计”。
 
-        ### B. 效果归因与证据核查 (technical_effects)
-        - **核心逻辑**：Effect -> Caused by Feature -> Proven by Evidence.
-        - **排序规则 (CRITICAL)**：
-            必须严格按照**重要性递减**排序：
-            1.  **第一梯队（核心创新）**：表格中 **“是否区别特征”列为 True** 的特征带来的效果。这是证明创造性的关键。
-            2.  **第二梯队（具体优化）**：表格中 **“权利要求来源”列为 'dependent'** 的特征带来的进一步有益效果。
-            3.  **第三梯队（基础功能）**：表格中 **“是否区别特征”列为 False** 且 **“权利要求来源”列为 'independent'** (前序特征) 带来的基础效果。
+        #### 评分标准 (TCS Model 2.0 - 严苛版)
+        请像最挑剔的审查员一样打分，**严禁分数通胀**。
 
-        - **字段填写规范**：
-        - `effect`: 效果描述（如“降低了测试数据的方差”）。
-        - `source_feature_name`: **必须**完全匹配输入表格第一列的 `name`，禁止自造新词。
-        - `feature_type`: **严格基于表格列值判断**，禁止主观臆断。判断逻辑如下：
-            - 若 “是否区别特征”列为 `True` -> 填 "Distinguishing Feature" (区别特征)。
-            - 若 “是否区别特征”列为 `False` 且 “权利要求来源”列为 `independent` -> 填 "Preamble Feature" (前序特征)。
-            - 若 “权利要求来源”列为 `dependent` -> 填 "Dependent Feature" (从权特征)。
-        - `evidence`: **证据提取**。
-            - *优选*：定量数据（如“表2显示磨损量减少了30%”）。
-            - *次选*：定性描述（如“实施例中提到，相比于图1的现有技术，震动明显减弱”）。
-            - *若无*：填“仅有定性描述，无具体实验数据”。
+        - **5分 [核心/必要 (Vital)]**: 
+          *定义*：解决【核心技术问题】的“阿基米德支点”。
+          *判定*：如果移除这些特征，发明是否会立即退化为现有技术或完全失效？如果是，给5分。
+          *审查员内心戏*："这是本发明的灵魂，没有它，这个专利就不成立。"
 
-        # 输出要求
-        1. 严格遵守 JSON 格式。
-        2. 不输出 Markdown 标记。
+        - **4分 [关键使能 (Enabler)]**: 
+          *定义*：为了让 5分特征 落地而必须克服的技术障碍（二次问题）的解决方案。
+          *判定*：通常涉及兼容性、接口适配、或者特定场景下的可靠性保障。
+          *审查员内心戏*："虽然不是最核心的发明点，但没有这个支撑，核心构思只是空中楼阁。"
 
-        # JSON Schema
+        - **3分 [优化/有益 (Improver)]**: 
+          *定义*：非必要的改进。涉及成本、良率、便利性或非核心性能的提升。
+          *判定*：从属权利要求中的常见内容。
+          *审查员内心戏*："这只是锦上添花，或者是为了省钱/好用，换一种普通方式也能做。"
+
+        - **1-2分 [常规 (Generic)]**: 
+          *定义*：公知常识、标准件功能、或仅仅是自动化的必然结果。
+          *判定*：如“通过CPU计算提高速度”、“通过外壳保护内部”。
+          *审查员内心戏*："这也能算发明点？行业惯例而已。"
+
+        #### 验证逻辑 (Evidence & Rationale)
+        1.  **Contributing Features**: 
+            -   必须根据【特征菜单】中的逻辑关系选择特征。
+            -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 [★区别特征] 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
+            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含后面的 "[...]" 状态标记。
+            -   *示例*：菜单项 "- 自适应滤波算法 [★区别特征]" -> 输出应为 "自适应滤波算法"。
+        2.  **Evidence (实锤)**：
+            -   **一级证据（最佳）**：定位到具体的**实验数据对比**、图表（Figure X）或具体的**实施例参数**（如“温度控制在50-60度”）。
+            -   **二级证据（次之）**：具体的逻辑推演描述。
+            -   **无证据**：如果文中只有“具有...优点”的空话，填入“仅声称，无实施例支持”。
+        3.  **Rationale (逻辑链)**：
+            -   使用“特征 -> 机制 -> 效果”的句式。
+            -   例如：“双气室结构(特征)增加了气体膨胀路径(机制)，从而降低了排气噪音(效果)。”
+
+        # 输出格式 (JSON Only)
         {
-            "technical_means": "string",
+            "technical_means": "基于第一性原理的机理描述...",
             "technical_effects": [
-                { 
-                    "effect": "string", 
-                    "source_feature_name": "string", 
-                    "feature_type": "Distinguishing Feature" | "Preamble Feature" | "Dependent Feature", 
-                    "evidence": "string" 
+                {
+                    "effect": "精炼的效果描述",
+                    "tcs_score": 5,
+                    "contributing_features": ["特征A", "特征B"],
+                    "evidence": "实施例3：数据显示误报率从5%降至0.1%...",
+                    "rationale": "特征A建立了...机制，配合特征B的...作用，直接解决了..."
                 }
             ]
         }
         """
 
         user_content = f"""
-        # 1. 分析背景 (Context)
-        【待解决的技术问题】: {core_logic.get('technical_problem')}
-        【待验证的技术效果】: {self.text_effect}
+        # 1. 核心逻辑锚点 (Anchor)
+        【待解决的核心技术问题 (The Pain Point)】: {core_logic.get('technical_problem')}
+        【技术方案概览 (The Solution)】: {core_logic.get('technical_scheme')}
 
-        # 2. 特征列表约束 (Constraints)
-        **注意：后续分析必须严格基于下表中的“特征名称”列：**
-        {features_context}
+        # 2. 待验证的声称效果 (Claimed Effects)
+        {self.text_effect if self.text_effect else "（原文未集中描述效果，请基于下文实施例反推）"}
 
-        # 3. 证据库 (Source Material)
-        【具体实施方式 (Description of Embodiments)】: 
-        *** 请在以下文本中寻找证据 ***
-        {self.text_details[:8000]} 
+        # 3. 特征菜单 (Feature Menu - Strict Selection)
+        *** 必须从此列表中选择 contributing_features ***
+        {feature_menu_str}
+
+        # 4. 事实数据库 (Embodiments & Experiments)
+        *** 请在此区域挖掘一级证据 (数据/参数/具体行为) ***
+        {self.text_details[:12000]} 
         """
 
-        result = self.llm_service.chat_completion_json(
+        response = self.llm_service.chat_completion_json(
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
             ],
-            temperature=0.1
+            temperature=0.1 # 保持低温度以确保精准引用特征名称
         )
 
-        type_priority = {
-            "Distinguishing Feature": 3, # 最重要
-            "Dependent Feature": 2,      # 其次（因为可能含有具体的优选参数）
-            "Preamble Feature": 1        # 最不重要
-        }
-
-        # 容错：防止 LLM 返回非预期结构
-        effects_list = result.get("technical_effects", [])
-        if not isinstance(effects_list, list):
-            effects_list = []
-
-        effects_list.sort(
-            key=lambda x: (
-                type_priority.get(x.get("feature_type"), 0), 
-                len(x.get("evidence", ""))
-            ), 
-            reverse=True
-        )
-
-        result["technical_effects"] = effects_list
-        
-        return result
+        return response
         
     def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """
@@ -639,7 +635,18 @@ class ContentGenerator:
         生成单张图片的“看图说话”
         """
 
-        effects_str = "\n".join([f"- {e['effect']}: {e['source_feature_name']}" for e in global_context.get('effects', [])[:3]])
+        # 格式："- [效果描述] (实现手段: 特征A, 特征B)"
+        effects_list = global_context.get('effects', []) or []
+        formatted_effects = []
+        
+        for e in effects_list[:4]: # 只取前4个重要效果，避免Token过长
+            eff_text = e.get('effect', '未知效果')
+            feats = e.get('contributing_features', [])
+            feat_text = ", ".join(feats)
+            
+            formatted_effects.append(f"- {eff_text} (实现手段: {feat_text})")
+            
+        effects_str = "\n".join(formatted_effects)
 
         system_prompt = """
         # 角色设定
