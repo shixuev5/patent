@@ -105,36 +105,29 @@ class ReportRenderer:
                 x.get("claim_source", "") == "independent"
             ), reverse=True)
 
-            lines.append("### 关键技术特征")
+            lines.append("### 关键技术特征表")
             
-            # Markdown 表格头
-            lines.append("| 特征名称 | 详细描述 | 属性分类 | 判定理由 | 来源 |")
-            lines.append("| :--- | :--- | :---: | :--- | :---: |")
+            # Markdown 表格
+            lines.append("| 特征名称 | 属性 | 详细定义 | 判定理由 |")
+            lines.append("| :--- | :---: | :--- | :--- |")
             
             for feat in features:
                 name = feat.get("name", "-")
-                # 表格内不能有换行符，需替换为空格
-                desc = feat.get("description", "-").replace("\n", " ") 
+                desc = feat.get("description", "-").replace("\n", " ").replace("|", "/")
+                rationale = feat.get("rationale", "").replace("\n", " ").replace("|", "/")
                 
-                # 获取 rationale 并处理换行 ---
-                rationale = feat.get("rationale", "-").replace("\n", " ")
-                
-                # 视觉化属性
                 is_distinguishing = feat.get("is_distinguishing", False)
-                source_raw = feat.get("claim_source", "unknown")
+                source = feat.get("claim_source", "unknown")
 
-                # 判定显示属性
+                # 视觉标记
                 if is_distinguishing:
-                    attr_str = "🌟 区别特征"  # 核心创新点
-                elif "independent" in source_raw:
-                    attr_str = "⚪ 前序特征"  # 独权里的公知部分
+                    attr_icon = "🌟 **区别特征**"
+                elif "independent" in source:
+                    attr_icon = "⚪ 前序特征"
                 else:
-                    attr_str = "🔵 从权特征"  # 补充细节
+                    attr_icon = "🔹 从权特征"
 
-                # 来源简化
-                source_str = "独权" if "independent" in source_raw else "从权"
-
-                lines.append(f"| {name} | {desc} | {attr_str} | {rationale} | {source_str} |")
+                lines.append(f"| **{name}** | {attr_icon} | {desc} | {rationale} |")
             
             lines.append("\n")
 
@@ -142,33 +135,62 @@ class ReportRenderer:
         lines.append("## 5. 技术效果")
         effects = data.get("technical_effects", [])
         if effects:
-            for idx, eff in enumerate(effects, 1):
-                desc = eff.get("effect", "")
-                src = eff.get("source_feature_name", "")
-                evidence = eff.get("evidence", "") # 获取证据字段
+            # 按 TCS 分数降序排列
+            effects.sort(key=lambda x: x.get("tcs_score", 0), reverse=True)
 
-                # 使用新字段 feature_type 进行视觉区分
-                ft_type = eff.get("feature_type", "")
+            # 表头设计：效果 -> 分数 -> 特征 -> 机理 -> 证据
+            lines.append("| 技术效果 | TCS 评分 | 检索块 | 贡献特征 | 机理推演 | 验证证据 |")
+            lines.append("| :--- | :---: | :---: | :--- | :--- | :--- |")
 
-                if "Distinguishing" in ft_type:
-                    title_prefix = "🌟 [核心效果]" # 对应区别特征
-                elif "Preamble" in ft_type:
-                    title_prefix = "⚪ [基础效果]" # 对应前序特征
+            for eff in effects:
+                # 1. 效果 (Effect)
+                desc = eff.get("effect", "未命名效果").replace("\n", "").replace("|", "/")
+
+                # 2. 分数 & ABC 映射逻辑 (核心逻辑)
+                score = eff.get("tcs_score", 0)
+
+                if score >= 5:
+                    score_str = f"🔴 **{score}**"
+                    # Vital -> Block B
+                    abc_tag = "**Block B**<br>Key Features" 
+                elif score == 4:
+                    score_str = f"🟠 **{score}**"
+                    # Enabler -> Block C (Essential)
+                    abc_tag = "**Block C**<br>Essential"
+                elif score == 3:
+                    score_str = f"🟡 **{score}**"
+                    # Improver -> Block C (Optional)
+                    abc_tag = "Block C<br>Optional"
                 else:
-                    title_prefix = "🔹 [进一步效果]" # 对应从权特征/Dependent
+                    score_str = f"⚪ **{score}**"
+                    # Common -> Block A
+                    abc_tag = "Block A<br>Background"
 
-                lines.append(f"**{idx}. {title_prefix} {desc}**")
-                
-                # 使用引用块展示证据链
-                lines.append(f"> - **归因特征**: {src}")
-                if evidence and "无实验数据" not in evidence:
-                    lines.append(f"> - **验证证据**: **{evidence}**") # 加粗强证据
+                # 3. 特征 (Features)
+                contributors = eff.get("contributing_features", [])
+                if isinstance(contributors, list):
+                    # 使用 HTML <br> 在单元格内换行，保持整洁
+                    contrib_str = "<br>".join([f"`{str(c)}`" for c in contributors])
                 else:
-                    lines.append(f"> - **验证证据**: {evidence}")
+                    contrib_str = str(contributors)
+
+                # 4. 机理 (Rationale)
+                rationale = eff.get("rationale", "-").replace("\n", " ").replace("|", "/")
+
+                # 5. 证据 (Evidence)
+                evidence = eff.get("evidence", "-").replace("\n", " ").replace("|", "/")
                 
-                lines.append("") # 空行分隔
+                # 证据样式微调：如果没有强证据，标记警告
+                if "仅声称" in evidence or "无实施例" in evidence:
+                    evidence_styled = f"⚠️ *{evidence}*"
+                else:
+                    evidence_styled = f"**{evidence}**"
+
+                lines.append(f"| {desc} | {score_str} | {abc_tag} | {contrib_str} | {rationale} | {evidence_styled} |")
+            
+            lines.append("\n")
         else:
-            lines.append("未提取到具体效果描述。\n")
+            lines.append("> *未提取到明确的技术效果或评分数据。*\n")
 
         # --- 9. 图解说明 (Figure Explanations) ---
         lines.append("## 6. 图解说明")
@@ -218,13 +240,13 @@ class ReportRenderer:
         lines = []
         lines.append("# 专利审查检索策略建议书\n")
 
-        # --- 0. 基础信息与时间截点 ---
+        # --- 1. 基础信息与时间截点 ---
         # 获取著录项目信息
         biblio = self.patent_data.get("bibliographic_data", {})
         title = biblio.get("invention_title", "未知标题")
         app_date = biblio.get("application_date", "未知")
         
-        lines.append("## 0. 检索基础信息")
+        lines.append("## 1. 检索基础信息")
         lines.append(f"- **发明名称**: {title}")
         lines.append(f"- **申请日**: {app_date}")
         lines.append("> *注：检索操作应限定在申请日之前，以排除抵触申请和相关公开文献。*\n")
@@ -233,8 +255,8 @@ class ReportRenderer:
         matrix = data.get("search_matrix", [])
         plan = data.get("search_plan", {})
         
-        # --- 1. 检索要素表 (包含分类号) ---
-        lines.append("## 1. 检索要素与分类号映射表")
+        # --- 2. 检索要素表 (包含分类号) ---
+        lines.append("## 2. 检索要素与分类号映射表")
         lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
         
         if matrix:
@@ -261,8 +283,8 @@ class ReportRenderer:
         else:
             lines.append("> 未生成检索要素表。\n")
 
-        # --- 2. 分步检索策略 (Strategies) ---
-        lines.append("## 2. 分步检索策略构建")
+        # --- 3. 分步检索策略 (Strategies) ---
+        lines.append("## 3. 分步检索策略构建")
         strategies = plan.get("strategies", [])
 
         if not strategies:
