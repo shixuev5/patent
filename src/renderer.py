@@ -7,11 +7,30 @@ from playwright.sync_api import sync_playwright
 
 from config import settings
 
+
 class ReportRenderer:
     def __init__(self, patent_data: Dict[str, Any]):
         self.patent_data = patent_data
 
-    def render(self, report_data: Dict[str, Any], search_data: Optional[Dict[str, Any]], md_path: Path, pdf_path: Path):
+    def _indent_text(self, text: str) -> str:
+        """
+        辅助函数：给文本首行添加两个全角空格缩进 (HTML实体)
+        """
+        if not text:
+            return ""
+        # 移除可能存在的首尾空白，然后添加缩进
+        clean_text = text.strip()
+        if not clean_text:
+            return ""
+        return f"&emsp;&emsp;{clean_text}"
+
+    def render(
+        self,
+        report_data: Dict[str, Any],
+        search_data: Optional[Dict[str, Any]],
+        md_path: Path,
+        pdf_path: Path,
+    ):
         """
         主入口：组装分析报告和检索策略，生成 MD 和 PDF
         """
@@ -30,7 +49,7 @@ class ReportRenderer:
             parts.append(self._render_search_section(search_data))
 
         full_md_content = "\n".join(parts)
-        
+
         # 3. 写入 .md 文件
         try:
             md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,7 +61,6 @@ class ReportRenderer:
 
         # 4. 导出 .pdf 文件
         self._export_pdf(full_md_content, pdf_path)
-
 
     def _render_analysis_section(self, data: Dict[str, Any]) -> str:
         """
@@ -58,7 +76,7 @@ class ReportRenderer:
         # --- 2. 摘要 ---
         lines.append("## 摘要")
         abstract = data.get("ai_abstract", "暂无摘要")
-        lines.append(f"{abstract}\n")
+        lines.append(f"{self._indent_text(abstract)}\n")
 
         # --- 3. 主图 ---
         # 检查主图是否存在
@@ -67,14 +85,14 @@ class ReportRenderer:
             lines.append(f"![Main Figure]({main_fig})\n")
 
         # --- 4. 技术领域 ---
-        lines.append('## 1. 技术领域')
+        lines.append("## 1. 技术领域")
         domain = data.get("technical_field", "未提取到技术领域")
-        lines.append(f"{domain}\n")
+        lines.append(f"{self._indent_text(domain)}\n")
 
         # --- 5. 技术问题 ---
         lines.append("## 2. 现有技术问题")
         problem = data.get("technical_problem", "未提取到技术问题")
-        lines.append(f"{problem}\n")
+        lines.append(f"{self._indent_text(problem)}\n")
 
         # --- 6 技术方案 ---
         lines.append("## 3. 技术方案概要")
@@ -86,12 +104,17 @@ class ReportRenderer:
             lines.append(f"> **🛡️ 保护主题**：{subject_matter}\n")
 
         scheme = data.get("technical_scheme", "未提取到技术方案")
+
+        # 只在技术方案是一整段话时才进行缩进
+        if "\n" not in scheme:
+            scheme = self._indent_text(scheme)
+
         lines.append(f"{scheme}\n")
 
         # --- 7. 技术手段 (Technical Means) ---
         lines.append("## 4. 核心技术手段")
         means = data.get("technical_means", "未提取到技术手段")
-        lines.append(f"{means}\n")
+        lines.append(f"{self._indent_text(means)}\n")
 
         # 7.1 技术特征列表
         features = data.get("technical_features", [])
@@ -100,95 +123,145 @@ class ReportRenderer:
             # 1. 区别特征 (is_distinguishing=True) 排最前
             # 2. 其次是前序特征 (claim_source="independent")
             # 3. 最后是从权特征
-            features.sort(key=lambda x: (
-                x.get("is_distinguishing", False),
-                x.get("claim_source", "") == "independent"
-            ), reverse=True)
+            features.sort(
+                key=lambda x: (
+                    x.get("is_distinguishing", False),
+                    x.get("claim_source", "") == "independent",
+                ),
+                reverse=True,
+            )
 
             lines.append("### 关键技术特征表")
-            
-            # Markdown 表格
-            lines.append("| 特征名称 | 属性 | 详细定义 | 判定理由 |")
-            lines.append("| :--- | :---: | :--- | :--- |")
-            
-            for feat in features:
+
+            # HTML 表格头
+            table_html = """
+<table>
+    <thead>
+        <tr>
+            <th style="width: 28px; text-align: center;">序号</th>
+            <th style="width: 20%;">特征名称</th>
+            <th style="width: 70px; text-align: center;">属性</th>
+            <th>详细定义</th>
+        </tr>
+    </thead>
+    <tbody>
+            """
+            for idx, feat in enumerate(features, 1):
                 name = feat.get("name", "-")
-                desc = feat.get("description", "-").replace("\n", " ").replace("|", "/")
-                rationale = feat.get("rationale", "").replace("\n", " ").replace("|", "/")
-                
+                desc = feat.get("description", "-").replace("\n", "<br>")
+                rationale = feat.get("rationale", "").replace("\n", "<br>")
+
                 is_distinguishing = feat.get("is_distinguishing", False)
-                source = feat.get("claim_source", "unknown")
+                source = str(feat.get("claim_source", "")).lower()
 
-                # 视觉标记
                 if is_distinguishing:
-                    attr_icon = "🌟 **区别特征**"
+                    badge_text = "🌟 区别特征"
                 elif "independent" in source:
-                    attr_icon = "⚪ 前序特征"
+                    badge_text = "⚪ 前序特征"
                 else:
-                    attr_icon = "🔹 从权特征"
+                    # 只要不是区别特征，且来源不是 independent，即为从权特征
+                    badge_text = "🔹 从权特征"
 
-                lines.append(f"| **{name}** | {attr_icon} | {desc} | {rationale} |")
-            
-            lines.append("\n")
+                # Row 1: 序号使用 rowspan="2" 消除留白
+                table_html += f"""
+        <tr>
+            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{idx}</td>
+            <td style="font-weight: bold;">{name}</td>
+            <td style="text-align: center;">{badge_text}</td>
+            <td>{desc}</td>
+        </tr>
+         <tr>
+            <td colspan="3">{rationale}</td>
+        </tr>
+                """
+
+            table_html += "</tbody></table>\n"
+            lines.append(table_html)
 
         # --- 8. 技术效果 (Technical Effects) ---
         lines.append("## 5. 技术效果")
         effects = data.get("technical_effects", [])
         if effects:
-            # 按 TCS 分数降序排列
             effects.sort(key=lambda x: x.get("tcs_score", 0), reverse=True)
 
-            # 表头设计：效果 -> 分数 -> 特征 -> 机理 -> 证据
-            lines.append("| 技术效果 | TCS 评分 | 检索块 | 贡献特征 | 机理推演 | 验证证据 |")
-            lines.append("| :--- | :---: | :---: | :--- | :--- | :--- |")
+            table_html = """
+<table>
+    <thead>
+        <tr>
+            <th style="width: 28px; text-align: center;">序号</th>
+            <th>技术效果</th>
+            <th style="width: 60px; text-align: center;">TCS 评分</th>
+            <th style="width: 40%;">贡献特征</th>
+            <th style="width: 40px; text-align: center;">检索分块</th>
+        </tr>
+    </thead>
+    <tbody>
+            """
 
-            for eff in effects:
-                # 1. 效果 (Effect)
-                desc = eff.get("effect", "未命名效果").replace("\n", "").replace("|", "/")
-
-                # 2. 分数 & ABC 映射逻辑 (核心逻辑)
+            for idx, eff in enumerate(effects, 1):
+                desc = eff.get("effect", "未命名效果")
                 score = eff.get("tcs_score", 0)
 
+                # 评分样式
                 if score >= 5:
-                    score_str = f"🔴 **{score}**"
-                    # Vital -> Block B
-                    abc_tag = "**Block B**<br>Key Features" 
+                    score_html = f"<span style='color: #dc3545;'>🔴 {score}</span>"
+                    abc = "Block B"
                 elif score == 4:
-                    score_str = f"🟠 **{score}**"
-                    # Enabler -> Block C (Essential)
-                    abc_tag = "**Block C**<br>Essential"
+                    score_html = f"<span style='color: #fd7e14;'>🟠 {score}</span>"
+                    abc = "Block C<br>(核心)"
                 elif score == 3:
-                    score_str = f"🟡 **{score}**"
-                    # Improver -> Block C (Optional)
-                    abc_tag = "Block C<br>Optional"
+                    score_html = f"<span style='color: #ffc107;'>🟡 {score}</span>"
+                    abc = "Block C<br>(可选)"
                 else:
-                    score_str = f"⚪ **{score}**"
-                    # Common -> Block A
-                    abc_tag = "Block A<br>Background"
+                    score_html = f"<span style='color: #6c757d;'>⚪ {score}</span>"
+                    abc = "Block A"
 
-                # 3. 特征 (Features)
+                # 贡献特征：处理为无序列表 <ul>
                 contributors = eff.get("contributing_features", [])
-                if isinstance(contributors, list):
-                    # 使用 HTML <br> 在单元格内换行，保持整洁
-                    contrib_str = "<br>".join([f"`{str(c)}`" for c in contributors])
+                if isinstance(contributors, list) and contributors:
+                    # 使用 <ul><li> 结构，避免数字混淆
+                    list_items = "".join([f"<li>{c}</li>" for c in contributors])
+                    contrib_html = f"<ul style='margin: 0;'>{list_items}</ul>"
                 else:
-                    contrib_str = str(contributors)
+                    contrib_html = str(contributors) if contributors else "-"
 
-                # 4. 机理 (Rationale)
-                rationale = eff.get("rationale", "-").replace("\n", " ").replace("|", "/")
+                rationale = eff.get("rationale", "-")
+                evidence = eff.get("evidence", "-")
 
-                # 5. 证据 (Evidence)
-                evidence = eff.get("evidence", "-").replace("\n", " ").replace("|", "/")
-                
-                # 证据样式微调：如果没有强证据，标记警告
                 if "仅声称" in evidence or "无实施例" in evidence:
-                    evidence_styled = f"⚠️ *{evidence}*"
+                    evidence_styled = f"<i style='color: #dc3545;'>⚠️ {evidence}</i>"
                 else:
-                    evidence_styled = f"**{evidence}**"
+                    evidence_styled = evidence
 
-                lines.append(f"| {desc} | {score_str} | {abc_tag} | {contrib_str} | {rationale} | {evidence_styled} |")
-            
-            lines.append("\n")
+                # Row 1: 效果 | 评分 | 贡献特征(列表) | 检索分级
+                table_html += f"""
+        <tr>
+            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{idx}</td>
+            <td style="font-weight: bold;">{desc}</td>
+            <td style="text-align: center;">{score_html}</td>
+            <td>{contrib_html}</td>
+            <td style="text-align: center;">{abc}</td>
+        </tr>
+                """
+
+                # Row 2: 详情行 (机理 -> 证据)
+                table_html += f"""
+        <tr>
+            <td colspan="4">
+                <div style="margin-bottom: 8px;">
+                    <span style="font-weight:bold; color:#2c3e50;">机理推演：</span>
+                    <span>{rationale}</span>
+                </div>
+                <div>
+                    <span style="font-weight:bold; color:#2c3e50;">验证证据：</span>
+                    <span>{evidence_styled}</span>
+                </div>
+            </td>
+        </tr>
+                """
+
+            table_html += "</tbody></table>\n"
+            lines.append(table_html)
         else:
             lines.append("> *未提取到明确的技术效果或评分数据。*\n")
 
@@ -215,7 +288,9 @@ class ReportRenderer:
                 lines.append(figure_html)
 
             if explanation:
-                lines.append(f"\n**【智能解说】**\n\n{explanation}\n")
+                lines.append(
+                    f"\n**【智能解说】**\n\n{self._indent_text(explanation)}\n"
+                )
 
             if parts:
                 lines.append("\n**【可见部件清单】**\n")
@@ -228,10 +303,9 @@ class ReportRenderer:
                     lines.append(f"| {pid} | {pname} | {pfunc} |")
                 lines.append("\n")
 
-            lines.append("\n---\n") # 分隔线
+            lines.append("\n---\n")  # 分隔线
 
         return "\n".join(lines)
-
 
     def _render_search_section(self, data: Dict[str, Any]) -> str:
         """
@@ -245,29 +319,48 @@ class ReportRenderer:
         biblio = self.patent_data.get("bibliographic_data", {})
         title = biblio.get("invention_title", "未知标题")
         app_date = biblio.get("application_date", "未知")
-        
+        prio_date = biblio.get("priority_date")  # 获取优先权日
+
+        # 确定检索截止日
+        if prio_date:
+            critical_date = prio_date
+            prio_display = f"{prio_date}"
+            note_desc = (
+                f"鉴于本案主张了优先权，**现有技术的时间界限应前移至 {prio_date}**。"
+            )
+        else:
+            critical_date = app_date
+            prio_display = "无"
+            note_desc = f"本案未主张优先权，**现有技术的时间界限为 {app_date}**。"
+
         lines.append("## 1. 检索基础信息")
         lines.append(f"- **发明名称**: {title}")
         lines.append(f"- **申请日**: {app_date}")
-        lines.append("> *注：检索操作应限定在申请日之前，以排除抵触申请和相关公开文献。*\n")
+        lines.append(f"- **优先权日**: {prio_display}")
+
+        # 动态提示块
+        lines.append(f"> **📅 检索截止日: {critical_date}**")
+        lines.append(
+            f"> *注：{note_desc} 所有在此日期之前公开的文献均构成现有技术，可用于评价新颖性与创造性。*\n"
+        )
 
         # 获取数据源
         matrix = data.get("search_matrix", [])
         plan = data.get("search_plan", {})
-        
+
         # --- 2. 检索要素表 (包含分类号) ---
         lines.append("## 2. 检索要素与分类号映射表")
         lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
-        
+
         if matrix:
             # Markdown 表格构建：增加分类号列
             # 使用 HTML 换行符 <br> 在单元格内区分 IPC 和 CPC，或区分太长的词
-            lines.append("| 核心概念 (Key Concept) | 中文扩展 (CNTXT) | 英文扩展 (VEN) | 分类号 (IPC/CPC) |")
+            lines.append("| 核心概念 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
             lines.append("| :--- | :--- | :--- | :--- |")
-            
+
             for item in matrix:
                 concept = item.get("concept_key", "-").replace("|", "\|")
-                
+
                 # 处理列表转字符串
                 zh_list = item.get("zh_expand", [])
                 en_list = item.get("en_expand", [])
@@ -275,7 +368,7 @@ class ReportRenderer:
 
                 zh_str = ", ".join(zh_list) if zh_list else "-"
                 en_str = ", ".join(en_list) if en_list else "-"
-                class_str = ", ".join(ref_list) if ref_list else "-"
+                class_str = "<br>".join(ref_list) if ref_list else "-"
 
                 # 组装表格行
                 lines.append(f"| **{concept}** | {zh_str} | {en_str} | {class_str} |")
@@ -289,7 +382,7 @@ class ReportRenderer:
 
         if not strategies:
             lines.append("未生成具体的检索策略步骤。\n")
-        
+
         for idx, strategy in enumerate(strategies, 1):
             s_name = strategy.get("name", f"策略 {idx}")
             s_desc = strategy.get("description", "暂无描述")
@@ -301,9 +394,9 @@ class ReportRenderer:
             if queries:
                 for q_item in queries:
                     db_name = q_item.get("db", "General")
-                    step_info = q_item.get("step", "") # 获取具体步骤描述
+                    step_info = q_item.get("step", "")  # 获取具体步骤描述
                     query_str = q_item.get("query", "").strip()
-                    
+
                     if not query_str:
                         continue
 
@@ -311,36 +404,55 @@ class ReportRenderer:
                     header_text = f"**[{db_name}]**"
                     if step_info:
                         header_text += f" - *{step_info}*"
-                    
+
                     lines.append(f"{header_text}")
                     # 使用 text 格式代码块，避免 markdown 对逻辑算符的错误高亮
                     lines.append(f"```text\n{query_str}\n```\n")
             else:
                 lines.append("*本步骤无需特定检索式 (如人工浏览或语义输入)*\n")
-            
-            lines.append("---\n") # 分隔线
+
+            lines.append("---\n")  # 分隔线
 
         return "\n".join(lines)
-    
 
     def _export_pdf(self, md_text: str, output_path: Path):
         """
         使用 Playwright 将 Markdown (转HTML后) 打印为 PDF
         """
         logger.info("Starting PDF generation...")
-        
+
         # 1. Markdown -> HTML
         html_body = markdown.markdown(
-            md_text, 
-            extensions=['tables', 'fenced_code', 'nl2br', 'sane_lists']
+            md_text,
+            extensions=["tables", "fenced_code", "nl2br", "sane_lists", "extra"],
         )
-        
+
         # 2. 构建完整 HTML
         full_html = f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
+            <title>Patent Analysis Report</title>
+            <!-- MathJax 配置: 自动识别 $...$ 和 \(...\) -->
+            <script>
+            window.MathJax = {{
+              tex: {{
+                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
+              }},
+              svg: {{
+                fontCache: 'global'
+              }},
+              startup: {{
+                // 确保 MathJax 初始化后我们能捕获状态
+                pageReady: () => {{
+                  return MathJax.startup.defaultPageReady();
+                }}
+              }}
+            }};
+            </script>
+            <script id="MathJax-script" async src="https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js"></script>
             <style>
                 {settings.PDF_CSS}
             </style>
@@ -350,33 +462,65 @@ class ReportRenderer:
         </body>
         </html>
         """
-        
+
         # 4. 保存临时 HTML (方便 Playwright 读取本地资源)
         temp_html_path = output_path.parent / "temp_render.html"
         try:
             temp_html_path.write_text(full_html, encoding="utf-8")
-            
+
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
-                
+
                 # 加载本地 HTML
-                page.goto(f"file://{temp_html_path.absolute()}", wait_until="networkidle")
-                
+                page.goto(
+                    f"file://{temp_html_path.absolute()}", wait_until="networkidle"
+                )
+
+                # 智能等待 MathJax 渲染完成
+                try:
+                    # 步骤 A: 确保 MathJax 对象已挂载 (脚本已下载执行)
+                    # 设置较短超时，如果因为网络问题没加载 MathJax，就不死等了
+                    page.wait_for_function("() => window.MathJax", timeout=10000)
+
+                    # 步骤 B: 等待 startup promise 解析
+                    # page.evaluate 会自动等待 JS 函数返回的 Promise 完成
+                    page.evaluate(
+                        """
+                        async () => {
+                            if (window.MathJax && window.MathJax.startup) {
+                                await window.MathJax.startup.promise;
+                            }
+                        }
+                    """
+                    )
+                    logger.info("MathJax rendering promise resolved.")
+
+                except Exception as e:
+                    # 如果等待超时（可能是没有公式导致 MathJax 懒加载，或者网络问题），记录日志但继续生成
+                    logger.warning(
+                        f"MathJax wait skipped or failed (safe to ignore if no math): {e}"
+                    )
+
                 # 生成 PDF
                 page.pdf(
                     path=str(output_path),
                     format="A4",
                     print_background=True,
-                    margin={"top": "2cm", "bottom": "2cm", "left": "1.5cm", "right": "1.5cm"},
+                    margin={
+                        "top": "2cm",
+                        "bottom": "2cm",
+                        "left": "1.5cm",
+                        "right": "1.5cm",
+                    },
                     display_header_footer=True,
                     footer_template='<div style="font-size: 10px; text-align: center; width: 100%;">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>',
-                    header_template='<div></div>'
+                    header_template="<div></div>",
                 )
                 browser.close()
-            
+
             logger.success(f"PDF successfully generated: {output_path}")
-            
+
         except Exception as e:
             logger.error(f"PDF generation failed: {e}")
         finally:

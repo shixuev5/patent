@@ -6,6 +6,7 @@ from src.utils.llm import get_llm_service
 from src.utils.cache import StepCache
 from config import settings
 
+
 class SearchStrategyGenerator:
     def __init__(self, patent_data: Dict, report_data: Dict, cache_file: Path = None):
         self.llm_service = get_llm_service()
@@ -15,7 +16,9 @@ class SearchStrategyGenerator:
         # 初始化缓存管理器
         self.cache = StepCache(cache_file) if cache_file else None
 
-        self.base_ipcs = self.patent_data.get("bibliographic_data", {}).get("ipc_classifications", [])
+        self.base_ipcs = self.patent_data.get("bibliographic_data", {}).get(
+            "ipc_classifications", []
+        )
 
     def generate_strategy(self) -> Dict[str, Any]:
         """
@@ -34,10 +37,10 @@ class SearchStrategyGenerator:
 
         # 使用通用方法运行 Step 1
         search_matrix = self.cache.run_step("step1_matrix", _execute_stage1)
-        
+
         if not search_matrix:
             logger.warning("Search Matrix 为空，后续策略生成可能受限。")
-        
+
         # Stage 2: 检索式构建 (Query Formulation) - 分库分治
         query_context = self._build_query_context(search_matrix)
 
@@ -45,12 +48,12 @@ class SearchStrategyGenerator:
         tasks_map = {
             "step2_cntxt": self._generate_cntxt_strategies,
             "step2_ven": self._generate_ven_strategies,
-            "step2_npl": self._generate_npl_strategies
+            "step2_npl": self._generate_npl_strategies,
         }
 
         results_map = {}
         futures_map = {}
-        
+
         # 使用 ThreadPoolExecutor 进行并行调用
         # max_workers=3 对应三个独立的数据库策略生成任务
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -79,21 +82,27 @@ class SearchStrategyGenerator:
         combined_strategies = self._merge_strategies(
             results_map.get("step2_cntxt", []),
             results_map.get("step2_ven", []),
-            results_map.get("step2_npl", [])
+            results_map.get("step2_npl", []),
         )
-        
+
         # 包装为最终对象
         strategy_plan = {"strategies": combined_strategies}
 
+        # 1. 插入语义检索
         self._inject_semantic_strategy(strategy_plan)
+
+        # 2. 注入时间限制
+        self._inject_date_constraints(strategy_plan)
 
         # 合并结果
         return {
-            "search_matrix": search_matrix, # 对应你要求的中文、中文扩展、英文翻译
-            "search_plan": strategy_plan    # 具体的检索步骤和分析
+            "search_matrix": search_matrix,  # 对应你要求的中文、中文扩展、英文翻译
+            "search_plan": strategy_plan,  # 具体的检索步骤和分析
         }
-    
-    def _merge_strategies(self, *strategy_lists: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    def _merge_strategies(
+        self, *strategy_lists: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
         辅助函数：合并来自不同源的策略列表。
         逻辑：
@@ -102,21 +111,23 @@ class SearchStrategyGenerator:
         3. 如果策略名称不同，则视为新策略添加。
         """
         merged_map = {}
-        
+
         # 遍历所有传入的策略列表（按参数顺序）
         for strategy_list in strategy_lists:
             for strategy in strategy_list:
                 name = strategy.get("name")
                 if not name:
                     continue
-                
+
                 if name not in merged_map:
                     # 首次遇到该名称：初始化新的策略对象
                     # 注意：构造新字典以避免引用污染
                     merged_map[name] = {
                         "name": name,
-                        "description": strategy.get("description", ""), # 保留首次出现的描述
-                        "queries": list(strategy.get("queries", []))    # 复制查询列表
+                        "description": strategy.get(
+                            "description", ""
+                        ),  # 保留首次出现的描述
+                        "queries": list(strategy.get("queries", [])),  # 复制查询列表
                     }
                 else:
                     # 再次遇到该名称：仅合并 queries
@@ -124,7 +135,7 @@ class SearchStrategyGenerator:
                     new_queries = strategy.get("queries", [])
                     if new_queries:
                         current_queries.extend(new_queries)
-        
+
         # 返回合并后的列表
         return list(merged_map.values())
 
@@ -135,21 +146,20 @@ class SearchStrategyGenerator:
         """
         biblio = self.patent_data.get("bibliographic_data", {})
         report = self.report_data
-        
+
         # 1. 建立特征详细信息查询表 (Feature Lookup Map)
         feature_details = {
-            f.get("name", "").strip(): f 
-            for f in report.get("technical_features", [])
+            f.get("name", "").strip(): f for f in report.get("technical_features", [])
         }
 
         # 2. 基于 TCS 评分对特征进行桶排序 (Bucket Sort by Score)
         # 逻辑：一个特征可能贡献多个效果，取其最高得分作为定位依据
-        feature_max_scores = {} # {feature_name: max_score}
-        
+        feature_max_scores = {}  # {feature_name: max_score}
+
         for effect in report.get("technical_effects", []):
             score = effect.get("tcs_score", 0)
             contributors = effect.get("contributing_features", [])
-            
+
             for feat_name in contributors:
                 feat_name = str(feat_name).strip()
                 current_max = feature_max_scores.get(feat_name, 0)
@@ -157,15 +167,15 @@ class SearchStrategyGenerator:
                     feature_max_scores[feat_name] = score
 
         # 3. 构建分块内容列表
-        block_b_content = [] # Score 5 (Vital)
-        block_c_content = [] # Score 4 (Enabler) & 3 (Improver)
-        block_a_candidates = [] # Score < 3 or Subject Matter
+        block_b_content = []  # Score 5 (Vital)
+        block_c_content = []  # Score 4 (Enabler) & 3 (Improver)
+        block_a_candidates = []  # Score < 3 or Subject Matter
 
         # --- 基于 TCS 评分的精确逻辑 ---
         for feat_name, info in feature_details.items():
             score = feature_max_scores.get(feat_name, 0)
             desc = info.get("description", "无描述")
-            
+
             # 格式: [名称] - [描述] (TCS Score: X)
             entry = f"- {feat_name}: {desc} (TCS Score: {score})"
 
@@ -180,8 +190,10 @@ class SearchStrategyGenerator:
         effects_summary = []
         for e in report.get("technical_effects", []):
             score = e.get("tcs_score", 0)
-            if score >= 3: # 只关注有价值的效果
-                effects_summary.append(f"- [Score {score}] {e.get('effect')} (源于: {e.get('contributing_features')})")
+            if score >= 3:  # 只关注有价值的效果
+                effects_summary.append(
+                    f"- [Score {score}] {e.get('effect')} (源于: {e.get('contributing_features')})"
+                )
 
         return f"""
         [发明名称] {biblio.get('invention_title')}
@@ -208,7 +220,7 @@ class SearchStrategyGenerator:
         === 4. 整体技术手段综述 ===
         {report.get('technical_means', '未定义')}
         """
-    
+
     def _build_query_context(self, matrix: List[Dict]) -> str:
         """
         阶段二上下文：专注逻辑组装
@@ -216,22 +228,22 @@ class SearchStrategyGenerator:
         并结合申请人信息，为 LLM 提供清晰的“积木”。
         """
         biblio = self.patent_data.get("bibliographic_data", {})
-        
+
         # 1. 对 Matrix 进行逻辑分组 (Grouping)
         # 这样 LLM 就能知道谁是“主语”，谁是“核心”，谁是“修饰”
         grouped_matrix = {
-            "Subject": [],     # 块 A: 技术领域/基础产品
+            "Subject": [],  # 块 A: 技术领域/基础产品
             "KeyFeature": [],  # 块 B: 核心区别特征 (重点)
             "Functional": [],  # 块 C: 效果/功能/问题
-            "Other": []
+            "Other": [],
         }
 
         for item in matrix:
-            role = item.get('role', 'Other')            
+            role = item.get("role", "Other")
             # 格式化单个要素
             content = (
                 f"   - [ID: {item['concept_key']}]\n"
-                f"     ZH: {', '.join(item.get('zh_expand', [])[:5])}\n" # 限制长度防Token溢出
+                f"     ZH: {', '.join(item.get('zh_expand', [])[:5])}\n"  # 限制长度防Token溢出
                 f"     EN: {', '.join(item.get('en_expand', [])[:5])}\n"
                 f"     IPC/CPC: {', '.join(item.get('ipc_cpc_ref', []))}"
             )
@@ -240,19 +252,28 @@ class SearchStrategyGenerator:
         # 2. 构建文本块
         matrix_text = []
         if grouped_matrix["Subject"]:
-            matrix_text.append(f"【Block A - 技术领域 (Subject)】:\n" + "\n".join(grouped_matrix["Subject"]))
-        
+            matrix_text.append(
+                f"【Block A - 技术领域 (Subject)】:\n"
+                + "\n".join(grouped_matrix["Subject"])
+            )
+
         if grouped_matrix["KeyFeature"]:
-            matrix_text.append(f"【Block B - 核心创新点 (KeyFeatures - 必须出现在检索式中)】:\n" + "\n".join(grouped_matrix["KeyFeature"]))
-            
+            matrix_text.append(
+                f"【Block B - 核心创新点 (KeyFeatures - 必须出现在检索式中)】:\n"
+                + "\n".join(grouped_matrix["KeyFeature"])
+            )
+
         if grouped_matrix["Functional"]:
-            matrix_text.append(f"【Block C - 功能与效果 (Functional - 用于组词或验证)】:\n" + "\n".join(grouped_matrix["Functional"]))
+            matrix_text.append(
+                f"【Block C - 功能与效果 (Functional - 用于组词或验证)】:\n"
+                + "\n".join(grouped_matrix["Functional"])
+            )
 
         formatted_matrix = "\n\n".join(matrix_text)
 
         # 3. 处理申请人和发明人 (用于追踪检索)
-        applicants = ', '.join([a['name'] for a in biblio.get('applicants', [])][:3])
-        inventors = ', '.join(biblio.get('inventors', [])[:3])
+        applicants = ", ".join([a["name"] for a in biblio.get("applicants", [])][:3])
+        inventors = ", ".join(biblio.get("inventors", [])[:3])
 
         return f"""
         【检索要素积木 (Building Blocks)】:
@@ -268,8 +289,10 @@ class SearchStrategyGenerator:
         """
         阶段一：基于专家策略构建检索要素表 (Search Matrix)
         """
-        logger.info("[SearchAgent] Step 1: Building Search Matrix with TCS-Guided Strategy...")
-        
+        logger.info(
+            "[SearchAgent] Step 1: Building Search Matrix with TCS-Guided Strategy..."
+        )
+
         system_prompt = """
         你是一位拥有 20 年经验的专利检索专家。请基于提供的**经过 TCS (技术贡献评分) 预处理**的技术交底信息，拆解技术方案并构建**检索要素表（Search Matrix）**。
 
@@ -327,15 +350,15 @@ class SearchStrategyGenerator:
           ...
         ]
         """
-        
+
         response = self.llm_service.chat_completion_json(
             model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ]
+                {"role": "user", "content": context},
+            ],
         )
-        
+
         # 确保返回的是列表
         return response if isinstance(response, list) else []
 
@@ -345,7 +368,7 @@ class SearchStrategyGenerator:
         侧重：基于 Block A/B/C 的逻辑组装、S/P/nD 精确算符、申请人清洗
         """
         logger.info("[SearchAgent] Generating CNTXT Strategies...")
-        
+
         system_prompt = """
         你是一位**中国国家知识产权局 (CNIPA) 的资深审查员**。
         你的任务是基于提供的【检索要素积木 (Building Blocks)】，编写适用于 **CNTXT (中国专利全文数据库)** 的专业检索式。
@@ -431,39 +454,39 @@ class SearchStrategyGenerator:
                 "name": "追踪检索",
                 "description": "基于申请人/发明人的排查",
                 "queries": [
-                    { "db": "CNTXT", "step": "PA_Trace", "query": "..." }
+                    { "db": "CNTXT", "step": "申请人追踪", "query": "..." }
                 ]
             },
             {
                 "name": "精确检索",
                 "description": "Block A与Block B的结构化组合",
                 "queries": [
-                    { "db": "CNTXT", "step": "Claim_Focus", "query": "..." },
-                    { "db": "CNTXT", "step": "TI_AB_Focus", "query": "..." },
-                    { "db": "CNTXT", "step": "FullText_P_Logic", "query": "..." }
+                    { "db": "CNTXT", "step": "权利要求精确限定", "query": "..." },
+                    { "db": "CNTXT", "step": "标题摘要组合", "query": "..." },
+                    { "db": "CNTXT", "step": "全文段落逻辑组合", "query": "..." }
                 ]
             },
             {
                 "name": "扩展检索",
                 "description": "基于Block C的功能性或跨领域检索",
                 "queries": [
-                    { "db": "CNTXT", "step": "KeyFeature_BroadIPC", "query": "..." },
-                    { "db": "CNTXT", "step": "Functional_Search", "query": "..." }
+                    { "db": "CNTXT", "step": "核心特征宽类检索", "query": "..." },
+                    { "db": "CNTXT", "step": "功能泛化检索", "query": "..." }
                 ]
             }
         ]
         """
-        
+
         response = self.llm_service.chat_completion_json(
             model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ]
+                {"role": "user", "content": context},
+            ],
         )
 
         return response if isinstance(response, list) else []
-    
+
     def _generate_ven_strategies(self, context: str) -> List[Dict]:
         """
         Step 2.2: 生成 VEN 英文检索策略 (中文 Prompt)
@@ -576,10 +599,10 @@ class SearchStrategyGenerator:
             model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ]
+                {"role": "user", "content": context},
+            ],
         )
-        
+
         return response if isinstance(response, list) else []
 
     def _generate_npl_strategies(self, context: str) -> List[Dict]:
@@ -669,40 +692,92 @@ class SearchStrategyGenerator:
             model=settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ]
+                {"role": "user", "content": context},
+            ],
         )
 
         return response if isinstance(response, list) else []
-    
+
+    def _get_critical_date_clause(self, db_type: str) -> str:
+        """
+        计算查新截止日期 (Critical Date) 并根据数据库类型返回限制子句。
+        逻辑：有优先权取优先权日，否则取申请日。
+        """
+        biblio = self.patent_data.get("bibliographic_data", {})
+
+        # 1. 获取日期字符串 (格式假设为 YYYY.MM.DD)
+        # 优先权日 > 申请日
+        raw_date = biblio.get("priority_date") or biblio.get("application_date")
+
+        if not raw_date:
+            return ""
+
+        # 2. 格式化日期 (移除点号，转为 YYYYMMDD)
+        # 假设输入是 "2023.03.29" -> "20230329"
+        clean_date = raw_date.replace(".", "").replace("-", "").strip()
+
+        if not clean_date.isdigit() or len(clean_date) != 8:
+            logger.warning(f"日期格式异常: {raw_date}，跳过时间限制注入")
+            return ""
+
+        # 3. 根据数据库类型生成不同的语法
+        # 查新逻辑：检索 公开日(PD) 早于 截止日 的文献
+        if db_type in ["CNTXT", "VEN", "CNIPA", "EPO"]:
+            # 标准专利数据库语法
+            return f" AND PD < {clean_date}"
+        elif db_type in ["Google Scholar", "NPL"]:
+            # 学术引擎通常不支持直接在 query 中精准写 AND PD<...
+            # 这里可以选择不加，或者加一个备注，或者尝试通用语法
+            return ""  # NPL 建议由用户在 UI 界面设置年份过滤器，Query 中不硬编码
+
+        return ""
+
+    def _inject_date_constraints(self, plan: Dict[str, List[Dict]]) -> None:
+        """
+        遍历生成的策略，向专利数据库的检索式中注入时间限制。
+        """
+        strategies = plan.get("strategies", [])
+
+        for strategy in strategies:
+            queries = strategy.get("queries", [])
+            for q_item in queries:
+                db_type = q_item.get("db", "")
+                original_query = q_item.get("query", "")
+
+                # 仅对非空 query 且是专利库的注入
+                if original_query:
+                    date_clause = self._get_critical_date_clause(db_type)
+                    if date_clause:
+                        q_item["query"] = f"({original_query}){date_clause}"
+
     def _inject_semantic_strategy(self, strategy_plan: Dict) -> None:
         # 1. 获取技术手段文本
         tech_means = self.report_data.get("technical_means", "")
         if not tech_means:
             # 降级策略：如果 technical_means 为空，使用 technical_scheme 或 abstract
-            tech_means = self.report_data.get("technical_scheme") or self.report_data.get("ai_abstract", "")
-        
+            tech_means = self.report_data.get(
+                "technical_scheme"
+            ) or self.report_data.get("ai_abstract", "")
+
         # 2. 构造语义检索节点结构
         semantic_strategy = {
             "name": "语义检索",
             "description": "基于核心技术手段的自然语言输入，用于智能检索系统快速圈定X类文献。",
             "queries": [
-                {
-                    "db": "Smart Search",
-                    "step": "自然语言输入",
-                    "query": tech_means
-                }
-            ]
+                {"db": "Smart Search", "step": "自然语言输入", "query": tech_means}
+            ],
         }
 
         # 3. 插入到策略列表头部
         if isinstance(strategy_plan, dict):
             # 确保 strategies 键存在且为列表
-            if "strategies" not in strategy_plan or not isinstance(strategy_plan["strategies"], list):
+            if "strategies" not in strategy_plan or not isinstance(
+                strategy_plan["strategies"], list
+            ):
                 strategy_plan["strategies"] = []
-            
+
             # 插入到索引 0
             strategy_plan["strategies"].insert(0, semantic_strategy)
         # 如果 strategy_plan 为空或异常，初始化它
         else:
-            strategy_plan = { "strategies": [semantic_strategy] }
+            strategy_plan = {"strategies": [semantic_strategy]}

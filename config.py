@@ -5,13 +5,14 @@ from dotenv import load_dotenv
 # 加载 .env 环境变量
 load_dotenv()
 
+
 class Settings:
     # --- 基础路径配置 ---
     BASE_DIR = Path(__file__).resolve().parent
     INPUT_DIR = BASE_DIR / "input"
     OUTPUT_DIR = BASE_DIR / "output"
     ASSETS_DIR = BASE_DIR / "assets"
-    
+
     # 确保字体文件路径 (请手动放入 simhei.ttf 到 assets 目录)
     FONT_PATH = ASSETS_DIR / "simhei.ttf"
 
@@ -27,12 +28,12 @@ class Settings:
     VLM_MODEL = os.getenv("VLM_MODEL", "glm-4.6v")
 
     # --- 视觉处理配置 ---
-    FONT_SIZE = 20       # 标注字体大小
-    LABEL_COLOR = (0, 0, 255) # 标注颜色 (B, G, R) - 蓝色
+    FONT_SIZE = 20  # 标注字体大小
+    LABEL_COLOR = (0, 0, 255)  # 标注颜色 (B, G, R) - 蓝色
 
     # Mineru 配置
     MINERU_TEMP_FOLDER = "mineru_raw"
-    
+
     PDF_CSS = """    
     @page { 
         size: A4;
@@ -109,9 +110,9 @@ class Settings:
     }
     
     th, td { 
-        border: 1px solid #dfe2e5; 
+        border: 1px solid #dfe2e5;
         padding: 6px 8px;
-        text-align: left; 
+        text-align: left;
         vertical-align: top;
         word-break: break-word; 
         overflow-wrap: break-word;
@@ -119,8 +120,8 @@ class Settings:
     
     th { 
         background-color: #f2f6f9; 
-        color: #2c3e50; 
-        font-weight: bold; 
+        color: #2c3e50;
+        font-weight: bold;
         white-space: nowrap;
     }
 
@@ -188,7 +189,7 @@ class Settings:
         """
         project_root = self.OUTPUT_DIR / pdf_filename_stem
         mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
-        
+
         return {
             "root": project_root,
             "mineru_dir": mineru_output_dir,
@@ -197,12 +198,14 @@ class Settings:
             "annotated_dir": project_root / "annotated_images",
             "patent_json": project_root / "patent.json",  # 专利数据
             "parts_json": project_root / "parts.json",  # 部件数据
-            "image_parts_json": project_root / "image_parts.json", # 图片部件数据
+            "image_parts_json": project_root / "image_parts.json",  # 图片部件数据
             "report_json": project_root / "report.json",  # 专利分析报告数据
-            "search_strategy_json": project_root / "search_strategy.json", # 检索策略数据
+            "search_strategy_json": project_root
+            / "search_strategy.json",  # 检索策略数据
             "final_md": project_root / f"{pdf_filename_stem}.md",
-            "final_pdf": project_root / f"{pdf_filename_stem}.pdf"
+            "final_pdf": project_root / f"{pdf_filename_stem}.pdf",
         }
+
 
 settings = Settings()
 
