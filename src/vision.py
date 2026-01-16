@@ -38,7 +38,6 @@ class VisualProcessor:
             self.ocr_engine = PaddleOCR(
                 text_detection_model_name="PP-OCRv5_server_det",
                 text_recognition_model_name="PP-OCRv5_server_rec",
-                lang="ch",
                 use_doc_orientation_classify=False,  # 通过 use_doc_orientation_classify 参数指定不使用文档方向分类模型
                 use_doc_unwarping=False,  # 通过 use_doc_unwarping 参数指定不使用文本图像矫正模型
                 use_textline_orientation=False,  # 通过 use_textline_orientation 参数指定不使用文本行方向分类模型
@@ -71,8 +70,8 @@ class VisualProcessor:
             filename = img_path.name
             out_path = self.out_dir / filename
 
-            # 如果是目标图片 (摘要图或附图)
-            if filename in target_filenames:
+            # 如果部件数据存在并且是目标图片 (摘要图或附图) 
+            if self.parts_db and filename in target_filenames:
                 part_ids = self._process_single_image(img_path, out_path)
                 if part_ids:
                     image_parts[filename] = part_ids

@@ -197,7 +197,7 @@ class SearchStrategyGenerator:
 
         return f"""
         [发明名称] {biblio.get('invention_title')}
-        [IPC参考] {', '.join(self.base_ipcs[:3])}
+        [IPC参考] {', '.join(self.base_ipcs[:5])}
 
         === 1. Block A: 技术领域 (Subject) ===
         [保护主题 (检索主语)]
