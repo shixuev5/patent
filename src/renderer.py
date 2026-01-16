@@ -1,4 +1,5 @@
 import os
+import re
 import markdown
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -23,6 +24,16 @@ class ReportRenderer:
         if not clean_text:
             return ""
         return f"&emsp;&emsp;{clean_text}"
+    
+    def _md_bold_to_html(self, text):
+        """
+        将 **文本** 转换为 <strong>文本</strong>
+        
+        :param text: 说明
+        """
+        if not text: return "-"
+        # 将 **text** 替换为 <strong>text</strong>，re.DOTALL 允许跨行匹配
+        return re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', str(text), flags=re.DOTALL)
 
     def render(
         self,
@@ -118,19 +129,10 @@ class ReportRenderer:
 
         # 7.1 技术特征列表
         features = data.get("technical_features", [])
+        
+        feature_name_map = {}
+        
         if features:
-            # 排序逻辑：
-            # 1. 区别特征 (is_distinguishing=True) 排最前
-            # 2. 其次是前序特征 (claim_source="independent")
-            # 3. 最后是从权特征
-            features.sort(
-                key=lambda x: (
-                    x.get("is_distinguishing", False),
-                    x.get("claim_source", "") == "independent",
-                ),
-                reverse=True,
-            )
-
             lines.append("### 关键技术特征表")
 
             # HTML 表格头
@@ -148,8 +150,12 @@ class ReportRenderer:
             """
             for idx, feat in enumerate(features, 1):
                 name = feat.get("name", "-")
-                desc = feat.get("description", "-").replace("\n", "<br>")
-                rationale = feat.get("rationale", "").replace("\n", "<br>")
+                
+                # 存入映射表，方便技术效果中的贡献特征映射
+                feature_name_map[name.strip()] = idx
+                
+                desc = self._md_bold_to_html(feat.get("description", "-").replace("\n", "<br>")) 
+                rationale = self._md_bold_to_html(feat.get("rationale", "").replace("\n", "<br>")) 
 
                 is_distinguishing = feat.get("is_distinguishing", False)
                 source = str(feat.get("claim_source", "")).lower()
@@ -181,9 +187,8 @@ class ReportRenderer:
         # --- 8. 技术效果 (Technical Effects) ---
         lines.append("## 5. 技术效果")
         effects = data.get("technical_effects", [])
+        
         if effects:
-            effects.sort(key=lambda x: x.get("tcs_score", 0), reverse=True)
-
             table_html = """
 <table>
     <thead>
@@ -219,19 +224,33 @@ class ReportRenderer:
                 # 贡献特征：处理为无序列表 <ul>
                 contributors = eff.get("contributing_features", [])
                 if isinstance(contributors, list) and contributors:
+                    formatted_items = []
+                    for c in contributors:
+                        c_clean = str(c).strip()
+                        # 【修改点 1】尝试查找序号并追加
+                        feat_idx = feature_name_map.get(c_clean)
+                        if feat_idx:
+                            formatted_items.append(f"{c_clean} [{feat_idx}]")
+                        else:
+                            formatted_items.append(c_clean)
+                            
                     # 使用 <ul><li> 结构，避免数字混淆
-                    list_items = "".join([f"<li>{c}</li>" for c in contributors])
+                    list_items = "".join([f"<li>{item}</li>" for item in formatted_items])
                     contrib_html = f"<ul style='margin: 0;'>{list_items}</ul>"
                 else:
                     contrib_html = str(contributors) if contributors else "-"
 
-                rationale = eff.get("rationale", "-")
-                evidence = eff.get("evidence", "-")
+                 # 使用正则替换 Markdown 加粗语法，因为 HTML 表格内 MD 不会自动解析
+                rationale = self._md_bold_to_html(eff.get("rationale", "-"))
+                
+                raw_evidence = eff.get("evidence", "-")
+                # 对证据也进行加粗转换，防止证据里有强调语法失效
+                evidence_text = self._md_bold_to_html(raw_evidence)
 
-                if "仅声称" in evidence or "无实施例" in evidence:
-                    evidence_styled = f"<i style='color: #dc3545;'>⚠️ {evidence}</i>"
+                if "仅声称" in raw_evidence or "无实施例" in raw_evidence:
+                    evidence_styled = f"<i style='color: #dc3545;'>⚠️ {evidence_text}</i>"
                 else:
-                    evidence_styled = evidence
+                    evidence_styled = evidence_text
 
                 # Row 1: 效果 | 评分 | 贡献特征(列表) | 检索分级
                 table_html += f"""
