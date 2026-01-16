@@ -1,3 +1,4 @@
+import re
 import concurrent.futures
 from pathlib import Path
 from typing import Dict, Any, List
@@ -749,6 +750,17 @@ class SearchStrategyGenerator:
                     date_clause = self._get_critical_date_clause(db_type)
                     if date_clause:
                         q_item["query"] = f"({original_query}){date_clause}"
+                        
+    def _clean_for_search_query(self, text: str) -> str:
+        """
+        辅助函数：清洗用于语义检索的文本
+        """
+        if not text:
+            return ""
+
+        text = re.sub(r"\*\*(.+?)\*\*\s*\[\d+\]", r"\1", text)
+
+        return text.strip()
 
     def _inject_semantic_strategy(self, strategy_plan: Dict) -> None:
         # 1. 获取技术手段文本
@@ -758,13 +770,16 @@ class SearchStrategyGenerator:
             tech_means = self.report_data.get(
                 "technical_scheme"
             ) or self.report_data.get("ai_abstract", "")
+        
+        # 清洗 markdown 标记
+        clean_query = self._clean_for_search_query(tech_means)
 
         # 2. 构造语义检索节点结构
         semantic_strategy = {
             "name": "语义检索",
             "description": "基于核心技术手段的自然语言输入，用于智能检索系统快速圈定X类文献。",
             "queries": [
-                {"db": "Smart Search", "step": "自然语言输入", "query": tech_means}
+                {"db": "Smart Search", "step": "自然语言输入", "query": clean_query}
             ],
         }
 

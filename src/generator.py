@@ -419,7 +419,7 @@ class ContentGenerator:
         {claims_text}
         """
 
-        return self.llm_service.chat_completion_json(
+        response = self.llm_service.chat_completion_json(
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -427,6 +427,21 @@ class ContentGenerator:
             ],
             temperature=0.0,  # 保持零温度，追求最严谨的逻辑
         )
+        
+        # 按照 tcs_score 字段进行降序排序 (reverse=True)
+        if isinstance(response, Dict) and "technical_features" in response:
+            features = response.get("technical_features", [])
+            # 排序逻辑：
+            # 1. 区别特征 (is_distinguishing=True) 排最前
+            # 2. 其次是前序特征 (claim_source="independent")
+            # 3. 最后是从权特征
+            features.sort(key=lambda x: (
+                    x.get("is_distinguishing", False),
+                    x.get("claim_source", "") == "independent",
+                ), reverse=True)
+            response["technical_features"] = features
+        
+        return response
 
     def _verify_evidence(
         self, core_logic: Dict[str, Any], feature_list: List[Dict]
