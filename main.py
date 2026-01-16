@@ -10,6 +10,7 @@ from src.generator import ContentGenerator
 from src.search import SearchStrategyGenerator
 from src.renderer import ReportRenderer
 
+
 def main():
     # 0. 检查输入
     input_pdf = next(settings.INPUT_DIR.glob("*.pdf"), None)
@@ -33,7 +34,7 @@ def main():
     if not paths["raw_md"].exists():
         logger.error("Markdown file not found. Pipeline stopped.")
         return
-    
+
     md_content = paths["raw_md"].read_text(encoding="utf-8")
 
     # --- Step 2: 专利结构化转换 ---
@@ -45,7 +46,9 @@ def main():
         logger.info("Step 2: Transforming MD to structured JSON...")
         transformer = PatentTransformer()
         patent_data = transformer.transform(md_content)
-        paths["patent_json"].write_text(json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["patent_json"].write_text(
+            json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # --- Step 3: 知识提取 ---
     parts_db = {}
@@ -56,7 +59,9 @@ def main():
         logger.info("Step 3: Extracting knowledge...")
         extractor = KnowledgeExtractor()
         parts_db = extractor.extract_entities(patent_data)
-        paths["parts_json"].write_text(json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["parts_json"].write_text(
+            json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # --- Step 4: 视觉处理 (OCR + Annotate) ---
     logger.info("Step 4: Processing images (OCR & Annotation)...")
@@ -68,13 +73,16 @@ def main():
     else:
         logger.info("Step 4: Generating image parts json...")
         # 传入：专利数据(获取目标图片)、知识库(用于标注)、原始图片目录、输出目录
-        image_parts = VisualProcessor.process_patent_images(
+        processor = VisualProcessor(
             patent_data=patent_data,
             parts_db=parts_db,
             raw_img_dir=paths["raw_images_dir"],
-            out_dir=paths["annotated_dir"]
+            out_dir=paths["annotated_dir"],
         )
-        paths["image_parts_json"].write_text(json.dumps(image_parts, ensure_ascii=False, indent=2), encoding="utf-8")
+        image_parts = processor.process_patent_images()
+        paths["image_parts_json"].write_text(
+            json.dumps(image_parts, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # --- Step 5: 内容生成 ---
     logger.info("Step 5: Generating report...")
@@ -85,37 +93,40 @@ def main():
     else:
         logger.info("Step 5: Generating report json...")
 
-        cache_file = paths["root"].joinpath('report_intermediate.json')
+        cache_file = paths["root"].joinpath("report_intermediate.json")
         generator = ContentGenerator(
-            patent_data=patent_data, 
-            parts_db=parts_db, 
+            patent_data=patent_data,
+            parts_db=parts_db,
             image_parts=image_parts,
             annotated_dir=paths["annotated_dir"],
-            cache_file=cache_file
+            cache_file=cache_file,
         )
         report_json = generator.generate_report_json()
-        paths["report_json"].write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["report_json"].write_text(
+            json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # --- Step 6: 检索策略生成 ---
     logger.info("Step 6: Generating Search Strategy & Queries...")
     search_json = {}
     if paths["search_strategy_json"].exists():
         logger.info("Step 6: Loading search strategy json...")
-        search_json = json.loads(paths["search_strategy_json"].read_text(encoding="utf-8"))
+        search_json = json.loads(
+            paths["search_strategy_json"].read_text(encoding="utf-8")
+        )
     else:
         logger.info("Step 6: Generating search strategy json...")
-        
+
         # 初始化生成器
         cache_file = paths["root"].joinpath("search_strategy_intermediate.json")
         search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
-        
+
         # 执行生成
         search_json = search_gen.generate_strategy()
-        
+
         # 4. 写入独立的 JSON 文件
         paths["search_strategy_json"].write_text(
-            json.dumps(search_json, ensure_ascii=False, indent=2), 
-            encoding="utf-8"
+            json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
     # --- Step 7: 渲染 MD 和 PDF ---
@@ -125,10 +136,11 @@ def main():
         report_data=report_json,
         search_data=search_json,
         md_path=paths["final_md"],
-        pdf_path=paths["final_pdf"]
+        pdf_path=paths["final_pdf"],
     )
-    
+
     logger.success(f"Pipeline Completed! Output: {paths['final_pdf']}")
+
 
 if __name__ == "__main__":
     main()

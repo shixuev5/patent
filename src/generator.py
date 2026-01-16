@@ -8,8 +8,16 @@ from src.utils.llm import get_llm_service
 from src.utils.cache import StepCache
 from config import Settings
 
+
 class ContentGenerator:
-    def __init__(self, patent_data: Dict, parts_db: Dict, image_parts: Dict, annotated_dir: Path, cache_file: Path = None):
+    def __init__(
+        self,
+        patent_data: Dict,
+        parts_db: Dict,
+        image_parts: Dict,
+        annotated_dir: Path,
+        cache_file: Path = None,
+    ):
         self.llm_service = get_llm_service()
         self.parts_db = parts_db
         self.image_parts = image_parts
@@ -28,7 +36,7 @@ class ContentGenerator:
         # 1. 用于定义问题：看背景和目标
         self.text_field = self.description.get("technical_field", "")
         self.text_background = self.description.get("background_art", "")
-        self.text_effect =  self.description.get("technical_effect", "")
+        self.text_effect = self.description.get("technical_effect", "")
         self.list_ipc = self.biblio.get("ipc_classifications", [])
 
         # 2. 用于概括方案：看摘要、发明内容
@@ -38,32 +46,31 @@ class ContentGenerator:
 
         # 3. 用于验证细节：看具体实施方式
         self.text_details = self.description.get("detailed_description", "")
-    
+
     def generate_report_json(self) -> Dict[str, Any]:
         """
         执行专利逻辑分析流水线。
         Flow: [Domain/Problem] -> [Solution/Title] -> [Features] -> [Verification] -> [Visuals]
         """
-        logger.info(f"开始生成专利分析报告: {self.biblio.get('application_number', 'Unknown')}")
+        logger.info(
+            f"开始生成专利分析报告: {self.biblio.get('application_number', 'Unknown')}"
+        )
 
         try:
             # === Step 1: 领域定位与问题定义 ===
             # 输入：背景技术、技术效果
             # 输出：technical_field, technical_problem
             domain_problem_data = self.cache.run_step(
-                "step1_domain_problem", 
-                self._analyze_domain_and_problem
+                "step1_domain_problem", self._analyze_domain_and_problem
             )
-            
+
             # === Step 2: 解决方案封装 ===
             # 输入：Step 1的结果、独立权利要求、发明内容
             # 输出：ai_title, ai_abstract, technical_scheme
             solution_data = self.cache.run_step(
-                "step2_solution", 
-                self._synthesize_solution_package, 
-                domain_problem_data
+                "step2_solution", self._synthesize_solution_package, domain_problem_data
             )
-            
+
             # 合并核心逻辑数据 (Core Logic Context)
             core_logic = {**domain_problem_data, **solution_data}
 
@@ -71,9 +78,7 @@ class ContentGenerator:
             # 输入：核心逻辑、全部权利要求
             # 输出：claim_subject_matter、technical_features
             features_data = self.cache.run_step(
-                "step3_features", 
-                self._extract_features, 
-                core_logic
+                "step3_features", self._extract_features, core_logic
             )
             feature_list = features_data.get("technical_features", [])
 
@@ -81,24 +86,19 @@ class ContentGenerator:
             # 输入：核心逻辑、技术特征、具体实施方式
             # 输出：technical_means, technical_effects
             verification_data = self.cache.run_step(
-                "step4_verification", 
-                self._verify_evidence, 
-                core_logic, 
-                feature_list
+                "step4_verification", self._verify_evidence, core_logic, feature_list
             )
 
             # 图解生成 (遍历每一张图，生成解说和部件表)
             global_context = {
                 "title": solution_data.get("ai_title"),
                 "problem": domain_problem_data.get("technical_problem"),
-                "effects": verification_data.get("technical_effects", [])
+                "effects": verification_data.get("technical_effects", []),
             }
             figures_data = self.cache.run_step(
-                "step5_figures", 
-                self._generate_figures_analysis, 
-                global_context
+                "step5_figures", self._generate_figures_analysis, global_context
             )
-            
+
             # 组装最终 JSON
             # 寻找主图：通常是第一张图，或者摘要附图
             main_fig = self.biblio.get("abstract_figure")
@@ -107,30 +107,44 @@ class ContentGenerator:
 
             final_report = {
                 # 基础信息
-                "ai_title": solution_data.get("ai_title", self.biblio.get("invention_title")),
-                "ai_abstract": solution_data.get("ai_abstract", self.biblio.get("abstract", "")),
-                "abstract_figure": main_fig.replace('images', 'annotated_images')  if main_fig else None,
-                
+                "ai_title": solution_data.get(
+                    "ai_title", self.biblio.get("invention_title")
+                ),
+                "ai_abstract": solution_data.get(
+                    "ai_abstract", self.biblio.get("abstract", "")
+                ),
+                "abstract_figure": (
+                    main_fig.replace("images", "annotated_images") if main_fig else None
+                ),
                 # 核心逻辑六要素
-                "technical_field": domain_problem_data.get("technical_field"),              # 技术领域
-                "claim_subject_matter": features_data.get("claim_subject_matter", ""),      # 保护主题
-                "technical_problem": domain_problem_data.get("technical_problem"),          # 技术问题
-                "technical_scheme": solution_data.get("technical_scheme"),                  # 技术方案
-                "technical_means": verification_data.get("technical_means"),                # 技术手段
-                "technical_features": features_data.get("technical_features", []),          # 技术特征
-                "technical_effects": verification_data.get("technical_effects", []),        # 技术效果
-                
+                "technical_field": domain_problem_data.get(
+                    "technical_field"
+                ),  # 技术领域
+                "claim_subject_matter": features_data.get(
+                    "claim_subject_matter", ""
+                ),  # 保护主题
+                "technical_problem": domain_problem_data.get(
+                    "technical_problem"
+                ),  # 技术问题
+                "technical_scheme": solution_data.get("technical_scheme"),  # 技术方案
+                "technical_means": verification_data.get("technical_means"),  # 技术手段
+                "technical_features": features_data.get(
+                    "technical_features", []
+                ),  # 技术特征
+                "technical_effects": verification_data.get(
+                    "technical_effects", []
+                ),  # 技术效果
                 # 图解详细信息
-                "figure_explanations": figures_data
+                "figure_explanations": figures_data,
             }
-            
+
             logger.success("专利分析 JSON 生成完成")
             return final_report
 
         except Exception as e:
             logger.error(f"生成报告过程中发生错误: {str(e)}")
             return {"error": str(e), "status": "failed"}
-        
+
     def _format_claims_to_text(self, only_independent: bool = False) -> str:
         """
         通用辅助函数：将权利要求列表格式化为层级分明的 Markdown 文本。
@@ -140,26 +154,28 @@ class ContentGenerator:
         # 自动生成编号 (如果原始数据没有 id 字段)
         for idx, claim in enumerate(self.claims):
             # 1. 类型过滤
-            c_type_raw = claim.get('claim_type', 'dependent').lower()
-            is_indep = 'independent' in c_type_raw
-            
+            c_type_raw = claim.get("claim_type", "dependent").lower()
+            is_indep = "independent" in c_type_raw
+
             if only_independent and not is_indep:
                 continue
 
             # 2. 获取内容 (兼容不同字段名)
-            content = claim.get('claim_text') or claim.get('content') or ""
-            
+            content = claim.get("claim_text") or claim.get("content") or ""
+
             # 3. 构建标题
             # 假设 idx+1 为权利要求编号，实际项目中建议尽量使用原始编号
-            claim_id = claim.get('id', str(idx + 1))
-            type_label = "独立权利要求 (Independent)" if is_indep else "从属权利要求 (Dependent)"
-            
+            claim_id = claim.get("id", str(idx + 1))
+            type_label = (
+                "独立权利要求 (Independent)" if is_indep else "从属权利要求 (Dependent)"
+            )
+
             lines.append(f"### Claim {claim_id} [{type_label}]")
             lines.append(content.strip())
             lines.append("---")
-            
+
         return "\n".join(lines)
-        
+
     def _analyze_domain_and_problem(self) -> Dict[str, str]:
         """
         Step 1: 定位领域与定义问题。
@@ -224,12 +240,14 @@ class ContentGenerator:
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
-            temperature=0.1
+            temperature=0.1,
         )
 
-    def _synthesize_solution_package(self, problem_context: Dict[str, str]) -> Dict[str, str]:
+    def _synthesize_solution_package(
+        self, problem_context: Dict[str, str]
+    ) -> Dict[str, str]:
         """
         Step 2: 封装解决方案。
         关键点：结合 Step 1 确定的“问题”，将“独权”转化为易读的方案和标题。
@@ -313,11 +331,11 @@ class ContentGenerator:
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
-            temperature=0.1
+            temperature=0.1,
         )
-    
+
     def _extract_features(self, core_logic: Dict[str, Any]) -> Dict[str, Any]:
         """
         Step 3: 权利要求分析。
@@ -405,12 +423,14 @@ class ContentGenerator:
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
-            temperature=0.0 # 保持零温度，追求最严谨的逻辑
+            temperature=0.0,  # 保持零温度，追求最严谨的逻辑
         )
 
-    def _verify_evidence(self, core_logic: Dict[str, Any], feature_list: List[Dict]) -> Dict[str, Any]:
+    def _verify_evidence(
+        self, core_logic: Dict[str, Any], feature_list: List[Dict]
+    ) -> Dict[str, Any]:
         """
         Step 4: TCS 贡献度评分与证据验证
         目标：基于 TCS 模型，建立【特征-原理-效果-证据】的闭环验证体系。
@@ -418,30 +438,56 @@ class ContentGenerator:
         logger.debug("Step 4: Running TCS Analysis (Deep Evidence Verification)...")
 
         # 1. 预处理特征列表，供 LLM 选词 (避免 LLM 编造特征名称)
-        # 格式：[ID] 特征名称 (来源)
+        # 格式：[序号] 特征名称 (状态)
         feature_menu = []
-        for f in feature_list:
-            name = f.get('name', 'unknown').strip()
+        for idx, f in enumerate(feature_list, 1):
+            name = f.get("name", "unknown").strip()
             # 标记是否为区别特征，引导模型重点关注
-            status = "★区别特征" if f.get('is_distinguishing') else "前序/通用特征"
-            feature_menu.append(f"- {name} [{status}]")
-        
+            status = "★区别特征" if f.get("is_distinguishing") else "前序/从权特征"
+            feature_menu.append(f"[{idx}] {name} ({status})")
+
         feature_menu_str = "\n".join(feature_menu)
 
         system_prompt = """
         你是一名以“技术深度”和“逻辑严谨”著称的高级专利审查员。
         你的任务是基于**TCS（技术贡献评分）模型**和**第一性原理**，对专利方案进行深度剖析。
 
+        ### 核心指令：引用规范 (Citation Protocol)
+        为了确保逻辑链条清晰，你在撰写 `technical_means` (技术手段机理) 和 `rationale` (推演逻辑) 时：
+        1.  **必须引用序号**：提到任何来自【特征菜单】的特征时，必须带上其序号。
+        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [序号]`。
+        3.  *示例*：
+            *   *Bad:* "通过双气室结构降低了噪音..."
+            *   *Good:* "通过 **双气室结构** [3] 增加了气体膨胀路径，配合 **吸音棉** [5] 的多孔耗散机制..."
+
+        ---
+
         # 任务一：揭示技术机理 (The "Black Box" Revelation)
         **字段**: `technical_means`
         **指令**：请撰写一段约 200 字的深度技术综述，揭示该发明**“如何从根本上起作用”**。
+
+        **核心思维模型**：
+        请采用 **“IPO + 变换”** 的叙事结构：
+        1.  **Input (困境输入)**：原始信号/能量面临什么具体的混沌、损耗或冲突？
+        2.  **Process (关键变换)**：**★区别特征** 具体引入了什么物理定律、数学算法或控制逻辑，对输入进行了何种“变换”（调制、解耦、映射、补偿）？
+        3.  **Output (秩序输出)**：这种变换如何直接导向了【核心技术问题】的解决？
+
         **写作要求**：
-        1.  **拒绝表象**：不要写“A连接B，B连接C”。
-        2.  **第一性原理**：从物理学（受力、热传导）、信息论（熵、信噪比）、控制论（反馈、收敛）或化学（反应动力学）角度解释。
-        3.  **动态视图**：描述“流”（能量流、数据流、控制流）是如何在**★区别特征**之间流转，并最终化解【核心技术问题】的。
-        4.  **示例风格**：
-            *   *Bad:* "系统包含传感器和控制器，控制器接收信号。"
-            *   *Good:* "通过引入差分电容结构(区别特征)，将微小的机械位移转化为高信噪比的电信号，利用共模抑制原理消除环境噪声干扰(核心问题)，实现了微米级的动态测量。"
+        1.  **严禁结构罗列**：绝对禁止写成“A连接B，B固定在C上”的说明书摘要。我们要看的是“活的机理”，不是“死的结构”。
+        2.  **第一性原理视角**：
+            -   *机械/物理类*：谈论力的传递路径、热阻的改变、流场的重构。
+            -   *电学/控制类*：谈论信噪比的提升、反馈回路的收敛性、阻抗匹配。
+            -   *算法/软件类*：谈论特征空间的映射、熵的减少、计算复杂度的降维。
+        3.  **必须引用序号**：提及特征时，**必须**严格使用 `**特征名称** [序号]` 格式。
+        4.  **聚焦区别特征**：机理描述的重心必须落在标记为 `[★区别特征]` 的项上，说明它们是如何“四两拨千斤”地改变了现有技术的局限。
+
+        **范例对比**：
+        *   *Low Quality (表象罗列)*: 
+            "本发明包括 **振动传感器** [1] 和 **控制器** [2]。传感器安装在轴承座上，采集信号传给控制器，控制器进行FFT分析，如果超过阈值就报警。"
+            *(评语：这是小学生水平的看图说话，没有解释“为什么能解决隐匿故障”。)*
+
+        *   *High Quality (机理洞察)*: 
+            "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [4] 将高频载波中的低频故障冲击特征（信息熵高的部分）进行非线性映射，实质上是在频域上对信噪比进行了‘放大’。配合 **多级带通滤波器** [5] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
 
         # 任务二：效果验证与 TCS 评分 (The Strict Audit)
         **字段**: `technical_effects`
@@ -473,27 +519,29 @@ class ContentGenerator:
         #### 验证逻辑 (Evidence & Rationale)
         1.  **Contributing Features**: 
             -   必须根据【特征菜单】中的逻辑关系选择特征。
-            -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 [★区别特征] 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
-            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含后面的 "[...]" 状态标记。
-            -   *示例*：菜单项 "- 自适应滤波算法 [★区别特征]" -> 输出应为 "自适应滤波算法"。
+            -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 (★区别特征) 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
+            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含序号以及"(...)" 状态标记。
+            -   *示例*：菜单项 "[1] 自适应滤波算法 (★区别特征)" -> 输出应为 "自适应滤波算法"。
         2.  **Evidence (实锤)**：
             -   **一级证据（最佳）**：定位到具体的**实验数据对比**、图表（Figure X）或具体的**实施例参数**（如“温度控制在50-60度”）。
             -   **二级证据（次之）**：具体的逻辑推演描述。
             -   **无证据**：如果文中只有“具有...优点”的空话，填入“仅声称，无实施例支持”。
         3.  **Rationale (逻辑链)**：
             -   使用“特征 -> 机制 -> 效果”的句式。
+            -   **严格遵守引用规范**：必须写成 `**特征名称** [序号]` 的形式。
             -   例如：“双气室结构(特征)增加了气体膨胀路径(机制)，从而降低了排气噪音(效果)。”
 
         # 输出格式 (JSON Only)
+        必须严格输出标准的 JSON 对象，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         {
-            "technical_means": "基于第一性原理的机理描述...",
+            "technical_means": "基于...原理，利用 **特征A** [1] 实现了...",
             "technical_effects": [
                 {
                     "effect": "精炼的效果描述",
                     "tcs_score": 5,
                     "contributing_features": ["特征A", "特征B"],
                     "evidence": "实施例3：数据显示误报率从5%降至0.1%...",
-                    "rationale": "特征A建立了...机制，配合特征B的...作用，直接解决了..."
+                    "rationale": "**特征A** [1] 建立了...机制，配合 **特征B** [2] 的...作用，解决了..."
                 }
             ]
         }
@@ -520,13 +568,19 @@ class ContentGenerator:
             model=Settings.LLM_MODEL_REASONING,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
+                {"role": "user", "content": user_content},
             ],
-            temperature=0.1 # 保持低温度以确保精准引用特征名称
+            temperature=0.1,  # 保持低温度以确保精准引用特征名称
         )
 
+        # 按照 tcs_score 字段进行降序排序 (reverse=True)
+        if isinstance(response, Dict) and "technical_effects" in response:
+            effects = response.get("technical_effects", [])
+            effects.sort(key=lambda x: x.get("tcs_score", 0), reverse=True)
+            response["technical_effects"] = effects
+
         return response
-        
+
     def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """
         Step 3: 图解生成。
@@ -540,14 +594,14 @@ class ContentGenerator:
         # 构建全局部件索引字符串 (用于 Prompt 查阅)
         all_parts_summary = []
         for pid, info in self.parts_db.items():
-            name = info.get('name', '未知部件')
+            name = info.get("name", "未知部件")
             all_parts_summary.append(f"{pid}: {name}")
         global_parts_str = "\n".join(all_parts_summary)
 
         for drawing in self.drawings:
             file_path = drawing.get("file_path")
-            label = drawing.get("figure_label", "") # 如 "图1"
-            caption = drawing.get("caption", "")    # 如 "系统流程图"
+            label = drawing.get("figure_label", "")  # 如 "图1"
+            caption = drawing.get("caption", "")  # 如 "系统流程图"
 
             # 处理图片路径
             image_abs_path = None
@@ -556,11 +610,13 @@ class ContentGenerator:
                 filename = os.path.basename(file_path)
                 # 拼接标注图片目录的绝对路径
                 target_path = self.annotated_dir / filename
-                
+
                 if target_path.exists():
                     image_abs_path = str(target_path)
                 else:
-                    logger.warning(f"Annotated image not found: {target_path}, skipping vision analysis.")
+                    logger.warning(
+                        f"Annotated image not found: {target_path}, skipping vision analysis."
+                    )
 
             # 匹配图片 OCR 识别部件
             part_ids = []
@@ -571,14 +627,17 @@ class ContentGenerator:
 
             # 构建当前图片的局部部件上下文 (用于识别图里有什么)
             local_parts_context_str = ""
-            parts_table_data = [] # 用于 JSON 输出的结构化数据
+            parts_table_data = []  # 用于 JSON 输出的结构化数据
 
             if part_ids:
                 temp_desc_list = []
 
                 # 去重并升序排列
                 def natural_key(string_):
-                    return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', string_)]
+                    return [
+                        int(s) if s.isdigit() else s
+                        for s in re.split(r"(\d+)", string_)
+                    ]
 
                 part_ids = sorted(set(part_ids), key=natural_key)
 
@@ -586,16 +645,14 @@ class ContentGenerator:
                     # 兼容 pid 是 int 或 str 的情况
                     info = self.parts_db.get(str(pid)) or self.parts_db.get(int(pid))
                     if info:
-                        name = info.get('name', '未知')
-                        func = info.get('function', '未知功能')
+                        name = info.get("name", "未知")
+                        func = info.get("function", "未知功能")
                         # 为 Prompt 准备的文本
                         temp_desc_list.append(f"- 标号 {pid} ({name}): {func}")
                         # 为 JSON 准备的数据
-                        parts_table_data.append({
-                            "id": pid,
-                            "name": name,
-                            "function": func
-                        })
+                        parts_table_data.append(
+                            {"id": pid, "name": name, "function": func}
+                        )
                 local_parts_context_str = "\n".join(temp_desc_list)
             else:
                 local_parts_context_str = "（该图未识别到具体部件标号）"
@@ -603,49 +660,68 @@ class ContentGenerator:
             # 2. 获取说明书上下文
             # 查找包含 "图1" 或 "Fig.1" 的段落
             related_text = ""
-            clean_label = label.replace(" ", "") # 去空格匹配
+            clean_label = label.replace(" ", "")  # 去空格匹配
 
             if clean_label:
                 pattern = re.compile(rf"{clean_label}(?!\d)")
 
-                matches = [p.strip() for p in paragraphs if pattern.search(p.replace(" ", ""))]
+                matches = [
+                    p.strip() for p in paragraphs if pattern.search(p.replace(" ", ""))
+                ]
                 matches.sort(key=len, reverse=True)
                 related_text = "\n---\n".join(matches[:2])
 
             if not related_text:
-                related_text = caption # 降级使用标题
+                related_text = caption  # 降级使用标题
 
             # 3. 生成图片解说
             image_explanation = self._generate_single_figure_caption(
-                label, caption, local_parts_context_str, global_parts_str, related_text, global_context, image_abs_path
+                label,
+                caption,
+                local_parts_context_str,
+                global_parts_str,
+                related_text,
+                global_context,
+                image_abs_path,
             )
 
             # 4. 存入结果
-            results.append({
-                "image_path": file_path.replace('images', 'annotated_images'),
-                "image_title": f"{label} {caption}".strip(),
-                "image_explanation": image_explanation,
-                "parts_info": parts_table_data # 结构化部件数据（可能为空列表）
-            })
+            results.append(
+                {
+                    "image_path": file_path.replace("images", "annotated_images"),
+                    "image_title": f"{label} {caption}".strip(),
+                    "image_explanation": image_explanation,
+                    "parts_info": parts_table_data,  # 结构化部件数据（可能为空列表）
+                }
+            )
 
         return results
 
-    def _generate_single_figure_caption(self, label: str, caption: str, local_parts: str, global_parts: str, text_context: str, global_context: Dict, image_path: str) -> str:
+    def _generate_single_figure_caption(
+        self,
+        label: str,
+        caption: str,
+        local_parts: str,
+        global_parts: str,
+        text_context: str,
+        global_context: Dict,
+        image_path: str,
+    ) -> str:
         """
         生成单张图片的“看图说话”
         """
 
         # 格式："- [效果描述] (实现手段: 特征A, 特征B)"
-        effects_list = global_context.get('effects', []) or []
+        effects_list = global_context.get("effects", []) or []
         formatted_effects = []
-        
-        for e in effects_list[:4]: # 只取前4个重要效果，避免Token过长
-            eff_text = e.get('effect', '未知效果')
-            feats = e.get('contributing_features', [])
+
+        for e in effects_list[:4]:  # 只取前4个重要效果，避免Token过长
+            eff_text = e.get("effect", "未知效果")
+            feats = e.get("contributing_features", [])
             feat_text = ", ".join(feats)
-            
+
             formatted_effects.append(f"- {eff_text} (实现手段: {feat_text})")
-            
+
         effects_str = "\n".join(formatted_effects)
 
         system_prompt = """
@@ -715,12 +791,14 @@ class ContentGenerator:
         """
 
         try:
-            logger.info(f"正在进行视觉思考分析: {label} ({os.path.basename(image_path)})")
+            logger.info(
+                f"正在进行视觉思考分析: {label} ({os.path.basename(image_path)})"
+            )
 
             content = self.llm_service.analyze_image_with_thinking(
                 image_path=image_path,
                 system_prompt=system_prompt,
-                user_prompt=user_content
+                user_prompt=user_content,
             )
             return content.strip()
         except Exception as e:
