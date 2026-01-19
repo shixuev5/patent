@@ -30,6 +30,14 @@ class Settings:
     # --- 视觉处理配置 ---
     FONT_SIZE = 20  # 标注字体大小
     LABEL_COLOR = (0, 0, 255)  # 标注颜色 (B, G, R) - 蓝色
+    
+    # --- 智慧芽 ---
+    ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")
+    ZHIHUIYA_PASSWORD = os.getenv("ZHIHUIYA_PASSWORD", "")
+    ZHIHUIYA_CLIENT_ID = os.getenv("ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc")
+    
+    # --- Google Patents / SerpApi Configuration ---
+    SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 
     # Mineru 配置
     MINERU_TEMP_FOLDER = "mineru_raw"

@@ -1,4 +1,5 @@
 import re
+import json
 import concurrent.futures
 from pathlib import Path
 from typing import Dict, Any, List
@@ -23,33 +24,43 @@ class SearchStrategyGenerator:
 
     def generate_strategy(self) -> Dict[str, Any]:
         """
-        主入口：执行两阶段检索策略生成
+        主流程入口
+        Phase 1: 基础积木构建 (Matrix Builder)
+        Phase 2: 全局策略规划 (Strategic Planner)
+        Phase 3: 多库语法翻译 (Syntax Translator - Parallel)
+        Phase 4: 全局注入与封装 (Finalizer)
         """
-        logger.info("开始构建检索策略...")
+        logger.info("开始构建检索策略 (Plan-and-Execute Mode)...")
 
-        # 初始化默认返回结构
-        search_matrix = []
-        strategy_plan = {"strategies": []}
-
-        # Stage 1: 检索要素表 (Search Matrix) - 深度扩展
-        def _execute_stage1():
+        # --- Phase 1: 检索要素表 (Search Matrix) ---
+        def _execute_phase1():
             matrix_context = self._build_matrix_context()
             return self._build_search_matrix(matrix_context)
 
-        # 使用通用方法运行 Step 1
-        search_matrix = self.cache.run_step("step1_matrix", _execute_stage1)
-
+        search_matrix = self.cache.run_step("step1_matrix", _execute_phase1)
         if not search_matrix:
-            logger.warning("Search Matrix 为空，后续策略生成可能受限。")
+            logger.warning("Search Matrix 为空，策略生成将受限。")
+            return {"search_matrix": [], "search_plan": {"strategies": []}}
 
-        # Stage 2: 检索式构建 (Query Formulation) - 分库分治
-        query_context = self._build_query_context(search_matrix)
+        # --- Phase 2: 全局策略规划 (Planner) ---
+        # 这一步只决定“查什么”和“逻辑组合方式”，不涉及具体数据库语法
+        def _execute_phase2():
+            planner_context = self._build_planner_context(search_matrix)
+            return self._generate_universal_plan(planner_context)
+
+        universal_plan = self.cache.run_step("step2_plan", _execute_phase2)
+
+        # --- Phase 3: 多库语法翻译 (Translator) ---
+        # 并行将通用计划翻译为 CNTXT, VEN, NPL 的具体查询语句
+        translator_context = self._build_translator_context(
+            search_matrix, universal_plan
+        )
 
         # 定义任务映射
         tasks_map = {
-            "step2_cntxt": self._generate_cntxt_strategies,
-            "step2_ven": self._generate_ven_strategies,
-            "step2_npl": self._generate_npl_strategies,
+            "step3_cntxt": self._translate_to_cntxt,
+            "step3_ven": self._translate_to_ven,
+            "step3_npl": self._translate_to_npl,
         }
 
         results_map = {}
@@ -63,9 +74,9 @@ class SearchStrategyGenerator:
                     logger.info(f"Step [{key}]: 跳过 (命中缓存)")
                     results_map[key] = self.cache.get(key)
                 else:
-                    logger.info(f"Step [{key}]: 提交并行任务...")
+                    logger.info(f"Step [{key}]: 提交翻译任务...")
                     # 提交任务
-                    futures_map[executor.submit(func, query_context)] = key
+                    futures_map[executor.submit(func, translator_context)] = key
 
             # 2. 等待并行任务完成并保存缓存
             for future in concurrent.futures.as_completed(futures_map):
@@ -81,9 +92,9 @@ class SearchStrategyGenerator:
 
         # 合并所有策略
         combined_strategies = self._merge_strategies(
-            results_map.get("step2_cntxt", []),
-            results_map.get("step2_ven", []),
-            results_map.get("step2_npl", []),
+            results_map.get("step3_cntxt", []),
+            results_map.get("step3_ven", []),
+            results_map.get("step3_npl", []),
         )
 
         # 包装为最终对象
@@ -98,6 +109,7 @@ class SearchStrategyGenerator:
         # 合并结果
         return {
             "search_matrix": search_matrix,  # 对应你要求的中文、中文扩展、英文翻译
+            "universal_plan": universal_plan,  # 可选：返回通用计划供调试
             "search_plan": strategy_plan,  # 具体的检索步骤和分析
         }
 
@@ -105,40 +117,102 @@ class SearchStrategyGenerator:
         self, *strategy_lists: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        辅助函数：合并来自不同源的策略列表。
-        逻辑：
-        1. 保持输入列表的顺序 (例如 CNTXT -> VEN -> NPL)。
-        2. 如果策略名称 (name) 相同，则将后续的 queries 追加到已有策略中。
-        3. 如果策略名称不同，则视为新策略添加。
+        核心聚合函数：将散乱的策略按 Intent 聚类为四大战役。
+        
+        逻辑变更：
+        1. Input: Translator 返回 {name="具体战术", intent="Trace", ...}
+        2. Process: 
+           - Map intent="Trace" -> Group="追踪检索"
+           - Map name="具体战术" -> step="具体战术"
+        3. Output: {name="追踪检索", queries=[{step="具体战术", ...}]}
         """
-        merged_map = {}
+        # 1. 定义意图到分组的映射表 (Configuration)
+        # Key: Intent (来自 Planner), Value: (Group Name, Group Description)
+        INTENT_MAPPING = {
+            # --- Group 1: 追踪检索 ---
+            "Trace": ("追踪检索", "基于申请人/发明人的排查与背景追踪"),
+            "Competitor": ("追踪检索", "基于申请人/发明人的排查与背景追踪"), # 竞争对手也归入追踪
+            
+            # --- Group 2: 精确检索 ---
+            "Precision": ("精确检索", "Block A与Block B的结构化组合，锁定X类文献"),
+            "Synergy": ("精确检索", "Block A与Block B的结构化组合，锁定X类文献"), # 协同复现通常也是为了查准
+            
+            # --- Group 3: 扩展检索 ---
+            "Broad": ("扩展检索", "基于Block C的功能性或跨领域检索，寻找Y类文献"),
+            "Functional": ("扩展检索", "基于Block C的功能性或跨领域检索，寻找Y类文献"),
+            "Component": ("扩展检索", "基于Block C的功能性或跨领域检索，寻找Y类文献"),
+            
+            # --- Group 4: NPL 非专利 ---
+            "Fundamental": ("NPL 非专利检索", "针对学术数据库的术语检索(去专利化)"),
+            "NPL": ("NPL 非专利检索", "针对学术数据库的术语检索(去专利化)")
+        }
 
-        # 遍历所有传入的策略列表（按参数顺序）
+        # 用于保持顺序的字典: {Group_Name: Group_Dict}
+        grouped_strategies = {}
+        
+        # 定义分组的默认顺序 (确保输出 JSON 的顺序)
+        default_order = ["追踪检索", "精确检索", "扩展检索", "NPL 非专利检索"]
+        for group_name in default_order:
+            # 预先查找描述（反向查找）
+            desc = next((v[1] for k, v in INTENT_MAPPING.items() if v[0] == group_name), "")
+            grouped_strategies[group_name] = {
+                "name": group_name,
+                "description": desc,
+                "queries": []
+            }
+
+        # 2. 遍历合并
         for strategy_list in strategy_lists:
-            for strategy in strategy_list:
-                name = strategy.get("name")
-                if not name:
-                    continue
+            for item in strategy_list:
+                intent = item.get("intent", "Other")
+                db_type = item.get("db", "")
+                
+                # 特殊处理：如果 DB 是学术库，强制归入 NPL (双重保险)
+                if db_type in ["CNKI", "Google Scholar", "WanFang"]:
+                    intent = "Fundamental"
 
-                if name not in merged_map:
-                    # 首次遇到该名称：初始化新的策略对象
-                    # 注意：构造新字典以避免引用污染
-                    merged_map[name] = {
-                        "name": name,
-                        "description": strategy.get(
-                            "description", ""
-                        ),  # 保留首次出现的描述
-                        "queries": list(strategy.get("queries", [])),  # 复制查询列表
-                    }
+                # 获取映射信息
+                mapping = INTENT_MAPPING.get(intent)
+                
+                # 如果是未知的 Intent (如 Other)，归入扩展检索或新建其他
+                if not mapping:
+                    group_name = "其他检索"
+                    group_desc = "补充策略"
                 else:
-                    # 再次遇到该名称：仅合并 queries
-                    current_queries = merged_map[name]["queries"]
-                    new_queries = strategy.get("queries", [])
-                    if new_queries:
-                        current_queries.extend(new_queries)
+                    group_name, group_desc = mapping
 
-        # 返回合并后的列表
-        return list(merged_map.values())
+                # 初始化分组 (如果不在默认顺序中)
+                if group_name not in grouped_strategies:
+                    grouped_strategies[group_name] = {
+                        "name": group_name,
+                        "description": group_desc,
+                        "queries": []
+                    }
+
+                # 3. 构造 Query Item (核心字段转换)
+                # Translator.name -> Query.step
+                query_item = {
+                    "db": item.get("db"),
+                    "step": item.get("name"),  # <--- 关键：将策略名转为步骤名
+                    "query": item.get("query")
+                }
+                
+                grouped_strategies[group_name]["queries"].append(query_item)
+
+        # 4. 过滤掉没有 Query 的空组，并按顺序返回
+        final_list = []
+        # 先按默认顺序添加
+        for g_name in default_order:
+            if grouped_strategies[g_name]["queries"]:
+                final_list.append(grouped_strategies[g_name])
+                del grouped_strategies[g_name] # 处理完移除
+        
+        # 添加剩下的组 (如果有)
+        for g_data in grouped_strategies.values():
+            if g_data["queries"]:
+                final_list.append(g_data)
+
+        return final_list
 
     def _build_matrix_context(self) -> str:
         """
@@ -222,70 +296,6 @@ class SearchStrategyGenerator:
         {report.get('technical_means', '未定义')}
         """
 
-    def _build_query_context(self, matrix: List[Dict]) -> str:
-        """
-        阶段二上下文：专注逻辑组装
-        将 Matrix 重组为逻辑块 (Subject, KeyFeature, Functional)，
-        并结合申请人信息，为 LLM 提供清晰的“积木”。
-        """
-        biblio = self.patent_data.get("bibliographic_data", {})
-
-        # 1. 对 Matrix 进行逻辑分组 (Grouping)
-        # 这样 LLM 就能知道谁是“主语”，谁是“核心”，谁是“修饰”
-        grouped_matrix = {
-            "Subject": [],  # 块 A: 技术领域/基础产品
-            "KeyFeature": [],  # 块 B: 核心区别特征 (重点)
-            "Functional": [],  # 块 C: 效果/功能/问题
-            "Other": [],
-        }
-
-        for item in matrix:
-            role = item.get("role", "Other")
-            # 格式化单个要素
-            content = (
-                f"   - [ID: {item['concept_key']}]\n"
-                f"     ZH: {', '.join(item.get('zh_expand', [])[:5])}\n"  # 限制长度防Token溢出
-                f"     EN: {', '.join(item.get('en_expand', [])[:5])}\n"
-                f"     IPC/CPC: {', '.join(item.get('ipc_cpc_ref', []))}"
-            )
-            grouped_matrix[role].append(content)
-
-        # 2. 构建文本块
-        matrix_text = []
-        if grouped_matrix["Subject"]:
-            matrix_text.append(
-                f"【Block A - 技术领域 (Subject)】:\n"
-                + "\n".join(grouped_matrix["Subject"])
-            )
-
-        if grouped_matrix["KeyFeature"]:
-            matrix_text.append(
-                f"【Block B - 核心创新点 (KeyFeatures - 必须出现在检索式中)】:\n"
-                + "\n".join(grouped_matrix["KeyFeature"])
-            )
-
-        if grouped_matrix["Functional"]:
-            matrix_text.append(
-                f"【Block C - 功能与效果 (Functional - 用于组词或验证)】:\n"
-                + "\n".join(grouped_matrix["Functional"])
-            )
-
-        formatted_matrix = "\n\n".join(matrix_text)
-
-        # 3. 处理申请人和发明人 (用于追踪检索)
-        applicants = ", ".join([a["name"] for a in biblio.get("applicants", [])][:3])
-        inventors = ", ".join(biblio.get("inventors", [])[:3])
-
-        return f"""
-        【检索要素积木 (Building Blocks)】:
-        {formatted_matrix}
-
-        【背景约束 (Constraints)】:
-        - 现有 IPC (Base IPCs): {', '.join(self.base_ipcs[:3])}
-        - 申请人 (Assignee): {applicants}
-        - 发明人 (Inventor): {inventors}
-        """
-
     def _build_search_matrix(self, context: str) -> List[Dict]:
         """
         阶段一：基于专家策略构建检索要素表 (Search Matrix)
@@ -363,117 +373,385 @@ class SearchStrategyGenerator:
         # 确保返回的是列表
         return response if isinstance(response, list) else []
 
-    def _generate_cntxt_strategies(self, context: str) -> List[Dict]:
+    def _build_planner_context(self, matrix: List[Dict]) -> str:
         """
-        Step 2.1: 生成 CNTXT 中文检索策略
-        侧重：基于 Block A/B/C 的逻辑组装、S/P/nD 精确算符、申请人清洗
+        阶段二上下文构建：为 Planner 提供结构化作战地图。
+
+        核心改进：
+        1. 显式划分 Block A/B/C 区域，明确组件角色。
+        2. 结合 Report 数据引入 'Synergy Clusters' (协同效应) 和 'Pivot Features' (核心轴心)。
+        3. 提供关键词预览，帮助 LLM 感知词汇粒度。
         """
-        logger.info("[SearchAgent] Generating CNTXT Strategies...")
+        biblio = self.patent_data.get("bibliographic_data", {})
+        report = self.report_data
+
+        # --- 1. 建立映射索引 (Matrix Concept -> Metadata) ---
+        # 方便后续校验 Feature 是否存在于 Matrix 中
+        matrix_map = {item["concept_key"]: item for item in matrix}
+
+        # --- 2. 积木逻辑分组 (Building Blocks Inventory) ---
+        # 将平铺的 List 重组为有层级的 Dict，方便 LLM 理解角色
+        grouped_blocks = {
+            "Subject": [],  # Block A: 基础产品/领域
+            "KeyFeature": [],  # Block B: 核心创新点
+            "Functional": [],  # Block C: 效果/问题
+            "Other": [],
+        }
+
+        for item in matrix:
+            role = item.get("role", "Other")
+            # 如果 role 标记不在预设范围内，归入 Other
+            if role not in grouped_blocks:
+                role = "Other"
+
+            # 提取前3个关键词作为预览，帮助Planner判断词汇宽窄
+            cn_preview = ",".join(item.get("zh_expand", [])[:3])
+            en_preview = ",".join(item.get("en_expand", [])[:3])
+
+            block_desc = (
+                f"   - [ID: {item['concept_key']}] (Type: {item.get('feature_type', 'N/A')})\n"
+                f"     Preview: {cn_preview} | {en_preview}"
+            )
+            grouped_blocks[role].append(block_desc)
+
+        # 构建积木文本块
+        inventory_text = []
+        if grouped_blocks["Subject"]:
+            inventory_text.append(
+                f"=== Block A: Subject (基础主语/应用场景) ===\n"
+                + "\n".join(grouped_blocks["Subject"])
+            )
+        if grouped_blocks["KeyFeature"]:
+            inventory_text.append(
+                f"=== Block B: KeyFeatures (核心创新结构/方法) ===\n"
+                + "\n".join(grouped_blocks["KeyFeature"])
+            )
+        if grouped_blocks["Functional"]:
+            inventory_text.append(
+                f"=== Block C: Functional (技术效果/优化目标) ===\n"
+                + "\n".join(grouped_blocks["Functional"])
+            )
+
+        # --- 3. 提取协同聚类 (Synergy Clusters) ---
+        # 逻辑：从 Report 中读取“技术效果”，寻找绑定在一起的 >=2 个特征
+        clusters_text = []
+        for effect in report.get("technical_effects", []):
+            contributors = effect.get("contributing_features", [])
+            # 过滤：只保留在 Matrix 中存在的特征，防止幻觉
+            valid_contributors = [f for f in contributors if f in matrix_map]
+
+            if len(valid_contributors) >= 2:
+                clusters_text.append(
+                    f"- [Synergy Target]: {effect.get('effect')} (Score: {effect.get('tcs_score', 0)})\n"
+                    f"  Bound Components: {json.dumps(valid_contributors, ensure_ascii=False)}\n"
+                    f"  Rationale: {effect.get('rationale', '通过特定结构组合实现该效果')}"
+                )
+
+        # --- 4. 提取高分轴心 (Pivot Features) ---
+        # 逻辑：提取 TCS Score >= 4 的特征，这些通常是检索的必备词
+        high_score_features = []
+        for feat in report.get("technical_features", []):
+            name = feat.get("name")
+            score = feat.get("tcs_score", 0)
+            # 必须是 Matrix 里有的词，且分数够高
+            if score >= 4 and name in matrix_map:
+                high_score_features.append(f"{name} (Importance: {score}/5)")
+
+        # --- 5. 组装最终上下文 ---
+        applicants = ", ".join([a["name"] for a in biblio.get("applicants", [])][:3])
+        inventors = ", ".join(biblio.get("inventors", [])[:3])
+
+        return f"""
+        【作战地图：检索要素清单 (Search Inventory)】
+        {chr(10).join(inventory_text)}
+
+        【核心策略输入 1: 协同聚类 (Synergy Clusters)】
+        *指示：以下组件具有强因果关系，建议在"Synergy"策略中捆绑检索 (使用 P/S 算符)*
+        {chr(10).join(clusters_text) if clusters_text else "暂无强聚类关系，请使用常规 Block A + Block B 组合。"}
+
+        【核心策略输入 2: 高分轴心 (Pivot Features)】
+        *指示：以下特征是发明的核心骨架，必须作为"Precision"或"Broad"策略的轴心词*
+        Pivot Candidates: {', '.join(high_score_features) if high_score_features else "无高分特征，请均衡组合 Block B 中的要素。"}
+
+        【案情背景 (Constraints)】
+        - Base IPCs: {', '.join(self.base_ipcs[:3])}
+        - Applicant: {applicants}
+        - Inventor: {inventors}
+        """
+
+    def _generate_universal_plan(self, context: str) -> List[Dict]:
+        """
+        阶段二 Step 1: 生成通用检索计划 (Universal Search Plan)
+
+        该函数制定战略层面的“作战意图”。
+        """
+        logger.info("[SearchAgent] Step 2.1: Planning Universal Strategy...")
 
         system_prompt = """
-        你是一位**中国国家知识产权局 (CNIPA) 的资深审查员**。
-        你的任务是基于提供的【检索要素积木 (Building Blocks)】，编写适用于 **CNTXT (中国专利全文数据库)** 的专业检索式。
+        你是一位 **高级专利检索策略专家 (Senior Search Strategist)**。
+        你的任务是基于提供的【作战地图 (Search Inventory)】、【协同聚类】和【高分轴心】，制定一份覆盖全场景的检索计划。
 
-        ### 输入数据说明 (积木定义)
-        你将看到以下逻辑块，请严格按照各块的**角色定义**进行组合：
-        1. **【Block A (Subject)】**: 技术领域/基础产品（如：无人机、轴承）。作为检索式的**基础主语**。
-        2. **【Block B (KeyFeature)】**: 核心创新点/区别特征（如：折叠旋翼、陶瓷涂层）。这是检索式的**必须限制条件**。
-        3. **【Block C (Functional)】**: 功能/效果（如：散热、减震）。主要用于扩展检索或实施例验证。
-        4. **【背景约束】**: 包含申请人、发明人和 IPC 分类号。
+        ### 核心任务：制定 8 类战术意图
+        请根据案情灵活组合以下策略。如果某类 Block (如 Block C) 数据为空，则跳过相关策略。
 
-        ### CNTXT 语法铁律
-        1. **逻辑算符**: 仅使用 `AND`, `OR`, `NOT`。严禁使用 `+`, `-`。
+        1.  **[Trace] 来源追踪 (Source Tracking)**
+            -   **目标**: 锁定申请人或发明人的相关专利。
+            -   **逻辑**: 
+                - 若申请人是初创/个人: 仅使用 ["Assignee", "Inventor"]。
+                - **降噪 (Noise Reduction)**: 若申请人为大型企业(如华为/波音)或常见名，必须追加 "IPC" 限制。
+            -   **适用源**: Patent。
+
+        2.  **[Competitor] 竞争对手技术穿透 (Competitor-Tech Intersection)**
+            -   **目标**: 精准打击特定申请人（尤其是本案申请人）在该技术点上的布局，寻找自我抵触。
+            -   **逻辑**: 必须包含 "Assignee" 以及 "Block B (KeyFeature)" 中的核心词。
+            -   **组件**: ["Assignee", "ID_of_KeyFeature"]。
+
+        3.  **[Precision] 核心新颖性打击 (Novelty - X Document)**
+            -   **目标**: 寻找与【Block B (KeyFeature)】完全一致的现有技术。
+            -   **路径**: 
+                - 优先: "Block A (Subject) + Pivot Feature (高分轴心)"。
+                - 常规: "Block A (Subject) + Block B (其他特征)"。
+            -   **要求**: 强调 **SameSentence (同句)** 紧密逻辑。
+
+        4.  **[Synergy] 方案复现与协同 (Full Embodiment)**
+            -   **目标**: 验证【协同聚类】中的特征组合，或寻找完整的实施例。
+            -   **路径**:
+                - 若存在【协同聚类 (Clusters)】: 直接提取 Cluster 中的 Bound Components 进行组合。
+                - 常规: "Block A + Block B + Block C (Functional)"。
+            -   **要求**: 强调 **SameParagraph (同段)** 或 **BooleanAND (全文)**。
+
+        5.  **[Functional] 功能性泛化 (Problem-Solution - Y Document)**
+            -   **目标**: 寻找“不同结构但实现相同功能”的现有技术。
+            -   **逻辑**: **保留 Block A (Subject)，保留 Block C (Functional)，刻意丢弃 Block B**。
+            -   **组件**: ["ID_of_Subject", "ID_of_Function"]。
+
+        6.  **[Component] 组件跨界应用 (Cross-Domain Component)**
+            -   **目标**: 寻找该核心结构在其他领域（非 Block A）的应用。
+            -   **逻辑**: **保留 Block B，保留 Block C，刻意丢弃 Block A**。
+            -   **组件**: ["ID_of_KeyFeature", "ID_of_Function"]。
+
+        7.  **[Broad] 宽泛/创造性 (Creativity - Y Document)**
+            -   **目标**: 忽略具体应用场景，寻找核心特征在其他领域的应用。
+            -   **逻辑**: 仅保留 "Block B (KeyFeature)"，并强制结合 "IPC" 以防噪音。
+            -   **组件**: ["ID_of_KeyFeature", "IPC"]。
+
+        8.  **[Fundamental] 基础原理/学术溯源 (Academic/NPL)**
+            -   **目标**: 针对算法、材料或机理进行去专利化的学术搜索。
+            -   **逻辑**: 
+                - 若 Block B 是算法/材料: 仅搜索 "Block B"。
+                - 若 Block B 是通用结构: 搜索 "Block A + Block B" (自然语言)。
+            -   **适用源**: Academic (CNKI/Scholar)。
+
+        ### 输出约束 (Strict Constraints)
+        1.  **JSON List Only**: 直接返回 JSON 列表，严禁 Markdown 格式，严禁废话。
+        2.  **ID Validation**: 
+            - `components` 列表中的值必须是以下两类之一：
+              a) **Reserved Keywords**: "Assignee", "Inventor", "IPC"
+              b) **Concept IDs**: 必须严格匹配【检索要素清单】中方括号内的 ID (如 `UAV_System`, `Folding_Wing`)。
+        3.  **Field Definition**:
+            -   `name`: 策略名称 (简短描述)。
+            -   `intent`: [Trace, Competitor, Precision, Synergy, Functional, Component, Broad, Fundamental]。
+            -   `proximity`: [None, SameSentence, SameParagraph, BooleanAND, NaturalLanguage]。
+            -   `components`: [ID1, ID2, ...] (积木ID或保留字列表)。
+            -   `target_source`: [Patent, Academic, All]。
+
+        ### JSON 输出示例
+        [
+            {
+                "name": "华为-IPC联合降噪追踪",
+                "intent": "Trace",
+                "components": ["Assignee", "IPC"],
+                "proximity": "BooleanAND",
+                "target_source": "Patent"
+            },
+            {
+                "name": "本申请人-折叠翼自我抵触排查",
+                "intent": "Competitor",
+                "components": ["Assignee", "Folding_Wing_Pivot"],
+                "proximity": "BooleanAND",
+                "target_source": "Patent"
+            },
+            {
+                "name": "无人机-散热功能泛化(去结构)",
+                "intent": "Functional",
+                "components": ["UAV_System", "Heat_Dissipation"],
+                "proximity": "SameParagraph",
+                "target_source": "Patent"
+            }
+        ]
+        """
+
+        response = self.llm_service.chat_completion_json(
+            model=settings.LLM_MODEL_REASONING,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context},
+            ],
+        )
+
+        return response if isinstance(response, list) else []
+
+    def _build_translator_context(self, matrix: List[Dict], plan: List[Dict]) -> str:
+        """
+        阶段二 Step 2 (Context): 为翻译器构建详细的“词汇表”与“作战计划”。
+
+        核心作用：
+        1. 将抽象的 ID (如 'UAV_System') 关联到具体的扩展词 (如 '无人机, 无人驾驶飞行器...')。
+        2. 提供 IPC 和 申请人信息，供 Trace/Broad 策略使用。
+        """
+        biblio = self.patent_data.get("bibliographic_data", {})
+
+        # 1. 构建词汇表 (Vocabulary)
+        # 格式: ID -> { CN: [...], EN: [...], IPC: [...] }
+        vocabulary = []
+        for item in matrix:
+            # 过滤掉过短的词或无意义词，保证质量
+            zh_keywords = [w for w in item.get("zh_expand", []) if len(w) > 1]
+            en_keywords = [w for w in item.get("en_expand", []) if len(w) > 2]
+
+            vocab_entry = (
+                f"ID: [{item['concept_key']}]\n"
+                f"  - CN_Keywords: {', '.join(zh_keywords[:8])} ...\n"  # 限制数量防Token溢出
+                f"  - EN_Keywords: {', '.join(en_keywords[:8])} ...\n"
+                # 关键修复：提供特征自身的分类号，而非专利的主分类号，用于扩展检索
+                f"  - Self_IPC (For Broad Search): {', '.join(item.get('ipc_cpc_ref', []))}"
+            )
+            vocabulary.append(vocab_entry)
+
+        # 2. 序列化通用计划
+        # 在这里执行 ID 校验，防止 LLM 幻觉
+        validated_plan = self._validate_plan_ids(plan, matrix)
+        plan_str = json.dumps(validated_plan, ensure_ascii=False, indent=2)
+
+        # 3. 提取背景约束 (传入原始数据)
+        # 关键修复：传入 Raw Data，让 Prompt 处理多样性
+        raw_applicants = [a["name"] for a in biblio.get("applicants", [])]
+        raw_inventors = biblio.get("inventors", [])
+
+        constraints = (
+            f"- Base IPCs (Patent's Field): {', '.join(self.base_ipcs[:3])}\n"
+            f"- Raw Assignees: {json.dumps(raw_applicants, ensure_ascii=False)}\n"
+            f"- Raw Inventors: {json.dumps(raw_inventors, ensure_ascii=False)}"
+        )
+
+        return f"""
+        === 1. 词汇映射表 (Vocabulary Map) ===
+        *Translator 请注意：将 Plan 中的 Component ID 替换为这里的 Keywords*
+        {chr(10).join(vocabulary)}
+
+        === 2. 背景约束数据 (Constraints Data) ===
+        *用于 Trace (申请人) 策略*
+        {constraints}
+
+        === 3. 通用检索计划 (Universal Plan) ===
+        *请将以下每一条 Plan 翻译为目标数据库的查询语句*
+        {plan_str}
+        """
+        
+    def _validate_plan_ids(self, plan: List[Dict], matrix: List[Dict]) -> List[Dict]:
+        """
+        辅助函数：防止 Planner 编造不存在的 ID (Hallucination Check)
+        """
+        valid_ids = {item["concept_key"] for item in matrix}
+        # 添加保留字 (Reserved Keywords)
+        valid_ids.add("Assignee")
+        valid_ids.add("Inventor")
+        valid_ids.add("IPC")
+        
+        cleaned_plan = []
+        for strategy in plan:
+            components = strategy.get("components", [])
+            # 过滤掉不存在的 ID
+            valid_components = [cid for cid in components if cid in valid_ids]
+            
+            # 如果过滤后组件为空（且不是 Trace 策略），则丢弃该策略
+            if not valid_components and strategy.get("intent") != "Trace":
+                logger.warning(f"Strategy '{strategy.get('name')}' dropped due to invalid IDs: {components}")
+                continue
+                
+            strategy["components"] = valid_components
+            cleaned_plan.append(strategy)
+            
+        return cleaned_plan
+
+    def _translate_to_cntxt(self, context: str) -> List[Dict]:
+        """
+        阶段二 Step 2.1 (Translation): 将通用计划翻译为 CNTXT 中文检索式。
+        """
+        logger.info("[SearchAgent] Translating Plan to CNTXT syntax...")
+
+        system_prompt = """
+        你是一位 **CNIPA 专利检索专家**。
+        你的任务是将输入的【通用检索计划 (Universal Plan)】结合【词汇映射表】，翻译为 **CNTXT (中国专利全文数据库)** 的标准检索式。
+        
+        ### 0. 过滤原则 (Filtering Rule)
+        -   **忽略** 任何 `intent` 为 **"Fundamental"** 的策略（因为它们针对 Academic 数据库）。
+        -   仅处理针对 Patent 的策略 (Trace, Precision, Synergy, Functional, Component, Broad, Competitor)。
+
+        ### 1. CNTXT 语法铁律 (Syntax Iron Rules)
+        必须严格遵守以下规则，任何违反都将导致检索失败：
+        
+        1. **逻辑算符**: 仅使用 `AND`, `OR`, `NOT`。**严禁**使用 `+`, `-`。
+        
         2. **位置算符 (核心武器)**:
-           - `S` (同句): 最强位置限定。必须用于 **Block A (主语) 与 Block B (结构类特征)** 的组合。例: `(活塞 S 螺旋槽)`。
+           - `S` (同句): **最强位置限定**。必须用于 **Block A (主语) 与 Block B (结构类特征)** 的组合。例: `(活塞 S 螺旋槽)`。
            - `nD` (词距): 灵活限定。用于 **Block B 中较长的修饰语** 内部组装。例: `(神经网络 5D 训练)`。
            - `P` (同段): 宽松限定。用于 **Block A (主语) 与 Block B/C (不同组件/功能)** 的组合。
-           - **禁止**在全文(`/TXT`)中直接使用 `AND` 连接通用词，必须用 `P`或`S`。
+           - **TXT字段禁令**: **禁止**在全文(`/TXT`)中直接使用 `AND` 连接通用技术词，必须用 `P` 或 `S`。
+           
         3. **字段**: `/TI` (名称), `/AB` (摘要), `/CLMS` (权利要求), `/TXT` (全文), `/PA` (申请人), `/IN` (发明人)。
-        4. **长复合词拆解策略**：
-            - 当 Block A 或 Block B 中出现长复合名词（如“谐波减速器柔性轴承试验台”），**严禁直接全词检索**。
+        
+        4. **长复合词拆解策略 (Compound Splitting)**:
+            - 当 Block A 或 Block B 中出现长复合名词（如“谐波减速器柔性轴承试验台”，长度>4），**严禁直接全词检索**。
             - 必须将其拆解为 **[修饰词]**、**[核心名词]**、**[功能/后缀]**。
-            - 先用 `nD` 将 [修饰词] 与 [核心名词] 紧密连接，再用 `S` 将上述组合与 [功能/后缀] 连接。
-            - *示例*: `((谐波 OR 柔性) 5D (轴承)) S (试验 OR 测试)`。
+            - **操作步骤**: 先用 `nD` 将 [修饰词] 与 [核心名词] 紧密连接，再用 `S` 将上述组合与 [功能/后缀] 连接。
+            - *示例*: 词表中是 "柔性显示面板" -> 翻译为 `((柔性 OR 柔性化) 5D (显示面板 OR 屏幕))`。
+            - *示例*: 词表中是 "谐波减速器柔性轴承试验台" -> 翻译为 `((谐波 OR 柔性) 5D (轴承)) S (试验 OR 测试)`。
 
-        ### 检索策略生成流程 (必须严格按步骤执行)
+        ### 2. 意图与语法映射 (Intent -> Syntax)
+        请根据 Plan 中的 `intent` 字段选择对应的翻译模板：
 
-        #### Step 1: 追踪检索 (Inventor/Assignee Trace)
-        - **核心原则**: 宁滥勿缺。除非申请人是巨头，否则**严禁使用技术关键词**进行限定。
+        -   **[Trace] 来源追踪**
+            -   **输入**: 读取【背景约束】中的 `Raw Assignees`。
+            -   **清洗**: 去除 "Co., Ltd", "有限公司", "股份公司" 等后缀，提取核心商号（如 "华为技术" -> "华为"）。
+            -   **逻辑**: 
+                - 若 `components` 包含 "IPC": `/PA=(核心商号) AND (Base IPCs 前4位)/IPC` (降噪模式)。
+                - 否则: `/PA=(核心商号) OR /IN=(发明人)` (全量模式)。
         
-        - **Query 1.1 (名称清洗与变体)**:
-            - **CNTXT**: 使用申请人(PA)的**核心词**（去除 "Co., Ltd", "股份公司" 等后缀）。
-            - 语法: `/PA=(核心词1 OR 核心词2) OR /IN=(发明人姓名)`
+        -   **[Competitor] 竞争对手穿透**
+            -   **逻辑**: 锁定申请人在该技术点的布局。
+            -   **语法**: `/PA=(核心商号) AND ((Block B 扩展关键词)/TI/AB/CLMS)`。
+            -   *注意*: 仅在核心字段(TI/AB/CLMS)检索 Block B，以确保相关性。
         
-        - **Query 1.2 (巨头降噪策略)**:
-          - 仅当申请人是知名大企业时，为了避免结果过多，使用 **IPC 小类 (Subclass, 4位)** 进行限定。
-          - **绝对禁止**在此阶段使用具体的“结构关键词”，防止术语不一致导致的漏检。
-          - 语法: `/PA=... AND (IPC前4位)/IPC`
-           
-        #### Step 2: 精确检索 (Precision) - [Block A + Block B 组合]
-        - **目标**: 针对 X 类文献（新颖性），利用核心特征进行“切片打击”。
-        - **原则**: 所有的词必须包含 `zh_expand` 扩展词。
+        -   **[Precision] 核心新颖性 (Block A + B)**
+            -   **逻辑**: 必须使用强位置限定。
+            -   **语法**: `((Block A 扩展) S (Block B 扩展))/CLMS` (优先权利要求)。
+            -   *备选*: 如果词汇较偏，可放宽到 `((Block A) S (Block B))/TXT`。
+        
+        -   **[Functional] 功能泛化 (Block A + C)**
+            -   **逻辑**: 寻找实现相同功能(C)的主体(A)，**忽略**结构(B)。
+            -   **语法**: `((Block A 扩展) P (Block C 扩展))/TXT`。
+            -   *注意*: 使用 `P` (同段) 而非 `S`，因为功能描述通常跟在产品名称后面一段距离。
+        
+        -   **[Component] 组件跨界 (Block B + C)**
+            -   **逻辑**: 寻找结构(B)实现功能(C)的其他应用，**忽略**原主体(A)。
+            -   **语法**: `((Block B 扩展) S (Block C 扩展))/TXT`。
+        
+        -   **[Synergy] 方案复现 (Block A + B + C)**
+            -   **语法**: `((Block A) P (Block B) P (Block C))/TXT`。
+        
+        -   **[Broad] 跨领域 (Block B + IPC)**
+            -   **逻辑**: 核心结构(B) + 基础分类号限制(IPC)。
+            -   **输入**: 读取【背景约束】中的 `Base IPCs` (取前4位，如 G06F)。
+            -   **语法**: `((Block B 扩展)/TI/AB/CLMS) AND ((Base IPCs)/IPC)`。
 
-        - **Query 2.1 (权利要求核心 / Claim Focus)**:
-            - **逻辑**: 锁定最核心的创新结构。通常位于权利要求 1 中。
-            - **组合**: **Block A (主语)** + **Block B (核心特征)**。
-            - **语法**: 
-                - 若 Block B 是结构词: `((Block A 扩展) S (Block B 扩展))/CLMS`
-                - 若 Block B 是参数/长修饰: `((Block A 扩展) 10D (Block B 扩展))/CLMS`
-            - *示例*: `((减速器 OR 减速机) S (柔性轴承))/CLMS`
-
-        - **Query 2.2 (标题摘要突击 / Title-Abstract Focus)**:
-            - **逻辑**: 如果特征出现在标题或摘要，必定是发明重点。
-            - **组合**: **Block A** + **Block B**。
-            - **语法**: `((Block A 扩展) AND (Block B 扩展))/TI/AB`
-            - *注意*: 仅在此字段范围较小的情况下允许使用 `AND`。
-
-        - **Query 2.3 (实施例复现 / Embodiment Re-enactment)**:
-            - **逻辑**: 模拟说明书中具体实施方式的段落描述。
-            - **组合**: **Block A** + **Block B** + **Block C (可选)**。
-            - **语法**: `((Block A 扩展) P (Block B 扩展) P (Block C 扩展))/TXT`
-            - *说明*: 使用 `P` 算符确保三者出现在同一自然段，模拟技术方案的完整描述。
-           
-        #### Step 3: 扩展检索 (Expansion) - [Block B/C + IPC 跨类]
-        - **目标**: 针对 Y 类文献（创造性），寻找跨领域的启示。
-
-        - **Query 3.1 (窄词宽类 / Specific Term + Broad Class)**:
-            - **逻辑**: 忽略 Block A (主语)，只查 Block B (独特点) 在该 IPC 大类下的应用。
-            - **组合**: **Block B (仅特征)** + **IPC (前4位)**。
-            - **语法**: `((Block B 扩展)/TXT) AND (IPC前4位)/IPC`
-            - *场景*: 当创新点是“一种特殊的密封结构”用在“泵”上时，此式可搜到该结构用在“阀”上的现有技术。
-
-        - **Query 3.2 (功能泛化 / Functional Generalization)**:
-            - **逻辑**: 忽略具体的 Block B (结构)，改查 Block C (功能/效果)。
-            - **组合**: **Block A (主语)** + **Block C (功能)** + **IPC**。
-            - **语法**: `((Block A 扩展) S (Block C 扩展)) AND (IPC)/IPC`
-            - *场景*: 用“吸震”代替“橡胶垫”进行检索。
-
-        ### 输出格式 (JSON List Only)
-        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
+        ### 3. 输出格式 (JSON List Only)
         [
             {
-                "name": "追踪检索",
-                "description": "基于申请人/发明人的排查",
-                "queries": [
-                    { "db": "CNTXT", "step": "申请人追踪", "query": "..." }
-                ]
-            },
-            {
-                "name": "精确检索",
-                "description": "Block A与Block B的结构化组合",
-                "queries": [
-                    { "db": "CNTXT", "step": "权利要求精确限定", "query": "..." },
-                    { "db": "CNTXT", "step": "标题摘要组合", "query": "..." },
-                    { "db": "CNTXT", "step": "全文段落逻辑组合", "query": "..." }
-                ]
-            },
-            {
-                "name": "扩展检索",
-                "description": "基于Block C的功能性或跨领域检索",
-                "queries": [
-                    { "db": "CNTXT", "step": "核心特征宽类检索", "query": "..." },
-                    { "db": "CNTXT", "step": "功能泛化检索", "query": "..." }
-                ]
+                "name": "策略名称",
+                "db": "CNTXT",
+                "intent": "Precision",
+                "query": "((无人机 OR UAV) S ((折叠 3D 旋翼) S 枢轴))/CLMS"
             }
         ]
         """
@@ -485,113 +763,90 @@ class SearchStrategyGenerator:
                 {"role": "user", "content": context},
             ],
         )
-
         return response if isinstance(response, list) else []
 
-    def _generate_ven_strategies(self, context: str) -> List[Dict]:
+    def _translate_to_ven(self, context: str) -> List[Dict]:
         """
-        Step 2.2: 生成 VEN 英文检索策略 (中文 Prompt)
-        侧重：基于 Block A/B/C 的逻辑组装、Patentese (专利英语)、截词符、拼音转换
+        阶段二 Step 2.2 (Translation): 将通用计划翻译为 VEN (Global Patent Database) 英文检索式。
         """
-        logger.info("[SearchAgent] Generating VEN Strategies...")
+        logger.info("[SearchAgent] Translating Plan to VEN (English)...")
 
         system_prompt = """
-        你是一位**精通全球专利数据库 (VEN/Derwent/WIPO) 的资深检索专家** (如 USPTO 或 EPO 审查员)。
-        你的任务是基于提供的【检索要素积木 (Building Blocks)】，编写高质量的**英文检索式**。
+        你是一位 **EPO/USPTO 资深审查员**。
+        你的任务是将【通用检索计划】结合【词汇映射表】，翻译为 **VEN (Global Patent Database)** 的标准英文检索式。
+
+        ### 0. 过滤原则 (Filtering Rule)
+        -   **忽略** 任何 `intent` 为 **"Fundamental"** 的策略。
+        -   仅处理 Patent 相关策略。
+
+        ### 1. VEN 语法铁律 (Syntax Iron Rules)
+        必须严格遵守以下英文检索规范：
+
+        1.  **截词 (Stemming)**: 
+            -   所有英文实词词根后必须加 `+` 以覆盖复数、时态。
+            -   *示例*: `detect` -> `detect+` (覆盖 detects, detected, detecting, detection)。
+            -   *例外*: 专有名词或缩写 (如 UAV, OLED) 不加。
+
+        2.  **短语与词距 (Phrases & Proximity)**:
+            -   **严禁**直接拼接多个单词而不加算符。
+            -   若关键词是词组 (如 "folding wing"):
+                -   精确短语: 使用双引号 `"folding wing"`。
+                -   灵活短语: 使用 `nD` (词距) 连接。 `(folding+ 2D wing+)`。
+            
+        3.  **算符映射 (Operators)**:
+            -   `S` (Same Sentence): 用于结构特征结合。 `(piston+ S cylinder+)`.
+            -   `P` (Same Paragraph): 用于功能/实施例结合。 `(wing+ P heat+ P dissipat+)`.
+            -   `AND/OR/NOT`: 标准逻辑算符。
+
+        4.  **字段映射 (Fields)**:
+            -   `/TI` (Title), `/AB` (Abstract), `/CLM` (Claims), `/DESC` (Description/FullText).
+            -   `/PA` (Assignee), `/IN` (Inventor).
+            -   `/IPC`, `/CPC` (Classification).
+
+        ### 2. 意图与逻辑映射 (Intent Logic)
         
-        ### 输入数据说明 (积木定义)
-        请利用 Context 中提供的 `EN` (英文扩展词) 字段：
-        1. **【Block A (Subject)】**: 技术领域/基础产品 (e.g., UAV, Bearing)。
-        2. **【Block B (KeyFeature)】**: 核心创新点/区别特征 (e.g., Folding Wing, Ceramic Coating)。
-        3. **【Block C (Functional)】**: 功能/效果 (e.g., Heat Dissipation, Damping)。
+        -   **[Trace] 来源追踪**
+            -   **输入**: 读取 `Raw Assignees` / `Raw Inventors`。
+            -   **拼音策略 (Pinyin Strategy)**: 
+                -   若原名是中文，必须同时检索 **英文商号** AND **拼音**。
+                -   拼音格式: `HUANG` OR `ZHANG` (姓), 以及全拼 `(ZHANG 1D SAN)`。
+            -   **降噪**: 若 Plan 含 "IPC"，追加 `AND (Base IPCs 4-digits)/IPC`。
+            -   **语法**: `/PA=(DJI OR (DA 1D JIANG) OR SZ_DJI)`.
 
-        ### VEN 数据库核心语法规范 (必须严格遵守)
-        1.  **语言要求**：检索式内容必须全部为**英文** (包含拼音)。
-        2.  **截词符 (查全率核心)**：
-            -   **必须使用 `+`**：表示无限截断，覆盖复数、动名词。例: `detect+` (detect, detector, detecting)。
-            -   **必须使用 `?`**：覆盖英美拼写差异。例: `alumin?um` (aluminium/aluminum), `mold` vs `mould` -> `mo?ld`.
-        3.  **逻辑与位置算符**:
-            -   `S` (Same Sentence): 同句算符。用于 **Block A (主语)** 与 **Block B (结构)** 的紧密结合。
-            -   `P` (Same Paragraph): 同段算符。用于组合松散的技术组件。
-            -   `/TI`, `/AB`, `/CLM`, `/DESC` (说明书), `/PA` (申请人), `/IN` (发明人).
-        4.  **专利英语 (Patentese) 风格**:
-            -   使用 `compris+` 而非 `include`.
-            -   使用 `plurality` 而非 `many`.
-            -   使用 `apparatus` 或 `device` 覆盖具体设备。
+        -   **[Competitor] 竞争对手穿透**
+            -   **逻辑**: 申请人 + 核心特征(B) (在 TI/AB/CLM 中)。
+            -   **语法**: `/PA=(Assignee_Name) AND ((Block B_Keywords)/TI/AB/CLM)`.
 
-        ### 策略生成任务 (Step-by-Step)
+        -   **[Precision] 核心新颖性 (Block A + B)**
+            -   **目标**: 权利要求中的结构结合。
+            -   **语法**: `((Block A_Terms) S (Block B_Terms))/CLM`.
 
-        #### 1. [Trace] 追踪检索
-        -   **场景**: 申请人/发明人追踪。
-        -   **难点**: 中文名在海外通常使用拼音，或特定的英文商号。
-        -   **动作**:
-            -   将中文名转换为 **拼音 (Pinyin)**。
-            -   如果 Context 中提供了英文商号 (如 DJI, BYD)，必须使用。
-            -   *语法*: `(PA=(English_Name OR Pinyin) AND IN=(Pinyin))/PA/IN`
+        -   **[Functional] 功能泛化 (Block A + C)**
+            -   **逻辑**: **忽略 Block B**。寻找 主语(A) + 功能(C)。
+            -   **语法**: `((Block A_Terms) P (Block C_Terms))/DESC`. (功能常在说明书中详述).
 
-        #### 2. [Precision] 精确检索 (Block A + Block B)
-        -   **场景**: X类文献（新颖性）排查。
-        -   **策略 2.1: 权利要求突击 (Claim Focus)**:
-            -   利用 `S` 算符锁定 Block A 与 Block B 在同一句中的描述。
-            -   *语法*: `((Block A EN_Terms) S (Block B EN_Terms))/CLM`
-            -   *示例*: `((drone+ OR UAV) S (fold+ S wing+))/CLM`
-        -   **策略 2.2: 标题摘要组合 (Title/Abstract)**:
-            -   最直观的特征组合。
-            -   *语法*: `((Block A EN_Terms) AND (Block B EN_Terms))/TI/AB`
-        -   **策略 2.3: 实施例复现 (Description/Full Text)**:
-            -   利用 `P` 算符模拟实施例段落。
-            -   *语法*: `((Block A EN_Terms) P (Block B EN_Terms) P (Block C EN_Terms))/DESC`
+        -   **[Component] 组件跨界 (Block B + C)**
+            -   **逻辑**: **忽略 Block A**。寻找 结构(B) + 功能(C)。
+            -   **语法**: `((Block B_Terms) S (Block C_Terms))/DESC`. (结构与功能结合紧密).
 
-        #### 3. [Expansion] 扩展检索 (Block B/C + CPC/IPC)
-        -   **场景**: Y类文献（创造性）及跨领域搜索。
-        -   **策略 3.1: 核心特征跨类 (Broad Class)**:
-            -   忽略 Block A (主语)，仅搜索 Block B (特征) + 分类号。
-            -   优先使用 CPC (如果 Context 中有)，否则使用 IPC (前4位)。
-            -   *语法*: `((Block B EN_Terms) AND (CPC OR IPC))/IPC/CPC`
-        -   **策略 3.2: 功能性检索 (Functional)**:
-            -   搜索 Block C (功能词) 替代 Block B (结构词)。
-            -   *语法*: `((Block A EN_Terms) AND (Block C EN_Terms))/TI/AB/CLM`
+        -   **[Synergy] 方案复现 (A + B + C)**
+            -   **语法**: `((Block A) P (Block B) P (Block C))/DESC`.
 
-        ### 输出格式 (JSON List Only)
-        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
+        -   **[Broad] 跨领域 (Block B + IPC)**
+            -   **逻辑**: Block B + **Self_IPC** (来自词汇表，非 Base IPC)。
+            -   **语法**: `((Block B_Terms)/TI/AB/CLM) AND ((Self_IPC)/IPC)`.
+
+        ### 3. 数据源引用 (Reference)
+        -   必须使用【词汇映射表】中的 `EN_Keywords`。
+        -   必须处理每一个 Keyword 的截词 (`+`)。
+
+        ### 4. 输出格式 (JSON List Only)
         [
             {
-                "name": "追踪检索",
-                "description": "申请人/发明人拼音及英文变体排查",
-                "queries": [
-                    { 
-                        "db": "VEN", 
-                        "step": "申请人与发明人组合追踪", 
-                        "query": "PA=(Huawei OR Hua Wei) AND IN=(Ren Zhengfei)" 
-                    }
-                ]
-            },
-            {
-                "name": "精确检索",
-                "description": "基于Block A/B组合的精准打击(Patentese)",
-                "queries": [
-                    { 
-                        "db": "VEN", 
-                        "step": "权利要求同句检索(S算符)",
-                        "query": "((piston+ S groove+) S (seal+))/CLM" 
-                    },
-                    { 
-                        "db": "VEN", 
-                        "step": "标题摘要特征组合",
-                        "query": "((drone+ OR UAV) AND (fold+ S wing+))/TI/AB" 
-                    }
-                ]
-            },
-            {
-                "name": "扩展检索",
-                "description": "基于CPC分类号的跨领域检索",
-                "queries": [
-                    {
-                        "db": "VEN",
-                        "step": "核心特征加分类号跨类搜索",
-                        "query": "((unique_feature+) AND (B64C))/IPC"
-                    }
-                ]
+                "name": "权利要求同句限定-折叠翼",
+                "db": "VEN",
+                "intent": "Precision",
+                "query": "((UAV OR drone+) S ((fold+ 2D wing+) OR rotat+))/CLM"
             }
         ]
         """
@@ -603,88 +858,85 @@ class SearchStrategyGenerator:
                 {"role": "user", "content": context},
             ],
         )
-
         return response if isinstance(response, list) else []
 
-    def _generate_npl_strategies(self, context: str) -> List[Dict]:
+    def _translate_to_npl(self, context: str) -> List[Dict]:
         """
-        Step 2.3: 生成 NPL 非专利文献策略
-        侧重：学术术语翻译、去专利化、CNKI/Scholar 专用语法
+        阶段二 Step 2.3 (Translation): 将通用计划翻译为 NPL (非专利文献) 检索式。
         """
-        logger.info("[SearchAgent] Generating NPL Strategies...")
+        logger.info("[SearchAgent] Translating Plan to NPL (Academic)...")
 
         system_prompt = """
-        你是一位 **CNKI / Google Scholar 的资深学术检索专家**。
-        你的任务是将专利检索要素（Building Blocks）“翻译”为学术检索式。
+        你是一位 **学术文献检索专家 (Google Scholar / CNKI)**。
+        你的任务是将【通用检索计划】调整并翻译为学术检索式。
 
-        ### 输入数据说明 (积木定义)
-        1. **【Block A (Subject)】**: 研究对象/应用场景 (e.g., UAV, Tumor Detection)。
-        2. **【Block B (KeyFeature)】**: 核心技术手段/算法/材料 (e.g., YOLOv5, Graphene, PID Control)。
-        3. **【Block C (Functional)】**: 优化目标/实验指标 (e.g., Accuracy, Latency, BER)。
+        ### 1. 过滤与聚焦 (Filter & Focus)
+        学术检索不关注法律状态或特定申请人，只关注技术原理。
+        -   **处理 (Keep)**: 
+            -   `[Fundamental]` (最重要，基础原理)
+            -   `[Synergy]` (系统级复现)
+            -   `[Functional]` (问题-方案型论文)
+            -   `[Component]` (跨学科应用)
+        -   **丢弃 (Drop)**: 
+            -   `[Trace]` (申请人), `[Competitor]`, `[Precision]` (权利要求), `[Broad]` (依赖IPC)。
 
-        ### 核心任务：去专利化 (De-Patentize) & 学术化
-        专利喜欢用通用词，论文喜欢用具体词。请执行以下**翻译**：
-        1. **通用结构 -> 具体硬件**: 
-            - "Control unit" -> "MCU", "FPGA", "DSP", "ARM".
-            - "Storage means" -> "DDR", "Flash", "Database".
-        2. **通用方法 -> 具体算法/模型**:
-            - "Machine learning" -> "CNN", "Transformer", "SVM", "ResNet".
-            - "Optimization" -> "Genetic Algorithm", "Simulated Annealing".
-        3. **通用材料 -> 化学式/学名**:
-            - "Conductive material" -> "Graphene", "CNT", "Ag Nanowire".
+        ### 2. 核心任务：去专利化 (De-patentization)
+        专利术语是为了模糊保护范围，学术术语是为了精确描述原理。你必须进行“翻译”：
 
-        ### 数据库语法规范
-        1. **结构化数据库 (CNKI, WanFang)**:
-            - 支持布尔逻辑 (`AND`, `OR`).
-            - 字段: `TI` (篇名), `KY`/`KW` (关键词), `AB` (摘要).
-            - *CNKI语法*: `TI=('词A' * '词B')` (注: * 表示 AND).
-        2. **非结构化引擎 (Google Scholar)**:
-            - **不支持** `TI=` 或 `KY=`.
-            - 使用自然语言关键词组合。
-            - **强制短语**使用双引号 `""`. (e.g., `"Deep Learning"`).
-            - 使用 `intitle:` 指令 (可选).
+        -   **词汇替换 (Vocabulary Swap)**:
+            -   *Generic* -> *Specific*: "数据处理装置" -> "FPGA" / "DSP" / "GPU".
+            -   *Functional* -> *Algorithmic*: "自适应调整步骤" -> "强化学习" / "PID控制" / "遗传算法".
+            -   *Structure* -> *Mechanism*: "啮合部件" -> "齿轮传动机理" / "摩擦学特性".
+        
+        -   **句式简化 (Simplification)**:
+            -   学术搜索引擎不支持复杂的嵌套逻辑 (S/P/nD)。
+            -   **策略**: 提取 2-4 个最核心的实质性名词，用简单的 AND 组合。
 
-        ### 策略生成流程
+        ### 3. 语法适配 (Syntax Adaptation)
 
-        #### 1. [Title/Keyword] 核心技术精准检索
-        - **目标**: 命中“A领域的B技术研究”类论文。
-        - **组合**: **Block A (学术词)** + **Block B (学术词)**。
-        - **策略**: 
-            - CNKI: `TI=(Block A * Block B)`
-            - Scholar: `intitle:"Block B" "Block A"` (Block B 更重要，放前面)
+        #### A. CNKI (中文学术)
+        -   **字段**: 使用 `SU` (主题) 而非 `TI` (篇名)，因为 `SU` 包含关键词和摘要，召回率更好。
+        -   **逻辑**: 使用 `*` 代表 AND, `+` 代表 OR。
+        -   **格式**: `SU=('关键词1' + '同义词') * SU=('关键词2')`.
+        -   *示例*: `SU=('视觉SLAM' + 'VSLAM') * SU=('闭环检测')`.
 
-        #### 2. [Algo/Material] 算法或材料专项检索
-        - **目标**: 针对 Block B 是具体算法或材料的情况，忽略应用场景，查原理性文献。
-        - **组合**: **Block B (具体的算法名/化学式)**。
-        - **策略**:
-            - CNKI: `KY=(Block B Extended)` (搜关键词字段)
-            - Scholar: `"Specific Algorithm Name" OR "Specific Material"`
+        #### B. Google Scholar (英文/国际)
+        -   **核心指令**: 使用 `intitle:` 锁定 1 个最核心的词（通常是 Block B）。
+        -   **逻辑**: 其他词使用自然语言组合，用空格隔开（默认 AND）。
+        -   **短语**: 必须使用双引号 `""` 锁定专有名词。
+        -   **格式**: `intitle:"Core_Term" "Secondary_Term" Function_Term`.
+        -   *示例*: `intitle:"Visual SLAM" "Loop Closure" Optimization`.
 
-        #### 3. [Problem/Solution] 问题导向检索
-        - **目标**: 寻找解决相同 Block C (功能/问题) 的不同技术路线。
-        - **组合**: **Block A (场景)** + **Block C (功能/指标)**。
-        - **策略**:
-            - 学术界常在标题中写“基于...的优化”或“...性能分析”。
-            - Query: `(Block A) AND (Block C)` (重点关注综述 Review 类文章)。
+        ### 4. 意图映射 (Intent Mapping)
+        
+        -   **[Fundamental] 基础原理**:
+            -   CNKI: `SU=(Block B_Keywords)`.
+            -   Scholar: `intitle:"Block B_Term"`.
+        
+        -   **[Functional] 功能泛化 (Block A + C)**:
+            -   *场景*: "无人机(A)的散热(C)研究"。
+            -   CNKI: `SU=(Block A) * SU=(Block C)`.
+            -   Scholar: `"Block A" "Block C"`.
+        
+        -   **[Synergy] / [Component] 组合**:
+            -   *场景*: "Block B 在 Block C 中的应用"。
+            -   CNKI: `SU=(Block B) * SU=(Block C)`.
+            -   Scholar: `intitle:"Block B" "Block C"`.
 
         ### 输出格式 (JSON List Only)
-        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
+        为每个有效的 Plan 生成 **两条** 记录 (一条 CNKI，一条 Scholar)。
         [
             {
-                "name": "NPL 非专利检索",
-                "description": "针对学术数据库的术语检索(去专利化)",
-                "queries": [
-                    { 
-                        "db": "CNKI", 
-                        "step": "题名精准(学术词)", 
-                        "query": "TI=('无人机' + 'UAV') * ('卡尔曼滤波' + 'Kalman Filter')" 
-                    },
-                    { 
-                        "db": "Google Scholar", 
-                        "step": "自然语言组合", 
-                        "query": "intitle:\"Visual Odometry\" drone OR UAV" 
-                    }
-                ]
+                "name": "CNKI题名检索-SLAM算法",
+                "db": "CNKI",
+                "intent": "Fundamental",
+                "query": "SU=('视觉SLAM' + '视觉里程计') * SU=('特征点提取')"
+            },
+            {
+                "name": "Scholar标题检索-SLAM",
+                "db": "Google Scholar",
+                "intent": "Fundamental",
+                "query": "intitle:\"Visual SLAM\" \"Feature Extraction\""
             }
         ]
         """
@@ -696,7 +948,6 @@ class SearchStrategyGenerator:
                 {"role": "user", "content": context},
             ],
         )
-
         return response if isinstance(response, list) else []
 
     def _get_critical_date_clause(self, db_type: str) -> str:
@@ -750,7 +1001,7 @@ class SearchStrategyGenerator:
                     date_clause = self._get_critical_date_clause(db_type)
                     if date_clause:
                         q_item["query"] = f"({original_query}){date_clause}"
-                        
+
     def _clean_for_search_query(self, text: str) -> str:
         """
         辅助函数：清洗用于语义检索的文本
@@ -770,7 +1021,7 @@ class SearchStrategyGenerator:
             tech_means = self.report_data.get(
                 "technical_scheme"
             ) or self.report_data.get("ai_abstract", "")
-        
+
         # 清洗 markdown 标记
         clean_query = self._clean_for_search_query(tech_means)
 
