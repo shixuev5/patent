@@ -372,13 +372,24 @@ class ReportRenderer:
         lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
 
         if matrix:
+            # 定义分块映射逻辑 (Emoji + 换行符优化显示)
+            role_mapping = {
+                "Subject": "Block A<br>(检索主语)",
+                "KeyFeature": "Block B<br>(核心特征)",
+                "Functional": "Block C<br>(功能/限定)"
+            }
+            
             # Markdown 表格构建：增加分类号列
             # 使用 HTML 换行符 <br> 在单元格内区分 IPC 和 CPC，或区分太长的词
-            lines.append("| 核心概念 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
-            lines.append("| :--- | :--- | :--- | :--- |")
+            lines.append("| 检索分块 | 核心概念 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
             for item in matrix:
                 concept = item.get("concept_key", "-").replace("|", "\|")
+                role_key = item.get("role", "Other")
+                
+                # 获取分块显示文本，如果未定义则显示原值
+                block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
 
                 # 处理列表转字符串
                 zh_list = item.get("zh_expand", [])
@@ -390,7 +401,7 @@ class ReportRenderer:
                 class_str = "<br>".join(ref_list) if ref_list else "-"
 
                 # 组装表格行
-                lines.append(f"| **{concept}** | {zh_str} | {en_str} | {class_str} |")
+                lines.append(f"| **{block_display}** | **{concept}** | {zh_str} | {en_str} | {class_str} |")
             lines.append("\n")
         else:
             lines.append("> 未生成检索要素表。\n")
