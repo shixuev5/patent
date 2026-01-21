@@ -17,6 +17,16 @@ class BaseSearchClient(ABC):
                  [{'id': '...', 'title': '...', 'abstract': '...', 'cpc': [...], ...}]
         """
         pass
+    
+    @abstractmethod
+    def search_semantic(self, text: str, to_date: str = "", limit: int = 50) -> List[Dict]:
+        """
+        语义/自然语言检索
+        :param text: 自然语言文本
+        :param to_date: 截止日期 (YYYYMMDD)，用于查新
+        :param limit: 数量限制
+        """
+        pass
 
     @abstractmethod
     def get_citations(self, patent_ids: List[str], direction: str = 'both') -> List[Dict]:

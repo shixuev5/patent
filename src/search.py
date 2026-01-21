@@ -65,6 +65,7 @@ class SearchStrategyGenerator:
         tasks_map = {
             "step3_cntxt": self._translate_to_cntxt,
             "step3_ven": self._translate_to_ven,
+            "step3_patsnap": self._translate_to_patsnap,
             "step3_npl": self._translate_to_npl,
         }
 
@@ -102,6 +103,7 @@ class SearchStrategyGenerator:
         combined_strategies = self._merge_strategies(
             results_map.get("step3_cntxt", []),
             results_map.get("step3_ven", []),
+            results_map.get("step3_patsnap", []),
             results_map.get("step3_npl", []),
         )
 
@@ -113,9 +115,13 @@ class SearchStrategyGenerator:
 
         # 2. 注入时间限制
         self._inject_date_constraints(strategy_plan)
+        
+        # 3. 计算 critical_date 以便返回
+        critical_date = self._calculate_critical_date()
 
         # 合并结果
         return {
+            "critical_date": critical_date,
             "search_matrix": search_matrix,  # 对应你要求的中文、中文扩展、英文翻译
             "universal_plan": universal_plan,  # 可选：返回通用计划供调试
             "search_plan": strategy_plan,  # 具体的检索步骤和分析
@@ -910,6 +916,108 @@ class SearchStrategyGenerator:
         )
         return response if isinstance(response, list) else []
 
+    def _translate_to_patsnap(self, context: str) -> List[Dict]:
+        """
+        阶段二 Step 2.4 (Translation): 将通用计划翻译为 Patsnap (智慧芽) 检索式。
+        生产级优化：适配字段代码、截词符(*)及特殊算符(w/n, s)。
+        """
+        logger.info("[SearchAgent] Translating Plan to Patsnap (Zhihuiya) Syntax...")
+
+        system_prompt = """
+        你是一位 **智慧芽 (Patsnap) 数据库高级检索专家**。
+        你的任务是将【通用检索计划】翻译为 **Patsnap 命令行检索式**。
+
+        ### 0. 预处理规则 (Pre-processing Rules) - 必须执行！
+        在生成检索式前，对关键词进行清洗：
+        1.  **英文截词 (English Stemming)**:
+            -   **规则**: 将所有英文实词转为词根 + `*`。
+            -   *示例*: `detecting` -> `detect*`, `batteries` -> `batter*`.
+            -   *例外*: 3个字母以下的短词 (e.g., `fan`, `bus`) 不截词；专有名词 (e.g., `Bluetooth`) 不截词。
+        2.  **中文处理**: 中文**严禁**使用截词符 `*`。
+        3.  **短语粉碎 (Phrase Smashing)**:
+            -   **规则**: 严禁使用双引号 `""` 包裹非专有名词的词组。
+            -   **操作**: 将 "Adjective Noun" 转换为 `(Adjective w/5 Noun)`。
+            -   *理由*: 智慧芽的 `w/n` 算符比精确匹配更具鲁棒性。
+
+        ### 1. 字段代码白名单 (Field Codes Whitelist)
+        请仅使用以下字段代码，严禁编造：
+
+        -   **TAC**: (Title, Abstract, Claims) -> **核心字段，最常用**。用于精准检索。
+        -   **TTL**: (Title) -> 用于极高相关性检索。
+        -   **DESC**: (Description) -> 仅用于功能/应用扩展，必须配合 `p` 算符。
+        -   **ANS**: (Assignee Name Standardized) -> **标准化申请人** (优于 AN)。
+        -   **IN**: (Inventor Name).
+        -   **IPC**: (IPC Classification).
+
+        ### 2. 算符映射体系 (Operator Mapping)
+        
+        -   **逻辑算符**: `AND`, `OR`, `NOT` (全大写)。
+        -   **位置算符 (Proximity)**:
+            -   `w/n` (Within n words): **词组拼接专用**。
+                -   *场景*: Block B 内部修饰。
+                -   *例*: `(variable w/3 resist*)` 代替 "variable resistor"。
+            -   **s** (Same Sentence): **结构绑定专用**。
+                -   *场景*: Block A (主语) 与 Block B (核心特征) 的结合。
+                -   *例*: `(drone OR UAV) s (camera w/5 rotat*)`.
+            -   **p** (Same Paragraph): **功能结合专用**。
+                -   *场景*: 实体 与 功能/效果 的结合。
+                -   *例*: `(graphene) p (heat w/3 dissipat*)`.
+
+        ### 3. 意图与策略模版 (Intent-Strategy Templates)
+
+        #### [Trace] 来源追踪
+        -   **输入**: 使用 `Raw Assignees`。
+        -   **策略**: 优先使用标准化申请人字段 `ANS`。
+        -   **语法**: `ANS:(Huawei) OR IN:(Zhang San)`.
+        -   **降噪**: 若需结合 IPC，则: `ANS:(Huawei) AND IPC:(H04W*)`.
+
+        #### [Competitor] 竞争对手穿透
+        -   **目标**: 某公司具体的某项技术。
+        -   **语法**: `ANS:(Assignee_Name) AND TAC:((Block B_Terms))`.
+
+        #### [Precision] 核心新颖性 (X类文献)
+        -   **场景**: 查找完全相同的现有技术。
+        -   **字段**: 必须限制在 **TAC** (题/摘/权) 以保证相关度。
+        -   **语法**: `TAC:( (Block A_Terms) s (Block B_Terms) )`.
+        -   *注意*: 使用 `s` 算符确保特征在同一句话中描述。
+
+        #### [Functional] 功能泛化 / [Component] 组件应用
+        -   **场景**: 在全文中寻找某一功能或组件的应用。
+        -   **字段**: 放宽至全文 (通常不加字段前缀即全文，或显式用 `DESC`)。
+        -   **语法**: `DESC:( (Block A/B_Terms) p (Block C_Terms) )`.
+        -   *注意*: 功能描述往往较长，必须使用 `p` (同段)。
+
+        #### [Broad] 跨领域扩展
+        -   **场景**: 核心结构 + 分类号。
+        -   **语法**: `TAC:((Block B_Terms)) AND IPC:(Self_IPC)`.
+
+        ### 4. 输出示例 (JSON List Only)
+        [
+            {
+                "name": "Patsnap精准-折叠翼",
+                "db": "Patsnap",
+                "intent": "Precision",
+                "query": "TAC:( (UAV OR drone) s (fold* w/5 wing*) )"
+            },
+            {
+                "name": "Patsnap功能-散热",
+                "db": "Patsnap",
+                "intent": "Functional",
+                "query": "DESC:( (UAV OR drone) p (heat w/3 dissipat*) )"
+            }
+        ]
+        """
+
+        response = self.llm_service.chat_completion_json(
+            model=settings.LLM_MODEL_REASONING,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context},
+            ],
+        )
+        return response if isinstance(response, list) else []
+    
+
     def _translate_to_npl(self, context: str) -> List[Dict]:
         """
         阶段二 Step 2.3 (Translation): 将通用计划翻译为 NPL (非专利文献) 检索式。
@@ -990,33 +1098,50 @@ class SearchStrategyGenerator:
         )
         return response if isinstance(response, list) else []
 
+    def _calculate_critical_date(self) -> str:
+        """
+        计算查新截止日期 (Critical Date)。
+        逻辑：有优先权取优先权日，否则取申请日。
+        返回格式: 'YYYYMMDD' (例如 '20230519')
+        """
+        biblio = self.patent_data.get("bibliographic_data", {})
+        
+        # 1. 获取日期字符串
+        raw_date = biblio.get("priority_date") or biblio.get("application_date")
+        if not raw_date:
+            return ""
+
+        # 2. 格式化日期 (移除点号/横杠，转为 YYYYMMDD)
+        clean_date = raw_date.replace(".", "").replace("-", "").strip()
+
+        # 3. 校验格式
+        if not clean_date.isdigit() or len(clean_date) != 8:
+            logger.warning(f"日期格式异常: {raw_date}，无法计算 Critical Date")
+            return ""
+            
+        return clean_date
+    
+    
     def _get_critical_date_clause(self, db_type: str) -> str:
         """
         计算查新截止日期 (Critical Date) 并根据数据库类型返回限制子句。
         逻辑：有优先权取优先权日，否则取申请日。
         """
-        biblio = self.patent_data.get("bibliographic_data", {})
-
-        # 1. 获取日期字符串 (格式假设为 YYYY.MM.DD)
-        # 优先权日 > 申请日
-        raw_date = biblio.get("priority_date") or biblio.get("application_date")
-
-        if not raw_date:
+        # 调用复用的计算逻辑
+        clean_date = self._calculate_critical_date()
+        
+        if not clean_date:
             return ""
 
-        # 2. 格式化日期 (移除点号，转为 YYYYMMDD)
-        # 假设输入是 "2023.03.29" -> "20230329"
-        clean_date = raw_date.replace(".", "").replace("-", "").strip()
-
-        if not clean_date.isdigit() or len(clean_date) != 8:
-            logger.warning(f"日期格式异常: {raw_date}，跳过时间限制注入")
-            return ""
-
-        # 3. 根据数据库类型生成不同的语法
+        # 根据数据库类型生成不同的语法
         # 查新逻辑：检索 公开日(PD) 早于 截止日 的文献
         if db_type in ["CNTXT", "VEN", "CNIPA", "EPO"]:
             # 标准专利数据库语法
             return f" AND PD < {clean_date}"
+        
+        elif db_type in ["Patsnap", "Zhihuiya"]:
+            return f" AND PBD:[* TO {clean_date}]"
+        
         elif db_type in ["Google Scholar", "NPL"]:
             # 学术引擎通常不支持直接在 query 中精准写 AND PD<...
             # 这里可以选择不加，或者加一个备注，或者尝试通用语法

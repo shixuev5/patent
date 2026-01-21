@@ -9,6 +9,7 @@ from src.vision import VisualProcessor
 from src.generator import ContentGenerator
 from src.search import SearchStrategyGenerator
 from src.renderer import ReportRenderer
+from src.executor import SearchExecutor
 
 
 def main():
@@ -128,9 +129,32 @@ def main():
         paths["search_strategy_json"].write_text(
             json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+    
+    # --- Step 7: 执行检索 ---
+    logger.info("Step 7: Executing Patsnap Search Queries...")
+    search_results = {}
+    
+    # 定义结果输出文件路径
+    if paths["search_result_json"].exists():
+        logger.info("Step 7: Loading search result json...")
+        search_results = json.loads(
+            paths["search_result_json"].read_text(encoding="utf-8")
+        )
+    else:
+        # 初始化执行器
+        executor = SearchExecutor(strategy_data=search_json)
 
-    # --- Step 7: 渲染 MD 和 PDF ---
-    logger.info("Step 7: Rendering Report (MD & PDF)...")
+        # 执行检索
+        search_results = executor.execute()
+        
+        # 保存结果
+        paths["search_result_json"].write_text(
+            json.dumps(search_results, ensure_ascii=False, indent=2), 
+            encoding="utf-8"
+        )
+
+    # --- Step 8: 渲染 MD 和 PDF ---
+    logger.info("Step 8: Rendering Report (MD & PDF)...")
     renderer = ReportRenderer(patent_data)
     renderer.render(
         report_data=report_json,
