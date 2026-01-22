@@ -16,11 +16,18 @@ class Settings:
     # 确保字体文件路径 (请手动放入 simhei.ttf 到 assets 目录)
     FONT_PATH = ASSETS_DIR / "simhei.ttf"
 
-    # --- LLM 配置 ---
+    # --- 核心 LLM 配置 (生成/推理) ---
     LLM_API_KEY = os.getenv("LLM_API_KEY")
     LLM_BASE_URL = os.getenv("LLM_BASE_URL")
     LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
     LLM_MODEL_REASONING = os.getenv("LLM_MODEL_REASONING", "deepseek-reasoner")
+
+    # --- 专利审查模型配置 (Patent Examination) ---
+    LLM_MODEL_EXAM = os.getenv("LLM_MODEL_EXAM", "deepseek-chat")
+    LLM_EXAM_API_KEY = os.getenv("LLM_EXAM_API_KEY")  # 可选，若为空则复用 LLM_API_KEY
+    LLM_EXAM_BASE_URL = os.getenv(
+        "LLM_EXAM_BASE_URL"
+    )  # 可选，若为空则复用 LLM_BASE_URL
 
     # --- 视觉模型配置 ---
     VLM_API_KEY = os.getenv("VLM_API_KEY")
@@ -30,12 +37,14 @@ class Settings:
     # --- 视觉处理配置 ---
     FONT_SIZE = 20  # 标注字体大小
     LABEL_COLOR = (0, 0, 255)  # 标注颜色 (B, G, R) - 蓝色
-    
+
     # --- 智慧芽 ---
     ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")
     ZHIHUIYA_PASSWORD = os.getenv("ZHIHUIYA_PASSWORD", "")
-    ZHIHUIYA_CLIENT_ID = os.getenv("ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc")
-    
+    ZHIHUIYA_CLIENT_ID = os.getenv(
+        "ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc"
+    )
+
     # --- Google Patents / SerpApi Configuration ---
     SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 
@@ -58,16 +67,37 @@ class Settings:
     }
     
     /* --- 1. 分页控制 --- */
-    h1, h2, h3, h4 { 
-        page-break-after: avoid; 
-        break-after: avoid; 
+    
+    /* 强制换行类 */
+    .page-break { 
+        page-break-before: always; 
+        break-before: page;
     }
     
-    .page-break { page-break-before: always; }
-    
-    .no-break, figure, blockquote, pre, tr {
+    /* 标题永远不要作为页面的最后元素，也不要被切断 */
+    h1, h2, h3, h4, h5, h6 { 
+        page-break-after: avoid; 
+        break-after: avoid; 
         page-break-inside: avoid;
         break-inside: avoid;
+    }
+    
+    /* 这里的元素作为一个整体，尽量不要内部断开 */
+    figure, blockquote, pre, .no-break {
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }
+
+    /* 表格行尝试保持完整，不要把一行字切成两半 */
+    tr {
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }
+
+    /* 段落孤行控制：页底至少留2行，页顶至少留2行 */
+    p {
+        orphans: 2;
+        widows: 2;
     }
 
     /* --- 2. 基础元素 --- */
@@ -108,13 +138,21 @@ class Settings:
     }
     li { margin-bottom: 6px; }
 
-    /* --- 3. 表格 --- */
+    /* --- 3. 表格 (增强) --- */
     table {
         width: 100%;
         border-collapse: collapse;
         margin-bottom: 20px;
         font-size: 12px; 
         table-layout: auto;
+        /* 允许表格整体跨页 */
+        page-break-inside: auto;
+        break-inside: auto;
+    }
+    
+    /* 关键：表格跨页时，自动在新页面重复表头 */
+    thead {
+        display: table-header-group;
     }
     
     th, td { 
@@ -130,7 +168,7 @@ class Settings:
         background-color: #f2f6f9; 
         color: #2c3e50;
         font-weight: bold;
-        white-space: nowrap;
+        white-space: nowrap; /* 表头尽量不换行 */
     }
 
     /* --- 4. 图片 --- */
@@ -208,8 +246,11 @@ class Settings:
             "parts_json": project_root / "parts.json",  # 部件数据
             "image_parts_json": project_root / "image_parts.json",  # 图片部件数据
             "report_json": project_root / "report.json",  # 专利分析报告数据
-            "search_strategy_json": project_root / "search_strategy.json",  # 检索策略数据
-            "search_result_json": project_root / "search_result.json", # 检索结果数据
+            "search_strategy_json": project_root
+            / "search_strategy.json",  # 检索策略数据
+            "search_result_json": project_root / "search_result.json",  # 检索结果数据
+            "examination_results_json": project_root
+            / "examination_results.json",  # 审查结果数据
             "final_md": project_root / f"{pdf_filename_stem}.md",
             "final_pdf": project_root / f"{pdf_filename_stem}.pdf",
         }

@@ -1,6 +1,5 @@
-import json
 import operator
-from typing import Annotated, List, Dict, Any, TypedDict, Union
+from typing import Annotated, List, Dict, TypedDict
 from loguru import logger
 from langgraph.graph import StateGraph, END
 from src.search_clients.factory import SearchClientFactory # 新增
@@ -92,8 +91,7 @@ class AdvancedSearchAgent:
                 # 仅执行专利库检索 (CNTXT/VEN)，跳过 NPL 以聚焦专利
                 if query_obj['db'] in ['CNTXT', 'VEN']:
                     hits = self.search_client.search(
-                        query=query_obj['query'], 
-                        db=query_obj['db'],
+                        query=query_obj['query'],
                         limit=20 # 初始探测不需要太多
                     )
                     # 标记来源
@@ -201,7 +199,7 @@ class AdvancedSearchAgent:
         refined_hits = []
         
         for q in new_queries:
-            hits = self.search_client.search(q['query'], q['db'], limit=20)
+            hits = self.search_client.search(q['query'], limit=20)
             for h in hits: h['source'] = 'refined'
             refined_hits.extend(hits)
             
