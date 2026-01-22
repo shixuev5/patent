@@ -154,7 +154,7 @@ class ReportRenderer:
                 # 存入映射表，方便技术效果中的贡献特征映射
                 feature_name_map[name.strip()] = idx
                 
-                desc = self._md_bold_to_html(feat.get("description", "-").replace("\n", "<br>")) 
+                desc = self._md_bold_to_html(feat.get("description", "").replace("\n", "<br>")) 
                 rationale = self._md_bold_to_html(feat.get("rationale", "").replace("\n", "<br>")) 
 
                 is_distinguishing = feat.get("is_distinguishing", False)
@@ -241,9 +241,9 @@ class ReportRenderer:
                     contrib_html = str(contributors) if contributors else "-"
 
                  # 使用正则替换 Markdown 加粗语法，因为 HTML 表格内 MD 不会自动解析
-                rationale = self._md_bold_to_html(eff.get("rationale", "-"))
+                rationale = self._md_bold_to_html(eff.get("rationale", ""))
                 
-                raw_evidence = eff.get("evidence", "-")
+                raw_evidence = eff.get("evidence", "")
                 # 对证据也进行加粗转换，防止证据里有强调语法失效
                 evidence_text = self._md_bold_to_html(raw_evidence)
 
@@ -427,7 +427,7 @@ class ReportRenderer:
                     step_info = q_item.get("step", "")  # 获取具体步骤描述
                     query_str = q_item.get("query", "").strip()
 
-                    if not query_str:
+                    if db_name == 'Patsnap' or not query_str:
                         continue
 
                     # 标题格式：[数据库] 步骤描述
