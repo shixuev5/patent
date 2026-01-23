@@ -7,10 +7,8 @@ from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.generator import ContentGenerator
-from src.search import SearchStrategyGenerator
+from src.graph.entrypoint import run_search_graph
 from src.renderer import ReportRenderer
-from src.executor import SearchExecutor
-from src.agents.examination_agent import ExaminationAgent
 
 
 def main():
@@ -108,101 +106,47 @@ def main():
             json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # --- Step 6: 检索策略生成 ---
-    logger.info("Step 6: Generating Search Strategy & Queries...")
-    search_json = {}
-    if paths["search_strategy_json"].exists():
-        logger.info("Step 6: Loading search strategy json...")
-        search_json = json.loads(
+    # --- Step 6: 查新检索 ---
+    logger.info("Step 6: Running LangGraph Search Agent...")
+
+    search_strategy_data = {}
+    examination_results = []
+
+    if (
+        paths["examination_results_json"].exists()
+        and paths["search_strategy_json"].exists()
+    ):
+        logger.info("Loading cached Graph results...")
+        search_strategy_data = json.loads(
             paths["search_strategy_json"].read_text(encoding="utf-8")
         )
-    else:
-        logger.info("Step 6: Generating search strategy json...")
-
-        # 初始化生成器
-        cache_file = paths["root"].joinpath("search_strategy_intermediate.json")
-        search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
-
-        # 执行生成
-        search_json = search_gen.generate_strategy()
-
-        # 4. 写入独立的 JSON 文件
-        paths["search_strategy_json"].write_text(
-            json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-    # --- Step 7: 执行检索 ---
-    logger.info("Step 7: Executing Patsnap Search Queries...")
-    search_results = {}
-
-    # 定义结果输出文件路径
-    if paths["search_result_json"].exists():
-        logger.info("Step 7: Loading search result json...")
-        search_results = json.loads(
-            paths["search_result_json"].read_text(encoding="utf-8")
-        )
-    else:
-        # 初始化执行器
-        cache_file = paths["root"].joinpath("search_result_intermediate.json")
-        executor = SearchExecutor(strategy_data=search_json, cache_file=cache_file)
-
-        # 执行检索
-        search_results = executor.execute()
-
-        # 保存结果
-        paths["search_result_json"].write_text(
-            json.dumps(search_results, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-    # --- Step 8: 执行审查 ---
-    logger.info("Step 8: Executing AI Patent Examination (Filtering & Reasoning)...")
-    examination_results = {}
-
-    # 定义结果输出文件路径
-    if paths["examination_results_json"].exists():
-        logger.info("Step 8: Loading cached examination results...")
         examination_results = json.loads(
             paths["examination_results_json"].read_text(encoding="utf-8")
         )
     else:
-        # 1. 获取待审查候选集
-        raw_results = search_results.get("results_collection", [])
+        # 调用图入口
+        search_strategy_data, examination_results = run_search_graph(
+            patent_data=patent_data, report_data=report_json
+        )
 
-        if not raw_results:
-            logger.warning("Step 8: No search results found to examine. Skipping.")
-            examination_results = []
-        else:
-            # 2. 初始化审查代理
-            logger.info("Step 8: Initializing AI Examiner...")
-            cache_file = paths["root"].joinpath("examination_result_intermediate.json")
+        # 保存结果 (保持与旧流程兼容的文件结构)
+        paths["search_strategy_json"].write_text(
+            json.dumps(search_strategy_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        paths["examination_results_json"].write_text(
+            json.dumps(examination_results, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
-            examiner = ExaminationAgent(report_data=report_json, cache_file=cache_file)
+    logger.success(f"Agent finished. Found {len(examination_results)} relevant docs.")
 
-            # 3. 截取 Top 50 进行深度分析
-            # (策略：只审查头部高分专利，节省 Token 并提高效率)
-            candidates = raw_results[:50]
-            logger.info(f"Step 8: Examining Top {len(candidates)} candidates...")
-
-            # 4. 执行深度审查与筛选
-            examination_results = examiner.examine_and_filter(
-                search_results=candidates, top_k=20
-            )
-
-            # 5. 保存审查报告
-            paths["examination_results_json"].write_text(
-                json.dumps(examination_results, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            logger.success(
-                f"Step 8: Examination completed. Selected {len(examination_results)} key patents."
-            )
-
-    # --- Step 9: 渲染 MD 和 PDF ---
-    logger.info("Step 9: Rendering Report (MD & PDF)...")
+    # --- Step 7: 渲染 MD 和 PDF ---
+    logger.info("Step 7: Rendering Report (MD & PDF)...")
     renderer = ReportRenderer(patent_data)
     renderer.render(
         report_data=report_json,
-        search_data=search_json,
+        search_data=search_strategy_data,
         md_path=paths["final_md"],
         pdf_path=paths["final_pdf"],
     )
