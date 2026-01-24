@@ -6,6 +6,7 @@ from src.parser import PDFParser
 from src.transformer import PatentTransformer
 from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
+from src.checker import FormalExaminer
 from src.generator import ContentGenerator
 from src.graph.entrypoint import run_search_graph
 from src.renderer import ReportRenderer
@@ -85,13 +86,23 @@ def main():
         )
 
     # --- Step 5: 内容生成 ---
-    logger.info("Step 5: Generating report...")
+    logger.info("Step 5: Running Formal Defect Check...")
+    
+    examiner = FormalExaminer(parts_db=parts_db, image_parts=image_parts)
+    
+    # 获取检查结果字典
+    check_result = examiner.check()
+
+    paths["check_json"].write_text(json.dumps(check_result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # --- Step 6: 内容生成 ---
+    logger.info("Step 6: Generating report...")
     report_json = {}
     if paths["report_json"].exists():
-        logger.info("Step 5: Loading report json...")
+        logger.info("Step 6: Loading report json...")
         report_json = json.loads(paths["report_json"].read_text(encoding="utf-8"))
     else:
-        logger.info("Step 5: Generating report json...")
+        logger.info("Step 6: Generating report json...")
 
         cache_file = paths["root"].joinpath("report_intermediate.json")
         generator = ContentGenerator(
@@ -106,8 +117,8 @@ def main():
             json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # --- Step 6: 查新检索 ---
-    logger.info("Step 6: Running LangGraph Search Agent...")
+    # --- Step 7: 查新检索 ---
+    logger.info("Step 7: Running LangGraph Search Agent...")
 
     search_strategy_data = {}
     examination_results = []
@@ -141,11 +152,12 @@ def main():
 
     logger.success(f"Agent finished. Found {len(examination_results)} relevant docs.")
 
-    # --- Step 7: 渲染 MD 和 PDF ---
-    logger.info("Step 7: Rendering Report (MD & PDF)...")
+    # --- Step 8: 渲染 MD 和 PDF ---
+    logger.info("Step 8: Rendering Report (MD & PDF)...")
     renderer = ReportRenderer(patent_data)
     renderer.render(
         report_data=report_json,
+        check_result=check_result,
         search_data=search_strategy_data,
         md_path=paths["final_md"],
         pdf_path=paths["final_pdf"],
