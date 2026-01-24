@@ -2,7 +2,7 @@ import requests
 import re
 import os
 import threading
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from loguru import logger
 from config import settings
 from src.utils.crypto import rsa_encrypt
@@ -69,6 +69,190 @@ class ZhihuiyaClient(BaseSearchClient):
             except Exception as e:
                 logger.error(f"[Zhihuiya] Login failed: {e}")
                 raise
+
+    def _fetch_basic_info(self, patent_id: str) -> Dict[str, Any]:
+        """
+        [Private] 获取专利基础信息 (Basic)
+        URL: /patent/id/{id}/basic
+        """
+        url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/basic"
+        # 构造最小可用 Payload，避免依赖具体的 signature
+        payload = {
+            "_type": "query",
+            "source_type": "search_result",
+            "q": f"PATENT_ID:{patent_id}",
+            "rows": "1", 
+            "page": 1
+        }
+        
+        try:
+            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if not data.get("status"):
+                return {}
+            
+            info = data.get("data", {})
+            
+            # 数据清洗
+            # 1. 标题 (优先中文)
+            title = info.get("TITLE", {}).get("CN", "") or info.get("TITLE", {}).get("EN", "")
+            if not title and "TITLE_LANG" in info:
+                title = info.get("TITLE_LANG", "")
+
+            # 2. 摘要 (优先中文)
+            abst = info.get("ABST", {}).get("CN", "") or info.get("ABST", {}).get("EN", "")
+            
+            # 3. 申请人 (归一化)
+            assignees = info.get("AN", {}).get("OFFICIAL", [])
+            
+            # 4. 发明人
+            inventors = [p.get("name") for p in info.get("IN", {}).get("CN", [])]
+            
+            return {
+                "pn": info.get("PN"),
+                "patent_id": info.get("PATENT_ID"),
+                "title": self._clean_html(title),
+                "abstract": self._clean_html(abst),
+                "assignees": assignees,
+                "inventors": inventors,
+                "publication_date": info.get("PBD"),
+                "application_date": info.get("APD"),
+                "ipc": info.get("IPC", []),
+                "cpc": info.get("CPC", []),
+                "technical_benefit": info.get("AI_TECHNICAL_BENEFIT", ""), # AI 生成的技术效果
+                "technical_problem": info.get("AI_TECHNICAL_PROBLEM", ""), # AI 生成的技术问题
+            }
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Fetch basic info failed: {e}")
+            return {}
+
+    def _fetch_claims(self, patent_id: str) -> str:
+        """
+        [Private] 获取权利要求 (Claims)
+        URL: /patent/id/{id}/clms
+        """
+        url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/clms"
+        payload = {
+            "_type": "query",
+            "source_type": "search_result",
+            "q": f"PATENT_ID:{patent_id}"
+        }
+
+        try:
+            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # 提取 HTML 内容 (优先 CN)
+            clms_html = data.get("data", {}).get("CLMS", {}).get("CN", "")
+            return self._clean_html(clms_html)
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Fetch claims failed: {e}")
+            return ""
+
+    def _fetch_description(self, patent_id: str) -> str:
+        """
+        [Private] 获取说明书全文 (Description)
+        URL: /patent/id/{id}/desc
+        """
+        url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/desc"
+        payload = {
+            "_type": "query",
+            "source_type": "search_result",
+            "q": f"PATENT_ID:{patent_id}"
+        }
+
+        try:
+            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # 提取 HTML 内容 (优先 CN)
+            desc_html = data.get("data", {}).get("DESC", {}).get("CN", "")
+            return self._clean_html(desc_html)
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Fetch description failed: {e}")
+            return ""
+
+    def _fetch_official_images(self, patent_id: str) -> List[str]:
+        """
+        [Private] 获取官方附图列表
+        URL: /patent/id/{id}/official-image (GET)
+        """
+        url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/official-image"
+        
+        try:
+            resp = self.session.get(url, headers=self.headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # 数据结构: data -> data -> {patent_id} -> OFFICIAL_IMAGE -> {ImageID: {url...}}
+            images_map = data.get("data", {}).get(patent_id, {}).get("OFFICIAL_IMAGE", {})
+            
+            image_urls = []
+            # 按 Image ID 排序 (通常 HDA...1, HDA...2) 保证顺序
+            sorted_keys = sorted(images_map.keys())
+            
+            for key in sorted_keys:
+                img_obj = images_map[key]
+                if isinstance(img_obj, dict) and "url" in img_obj:
+                    image_urls.append(img_obj["url"])
+                    
+            return image_urls
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Fetch official images failed: {e}")
+            return []
+
+    def get_patent_detail(self, pn_or_id: str) -> Dict[str, Any]:
+        """
+        [Public] 获取专利完整详情 (聚合 Basic, Claims, Desc, Images)
+        :param pn_or_id: 专利公开号(PN) 或 内部ID(PATENT_ID)
+        """
+        if not self.token:
+            self._login()
+
+        # 1. 确保持有 ID
+        patent_id = pn_or_id
+        # 如果看起来像 PN (包含字母且长度较短)，尝试转换。ID通常是UUID格式 (36位)
+        if len(pn_or_id) < 30: 
+            resolved_id = self._get_patent_id_by_pn(pn_or_id)
+            if resolved_id:
+                patent_id = resolved_id
+            else:
+                logger.warning(f"[Zhihuiya] Could not resolve ID for {pn_or_id}, trying to use as ID anyway.")
+
+        logger.info(f"[Zhihuiya] Fetching details for {patent_id}...")
+
+        # 2. 并行或串行获取各部分数据 (这里使用串行，简单可靠)
+        # 如果追求性能，可以使用 ThreadPoolExecutor 并发这4个请求
+        
+        basic_info = self._fetch_basic_info(patent_id)
+        if not basic_info:
+            logger.error(f"[Zhihuiya] Failed to get basic info for {patent_id}")
+            return {}
+
+        claims_text = self._fetch_claims(patent_id)
+        desc_text = self._fetch_description(patent_id)
+        images = self._fetch_official_images(patent_id)
+
+        # 3. 组装结果
+        detail = {
+            **basic_info, # 展开基础信息
+            "claims_text": claims_text,
+            "description_text": desc_text,
+            "images": images,
+            "full_text_combined": (
+                f"【标题】\n{basic_info.get('title', '')}\n\n"
+                f"【摘要】\n{basic_info.get('abstract', '')}\n\n"
+                f"【权利要求】\n{claims_text}\n\n"
+                f"【说明书】\n{desc_text}"
+            )
+        }
+        
+        logger.success(f"[Zhihuiya] Details fetched for {basic_info.get('pn', patent_id)}")
+        return detail
         
     def _configure_search_settings(self):
         """
@@ -97,9 +281,11 @@ class ZhihuiyaClient(BaseSearchClient):
             return ""
         # 移除 <div ...> 和 </div>
         text = re.sub(r"<[^>]+>", "", text)
-        # 移除可能存在的 &nbsp; 等实体
-        text = text.replace("&nbsp;", " ").strip()
-        return text
+        # 移除 XML 实体
+        text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        # 移除连续空行
+        text = re.sub(r"\n\s*\n", "\n\n", text)
+        return text.strip()
 
     def _normalize_result(self, raw_item: Dict) -> Dict:
         """将智慧芽原始数据标准化为系统通用格式 (适配语义检索返回字段)"""
@@ -234,6 +420,114 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         return self._do_post_request(step2_url, step2_payload)
+    
+    def get_similar_patents(self, pn: str, limit: int = 50) -> Dict[str, Any]:
+        """
+        [Similar] 查询本专利的相似专利 (基于 PN 语义跳转)
+        1. POST /jump 获取 semantic_id
+        2. 执行语义检索
+        :param pn: 目标专利号 (e.g., CN116745575A)
+        :param limit: 返回数量
+        """
+        if not self.token:
+            self._login()
+
+        # --- Step 1: 通过 PN 获取 Semantic ID ---
+        jump_url = "https://search-service.zhihuiya.com/core-search-api/search/input/search/semantic/jump"
+        jump_payload = {
+            "from_apd": "",
+            "to_apd": "",
+            "from_pbd": "",
+            "to_pbd": "",
+            "query": pn
+        }
+
+        try:
+            logger.info(f"[Zhihuiya] Generating semantic ID for similar patents of {pn}...")
+            resp = self.session.post(jump_url, headers=self.headers, json=jump_payload)
+            
+            # Token 过期重试逻辑
+            if resp.status_code == 401:
+                self.token = None
+                self._login()
+                resp = self.session.post(jump_url, headers=self.headers, json=jump_payload)
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not data.get("status"):
+                logger.warning(f"[Zhihuiya] Jump API returned false status: {data}")
+                return {"total": 0, "results": []}
+
+            # 解析 URL 参数获取 semantic_id
+            # 响应示例: "...url": "_type=semantic&semantic_id=05e4dd15...&sort=sdesc"
+            result_url = data.get("data", {}).get("url", "")
+            match = re.search(r"semantic_id=([a-f0-9\-]+)", result_url)
+
+            if not match:
+                logger.error(f"[Zhihuiya] Failed to extract semantic_id from jump url: {result_url}")
+                return {"total": 0, "results": []}
+
+            semantic_id = match.group(1)
+            logger.debug(f"[Zhihuiya] Got Similar Semantic ID: {semantic_id}")
+
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Similar search Step 1 (Jump) failed: {e}")
+            return {"total": 0, "results": []}
+
+        # --- Step 2: 执行语义检索 ---
+        search_url = "https://search-service.zhihuiya.com/core-search-api/search/srp/patents"
+        search_payload = {
+            "special_query": False,
+            "view_type": "standard",
+            "with_count": True,
+            "_type": "semantic",
+            "q": f"[SEMANTIC]{semantic_id}",
+            "semantic_id": semantic_id,
+            "search_mode": "unset",
+            "sort": "sdesc",  # 相关度降序
+            "page": 1,
+            "limit": limit,
+        }
+
+        # 复用统一的请求处理方法
+        return self._do_post_request(search_url, search_payload)
+    
+    def get_family(self, pn: str, limit: int = 50) -> List[Dict]:
+        """
+        [Spider] 获取目标专利的同族专利 (Family members)
+        语法: EFAM:(PN)
+        """
+        if not pn:
+            return []
+            
+        # 构建同族检索式
+        query = f"EFAM:({pn})"
+        logger.debug(f"[Zhihuiya] Fetching family for {pn} with query: {query}")
+        
+        # 调用基础检索
+        res = self.search(query=query, limit=limit)
+        
+        # Spider 逻辑只需要结果列表，过滤掉自身
+        results = [doc for doc in res.get("results", []) if doc.get("pn") != pn]
+        return results
+
+    def get_citations(self, pn: str, limit: int = 50) -> List[Dict]:
+        """
+        [Spider] 获取目标专利的引用与被引用专利 (Citations)
+        语法: BF_CITES:(PN) -> 包含前向(F)和后向(B)引证
+        """
+        if not pn:
+            return []
+            
+        # 构建引证检索式
+        query = f"BF_CITES:({pn})"
+        logger.debug(f"[Zhihuiya] Fetching citations for {pn} with query: {query}")
+        
+        # 调用基础检索
+        res = self.search(query=query, limit=limit)
+        
+        return res.get("results", [])
 
     def _do_post_request(self, url: str, payload: Dict) -> List[Dict]:
         """统一的 POST 请求处理与重试逻辑"""
