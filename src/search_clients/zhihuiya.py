@@ -1,6 +1,8 @@
 import requests
 import re
-from typing import List, Dict
+import os
+import threading
+from typing import List, Dict, Optional
 from loguru import logger
 from config import settings
 from src.utils.crypto import rsa_encrypt
@@ -15,50 +17,58 @@ class ZhihuiyaClient(BaseSearchClient):
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-api-version": "2.0",
         }
+        # 依然建议保留登录锁，防止 Token 过期时多个线程同时触发重新登录
+        self._login_lock = threading.Lock() 
 
     def _login(self):
         """执行登录流程获取 Token"""
         logger.info("[Zhihuiya] Logging in...")
 
-        # 1. 获取公钥
-        try:
-            pk_resp = self.session.get(
-                "https://passport.zhihuiya.com/public/request_public_key"
-            )
-            pk_resp.raise_for_status()
-            public_key = pk_resp.text
-        except Exception as e:
-            logger.error(f"[Zhihuiya] Failed to get public key: {e}")
-            raise
+        if self.token:
+            return
+        
+        with self._login_lock:
+            if self.token: return
 
-        # 2. 加密密码
-        encrypted_password = rsa_encrypt(settings.ZHIHUIYA_PASSWORD, public_key)
+            # 1. 获取公钥
+            try:
+                pk_resp = self.session.get(
+                    "https://passport.zhihuiya.com/public/request_public_key"
+                )
+                pk_resp.raise_for_status()
+                public_key = pk_resp.text
+            except Exception as e:
+                logger.error(f"[Zhihuiya] Failed to get public key: {e}")
+                raise
 
-        # 3. 登录获取 Token
-        payload = {
-            "username": settings.ZHIHUIYA_USERNAME,
-            "password": encrypted_password,
-            "remember_me": "on",
-            "client_id": settings.ZHIHUIYA_CLIENT_ID,
-            "from": "account",
-            "response_type": "TOKEN",
-        }
+            # 2. 加密密码
+            encrypted_password = rsa_encrypt(settings.ZHIHUIYA_PASSWORD, public_key)
 
-        try:
-            login_resp = self.session.post(
-                "https://passport.zhihuiya.com/doLogin", json=payload
-            )
-            login_resp.raise_for_status()
-            data = login_resp.json()
-            self.token = data.get("token")
-            self.headers["Authorization"] = f"Bearer {self.token}"
-            logger.success("[Zhihuiya] Login successful.")
-            
-            # 4. 登录成功后，初始化查询字段配置
-            self._configure_search_settings()
-        except Exception as e:
-            logger.error(f"[Zhihuiya] Login failed: {e}")
-            raise
+            # 3. 登录获取 Token
+            payload = {
+                "username": settings.ZHIHUIYA_USERNAME,
+                "password": encrypted_password,
+                "remember_me": "on",
+                "client_id": settings.ZHIHUIYA_CLIENT_ID,
+                "from": "account",
+                "response_type": "TOKEN",
+            }
+
+            try:
+                login_resp = self.session.post(
+                    "https://passport.zhihuiya.com/doLogin", json=payload
+                )
+                login_resp.raise_for_status()
+                data = login_resp.json()
+                self.token = data.get("token")
+                self.headers["Authorization"] = f"Bearer {self.token}"
+                logger.success("[Zhihuiya] Login successful.")
+                
+                # 4. 登录成功后，初始化查询字段配置
+                self._configure_search_settings()
+            except Exception as e:
+                logger.error(f"[Zhihuiya] Login failed: {e}")
+                raise
         
     def _configure_search_settings(self):
         """
@@ -261,3 +271,130 @@ class ZhihuiyaClient(BaseSearchClient):
                 logger.error(f"[Zhihuiya] Request failed: {e}")
                 return {"total": 0, "results": []}
         return {"total": 0, "results": []}
+    
+    # =========================================================================
+    # PDF 下载相关功能
+    # =========================================================================
+
+    def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
+        """
+        Step 1: 查询专利ID
+        :param pn: 专利公开号 (如 CN116745575A)
+        :return: PATENT_ID 或 None
+        """
+        url = "https://search-service.zhihuiya.com/core-search-api/search/patent/query/count"
+        payload = {
+            "search_mode": "publication",
+            "q": pn,
+            "simple": True,
+            "check_complexity": True
+        }
+
+        for attempt in range(2):
+            try:
+                resp = self.session.post(url, headers=self.headers, json=payload)
+                
+                if resp.status_code == 401:
+                    logger.warning("[Zhihuiya] Token expired during ID query, refreshing...")
+                    self._login()
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not data.get("status"):
+                    logger.error(f"[Zhihuiya] Failed to query patent ID for {pn}: {data.get('message')}")
+                    return None
+
+                patent_info = data.get("data", {}).get("patent_info", {})
+                patent_id = patent_info.get("PATENT_ID")
+                
+                if not patent_id:
+                    logger.warning(f"[Zhihuiya] No patent ID found for {pn}")
+                    return None
+                
+                return patent_id
+
+            except Exception as e:
+                logger.error(f"[Zhihuiya] Error getting patent ID: {e}")
+                return None
+        return None
+
+    def _get_pdf_download_url(self, patent_id: str) -> Optional[str]:
+        """
+        Step 2: 获取下载地址
+        :param patent_id: 内部专利ID
+        :return: PDF下载链接 或 None
+        """
+        url = "https://search-service.zhihuiya.com/core-search-api/search/srp/pdf"
+        params = {
+            "patentId": patent_id,
+            "ttlLang": "CN" # 默认使用CN，如果需要可扩展为参数
+        }
+
+        for attempt in range(2):
+            try:
+                resp = self.session.get(url, headers=self.headers, params=params)
+
+                if resp.status_code == 401:
+                    logger.warning("[Zhihuiya] Token expired during PDF URL query, refreshing...")
+                    self._login()
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not data.get("status"):
+                    logger.error(f"[Zhihuiya] Failed to get PDF URL: {data.get('message')}")
+                    return None
+
+                pdf_url = data.get("data", {}).get("PDF_D")
+                return pdf_url
+
+            except Exception as e:
+                logger.error(f"[Zhihuiya] Error getting PDF URL: {e}")
+                return None
+        return None
+
+    def download_patent_document(self, pn: str, save_path: str) -> bool:
+        """
+        下载 PDF 到指定路径
+        :param pn: 专利公开号
+        :param save_path: 完整的保存路径 (含文件名)
+        :return: Boolean 是否成功
+        """
+        if not self.token:
+            self._login()
+
+        logger.info(f"[Zhihuiya] Starting download for patent: {pn}")
+
+        # 1. 获取 Patent ID
+        patent_id = self._get_patent_id_by_pn(pn)
+        if not patent_id:
+            logger.error(f"[Zhihuiya] Aborting download: Cannot find Patent ID for {pn}")
+            return None
+
+        # 2. 获取下载链接
+        pdf_url = self._get_pdf_download_url(patent_id)
+        if not pdf_url:
+            logger.error(f"[Zhihuiya] Aborting download: Cannot get PDF URL for {pn}")
+            return None
+
+        # 3. 下载文件
+        try:
+            # 确保目标文件夹存在
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
+            with self.session.get(pdf_url, stream=True) as r:
+                r.raise_for_status()
+                with open(save_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            logger.success(f"[Zhihuiya] Downloaded: {save_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[Zhihuiya] Download failed: {e}")
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            return False
