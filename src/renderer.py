@@ -38,6 +38,7 @@ class ReportRenderer:
     def render(
         self,
         report_data: Dict[str, Any],
+        check_result: Optional[Dict[str, str]],
         search_data: Optional[Dict[str, Any]],
         md_path: Path,
         pdf_path: Path,
@@ -53,7 +54,13 @@ class ReportRenderer:
         if report_data:
             parts.append(self._render_analysis_section(report_data))
 
-        # 2. 渲染检索策略部分
+        # 2. 形式缺陷审查报告
+        if check_result:
+            # 强制分页
+            parts.append("\n<div style='page-break-before: always;'></div>\n")
+            parts.append(self._render_formal_check_section(check_result))
+
+        # 3. 渲染检索策略部分
         if search_data:
             # 添加分页符，确保检索策略从新页面开始
             parts.append("\n<div style='page-break-before: always;'></div>\n")
@@ -61,7 +68,7 @@ class ReportRenderer:
 
         full_md_content = "\n".join(parts)
 
-        # 3. 写入 .md 文件
+        # 4. 写入 .md 文件
         try:
             md_path.parent.mkdir(parents=True, exist_ok=True)
             md_path.write_text(full_md_content, encoding="utf-8")
@@ -325,6 +332,26 @@ class ReportRenderer:
             lines.append("\n---\n")  # 分隔线
 
         return "\n".join(lines)
+
+    def _render_formal_check_section(self, check_results: Dict[str, str]) -> str:
+        """
+        渲染独立章节：形式缺陷检查报告
+        """
+        lines = []
+        lines.append("# 形式缺陷审查报告\n")
+        
+        # 1. 附图标记一致性检查
+        consistency_text = check_results.get("consistency")
+        if consistency_text:
+            lines.append("## 1. 附图标记一致性检查")
+            lines.append(f"{consistency_text}\n")
+        
+        # 如果没有任何检查结果
+        if not lines:
+            lines.append("本次未进行形式缺陷检查。")
+
+        return "\n".join(lines)
+    
 
     def _render_search_section(self, data: Dict[str, Any]) -> str:
         """
