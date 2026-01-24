@@ -229,28 +229,41 @@ class Settings:
     }
     """
 
-    def get_project_paths(self, pdf_filename_stem: str):
+    def get_project_paths(self, pn: str):
         """
-        根据 PDF文件名 生成该项目的特定路径结构
+        根据专利号生成标准化的工作区路径
+        结构: output/{pn}/...
         """
-        project_root = self.OUTPUT_DIR / pdf_filename_stem
+        # 清理文件名中的非法字符
+        safe_pn = "".join([c for c in pn if c.isalnum() or c in ('-', '_')])
+
+        project_root = self.OUTPUT_DIR / safe_pn
         mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
 
         return {
             "root": project_root,
             "mineru_dir": mineru_output_dir,
-            "raw_md": mineru_output_dir / f"{pdf_filename_stem}.md",
-            "raw_images_dir": mineru_output_dir / "images",
             "annotated_dir": project_root / "annotated_images",
+
+            # 输入/中间文件
+            "raw_pdf": project_root / "raw.pdf",
+            "raw_md": mineru_output_dir / f"{safe_pn}.md",
+            "raw_images_dir": mineru_output_dir / "images",
+
+            # 结构化数据
             "patent_json": project_root / "patent.json",  # 专利数据
             "parts_json": project_root / "parts.json",  # 部件数据
             "image_parts_json": project_root / "image_parts.json",  # 图片部件数据
             "check_json": project_root / "check.json", # 专利形式检查
             "report_json": project_root / "report.json",  # 专利分析报告数据
+
+            # 搜索与查新
             "search_strategy_json": project_root / "search_strategy.json",  # 检索策略数据
             "examination_results_json": project_root / "examination_results.json",  # 审查结果数据
-            "final_md": project_root / f"{pdf_filename_stem}.md",
-            "final_pdf": project_root / f"{pdf_filename_stem}.pdf",
+
+            # 最终产物
+            "final_md": project_root / f"{safe_pn}.md",
+            "final_pdf": project_root / f"{safe_pn}.pdf",
         }
 
 
