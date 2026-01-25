@@ -358,7 +358,7 @@ class ExecutionHand:
 
         try:
             resp = self.llm.chat_completion_json(
-                model=settings.LLM_MODEL_FAST, # 使用廉价模型
+                model=settings.LLM_MODEL_EXAM, # 使用廉价模型
                 messages=[{"role": "user", "content": prompt}]
             )
             

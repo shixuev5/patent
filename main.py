@@ -52,22 +52,10 @@ class PatentPipeline:
             if not self.paths["raw_md"].exists():
                 logger.info(f"[{self.pn}] Step 1: Parsing PDF...")
                 # Mineru 解析 PDF
-                # 注意：Mineru 的 parse 方法通常接受 input_file 和 output_dir
                 PDFParser.parse(self.raw_pdf_path, self.paths["mineru_dir"])
             else:
                 logger.info(f"[{self.pn}] Step 1: PDF already parsed, skipping.")
-
-            # 再次检查 MD 是否生成 (Mineru 可能生成 raw.md 或 auto.md，视具体实现而定)
-            # 这里假设 config 中定义的 raw_md 路径是准确的
-            if not self.paths["raw_md"].exists():
-                 # 尝试寻找 mineru_dir 下的唯一 md 文件作为容错
-                md_files = list(self.paths["mineru_dir"].glob("*.md"))
-                if md_files:
-                    logger.warning(f"[{self.pn}] Found MD file at {md_files[0]}, linking...")
-                    self.paths["raw_md"] = md_files[0]
-                else:
-                    raise FileNotFoundError(f"[{self.pn}] Markdown file generation failed.")
-
+                
             md_content = self.paths["raw_md"].read_text(encoding="utf-8")
 
             # --- Step 2: 专利结构化转换 ---
@@ -148,20 +136,20 @@ class PatentPipeline:
             search_strategy_data = {}
             examination_results = []
             
-            # 检查缓存
-            if self.paths["examination_results_json"].exists() and self.paths["search_strategy_json"].exists():
-                logger.info(f"[{self.pn}] Loading cached search results...")
-                search_strategy_data = json.loads(self.paths["search_strategy_json"].read_text(encoding="utf-8"))
-            else:
-                search_strategy_data, examination_results = run_search_graph(
-                    patent_data=patent_data, report_data=report_json
-                )
-                self.paths["search_strategy_json"].write_text(
-                    json.dumps(search_strategy_data, ensure_ascii=False, indent=2), encoding="utf-8",
-                )
-                self.paths["examination_results_json"].write_text(
-                    json.dumps(examination_results, ensure_ascii=False, indent=2), encoding="utf-8",
-                )
+            # # 检查缓存
+            # if self.paths["examination_results_json"].exists() and self.paths["search_strategy_json"].exists():
+            #     logger.info(f"[{self.pn}] Loading cached search results...")
+            #     search_strategy_data = json.loads(self.paths["search_strategy_json"].read_text(encoding="utf-8"))
+            # else:
+            #     search_strategy_data, examination_results = run_search_graph(
+            #         patent_data=patent_data, report_data=report_json
+            #     )
+            #     self.paths["search_strategy_json"].write_text(
+            #         json.dumps(search_strategy_data, ensure_ascii=False, indent=2), encoding="utf-8",
+            #     )
+            #     self.paths["examination_results_json"].write_text(
+            #         json.dumps(examination_results, ensure_ascii=False, indent=2), encoding="utf-8",
+            #     )
 
             # --- Step 8: 渲染 ---
             logger.info(f"[{self.pn}] Step 8: Rendering Report...")
