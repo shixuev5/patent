@@ -152,7 +152,7 @@ class QuickEye:
 
         try:
             return self.llm.chat_completion_json(
-                model=settings.LLM_MODEL_FAST,
+                model=settings.LLM_MODEL_EXAM,
                 messages=[{"role": "user", "content": prompt}]
             )
         except Exception:

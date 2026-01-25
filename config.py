@@ -9,7 +9,6 @@ load_dotenv()
 class Settings:
     # --- 基础路径配置 ---
     BASE_DIR = Path(__file__).resolve().parent
-    INPUT_DIR = BASE_DIR / "input"
     OUTPUT_DIR = BASE_DIR / "output"
     ASSETS_DIR = BASE_DIR / "assets"
 
@@ -44,9 +43,6 @@ class Settings:
     ZHIHUIYA_CLIENT_ID = os.getenv(
         "ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc"
     )
-
-    # --- Google Patents / SerpApi Configuration ---
-    SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 
     # Mineru 配置
     MINERU_TEMP_FOLDER = "mineru_raw"
@@ -247,7 +243,7 @@ class Settings:
 
             # 输入/中间文件
             "raw_pdf": project_root / "raw.pdf",
-            "raw_md": mineru_output_dir / f"{safe_pn}.md",
+            "raw_md": mineru_output_dir / "raw.md",
             "raw_images_dir": mineru_output_dir / "images",
 
             # 结构化数据
@@ -270,6 +266,5 @@ class Settings:
 settings = Settings()
 
 # 自动创建基础目录
-settings.INPUT_DIR.mkdir(exist_ok=True)
 settings.OUTPUT_DIR.mkdir(exist_ok=True)
 settings.ASSETS_DIR.mkdir(exist_ok=True)

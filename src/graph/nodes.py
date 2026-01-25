@@ -1,6 +1,6 @@
 # src/graph/nodes.py
 
-from typing import Dict, Any, List
+from typing import Dict, Any
 from loguru import logger
 
 # 引入数据结构
