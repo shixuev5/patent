@@ -34,8 +34,7 @@ class Settings:
     VLM_MODEL = os.getenv("VLM_MODEL", "glm-4.6v")
 
     # --- 视觉处理配置 ---
-    FONT_SIZE = 20  # 标注字体大小
-    LABEL_COLOR = (0, 0, 255)  # 标注颜色 (B, G, R) - 蓝色
+    LABEL_COLOR = (0, 0, 255)
 
     # --- 智慧芽 ---
     ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")
