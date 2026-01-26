@@ -96,6 +96,8 @@ class LLMService:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("utf-8")
 
+            img_url = f"data:image/jpeg;base64,{img_b64}"
+
             # 调用视觉模型
             response = self.vlm_client.chat.completions.create(
                 model=settings.VLM_MODEL,
@@ -104,7 +106,7 @@ class LLMService:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image_url", "image_url": {"url": img_b64}},
+                            {"type": "image_url", "image_url": {"url": img_url}},
                             {"type": "text", "text": user_prompt},
                         ],
                     },

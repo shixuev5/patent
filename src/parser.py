@@ -200,7 +200,7 @@ class OnlinePDFParser:
 
         zip_path = output_dir / "result.zip"
         
-        with requests.get(download_url, stream=True) as r:
+        with requests.get(download_url, stream=True, verify=False) as r:
             r.raise_for_status()
             with open(zip_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):
