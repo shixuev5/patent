@@ -43,7 +43,9 @@ class Settings:
         "ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc"
     )
 
-    # Mineru 配置
+    # --- Mineru ---
+    MINERU_API_KEY = os.getenv("MINERU_API_KEY", "")  
+    MINERU_BASE_URL = os.getenv("MINERU_BASE_URL", "https://mineru.net/api/v4")
     MINERU_TEMP_FOLDER = "mineru_raw"
 
     PDF_CSS = """    
