@@ -36,6 +36,7 @@ class LLMService:
         temperature: float = 0.1,
         max_tokens: int = 64000,
         model: Optional[str] = None,
+        thinking: bool = True
     ) -> Dict[str, Any]:
         """
         JSON 格式对话，自动解析返回的 JSON
@@ -56,6 +57,7 @@ class LLMService:
                 temperature=temperature,
                 max_completion_tokens=max_tokens,
                 response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}}
             )
 
             content = response.choices[0].message.content
@@ -69,23 +71,6 @@ class LLMService:
         except Exception as e:
             logger.error(f"[LLM] JSON completion failed: {e}")
             raise
-
-    def chat_completion(
-        self,
-        messages: List[Dict[str, str]],
-        model: Optional[str] = None,
-        temperature: float = 0.7,
-    ) -> Dict[str, Any]:
-        """
-        普通对话接口
-        """
-        response = self.text_client.chat.completions.create(
-            model=model or settings.LLM_MODEL,
-            messages=messages,
-            temperature=temperature,
-        )
-
-        return response.choices[0].message.content
 
     def analyze_image_with_thinking(
         self, image_path: str, system_prompt: str, user_prompt: str
