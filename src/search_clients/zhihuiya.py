@@ -18,7 +18,7 @@ class ZhihuiyaClient(BaseSearchClient):
             "x-api-version": "2.0",
         }
         # 依然建议保留登录锁，防止 Token 过期时多个线程同时触发重新登录
-        self._login_lock = threading.Lock() 
+        self._login_lock = threading.Lock()
 
     def _login(self):
         """执行登录流程获取 Token"""
@@ -541,6 +541,7 @@ class ZhihuiyaClient(BaseSearchClient):
                     and "token expired" in resp.text
                 ):
                     logger.warning("[Zhihuiya] Token expired, refreshing...")
+                    self.token = None
                     self._login()
                     continue
 
@@ -590,6 +591,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 
                 if resp.status_code == 401:
                     logger.warning("[Zhihuiya] Token expired during ID query, refreshing...")
+                    self.token = None
                     self._login()
                     continue
 
@@ -632,6 +634,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
                 if resp.status_code == 401:
                     logger.warning("[Zhihuiya] Token expired during PDF URL query, refreshing...")
+                    self.token = None
                     self._login()
                     continue
 
