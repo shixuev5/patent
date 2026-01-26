@@ -3,9 +3,10 @@ import re
 import os
 import json
 import shutil
+import math
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
 from paddleocr import PaddleOCR
 from tqdm import tqdm
@@ -38,9 +39,10 @@ class VisualProcessor:
             self.ocr_engine = PaddleOCR(
                 text_detection_model_name="PP-OCRv5_server_det",
                 text_recognition_model_name="PP-OCRv5_server_rec",
-                use_doc_orientation_classify=False,  # 通过 use_doc_orientation_classify 参数指定不使用文档方向分类模型
-                use_doc_unwarping=False,  # 通过 use_doc_unwarping 参数指定不使用文本图像矫正模型
-                use_textline_orientation=False,  # 通过 use_textline_orientation 参数指定不使用文本行方向分类模型
+                use_doc_orientation_classify=False,  # 不使用文档方向分类模型
+                use_doc_unwarping=False,  # 不使用文本图像矫正模型
+                use_textline_orientation=False,  # 不使用文本行方向分类模型
+                text_rec_score_thresh=0.9,  # 识别置信度
             )
         else:
             self.ocr_engine = None
@@ -70,7 +72,7 @@ class VisualProcessor:
             filename = img_path.name
             out_path = self.out_dir / filename
 
-            # 如果部件数据存在并且是目标图片 (摘要图或附图) 
+            # 如果部件数据存在并且是目标图片 (摘要图或附图)
             if self.parts_db and filename in target_filenames:
                 part_ids = self._process_single_image(img_path, out_path)
                 if part_ids:
@@ -151,7 +153,8 @@ class VisualProcessor:
                     found_pids.append(match_key)
 
             # 3. 绘图或复制
-            if len(ocr_results) and len(valid_labels) / len(ocr_results) > 0.3:
+            # 如果有有效标注，或者至少识别出了一些东西（避免空图被覆盖），则进行标注
+            if len(valid_labels) > 0:
                 self._annotate_image(str(img_path), valid_labels, str(out_path))
             else:
                 # 无有效信息，复制原图
@@ -166,20 +169,102 @@ class VisualProcessor:
                 shutil.copy2(img_path, out_path)
             return []
 
+    def _preprocess_image(self, img_path: str) -> Tuple[Optional[np.ndarray], int, float]:
+        """
+        对小尺寸图片进行放大
+        """
+        img = cv2.imread(img_path)
+        if img is None:
+            return None, 0, 1.0
+
+        h, w = img.shape[:2]
+        max_side = max(h, w)
+        
+        TARGET_SIDE = 1280
+        
+        # 1. 计算自适应缩放倍率
+        if max_side < TARGET_SIDE:
+            scale_factor = TARGET_SIDE / max_side
+            scale_factor = min(scale_factor, 3.0)
+        else:
+            # 大图不缩放，节省内存
+            scale_factor = 1.0
+
+        # 2. 执行缩放 (仅在需要时)
+        if scale_factor > 1.05:  # 设置一个小阈值避免 1.0001 这种无意义操作
+            new_w = int(w * scale_factor)
+            new_h = int(h * scale_factor)
+            img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        else:
+            img_resized = img
+            scale_factor = 1.0
+
+        # 3. 边缘填充 (Padding)
+        pad_size = 30
+        img_padded = cv2.copyMakeBorder(
+            img_resized,
+            pad_size,
+            pad_size,
+            pad_size,
+            pad_size,
+            cv2.BORDER_CONSTANT,
+            value=(255, 255, 255),
+        )
+
+        # 4. 转灰度
+        gray = cv2.cvtColor(img_padded, cv2.COLOR_BGR2GRAY)
+
+        # 5. 转回 BGR
+        processed_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        return processed_img, pad_size, scale_factor
+    
+    
     def _run_local_ocr(self, img_path: str) -> List[Dict]:
         """运行 OCR 返回原始结果"""
-        result = self.ocr_engine.predict(img_path, text_rec_score_thresh=0.9)
+
+        # 1. 图像预处理
+        processed_img, pad_offset, scale = self._preprocess_image(img_path)
+
+        if processed_img is None:
+            logger.warning(f"Failed to load image for OCR: {img_path}")
+            return []
+
+        # 2. 执行预测
+        result = self.ocr_engine.predict(processed_img)
 
         if not result or not result[0]:
             return []
 
-        # 格式化输出: [{'text':Str, 'box': [x1,y1,x2,y2]}, ...]
         texts = result[0].get("rec_texts", [])
         boxes = result[0].get("rec_boxes", []).tolist()
 
         formatted = []
         for text, box in zip(texts, boxes):
-            formatted.append({"text": text, "box": box})
+            xs = [box[i] for i in range(0, len(box), 2)]
+            ys = [box[i] for i in range(1, len(box), 2)]
+
+            # 1. 还原 Padding
+            x1_pad = min(xs) - pad_offset
+            y1_pad = min(ys) - pad_offset
+            x2_pad = max(xs) - pad_offset
+            y2_pad = max(ys) - pad_offset
+
+            # 2. 还原缩放 (除以 scale_factor)
+            x1 = int(x1_pad / scale)
+            y1 = int(y1_pad / scale)
+            x2 = int(x2_pad / scale)
+            y2 = int(y2_pad / scale)
+
+            # 边界检查
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+
+            # 过滤掉因为 padding 导致的无效框 (虽然很少见)
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            formatted.append({"text": text, "box": [x1, y1, x2, y2]})
 
         return formatted
 
@@ -196,7 +281,7 @@ class VisualProcessor:
             h, w = img.shape[:2]
 
             prompt = """
-            任务：找出图片中所有的零部件编号（数字）。
+            任务：找出图片中所有的零部件编号（数字或字母组合）。
             
             要求：
             1. 返回纯 JSON 列表。
@@ -214,12 +299,18 @@ class VisualProcessor:
 
             content = content.replace("```json", "").replace("```", "").strip()
 
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                # 简单的尝试修复或忽略
+                logger.warning(f"[VLM] Failed to parse JSON response for {img_path}")
+                return []
 
             formatted = []
             for item in data:
                 norm_box = item.get("box", [])
                 if len(norm_box) == 4:
+                    # 坐标转换并确保为整数
                     x1 = int(norm_box[0] / 1000 * w)
                     y1 = int(norm_box[1] / 1000 * h)
                     x2 = int(norm_box[2] / 1000 * w)
@@ -243,28 +334,46 @@ class VisualProcessor:
         在图片上绘制标签
         labels: [{'text': '中文名', 'box': [x1,y1,x2,y2]}, ...]
         """
-        processor = LabelPlacer(img_path)
-        result_img = processor.place_labels(labels)
-        cv2.imwrite(output_path, result_img)
+        try:
+            processor = LabelPlacer(img_path)
+            result_img = processor.place_labels(labels)
+            cv2.imwrite(output_path, result_img)
+        except Exception as e:
+            logger.error(f"Annotation failed for {img_path}: {e}")
+            # 失败时尝试直接拷贝原图
+            shutil.copy2(img_path, output_path)
 
 
 class LabelPlacer:
-    """避障标签放置算法"""
+    """智能避障标签放置器"""
 
     def __init__(self, image_path):
-        # 解决中文路径读取问题
         self.original_img = cv2.imdecode(np.fromfile(image_path, dtype=np.uint8), -1)
         if self.original_img is None:
             raise ValueError(f"Image not found: {image_path}")
 
-        # 处理可能的 Alpha 通道
-        if self.original_img.shape[2] == 4:
+        # 处理 Alpha 通道，转为 BGR
+        if len(self.original_img.shape) == 3 and self.original_img.shape[2] == 4:
             self.original_img = cv2.cvtColor(self.original_img, cv2.COLOR_BGRA2BGR)
 
-        self.h, self.w = self.original_img.shape[:2]
+        # 确保是 3 通道 BGR (处理灰度图情况)
+        if len(self.original_img.shape) == 2:
+            self.original_img = cv2.cvtColor(self.original_img, cv2.COLOR_GRAY2BGR)
 
-        # 构建代价地图
+        self.h, self.w = self.original_img.shape[:2]
+        
+        # 自适应字体大小逻辑
+        max_side = max(self.h, self.w)
+        if max_side < 600:
+            self.font_size = 14
+        elif max_side < 800:
+            self.font_size = 16
+        else:
+            self.font_size = 20
+
+        # 障碍地图与占用地图
         gray = cv2.cvtColor(self.original_img, cv2.COLOR_BGR2GRAY)
+        # 简单的线条提取作为障碍物
         _, self.line_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
         kernel = np.ones((3, 3), np.uint8)
         self.obstacle_map = cv2.dilate(self.line_mask, kernel, iterations=1)
@@ -275,86 +384,156 @@ class LabelPlacer:
             x1, y1, x2, y2 = map(int, box)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(self.w, x2), min(self.h, y2)
-            # 标记为完全不可用
-            cv2.rectangle(self.occupied_map, (x1, y1), (x2, y2), 255, -1)
-            cv2.rectangle(self.obstacle_map, (x1, y1), (x2, y2), 255, -1)
+            if x2 > x1 and y2 > y1:
+                cv2.rectangle(self.occupied_map, (x1, y1), (x2, y2), 255, -1)
+                cv2.rectangle(self.obstacle_map, (x1, y1), (x2, y2), 255, -1)
 
-    def find_best_position(self, anchor_box, text_w, text_h):
-        ax1, ay1, ax2, ay2 = map(int, anchor_box)
-        padding = 5
-        # 候选位置：右、左、下、上
-        candidates = [
-            (ax2 + padding, ay1),
-            (ax1 - text_w - padding, ay1),
-            (ax1, ay2 + padding),
-            (ax1, ay1 - text_h - padding),
+    def is_location_safe(self, x, y, w, h, check_lines=True):
+        if x < 0 or y < 0 or x + w > self.w or y + h > self.h:
+            return False
+
+        # 1. 绝对不可重叠：其他标签
+        roi_occ = self.occupied_map[y : y + h, x : x + w]
+        if np.count_nonzero(roi_occ) > 0:
+            return False
+
+        # 2. 尽量不遮挡：原图线条
+        if check_lines:
+            roi_obs = self.obstacle_map[y : y + h, x : x + w]
+            # 容忍度设为 5%
+            if np.count_nonzero(roi_obs) > (w * h * 0.05):
+                return False
+
+        return True
+
+    def search_position(self, center_box, text_w, text_h):
+        """
+        辐射搜索最佳位置
+        :return: (x, y, use_leader_line)
+        """
+        # 计算原框中心点
+        cx = (center_box[0] + center_box[2]) // 2
+        cy = (center_box[1] + center_box[3]) // 2
+
+        padding = 3  # 紧贴时的间距
+
+        # --- 策略 1: 紧邻四周 (无引线) ---
+        # 优化优先级：正上 -> 正下 -> 正右 -> 正左
+        # 优化对齐：上下放置时，水平居中；左右放置时，垂直居中
+
+        candidates_tier1 = [
+            # (x, y, 描述)
+            (cx - text_w // 2, center_box[1] - text_h - padding),  # 正上 (居中)
+            (cx - text_w // 2, center_box[3] + padding),  # 正下 (居中)
+            (center_box[2] + padding, cy - text_h // 2),  # 正右 (垂直居中)
+            (center_box[0] - text_w - padding, cy - text_h // 2),  # 正左 (垂直居中)
         ]
 
-        best_pos = None
-        min_cost = float("inf")
+        for x, y in candidates_tier1:
+            # Tier 1 必须严格检查线条遮挡，因为没有引线，直接盖在图上会很丑
+            if self.is_location_safe(int(x), int(y), text_w, text_h, check_lines=True):
+                return int(x), int(y), False
 
-        for x, y in candidates:
-            x, y = int(x), int(y)
-            # 越界检查
-            if x < 0 or y < 0 or x + text_w > self.w or y + text_h > self.h:
-                continue
+        # --- 策略 2: 辐射搜索 (有引线) ---
 
-            # 碰撞检查（是否与其他标签重叠）
-            roi_occ = self.occupied_map[y : y + text_h, x : x + text_w]
-            if np.count_nonzero(roi_occ) > 0:
-                continue
+        # 定义优先角度 (度)：优先垂直和斜角，最后才是水平
+        # -90=上, 90=下, -45=右上, 45=右下, -135=左上, 135=左下, 0=右, 180=左
+        preferred_angles = [-90, 90, -45, 45, -135, 135, 0, 180]
 
-            # 遮挡检查（是否遮挡了原图的线条）
-            roi_obs = self.obstacle_map[y : y + text_h, x : x + text_w]
-            cost = np.count_nonzero(roi_obs)
+        # 补充角度：如果在上述角度找不到，再尝试中间的角度
+        secondary_angles = [a for a in range(0, 360, 20) if a not in preferred_angles]
 
-            if cost < min_cost:
-                min_cost = cost
-                best_pos = (x, y)
-                if cost == 0:
-                    break  # 找到完美位置，提前退出
+        # 定义半径：更密集的步长，防止跳得太远
+        # 25px, 35px: 非常近的引线，解决 "13" 这种稍微挪一点就好的情况
+        radii = [25, 35, 50, 70, 90, 120, 150]
 
-        return best_pos
+        # 开始搜索：先遍历半径，再遍历角度（保证尽可能近）
+        for r in radii:
+            # 合并角度列表，优先尝试黄金角度
+            check_sequence = preferred_angles + secondary_angles
+
+            for angle in check_sequence:
+                theta = math.radians(angle)
+
+                # 计算候选中心
+                cand_cx = cx + int(r * math.cos(theta))
+                cand_cy = cy + int(r * math.sin(theta))
+
+                # 推算左上角
+                x = cand_cx - text_w // 2
+                y = cand_cy - text_h // 2
+
+                # 检查: 有引线时，优先找不遮挡线条的区域
+                if self.is_location_safe(x, y, text_w, text_h, check_lines=True):
+                    return x, y, True
+
+        # --- 策略 3: 放宽限制 (允许遮挡线条) ---
+        # 如果干净的地方找不到，就在附近找个能放下的地方（遮住线条也没关系，有白底）
+        fallback_radii = [40, 60]
+        for r in fallback_radii:
+            for angle in preferred_angles:
+                theta = math.radians(angle)
+                x = cx + int(r * math.cos(theta)) - text_w // 2
+                y = cy + int(r * math.sin(theta)) - text_h // 2
+                if self.is_location_safe(x, y, text_w, text_h, check_lines=False):
+                    return x, y, True
+
+        # --- 策略 4: 终极兜底 ---
+        # 放在右上角，不管是否遮挡
+        return int(center_box[2] + 10), int(center_box[1] - 10), True
 
     def place_labels(self, labels_data):
-        img_pil = Image.fromarray(cv2.cvtColor(self.original_img, cv2.COLOR_BGR2RGB))
+        # 转换为 RGB 供 PIL 处理
+        img_rgb = cv2.cvtColor(self.original_img, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_rgb)
         draw = ImageDraw.Draw(img_pil)
 
         try:
-            font = ImageFont.truetype(str(settings.FONT_PATH), settings.FONT_SIZE)
-        except Exception:
-            # logger.warning("Font file error, using default.")
+            # 字体大小适配
+            font = ImageFont.truetype(str(settings.FONT_PATH), self.font_size)
+        except:
             font = ImageFont.load_default()
 
-        # 1. 标记所有 OCR 识别框区域为不可用（避免把字写在原本的数字上）
+        # 1. 标记所有 OCR 原框
         all_boxes = [item["box"] for item in labels_data]
         self.mark_existing_boxes(all_boxes)
 
-        # 2. 放置标签
         for item in labels_data:
             text = item["text"]
             box = item["box"]
 
-            # 获取文本尺寸
+            src_cx = (box[0] + box[2]) // 2
+            src_cy = (box[1] + box[3]) // 2
+
+            # 计算文字尺寸 (稍微留宽一点 padding)
             bbox = draw.textbbox((0, 0), text, font=font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
+            text_w = bbox[2] - bbox[0] + 8
+            text_h = bbox[3] - bbox[1] + 4
 
-            pos = self.find_best_position(box, text_w, text_h)
+            # 搜索位置
+            x, y, need_line = self.search_position(box, text_w, text_h)
 
-            if pos:
-                x, y = pos
-                # 绘制背景框 (可选，增加可读性)
-                draw.rectangle(
-                    (x, y, x + text_w, y + text_h), fill="white", outline=None
-                )
-                # 绘制文字
-                draw.text((x, y), text, font=font, fill=settings.LABEL_COLOR)
-                # 更新占用地图
-                self_box = [x, y, x + text_w, y + text_h]
-                self.mark_existing_boxes([self_box])
-            else:
-                # 找不到位置时，可以选择不做任何事，或者强制绘制在某个位置
-                pass
+            # 边界修正
+            x = max(0, min(self.w - text_w, x))
+            y = max(0, min(self.h - text_h, y))
+
+            if need_line:
+                dst_cx = x + text_w // 2
+                dst_cy = y + text_h // 2
+
+                # 画引线 (红色)
+                draw.line([(src_cx, src_cy), (dst_cx, dst_cy)], fill="red", width=2)
+
+            # 画标签背景 (白色填充 + 红色边框)
+            # outline="red" 使标签更醒目
+            draw.rectangle((x, y, x + text_w, y + text_h), fill="white", outline=None)
+
+            # 画文字 (垂直居中微调)
+            text_x = x + 4
+            text_y = y + 2
+            draw.text((text_x, text_y), text, font=font, fill=settings.LABEL_COLOR)
+
+            # 更新占用
+            self.mark_existing_boxes([[x, y, x + text_w, y + text_h]])
 
         return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
