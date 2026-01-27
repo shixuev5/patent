@@ -8,6 +8,7 @@ from loguru import logger
 from config import settings
 from src.utils.llm import get_llm_service
 from src.graph.consts import (
+    PHASE_TIER0_SCOUT,
     PHASE_TIER1_X,
     PHASE_TIER2_Y,
     PHASE_TIER3_BROAD,
@@ -70,94 +71,96 @@ class StrategyBrain:
         logger.info(f"[Brain] Planning strategies for {phase}. IPCs: {active_ipcs[:3]}...")
         strategies = []
 
-        # --- 策略 A: 语义检索兜底 (Tier 3) ---
-        if phase == PHASE_TIER3_BROAD:
-            logger.info("  Generating Semantic Search strategy for Tier 3...")
+        # --- [NEW] 策略 0: 侦察兵 (Tier 0 Scout) ---
+        # 目标: 快速获取 Top 相关文档，用于 Keyword Harvesting 和 IPC Calibration
+        if phase == PHASE_TIER0_SCOUT:
+            logger.info("  Generating Scouting Strategy (Semantic)...")
+            # 1. 语义检索 (从原 Tier 3 移至此处)
             strategies.append(self._get_semantic_strategy())
-        
-        # --- 策略 B: 创造性结合检索 (Tier 2 - Y类定向打击) ---
-        # [Step 2 Feature] 如果有区别特征，生成寻找 D2 的专用策略
-        if phase == PHASE_TIER2_Y and diff_features:
-            logger.info(f"  Targeting Diff Features: {diff_features}")
             
-            y_context = self._build_diff_context(search_matrix, diff_features)
-            y_plan = self._llm_generate_diff_plan(y_context)
-            
-            # 翻译并加入队列
-            translator_context = self._build_translator_context(search_matrix, y_plan, active_ipcs)
-            patsnap_queries = self._llm_translate_to_patsnap(translator_context)
-            
-            for q in patsnap_queries:
-                q["status"] = "pending"
-                strategies.append(q)
+            # 2. [Optional] 极简的核心词布尔检索 (无 IPC 限制，用于防语义漏检)
+            # 仅使用 Block B 中 Score=5 的最核心词
+            pivot_query = self._get_pivot_scout_strategy(search_matrix)
+            if pivot_query:
+                strategies.append(pivot_query)
 
-        # --- 策略 C: 通用关键词组合 (Tier 1 & 常规 Tier 2) ---
-
-        # 1. 确定本轮目标意图 (Target Intents)
-        target_intents = []
-        if phase == PHASE_TIER1_X:
-            # Tier 1: 精准打击 + 协同 + [Step 3] 抵触申请 (E类)
+        # --- 策略 1: 精准打击 (Tier 1 Precision) ---
+        # 此时的 search_matrix 和 active_ipcs 应该已经被 Tier 0 校准过
+        elif phase == PHASE_TIER1_X:
             target_intents = ["Precision", "Synergy", "Conflicting_E"]
-        
-        elif phase == PHASE_TIER2_Y:
-            # Tier 2: 竞争对手 + 功能泛化 + 组件跨界 + 宽泛
-            target_intents = ["Competitor", "Functional", "Component", "Broad"]
-
-        # --- 策略 C: 通用关键词组合 (Tier 1 & 常规 Tier 2) ---
-        target_intents = []
-        if phase == PHASE_TIER1_X:
-            target_intents = ["Precision", "Synergy", "Conflicting_E"]
-        elif phase == PHASE_TIER2_Y:
-            target_intents = ["Competitor", "Functional", "Component", "Broad"]
-
-        if target_intents:
-            # 2. 构建 Planner 上下文
+            
+            # 生成通用计划
             planner_context = self._build_planner_context(search_matrix, active_ipcs, executed_intents)
-
-            # 3. 生成通用计划
             universal_plan = self._llm_generate_universal_plan(planner_context)
-
-            # 4. 过滤计划
             filtered_plan = [p for p in universal_plan if p.get("intent") in target_intents]
-
-            if not filtered_plan:
-                logger.warning(f"[Brain] No strategies generated for intents: {target_intents}")
-            else:
-                # 5. 翻译为 Patsnap 语法
-                translator_context = self._build_translator_context(
-                    search_matrix, filtered_plan, active_ipcs
-                )
-                generic_queries = self._llm_translate_to_patsnap(translator_context)
-
-                for q in generic_queries:
-                    q["status"] = "pending"
-                    strategies.append(q)
-
-        # --- 全局去重 (De-duplication) ---
-        unique_strategies = []
-        # 使用本地 seen 集合避免本轮内部重复，同时对比 executed_queries
-        local_seen = set()
-        
-        for s in strategies:
-            q_str = s.get("query", "").strip()
-            if not q_str:
-                continue
-                
-            if q_str in executed_queries:
-                logger.debug(f"  [Skipped] Duplicate query (history): {q_str[:40]}...")
-                continue
             
-            if q_str in local_seen:
-                continue
+            # 翻译
+            translator_context = self._build_translator_context(search_matrix, filtered_plan, active_ipcs)
+            strategies.extend(self._llm_translate_to_patsnap(translator_context))
+
+        # --- 策略 2: 创造性结合 (Tier 2 Inventive) ---
+        elif phase == PHASE_TIER2_Y:
+            # A. 针对区别特征 (Diff) 的打击
+            if diff_features:
+                logger.info(f"  Targeting Diff Features: {diff_features}")
+                y_context = self._build_diff_context(search_matrix, diff_features)
+                y_plan = self._llm_generate_diff_plan(y_context)
                 
+                translator_context = self._build_translator_context(search_matrix, y_plan, active_ipcs)
+                strategies.extend(self._llm_translate_to_patsnap(translator_context))
+
+            # B. 常规泛化打击 (防止 Diff 找不全)
+            target_intents = ["Competitor", "Functional", "Component", "Broad"]
+            planner_context = self._build_planner_context(search_matrix, active_ipcs, executed_intents)
+            universal_plan = self._llm_generate_universal_plan(planner_context)
+            filtered_plan = [p for p in universal_plan if p.get("intent") in target_intents]
+            
+            translator_context = self._build_translator_context(search_matrix, filtered_plan, active_ipcs)
+            strategies.extend(self._llm_translate_to_patsnap(translator_context))
+
+        # --- 策略 3: 兜底 (Tier 3 Broad Fallback) ---
+        elif phase == PHASE_TIER3_BROAD:
+            logger.info("  Generating Fallback Broad Strategy...")
+            # 这里可以放宽 IPC 限制，或者做简单的 A+B 检索
+            # 如果 Tier 0 的语义检索没找到好结果，这里可以尝试用不同的描述再跑一次语义
+            pass 
+
+        # --- 全局去重 ---
+        unique_strategies = []
+        local_seen = set()
+        for s in strategies:
+            s["status"] = "pending" # 确保状态重置
+            q_str = s.get("query", "").strip()
+            if not q_str: continue
+            if q_str in executed_queries: continue
+            if q_str in local_seen: continue
             local_seen.add(q_str)
             unique_strategies.append(s)
 
         return unique_strategies
 
-    # =========================================================================
-    # Context Builders (数据准备)
-    # =========================================================================
+    def _get_pivot_scout_strategy(self, matrix: List[Dict]) -> Optional[Dict]:
+        """
+        [Helper] 生成一个极简的布尔侦察查询。
+        仅使用 Score 5 的核心词，不加任何限制，用于捕获跨领域的噪音较小的核心专利。
+        """
+        # 寻找 Role=KeyFeature 且出现在 Block B 的词
+        core_feats = [m for m in matrix if m.get("role") == "KeyFeature"]
+        if not core_feats:
+            return None
+        
+        # 取第一个最核心的词
+        feat = core_feats[0]
+        # 构造简单的 TAC 查询
+        keywords = " OR ".join(feat.get("en_expand", [])[:3]) # 取前3个英文扩展
+        if not keywords: return None
+        
+        return {
+            "name": f"Scout-Pivot-{feat['concept_key']}",
+            "intent": "Broad", # 标记为 Broad
+            "db": "Patsnap",
+            "query": f"TAC:({keywords})" 
+        }
 
     def _build_matrix_context(self) -> str:
         """Step 1 Context: 基于 TCS 评分构建技术理解环境。"""

@@ -42,7 +42,10 @@ class VisualProcessor:
                 use_doc_orientation_classify=False,  # 不使用文档方向分类模型
                 use_doc_unwarping=False,  # 不使用文本图像矫正模型
                 use_textline_orientation=False,  # 不使用文本行方向分类模型
-                text_rec_score_thresh=0.9,  # 识别置信度
+                text_rec_score_thresh=0.8,  # 识别置信度
+                text_det_thresh=0.1, # 文本检测像素阈值
+                text_det_box_thresh=0.2, # 文本检测框阈值
+                text_det_unclip_ratio=2.0 # 文本检测扩张系数
             )
         else:
             self.ocr_engine = None
@@ -168,70 +171,11 @@ class VisualProcessor:
             if img_path.exists():
                 shutil.copy2(img_path, out_path)
             return []
-
-    def _preprocess_image(self, img_path: str) -> Tuple[Optional[np.ndarray], int, float]:
-        """
-        对小尺寸图片进行放大
-        """
-        img = cv2.imread(img_path)
-        if img is None:
-            return None, 0, 1.0
-
-        h, w = img.shape[:2]
-        max_side = max(h, w)
-        
-        TARGET_SIDE = 1280
-        
-        # 1. 计算自适应缩放倍率
-        if max_side < TARGET_SIDE:
-            scale_factor = TARGET_SIDE / max_side
-            scale_factor = min(scale_factor, 3.0)
-        else:
-            # 大图不缩放，节省内存
-            scale_factor = 1.0
-
-        # 2. 执行缩放 (仅在需要时)
-        if scale_factor > 1.05:  # 设置一个小阈值避免 1.0001 这种无意义操作
-            new_w = int(w * scale_factor)
-            new_h = int(h * scale_factor)
-            img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-        else:
-            img_resized = img
-            scale_factor = 1.0
-
-        # 3. 边缘填充 (Padding)
-        pad_size = 30
-        img_padded = cv2.copyMakeBorder(
-            img_resized,
-            pad_size,
-            pad_size,
-            pad_size,
-            pad_size,
-            cv2.BORDER_CONSTANT,
-            value=(255, 255, 255),
-        )
-
-        # 4. 转灰度
-        gray = cv2.cvtColor(img_padded, cv2.COLOR_BGR2GRAY)
-
-        # 5. 转回 BGR
-        processed_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-
-        return processed_img, pad_size, scale_factor
-    
     
     def _run_local_ocr(self, img_path: str) -> List[Dict]:
         """运行 OCR 返回原始结果"""
-
-        # 1. 图像预处理
-        processed_img, pad_offset, scale = self._preprocess_image(img_path)
-
-        if processed_img is None:
-            logger.warning(f"Failed to load image for OCR: {img_path}")
-            return []
-
-        # 2. 执行预测
-        result = self.ocr_engine.predict(processed_img)
+        
+        result = self.ocr_engine.predict(img_path)
 
         if not result or not result[0]:
             return []
@@ -241,30 +185,7 @@ class VisualProcessor:
 
         formatted = []
         for text, box in zip(texts, boxes):
-            xs = [box[i] for i in range(0, len(box), 2)]
-            ys = [box[i] for i in range(1, len(box), 2)]
-
-            # 1. 还原 Padding
-            x1_pad = min(xs) - pad_offset
-            y1_pad = min(ys) - pad_offset
-            x2_pad = max(xs) - pad_offset
-            y2_pad = max(ys) - pad_offset
-
-            # 2. 还原缩放 (除以 scale_factor)
-            x1 = int(x1_pad / scale)
-            y1 = int(y1_pad / scale)
-            x2 = int(x2_pad / scale)
-            y2 = int(y2_pad / scale)
-
-            # 边界检查
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-
-            # 过滤掉因为 padding 导致的无效框 (虽然很少见)
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            formatted.append({"text": text, "box": [x1, y1, x2, y2]})
+            formatted.append({"text": text, "box": box})
 
         return formatted
 
@@ -280,22 +201,75 @@ class VisualProcessor:
                 return []
             h, w = img.shape[:2]
 
-            prompt = """
-            任务：找出图片中所有的零部件编号（数字或字母组合）。
+            system_prompt = """
+            你是一个专业的机械图纸分析专家，专门识别专利图中的零部件编号。
             
-            要求：
-            1. 返回纯 JSON 列表。
-            2. 格式：[{"text": "数字内容", "box": [ymin, xmin, ymax, xmax]}]。
-            3. 坐标系：使用 0-1000 的归一化坐标。
-            4. 精度要求：box 必须【紧致地包裹】数字像素，不要包含过多空白背景。
-            5. 如果数字周围有引线，box 不要包含引线，只包含数字本身。
-            6. "box" 顺序：注意通常是 [xmin, ymin, xmax, ymax]。
+            任务要求：
+            1. 识别图中所有的零部件编号（通常为数字或数字+字母的组合）
+            2. 零部件编号特征：
+                - 通常位于引线端点处
+                - 大小适中，与图中的尺寸标注有明显区别
+                - 常见格式：纯数字（如"10", "23"）、数字+小写字母（如"11a", "16b"）
+                - 可能包含罗马数字或带括号，但输出时要去除非字母数字字符
+            3. 排除内容：
+                - 图纸标题、页码、图号（如"FIG.1"、"图2"）
+                - 尺寸标注（通常带箭头或尺寸线）
+                - 技术说明文字、表格内容
+                - 阴影线、剖面线等图形元素
             
-            返回示例：
-            [{"text": "10", "box": [100, 100, 150, 120]}]
+            输出格式要求：
+            1. 返回纯JSON列表，格式：[
+                {
+                    "text": "清理后的编号字符串", 
+                    "box": [x_min, y_min, x_max, y_max]
+                },
+                ...
+            ]
+            2. 坐标系：归一化到0-1000的坐标系（原图宽度对应1000，高度按比例）
+            3. Bounding Box要求：
+                - 紧贴数字边界，不留过多空白
+                - 只包含数字本身，不包含引线、箭头等
+                - 顺序：[x_min, y_min, x_max, y_max]（左上角到右下角）
+            4. 文本处理：
+                - 去除所有标点符号、括号、空格
+                - 统一转为小写字母
+                - 例如："(16a)" -> "16a"，"10." -> "10"，"11-A" -> "11a"
+            
+            质量控制：
+                1. 每个检测框必须包含有效的零部件编号
+                2. 数字字符应清晰可辨
+                3. 避免重复检测同一编号
+                4. 如果遇到模糊或不确定的编号，跳过不检测
+            
+            示例输出：
+            [
+                {"text": "10", "box": [245, 120, 265, 140]},
+                {"text": "11a", "box": [320, 280, 345, 300]},
+                {"text": "23", "box": [510, 410, 530, 430]}
+            ]
+            """
+            
+            user_prompt = f"""
+            请分析这张专利图纸，识别图中所有用于标识零部件的编号。
+            
+            图片信息：宽度{w}像素，高度{h}像素
+            
+            重点关注：
+            1. 引线末端的小数字
+            2. 圆圈或方框内的编号
+            3. 零件剖面图中的标识符
+            4. 装配图中的组件序号
+            
+            忽略：
+            1. 图纸边框外的文字
+            2. 比例尺、单位标注
+            3. 材料说明、技术要求
+            4. 视图方向的指示（如"前视图"、"A-A剖面"）
+            
+            请严格按照要求的JSON格式返回结果，确保box坐标准确且文本已清理。
             """
 
-            content = llm_service.analyze_image_with_thinking(img_path, prompt)
+            content = llm_service.analyze_image_with_thinking(img_path, system_prompt, user_prompt)
 
             content = content.replace("```json", "").replace("```", "").strip()
 
@@ -315,9 +289,12 @@ class VisualProcessor:
                     y1 = int(norm_box[1] / 1000 * h)
                     x2 = int(norm_box[2] / 1000 * w)
                     y2 = int(norm_box[3] / 1000 * h)
+                    
+                    xmin, xmax = sorted([x1, x2])
+                    ymin, ymax = sorted([y1, y2])
 
                     formatted.append(
-                        {"text": str(item.get("text", "")), "box": [x1, y1, x2, y2]}
+                        {"text": str(item.get("text", "")), "box": [xmin, ymin, xmax, ymax]}
                     )
 
             logger.info(

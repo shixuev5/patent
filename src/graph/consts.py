@@ -2,6 +2,7 @@
 
 # 阶段定义
 PHASE_INIT = "INIT"  # 初始化：构建矩阵
+PHASE_TIER0_SCOUT = "TIER0_SCOUT" # [New] 侦察阶段
 PHASE_TIER1_X = "TIER1_X"  # 第一轮：精准打击 (A+B+C, A+B)
 PHASE_TIER2_Y = "TIER2_Y"  # 第二轮：组合打击 (Y类构建)
 PHASE_TIER3_BROAD = "TIER3_BROAD"  # 第三轮：兜底/跨领域
