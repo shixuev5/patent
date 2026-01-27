@@ -197,7 +197,7 @@ def main():
     parser = argparse.ArgumentParser(description="Patent Analysis Pipeline")
     parser.add_argument("--pn", type=str, help="Single PN or comma-separated PNs (e.g., CN116745575A,CN123)")
     parser.add_argument("--file", type=str, help="Path to a text file containing PNs (one per line)")
-    parser.add_argument("--workers", type=int, default=1, help="Number of concurrent workers (default: 1)")
+    parser.add_argument("--workers", type=int, default=5, help="Number of concurrent workers (default: 5)")
     
     args = parser.parse_args()
 
