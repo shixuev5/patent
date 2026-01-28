@@ -34,7 +34,7 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.1,
-        max_tokens: int = 64000,
+        max_tokens: int = 65536,
         model: Optional[str] = None,
         thinking: bool = True
     ) -> Dict[str, Any]:
@@ -52,6 +52,8 @@ class LLMService:
         """
         try:
             if model == 'kimi-k2.5': temperature = 1.0
+            if model.startswith('qwen'):
+                max_tokens = 32768 if thinking else 65536
 
             response = self.text_client.chat.completions.create(
                 model=model or settings.LLM_MODEL,
