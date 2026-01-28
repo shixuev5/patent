@@ -51,11 +51,13 @@ class LLMService:
             解析后的 JSON 字典
         """
         try:
+            if model == 'kimi-k2.5': temperature = 1.0
+
             response = self.text_client.chat.completions.create(
                 model=model or settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
                 extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}}
             )
@@ -73,7 +75,7 @@ class LLMService:
             raise
 
     def analyze_image_with_thinking(
-        self, image_path: str, system_prompt: str, user_prompt: str
+        self, image_path: str, system_prompt: str, user_prompt: str, temperature: float = 0.6
     ) -> str:
         """
         使用思考模式的视觉模型图片理解
@@ -98,9 +100,12 @@ class LLMService:
 
             img_url = f"data:image/jpeg;base64,{img_b64}"
 
+            model = settings.VLM_MODEL
+            temperature = 1.0 if model == 'kimi-k2.5' else temperature
+
             # 调用视觉模型
             response = self.vlm_client.chat.completions.create(
-                model=settings.VLM_MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {
@@ -112,7 +117,7 @@ class LLMService:
                     },
                 ],
                 extra_body={"thinking": {"type": "enabled"}},
-                temperature=0.6,
+                temperature=temperature,
             )
             return response.choices[0].message.content
         except Exception as e:
