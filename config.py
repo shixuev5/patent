@@ -47,6 +47,10 @@ class Settings:
     MINERU_API_KEY = os.getenv("MINERU_API_KEY", "")  
     MINERU_BASE_URL = os.getenv("MINERU_BASE_URL", "https://mineru.net/api/v4")
     MINERU_TEMP_FOLDER = "mineru_raw"
+    
+    # --- PaddleOCR ---
+    OCR_API_KEY = os.getenv("OCR_API_KEY", "")  
+    OCR_BASE_URL = os.getenv("OCR_BASE_URL", "https://j9dd7babo5tcocz9.aistudio-app.com/ocr")
 
     PDF_CSS = """    
     @page { 
