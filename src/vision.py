@@ -5,6 +5,8 @@ import json
 import shutil
 import math
 import numpy as np
+import base64
+import requests
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
@@ -27,6 +29,8 @@ class VisualProcessor:
         :param raw_img_dir: 原始图片目录
         :param out_dir: 输出目录 (annotated_dir)
         """
+        
+         # 支持模式: 'local', 'vlm', 'online' (对应提供的 AI Studio 接口)
         self.engine_type = os.getenv("OCR_ENGINE", "local").lower()
 
         self.patent_data = patent_data
@@ -43,10 +47,17 @@ class VisualProcessor:
                 use_doc_unwarping=False,  # 不使用文本图像矫正模型
                 use_textline_orientation=False,  # 不使用文本行方向分类模型
                 text_rec_score_thresh=0.8,  # 识别置信度
-                text_det_thresh=0.1, # 文本检测像素阈值
-                text_det_box_thresh=0.2, # 文本检测框阈值
-                text_det_unclip_ratio=2.0 # 文本检测扩张系数
+                text_det_thresh=0.2, # 文本检测像素阈值
+                text_det_box_thresh=0.3, # 文本检测框阈值
+                text_det_unclip_ratio=1.5 # 文本检测扩张系数
             )
+            
+        elif self.engine_type == "online":
+            logger.info("[Vision] Using AI Studio Online OCR API.")
+            self.api_url = settings.OCR_BASE_URL
+            self.api_token = settings.OCR_API_KEY
+            self.ocr_engine = None
+            
         else:
             self.ocr_engine = None
             logger.info("[Vision] Using VLM (Vision Language Model) for OCR.")
@@ -121,14 +132,17 @@ class VisualProcessor:
     def _process_single_image(self, img_path: Path, out_path: Path) -> List[str]:
         """对单张图片进行 OCR 并根据 parts_db 进行标注"""
         try:
-            # 1. OCR 识别
-            ocr_results = (
-                self._run_local_ocr(str(img_path))
-                if self.engine_type == "local"
-                else self._run_vlm_ocr(str(img_path))
-            )
+            # 根据引擎分发任务
+            if self.engine_type == "local":
+                ocr_results = self._run_local_ocr(str(img_path))
+            elif self.engine_type == "online":
+                ocr_results = self._run_online_ocr(str(img_path))
+            else:
+                ocr_results = self._run_vlm_ocr(str(img_path))
+                
+            # 修复粘连：拆分 "101 106" 这种结果
+            ocr_results = self._expand_merged_ocr_results(ocr_results)
 
-            # 2. 匹配知识库
             valid_labels = []
             found_pids = []
 
@@ -172,10 +186,139 @@ class VisualProcessor:
                 shutil.copy2(img_path, out_path)
             return []
     
+    def _preprocess_for_ocr(self, img_path: str) -> Tuple[Optional[np.ndarray], float]:
+        """
+        OCR 专用预处理：智能放大 + 背景除法清洗
+        :return: (处理后的图像array, 缩放比例)
+        """
+        if not os.path.exists(img_path):
+            return None, 1.0
+            
+        img = cv2.imread(img_path)
+        if img is None:
+            return None, 1.0
+
+        h, w = img.shape[:2]
+        
+        # 1. 智能放大逻辑
+        # 目标：确保短边至少 1600px，使 10px 的小数字变成 ~25px 以上
+        target_min_side = 1600
+        min_side = min(h, w)
+        
+        if min_side < target_min_side:
+            scale_factor = target_min_side / min_side
+            scale_factor = min(scale_factor, 4.0) # 限制最大 4 倍
+        else:
+            scale_factor = 1.0
+
+        if scale_factor > 1.0:
+            # 使用 Lanczos 插值，保持线条平滑
+            processed_img = cv2.resize(img, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LANCZOS4)
+        else:
+            processed_img = img.copy()
+
+        # 转灰度
+        if len(processed_img.shape) == 3:
+            gray = cv2.cvtColor(processed_img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = processed_img
+
+        # 2. 背景除法清洗 (Background Division)
+        # 估算背景 (膨胀去除线条)
+        dilated = cv2.dilate(gray, np.ones((25, 25), np.uint8)) 
+        bg_blur = cv2.medianBlur(dilated, 21)
+        
+        # 核心算法：(原图 / 背景) 
+        # 255 - absdiff 近似于除法效果，能强制背景变白
+        diff = 255 - cv2.absdiff(gray, bg_blur)
+        
+        # 线性拉伸到 0-255
+        norm_img = cv2.normalize(diff, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+        
+        # 阈值漂白：去除浅灰色的水印/噪点 (Truncate mode)
+        _, result = cv2.threshold(norm_img, 230, 255, cv2.THRESH_TRUNC)
+        
+        # 再次拉伸对比度，使文字更黑
+        final_result = cv2.normalize(result, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+        
+        # # A. 微量加粗 (Erosion)
+        # # 注意：在白底黑字中，Erosion(腐蚀) 会让黑色区域变大(加粗)，Dilation(膨胀) 会让黑色区域变小(变细)
+        # # 我们使用一个极小的 kernel (2x2) 进行一次腐蚀，让细断的笔画连起来
+        # kernel = np.ones((2, 2), np.uint8)
+        # result = cv2.erode(result, kernel, iterations=1)
+        
+        # # B. 高斯模糊 (Smoothing)
+        # # 这一步非常关键：它能消除锯齿，把"马赛克"变成"线条"，极大提升 OCR 识别率
+        # result = cv2.GaussianBlur(result, (3, 3), 0)
+
+        return final_result, scale_factor
+    
+    def _expand_merged_ocr_results(self, results: List[Dict]) -> List[Dict]:
+        """
+        修复 OCR 粘连问题：将 "101 106" 或 "10a 10b" 拆分为独立的 box。
+        使用线性插值估算每个子串的坐标。
+        """
+        expanded = []
+        
+        for item in results:
+            text = item["text"]
+            box = item["box"] # [xmin, ymin, xmax, ymax]
+            
+            if re.search(r'[a-zA-Z0-9]+\s+[a-zA-Z0-9]+', text):
+                # 按空格拆分
+                parts = text.split() 
+                
+                # 准备坐标计算
+                xmin, ymin, xmax, ymax = box
+                total_width = xmax - xmin
+                total_chars = len(text) # 原文总长度（含空格）
+                
+                current_char_idx = 0
+                
+                for part in parts:
+                    # 跳过空字符串
+                    if not part.strip(): 
+                        continue
+                    
+                    # 找到该片段在原字符串中的起始位置
+                    start_idx = text.find(part, current_char_idx)
+                    end_idx = start_idx + len(part)
+                    
+                    # 线性插值计算新坐标
+                    # 假设字符是等宽的，根据字符索引位置比例切割 box
+                    new_xmin = xmin + int((start_idx / total_chars) * total_width)
+                    new_xmax = xmin + int((end_idx / total_chars) * total_width)
+                    
+                    # 构造新 item
+                    new_box = [new_xmin, ymin, new_xmax, ymax]
+                    
+                    expanded.append({
+                        "text": part,
+                        "box": new_box
+                    })
+                    
+                    # 更新搜索游标，防止重复查找
+                    current_char_idx = end_idx
+            else:
+                # 没有粘连，保留原样
+                expanded.append(item)
+                
+        return expanded
+
     def _run_local_ocr(self, img_path: str) -> List[Dict]:
         """运行 OCR 返回原始结果"""
         
-        result = self.ocr_engine.predict(img_path)
+        processed_img, scale = self._preprocess_for_ocr(img_path)
+        
+        if processed_img is None:
+            logger.warning(f"Failed to preprocess image: {img_path}")
+            return []
+
+        try:
+            result = self.ocr_engine.predict(processed_img)
+        except Exception as e:
+            logger.error(f"PaddleOCR inference failed: {e}")
+            return []
 
         if not result or not result[0]:
             return []
@@ -185,12 +328,85 @@ class VisualProcessor:
 
         formatted = []
         for text, box in zip(texts, boxes):
-            formatted.append({"text": text, "box": box})
+            xmin, ymin, xmax, ymax = box
+            
+            xmin = max(0, int(xmin / scale))
+            ymin = max(0, int(ymin / scale))
+            xmax = int(xmax / scale)
+            ymax = int(ymax / scale)
+            
+            formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
 
         return formatted
+    
+    def _run_online_ocr(self, img_path: str) -> List[Dict]:
+        """
+        调用自定义的 AI Studio OCR 接口
+        流程：本地预处理(放大/去底) -> 内存转Base64 -> POST请求 -> 解析坐标 -> 坐标还原
+        """
+        # 1. 复用图像增强 (关键)
+        processed_img, scale = self._preprocess_for_ocr(img_path)
+        if processed_img is None: return []
+
+        try:
+            # 2. 内存编码: Numpy -> JPG Bytes -> Base64 String
+            success, encoded_img = cv2.imencode('.jpg', processed_img)
+            if not success:
+                logger.error(f"[OnlineOCR] Failed to encode image: {img_path}")
+                return []
+            
+            file_data = base64.b64encode(encoded_img.tobytes()).decode("ascii")
+
+            # 3. 构造请求
+            headers = {
+                "Authorization": f"token {self.api_token}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "file": file_data,
+                "fileType": 1, # 1 for Image
+                "useDocOrientationClassify": False,
+                "useDocUnwarping": False,
+                "useTextlineOrientation": False,
+                "textDetThresh": 0.2,
+                "textDetBoxThresh": 0.3,
+                "textDetUnclipRatio": 1.5,
+                "textRecScoreThresh": 0.8
+            }
+
+            # 4. 发送请求
+            response = requests.post(self.api_url, json=payload, headers=headers)
+            response.raise_for_status() # 检查 200
+            
+            result_json = response.json()
+            
+            # 5. 解析结果
+            ocr_results = result_json.get("result", {}).get("ocrResults", [])
+            ocr_result = ocr_results[0].get('prunedResult', {})
+            
+            texts = ocr_result.get("rec_texts", [])
+            boxes = ocr_result.get("rec_boxes", [])
+            
+            formatted = []
+            for text, box in zip(texts, boxes):
+                xmin, ymin, xmax, ymax = box
+                
+                xmin = max(0, int(xmin / scale))
+                ymin = max(0, int(ymin / scale))
+                xmax = int(xmax / scale)
+                ymax = int(ymax / scale)
+                
+                formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
+
+            return formatted
+
+        except Exception as e:
+            logger.error(f"[OnlineOCR] Request failed for {Path(img_path).name}: {e}")
+            return []
 
     def _run_vlm_ocr(self, img_path: str) -> List[Dict]:
-        """使用视觉模型"""
+        """使用视觉模型进行高精度专利附图标记识别"""
         try:
             llm_service = get_llm_service()
 
@@ -202,99 +418,81 @@ class VisualProcessor:
             h, w = img.shape[:2]
 
             system_prompt = """
-            你是一个专业的机械图纸分析专家，专门识别专利图中的零部件编号。
+            你是一个资深的专利附图审查专家。你的唯一任务是提取专利技术图纸中的"附图标记"(Reference Numerals)。
             
-            任务要求：
-            1. 识别图中所有的零部件编号（通常为数字或数字+字母的组合）
-            2. 零部件编号特征：
-                - 通常位于引线端点处
-                - 大小适中，与图中的尺寸标注有明显区别
-                - 常见格式：纯数字（如"10", "23"）、数字+小写字母（如"11a", "16b"）
-                - 可能包含罗马数字或带括号，但输出时要去除非字母数字字符
-            3. 排除内容：
-                - 图纸标题、页码、图号（如"FIG.1"、"图2"）
-                - 尺寸标注（通常带箭头或尺寸线）
-                - 技术说明文字、表格内容
-                - 阴影线、剖面线等图形元素
+            ### 核心定义
+            附图标记是用于标识图纸中零部件的数字或字母数字组合（如 "10", "205", "14a", "12B"）。
             
-            输出格式要求：
-            1. 返回纯JSON列表，格式：[
-                {
-                    "text": "清理后的编号字符串", 
-                    "box": [x_min, y_min, x_max, y_max]
-                },
-                ...
-            ]
-            2. 坐标系：归一化到0-1000的坐标系（原图宽度对应1000，高度按比例）
-            3. Bounding Box要求：
-                - 紧贴数字边界，不留过多空白
-                - 只包含数字本身，不包含引线、箭头等
-                - 顺序：[x_min, y_min, x_max, y_max]（左上角到右下角）
-            4. 文本处理：
-                - 去除所有标点符号、括号、空格
-                - 统一转为小写字母
-                - 例如："(16a)" -> "16a"，"10." -> "10"，"11-A" -> "11a"
+            ### 视觉识别策略
+            1. **跟随引线 (Critical)**：绝大多数附图标记都连接着一条细线（引线/指引线）指向零件。请务必追踪所有引线的末端。
+            2. **扫描孤立字符**：部分标记可能位于零件内部或圆圈/方框内，没有引线。
+            3. **区分尺寸标注**：忽略带有双向箭头、尺寸界线或表示长度/角度的数字（这些是尺寸，不是部件编号）。
             
-            质量控制：
-                1. 每个检测框必须包含有效的零部件编号
-                2. 数字字符应清晰可辨
-                3. 避免重复检测同一编号
-                4. 如果遇到模糊或不确定的编号，跳过不检测
+            ### 输出规范
+            请输出一个纯 JSON 列表。
+            - **坐标系**：使用 [0, 1000] 的归一化坐标系（左上角为0,0，右下角为1000,1000）。
+            - **Box 格式**：[xmin, ymin, xmax, ymax]。
+            - **Box 要求**：
+                - **极度紧密 (Tight Fit)**：检测框必须紧贴字符边缘，**严禁**包含引线、箭头或周围空白。
+                - **分离重叠**：如果 "10" 和 "11" 靠得很近但含义独立，请分别输出两个框，不要合并。
+            - **Text 清洗**：
+                - 去除非字母数字字符（如括号 "()"、点 "."）。
+                - 统一转换为小写。
             
-            示例输出：
+            ### JSON 格式示例
+            ```json
             [
-                {"text": "10", "box": [245, 120, 265, 140]},
-                {"text": "11a", "box": [320, 280, 345, 300]},
-                {"text": "23", "box": [510, 410, 530, 430]}
+              {"text": "10", "box": [100, 200, 150, 250]},
+              {"text": "15a", "box": [300, 400, 380, 420]}
             ]
+            ```
             """
-            
+
             user_prompt = f"""
-            请分析这张专利图纸，识别图中所有用于标识零部件的编号。
+            请对这张图片进行详尽的扫描，找出所有的附图标记。
+            图片分辨率：{w}x{h}
             
-            图片信息：宽度{w}像素，高度{h}像素
+            请特别注意：
+            1. **不遗漏**：图中可能有几十个编号，请仔细检查每一个角落，特别是密集的区域。
+            2. **排除干扰**：不要识别图名（如 "FIG. 1"）、页码或底部的说明文字。
+            3. **准确性**：确保 bounding box 没有切断数字，也没有包含连接它的线条。
             
-            重点关注：
-            1. 引线末端的小数字
-            2. 圆圈或方框内的编号
-            3. 零件剖面图中的标识符
-            4. 装配图中的组件序号
-            
-            忽略：
-            1. 图纸边框外的文字
-            2. 比例尺、单位标注
-            3. 材料说明、技术要求
-            4. 视图方向的指示（如"前视图"、"A-A剖面"）
-            
-            请严格按照要求的JSON格式返回结果，确保box坐标准确且文本已清理。
+            请直接返回 JSON 数据，不要包含任何 Markdown 格式或解释性语言。
             """
 
             content = llm_service.analyze_image_with_thinking(img_path, system_prompt, user_prompt)
-
-            content = content.replace("```json", "").replace("```", "").strip()
+            
+            content = content.replace("```json", "").replace("```", "").strip()    
 
             try:
                 data = json.loads(content)
-            except json.JSONDecodeError:
-                # 简单的尝试修复或忽略
-                logger.warning(f"[VLM] Failed to parse JSON response for {img_path}")
+            except json.JSONDecodeError as e:
+                logger.error(f"[VLM] JSON parse error: {e}. Raw content snippet: {content[:100]}...")
                 return []
 
             formatted = []
             for item in data:
                 norm_box = item.get("box", [])
+
                 if len(norm_box) == 4:
-                    # 坐标转换并确保为整数
-                    x1 = int(norm_box[0] / 1000 * w)
-                    y1 = int(norm_box[1] / 1000 * h)
-                    x2 = int(norm_box[2] / 1000 * w)
-                    y2 = int(norm_box[3] / 1000 * h)
+                    x_coords = [norm_box[0], norm_box[2]]
+                    y_coords = [norm_box[1], norm_box[3]]
                     
-                    xmin, xmax = sorted([x1, x2])
-                    ymin, ymax = sorted([y1, y2])
+                    x1 = int(min(x_coords) / 1000 * w)
+                    x2 = int(max(x_coords) / 1000 * w)
+                    y1 = int(min(y_coords) / 1000 * h)
+                    y2 = int(max(y_coords) / 1000 * h)
+                    
+                    # 边界安全检查
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+
+                    # 过滤无效框
+                    if x2 <= x1 or y2 <= y1:
+                        continue
 
                     formatted.append(
-                        {"text": str(item.get("text", "")), "box": [xmin, ymin, xmax, ymax]}
+                        {"text": str(item.get("text", "")), "box": [x1, y1, x2, y2]}
                     )
 
             logger.info(
