@@ -49,7 +49,7 @@ class VisualProcessor:
                 text_rec_score_thresh=0.8,  # 识别置信度
                 text_det_thresh=0.2, # 文本检测像素阈值
                 text_det_box_thresh=0.3, # 文本检测框阈值
-                text_det_unclip_ratio=1.5 # 文本检测扩张系数
+                text_det_unclip_ratio=1.8 # 文本检测扩张系数
             )
             
         elif self.engine_type == "online":
@@ -371,7 +371,7 @@ class VisualProcessor:
                 "useTextlineOrientation": False,
                 "textDetThresh": 0.2,
                 "textDetBoxThresh": 0.3,
-                "textDetUnclipRatio": 1.5,
+                "textDetUnclipRatio": 1.8,
                 "textRecScoreThresh": 0.8
             }
 
