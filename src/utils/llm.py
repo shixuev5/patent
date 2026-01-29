@@ -52,14 +52,12 @@ class LLMService:
         """
         try:
             if model == 'kimi-k2.5': temperature = 1.0
-            if model.startswith('qwen'):
-                max_tokens = 32768 if thinking else 65536
 
             response = self.text_client.chat.completions.create(
                 model=model or settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 response_format={"type": "json_object"},
                 extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}}
             )

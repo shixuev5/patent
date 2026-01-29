@@ -184,5 +184,5 @@ class PatentTransformer:
 if __name__ == "__main__":
     # 模拟使用
     # transformer = PatentTransformer()
-    # data = transformer.transform(md_content="...")
+    # print(transformer._get_system_prompt())
     pass

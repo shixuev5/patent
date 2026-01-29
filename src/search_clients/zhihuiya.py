@@ -580,7 +580,7 @@ class ZhihuiyaClient(BaseSearchClient):
         url = "https://search-service.zhihuiya.com/core-search-api/search/patent/query/count"
         payload = {
             "search_mode": "publication",
-            "q": pn,
+            "q": f"PN:({pn})",
             "simple": True,
             "check_complexity": True
         }
