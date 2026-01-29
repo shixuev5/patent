@@ -87,7 +87,7 @@ class DescriptionSection(BaseModel):
         description="有益效果/技术效果。提取'发明内容'章节末尾关于'本发明具有如下有益效果'或'技术效果'的描述段落。若无明确描述则为null。",
     )
     brief_description_of_drawings: str = Field(
-        ..., description="附图标记定义。提取'附图说明'章节末尾关于'附图标记'定义的内容。如无附图标记则为null。"
+        ..., description="附图标记说明（标号说明）。请提取位于'附图说明'章节末尾或说明书全文末尾的附图标记对应的名称列表（例如 '10 信号发生部 11 光源部'）。**注意**：严禁包含'附图说明'章节中关于'图1是...'、'图2是...'的图解说明文字。"
     )
     detailed_description: str = Field(
         ...,
