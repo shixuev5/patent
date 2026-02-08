@@ -112,8 +112,52 @@ class ReportRenderer:
         problem = data.get("technical_problem", "未提取到技术问题")
         lines.append(f"{self._indent_text(problem)}\n")
 
-        # --- 6 技术方案 ---
-        lines.append("## 3. 技术方案概要")
+        # --- 6. 背景知识百科 ---
+        bg_knowledge = data.get("background_knowledge", [])
+        if bg_knowledge:
+            lines.append("## 3. 核心概念百科")
+            lines.append("> 💡 *阅读提示：以下是本案涉及的关键术语解释，旨在辅助非本领域人员理解技术方案。*\n")
+            
+            for item in bg_knowledge:
+                term = item.get("term", "未命名术语")
+                definition = item.get("definition", "")
+                analogy = item.get("analogy", "")
+                context = item.get("context_in_patent", "")
+                
+                card_html = f"""
+<div style="border: 1px solid #dfe2e5; margin-bottom: 20px; page-break-inside: avoid; background-color: #fff;">
+    <!-- 标题栏 -->
+    <div style="background-color: #f2f6f9; padding: 6px 8px; border-bottom: 1px solid #dfe2e5;">
+        <strong style="color: #2c3e50; font-size: 14px;">{term}</strong>
+    </div>
+
+    <!-- 内容区：左右分栏 -->
+    <div style="display: flex; flex-direction: row; border-bottom: 1px solid #dfe2e5;">
+        <!-- 左侧：专业定义 -->
+        <div style="flex: 1; padding: 8px; border-right: 1px solid #dfe2e5;">
+            <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">专业定义</div>
+            <div>{self._indent_text(definition)}</div>
+        </div>
+        
+        <!-- 右侧：通俗理解 (背景微调以示区分) -->
+        <div style="flex: 1; padding: 8px; background-color: #fafbfc;">
+            <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">通俗理解</div>
+            <div>{self._indent_text(analogy)}</div>
+        </div>
+    </div>
+
+    <!-- 底部：本案应用 -->
+    <div style="padding: 6px 8px;">
+        <span style="font-size: 12px; font-weight: bold; ">本案应用：</span>
+        <span style="font-size: 12px;">{context}</span>
+    </div>
+</div>
+"""
+                lines.append(card_html)
+            lines.append("\n")
+
+        # --- 7 技术方案 ---
+        lines.append("## 4. 技术方案概要")
 
         # 优先展示保护主题，作为方案的定性描述
         subject_matter = data.get("claim_subject_matter")
@@ -129,12 +173,12 @@ class ReportRenderer:
 
         lines.append(f"{scheme}\n")
 
-        # --- 7. 技术手段 (Technical Means) ---
-        lines.append("## 4. 核心技术手段")
+        # --- 8. 技术手段 (Technical Means) ---
+        lines.append("## 5. 核心技术手段")
         means = data.get("technical_means", "未提取到技术手段")
         lines.append(f"{self._indent_text(means)}\n")
 
-        # 7.1 技术特征列表
+        # 8.1 技术特征列表
         features = data.get("technical_features", [])
         
         feature_name_map = {}
@@ -191,8 +235,8 @@ class ReportRenderer:
             table_html += "</tbody></table>\n"
             lines.append(table_html)
 
-        # --- 8. 技术效果 (Technical Effects) ---
-        lines.append("## 5. 技术效果")
+        # --- 9. 技术效果 (Technical Effects) ---
+        lines.append("## 6. 技术效果")
         effects = data.get("technical_effects", [])
         
         if effects:
@@ -291,8 +335,8 @@ class ReportRenderer:
         else:
             lines.append("> *未提取到明确的技术效果或评分数据。*\n")
 
-        # --- 9. 图解说明 (Figure Explanations) ---
-        lines.append("## 6. 图解说明")
+        # --- 10. 图解说明 (Figure Explanations) ---
+        lines.append("## 7. 图解说明")
         figures = data.get("figure_explanations", [])
 
         if not figures:

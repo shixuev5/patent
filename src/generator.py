@@ -74,6 +74,13 @@ class ContentGenerator:
             # 合并核心逻辑数据 (Core Logic Context)
             core_logic = {**domain_problem_data, **solution_data}
 
+            # === Step 2.5: 背景知识百科 (NEW) ===
+            # 输入：核心逻辑、详细描述的前半部分(通常包含定义)
+            # 输出：background_knowledge (List[Dict])
+            background_data = self.cache.run_step(
+                "step2_5_background", self._generate_background_knowledge, core_logic
+            )
+
             # === Step 3: 权利要求解构与特征定义 ===
             # 输入：核心逻辑、全部权利要求
             # 输出：claim_subject_matter、technical_features
@@ -128,6 +135,9 @@ class ContentGenerator:
                 ),  # 技术问题
                 "technical_scheme": solution_data.get("technical_scheme"),  # 技术方案
                 "technical_means": verification_data.get("technical_means"),  # 技术手段
+
+                "background_knowledge": background_data.get("background_knowledge", []),
+
                 "technical_features": features_data.get(
                     "technical_features", []
                 ),  # 技术特征
@@ -334,6 +344,83 @@ class ContentGenerator:
                 {"role": "user", "content": user_content},
             ],
             temperature=0.1,
+        )
+    
+    def _generate_background_knowledge(self, core_logic: Dict[str, str]) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Step 2.5: 生成背景知识与术语解释。
+        目标：识别文中晦涩的专有名词（Acronyms, Jargon），提供通俗解释。
+        """
+        logger.debug("Step 2.5: Generating Background Knowledge...")
+
+        system_prompt = """
+        你是一名 **科学传播专家** (Science Communicator)，专门负责协助非本领域的专利审查员理解复杂的前沿技术。
+        你的任务是扫描专利文本，识别出阻碍理解的“核心概念”、“生僻术语”或“缩写”，并提供**通俗易懂（Explain Like I'm 5）**的解释。
+
+        # 任务说明
+        1. **筛选词条**：
+           - 请从提供的【专利内容】中，挑选 **3-6个** 最关键的、非大众通用的技术名词。
+           - **优先选择**：具体的算法名称（如“卡尔曼滤波”）、特定材料（如“共晶焊料”）、行业缩写（如“MIMO”、“IGBT”）或特定物理效应。
+           - **剔除**：过于基础的词汇（如“电脑”、“螺丝”、“互联网”）或纯法律词汇（如“实施例”）。
+
+        2. **撰写解释**：
+           - **Definition (定义)**：用一句话准确定义该术语。
+           - **Analogy (通俗类比)**：**这是必须的**。使用生活中的例子来打比方。
+           - **Context (本案联系)**：简要说明该术语在本专利中起什么作用。
+
+        # 示例 (Few-Shot)
+        *   **术语**: PID控制
+            *   **定义**: 比例-积分-微分控制器，一种通用的工业控制算法。
+            *   **类比**: 就像开车控制油门，既看当前速度(P)，也看过去累积的误差(I)，还预测未来的趋势(D)，以此保持车速平稳。
+            *   **本案联系**: 用于控制加热器的温度恒定。
+        
+        *   **术语**: 卷积神经网络 (CNN)
+            *   **定义**: 一种专门处理网格数据（如图像）的深度学习模型。
+            *   **类比**: 就像通过一个小窗口（卷积核）在图片上滑动，提取局部特征（如边缘、纹理），最后拼凑出整体图案。
+            *   **本案联系**: 用于识别监控画面中的异常入侵行为。
+
+        # 输出要求
+        1. 严格遵守 JSON 格式。
+        2. 不要输出 Markdown 标记。
+        3. 确保 content 不为空。
+
+        # JSON Schema
+        {
+            "background_knowledge": [
+                {
+                    "term": "术语名称",
+                    "definition": "学术定义",
+                    "analogy": "生活化类比 (必填)",
+                    "context_in_patent": "在本专利中的具体用途"
+                }
+            ]
+        }
+        """
+
+        # 准备上下文：不仅需要核心逻辑，还需要一些具体的描述文本来挖掘术语
+        # 截取 description 的前 5000 字符，通常包含背景和术语定义
+        context_text = self.description.get("detailed_description", "")[:5000]
+        if not context_text:
+            context_text = self.description.get("summary_of_invention", "")
+
+        user_content = f"""
+        【技术领域】: {core_logic.get('technical_field')}
+        【核心方案】: {core_logic.get('technical_scheme')}
+        
+        【待扫描的专利文本片段】:
+        {context_text}
+        
+        【权利要求片段 (寻找核心名词)】:
+        {self._format_claims_to_text(only_independent=True)}
+        """
+
+        return self.llm_service.chat_completion_json(
+            model=Settings.LLM_MODEL_REASONING, # 建议使用推理能力强的模型以生成好的类比
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.3, # 稍微增加一点创造性，以便生成生动的类比
         )
 
     def _extract_features(self, core_logic: Dict[str, Any]) -> Dict[str, Any]:
