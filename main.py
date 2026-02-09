@@ -15,6 +15,7 @@ from src.knowledge import KnowledgeExtractor
 from src.vision import VisualProcessor
 from src.checker import FormalExaminer
 from src.generator import ContentGenerator
+from src.search import SearchStrategyGenerator
 from src.graph.entrypoint import run_search_graph
 from src.renderer import ReportRenderer
 
@@ -25,15 +26,16 @@ class PatentPipeline:
     负责：下载 -> 解析 -> 提取 -> 检索 -> 生成报告
     """
 
-    def __init__(self, pn: str):
+    def __init__(self, pn: str, upload_file_path: str = None):
         self.pn = pn.strip()
+        self.upload_file_path = upload_file_path
         # 获取基于 PN 的项目路径配置 (例如: output/CN123456)
         self.paths = settings.get_project_paths(self.pn)
-        
+
         # 确保根目录存在
         self.paths["root"].mkdir(parents=True, exist_ok=True)
         self.paths["annotated_dir"].mkdir(exist_ok=True)
-        
+
         # raw.pdf 的目标路径
         self.raw_pdf_path = self.paths["raw_pdf"]
 
@@ -131,10 +133,33 @@ class PatentPipeline:
                     json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
 
-            # --- Step 7: 查新检索 (LangGraph) ---
-            logger.info(f"[{self.pn}] Step 7: Running Graph Search...")
-            search_strategy_data = {}
-            examination_results = []
+            # --- Step 7: 检索策略生成 ---
+            logger.info("Step 7: Generating Search Strategy & Queries...")
+            search_json = {}
+            if self.paths["search_strategy_json"].exists():
+                logger.info("Step 7: Loading search strategy json...")
+                search_json = json.loads(
+                    self.paths["search_strategy_json"].read_text(encoding="utf-8")
+                )
+            else:
+                logger.info("Step 7: Generating search strategy json...")
+
+                # 初始化生成器
+                cache_file = self.paths["root"].joinpath("search_strategy_intermediate.json")
+                search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
+
+                # 执行生成
+                search_json = search_gen.generate_strategy()
+
+                # 4. 写入独立的 JSON 文件
+                self.paths["search_strategy_json"].write_text(
+                    json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+
+            # # --- Step 7: 查新检索 (LangGraph) ---
+            # logger.info(f"[{self.pn}] Step 7: Running Graph Search...")
+            # search_strategy_data = {}
+            # examination_results = []
             
             # # 检查缓存
             # if self.paths["examination_results_json"].exists() and self.paths["search_strategy_json"].exists():
@@ -157,7 +182,7 @@ class PatentPipeline:
             renderer.render(
                 report_data=report_json,
                 check_result=check_result,
-                search_data=search_strategy_data,
+                search_data=search_json,
                 md_path=self.paths["final_md"],
                 pdf_path=self.paths["final_pdf"],
             )
@@ -170,19 +195,26 @@ class PatentPipeline:
             return {"status": "failed", "pn": self.pn, "error": str(e)}
 
     def _step_download(self):
-        """处理文件下载与归档"""
+        """处理文件下载与归档（支持上传文件或下载专利）"""
         if self.raw_pdf_path.exists():
             logger.info(f"[{self.pn}] Step 0: raw.pdf already exists in output dir, skipping download.")
             return
 
+        # 如果有上传文件，直接使用上传的文件
+        if self.upload_file_path and Path(self.upload_file_path).exists():
+            logger.info(f"[{self.pn}] Step 0: Using uploaded file: {self.upload_file_path}")
+            import shutil
+            shutil.copy2(self.upload_file_path, self.raw_pdf_path)
+            return
+
         logger.info(f"[{self.pn}] Step 0: Downloading patent document...")
-        
+
         # 获取单例 Client
         client = SearchClientFactory.get_client("zhihuiya")
-        
+
         # 直接下载到目标 output 目录
         success = client.download_patent_document(self.pn, str(self.raw_pdf_path))
-        
+
         if not success:
             raise Exception(f"Download failed for {self.pn} (API returned error or empty path)")
 
