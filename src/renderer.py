@@ -126,27 +126,21 @@ class ReportRenderer:
                 
                 card_html = f"""
 <div style="border: 1px solid #dfe2e5; margin-bottom: 20px; page-break-inside: avoid; background-color: #fff;">
-    <!-- 标题栏 -->
     <div style="background-color: #f2f6f9; padding: 6px 8px; border-bottom: 1px solid #dfe2e5;">
         <strong style="color: #2c3e50; font-size: 14px;">{term}</strong>
     </div>
 
-    <!-- 内容区：左右分栏 -->
     <div style="display: flex; flex-direction: row; border-bottom: 1px solid #dfe2e5;">
-        <!-- 左侧：专业定义 -->
         <div style="flex: 1; padding: 8px; border-right: 1px solid #dfe2e5;">
             <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">专业定义</div>
             <div>{self._indent_text(definition)}</div>
         </div>
-        
-        <!-- 右侧：通俗理解 (背景微调以示区分) -->
-        <div style="flex: 1; padding: 8px; background-color: #fafbfc;">
+        <div style="flex: 1; padding: 8px;">
             <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">通俗理解</div>
             <div>{self._indent_text(analogy)}</div>
         </div>
     </div>
 
-    <!-- 底部：本案应用 -->
     <div style="padding: 6px 8px;">
         <span style="font-size: 12px; font-weight: bold; ">本案应用：</span>
         <span style="font-size: 12px;">{context}</span>
