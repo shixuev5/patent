@@ -9,7 +9,10 @@ load_dotenv()
 class Settings:
     # --- 基础路径配置 ---
     BASE_DIR = Path(__file__).resolve().parent
-    OUTPUT_DIR = BASE_DIR / "output"
+    STORAGE_ROOT = Path(os.getenv("APP_STORAGE_ROOT", BASE_DIR))
+    OUTPUT_DIR = Path(os.getenv("APP_OUTPUT_DIR", STORAGE_ROOT / "output"))
+    DATA_DIR = Path(os.getenv("APP_DATA_DIR", STORAGE_ROOT / "data"))
+    UPLOAD_DIR = Path(os.getenv("APP_UPLOAD_DIR", STORAGE_ROOT / "uploads"))
     ASSETS_DIR = BASE_DIR / "assets"
 
     # 确保字体文件路径 (请手动放入 simhei.ttf 到 assets 目录)
@@ -271,5 +274,7 @@ class Settings:
 settings = Settings()
 
 # 自动创建基础目录
-settings.OUTPUT_DIR.mkdir(exist_ok=True)
-settings.ASSETS_DIR.mkdir(exist_ok=True)
+settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)

@@ -61,7 +61,7 @@ npx wrangler login
 
 2. **部署到 Cloudflare Pages**:
    ```bash
-   npx wrangler pages deploy dist --project-name="patent-analyzer-frontend"
+   npx wrangler pages deploy .output/public --project-name="patent-analyzer-frontend"
    ```
 
 3. **配置环境变量** (生产环境):
@@ -79,7 +79,7 @@ npx wrangler login
 3. 连接 Git 仓库
 4. 构建设置：
    - Build command: `npm run generate`
-   - Build output directory: `dist`
+   - Build output directory: `.output/public`
 
 ## 项目结构
 
@@ -132,7 +132,7 @@ NUXT_PUBLIC_API_BASE_URL=https://your-production-api.com
 ### 部署失败
 - 检查 Node.js 版本 >= 18
 - 确保 `npm run generate` 能本地成功构建
-- 检查 `dist` 目录是否生成
+- 检查 `.output/public` 目录是否生成
 
 ### API 连接失败
 - 检查 `NUXT_PUBLIC_API_BASE_URL` 环境变量

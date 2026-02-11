@@ -1,0 +1,61 @@
+services:
+  - type: web
+    name: patent-backend
+    env: python
+    plan: starter
+    buildCommand: |
+      pip install --upgrade pip uv
+      uv sync --frozen --no-dev
+      uv run playwright install chromium
+    startCommand: uv run --no-sync uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: patent-storage
+      mountPath: /var/data
+      sizeGB: 20
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: APP_STORAGE_ROOT
+        value: /var/data/patent
+      - key: MINERU_MODEL_SOURCE
+        value: modelscope
+      - key: MINERU_API_KEY
+        sync: false
+      - key: MINERU_BASE_URL
+        value: https://mineru.net/api/v4
+      - key: PDF_PARSER
+        value: local
+      - key: OCR_API_KEY
+        sync: false
+      - key: OCR_BASE_URL
+        value: https://j9dd7babo5tcocz9.aistudio-app.com/ocr
+      - key: OCR_ENGINE
+        value: local
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        value: https://api.deepseek.com
+      - key: LLM_MODEL
+        value: deepseek-chat
+      - key: LLM_MODEL_REASONING
+        value: deepseek-reasoner
+      - key: LLM_EXAM_API_KEY
+        sync: false
+      - key: LLM_EXAM_BASE_URL
+        value: https://api.siliconflow.cn/v1
+      - key: LLM_MODEL_EXAM
+        value: deepseek-chat
+      - key: VLM_API_KEY
+        sync: false
+      - key: VLM_BASE_URL
+        value: https://open.bigmodel.cn/api/paas/v4
+      - key: VLM_MODEL
+        value: glm-4.6v
+      - key: ZHIHUIYA_USERNAME
+        sync: false
+      - key: ZHIHUIYA_PASSWORD
+        sync: false
