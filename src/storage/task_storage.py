@@ -110,7 +110,7 @@ class TaskStorage:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            metadata=self._parse_metadata(row["metadata"]),
         )
 
     def _row_to_step(self, row: sqlite3.Row) -> TaskStep:
@@ -122,8 +122,35 @@ class TaskStorage:
             start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
             end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
             error_message=row["error_message"],
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            metadata=self._parse_metadata(row["metadata"]),
         )
+
+    @staticmethod
+    def _parse_metadata(raw: Any) -> Dict[str, Any]:
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _encode_metadata(value: Any) -> Any:
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    @staticmethod
+    def _normalize_update_value(value: Any) -> Any:
+        if isinstance(value, TaskStatus):
+            return value.value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
 
     def create_task(self, task: Task) -> Task:
         with self._get_connection() as conn:
@@ -187,6 +214,8 @@ class TaskStorage:
             return False
 
         updates["updated_at"] = datetime.now().isoformat()
+        for key in list(updates.keys()):
+            updates[key] = self._normalize_update_value(self._encode_metadata(updates[key]))
         set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
         values = list(updates.values()) + [task_id]
 
@@ -287,11 +316,13 @@ class TaskStorage:
             where.append("owner_id = ?")
             params.append(owner_id)
 
+        allowed_order_columns = {"created_at", "updated_at", "progress", "status", "pn"}
+        safe_order_by = order_by if order_by in allowed_order_columns else "created_at"
         direction = "DESC" if order_desc else "ASC"
         sql = f"""
             SELECT * FROM tasks
             WHERE {' AND '.join(where)}
-            ORDER BY {order_by} {direction}
+            ORDER BY {safe_order_by} {direction}
             LIMIT ? OFFSET ?
         """
         params.extend([limit, offset])
@@ -407,13 +438,30 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
     if _storage_instance is None:
         with _storage_lock:
             if _storage_instance is None:
-                database_url = os.getenv("TASK_DATABASE_URL", "").strip()
-                if database_url:
-                    from .postgres_storage import PostgresTaskStorage
+                backend = os.getenv("TASK_STORAGE_BACKEND", "sqlite").strip().lower()
+                if backend == "d1":
+                    from .d1_storage import D1TaskStorage
 
-                    _storage_instance = PostgresTaskStorage(database_url)
-                else:
+                    account_id = os.getenv("D1_ACCOUNT_ID", "").strip()
+                    database_id = os.getenv("D1_DATABASE_ID", "").strip()
+                    api_token = os.getenv("D1_API_TOKEN", "").strip()
+                    api_base_url = os.getenv(
+                        "D1_API_BASE_URL",
+                        "https://api.cloudflare.com/client/v4",
+                    ).strip()
+                    _storage_instance = D1TaskStorage(
+                        account_id=account_id,
+                        database_id=database_id,
+                        api_token=api_token,
+                        api_base_url=api_base_url,
+                    )
+                elif backend in {"", "sqlite"}:
                     _storage_instance = TaskStorage(db_path)
+                else:
+                    raise ValueError(
+                        f"Unsupported TASK_STORAGE_BACKEND={backend}. "
+                        "Use `sqlite` or `d1`."
+                    )
     return _storage_instance
 
 

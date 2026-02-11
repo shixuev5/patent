@@ -26,7 +26,7 @@ Render 免费计划不能通过 `New +` -> `Blueprint` 从 `render.yaml` 一键�
    - Health Check Path: `/api/health`
 4. 在 Render 中补充环境变量（尤其是密钥类变量，如 `LLM_API_KEY`、`VLM_API_KEY`、`AUTH_SECRET`）。
    - 推荐同时配置持久化外部存储：
-     - `TASK_DATABASE_URL`（Supabase/Neon Postgres）
+     - `TASK_STORAGE_BACKEND=d1` + `D1_ACCOUNT_ID` + `D1_DATABASE_ID` + `D1_API_TOKEN`
      - `R2_ENABLED=true` + `R2_*`（Cloudflare R2，用于 PDF/上传文件）
 5. 首次构建完成后，访问健康检查：
    - `https://<your-render-domain>/api/health`
@@ -83,7 +83,11 @@ npm run deploy
 - `APP_OUTPUT_DIR`
 - `APP_DATA_DIR`
 - `APP_UPLOAD_DIR`
-- `TASK_DATABASE_URL`（配置后任务状态存储改为 Postgres）
+- `TASK_STORAGE_BACKEND`（`sqlite` 用于本地调试，`d1` 用于线上）
+- `D1_ACCOUNT_ID`
+- `D1_DATABASE_ID`
+- `D1_API_TOKEN`
+- `D1_API_BASE_URL`
 - `R2_ENABLED`
 - `R2_ENDPOINT_URL`
 - `R2_ACCESS_KEY_ID`

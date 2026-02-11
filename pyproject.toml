@@ -15,7 +15,6 @@ dependencies = [
     "paddleocr>=3.3.2",
     "paddlepaddle>=3.2.2",
     "playwright>=1.57.0",
-    "psycopg[binary]>=3.2.10",
     "pydantic>=2.11.10",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",

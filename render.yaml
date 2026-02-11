@@ -21,8 +21,16 @@ services:
         value: "1"
       - key: APP_STORAGE_ROOT
         value: /var/data/patent
-      - key: TASK_DATABASE_URL
+      - key: TASK_STORAGE_BACKEND
+        value: d1
+      - key: D1_ACCOUNT_ID
         sync: false
+      - key: D1_DATABASE_ID
+        sync: false
+      - key: D1_API_TOKEN
+        sync: false
+      - key: D1_API_BASE_URL
+        value: https://api.cloudflare.com/client/v4
       - key: MINERU_MODEL_SOURCE
         value: modelscope
       - key: MINERU_API_KEY
