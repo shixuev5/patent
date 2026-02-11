@@ -1,37 +1,35 @@
 """
-任务数据模型定义
+Task data models.
 """
-from dataclasses import dataclass, field, asdict
+
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 import json
 
 
 class TaskStatus(str, Enum):
-    """任务状态枚举"""
-    PENDING = "pending"           # 等待处理
-    PROCESSING = "processing"     # 处理中
-    PAUSED = "paused"            # 已暂停
-    COMPLETED = "completed"      # 已完成
-    FAILED = "failed"             # 失败
-    CANCELLED = "cancelled"      # 已取消
+    PENDING = "pending"
+    PROCESSING = "processing"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
 class TaskStep:
-    """任务步骤/阶段记录"""
-    step_name: str                    # 步骤名称
-    step_order: int                   # 步骤顺序
-    status: str = "pending"           # 步骤状态: pending/running/completed/failed
-    progress: int = 0                 # 该步骤的进度 (0-100)
+    step_name: str
+    step_order: int
+    status: str = "pending"
+    progress: int = 0
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)  # 额外元数据
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict:
-        """转换为字典"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "step_name": self.step_name,
             "step_order": self.step_order,
@@ -44,8 +42,7 @@ class TaskStep:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "TaskStep":
-        """从字典创建"""
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskStep":
         return cls(
             step_name=data["step_name"],
             step_order=data["step_order"],
@@ -60,39 +57,26 @@ class TaskStep:
 
 @dataclass
 class Task:
-    """任务数据模型"""
-    # 基本信息
-    id: str                           # 任务ID (唯一标识)
-    pn: Optional[str] = None            # 专利号 (Patent Number)
-    title: Optional[str] = None         # 任务标题/描述
-
-    # 状态信息
+    id: str
+    owner_id: Optional[str] = None
+    pn: Optional[str] = None
+    title: Optional[str] = None
     status: TaskStatus = TaskStatus.PENDING
-    progress: int = 0                 # 整体进度 (0-100)
-    current_step: Optional[str] = None  # 当前步骤名称
-
-    # 文件路径
-    output_dir: Optional[str] = None    # 输出目录路径
-    raw_pdf_path: Optional[str] = None  # 原始PDF路径
-
-    # 错误信息
+    progress: int = 0
+    current_step: Optional[str] = None
+    output_dir: Optional[str] = None
+    raw_pdf_path: Optional[str] = None
     error_message: Optional[str] = None
-
-    # 时间戳
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
+    steps: List[TaskStep] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # 关联数据 (不直接存储到task表)
-    steps: List[TaskStep] = field(default_factory=list)  # 任务步骤列表
-
-    # 扩展元数据
-    metadata: Dict[str, Any] = field(default_factory=dict)  # 额外元数据
-
-    def to_dict(self) -> Dict:
-        """转换为字典 (用于JSON序列化)"""
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
+            "owner_id": self.owner_id,
             "pn": self.pn,
             "title": self.title,
             "status": self.status.value,
@@ -108,10 +92,10 @@ class Task:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "Task":
-        """从字典创建实例"""
+    def from_dict(cls, data: Dict[str, Any]) -> "Task":
         return cls(
             id=data["id"],
+            owner_id=data.get("owner_id"),
             pn=data.get("pn"),
             title=data.get("title"),
             status=TaskStatus(data.get("status", "pending")),
@@ -125,23 +109,3 @@ class Task:
             completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None,
             metadata=data.get("metadata", {}),
         )
-
-    def update_progress(self, progress: int, step: str = None):
-        """更新进度"""
-        self.progress = max(0, min(100, progress))
-        if step:
-            self.current_step = step
-        self.updated_at = datetime.now()
-
-    def complete(self):
-        """标记任务完成"""
-        self.status = TaskStatus.COMPLETED
-        self.progress = 100
-        self.completed_at = datetime.now()
-        self.updated_at = datetime.now()
-
-    def fail(self, error_message: str):
-        """标记任务失败"""
-        self.status = TaskStatus.FAILED
-        self.error_message = error_message
-        self.updated_at = datetime.now()

@@ -29,5 +29,10 @@
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3",
     "wrangler": "^3.22.0"
+  },
+  "optionalDependencies": {
+    "@oxc-minify/binding-linux-x64-gnu": "0.112.0",
+    "@oxc-parser/binding-linux-x64-gnu": "0.112.0",
+    "@oxc-transform/binding-linux-x64-gnu": "0.112.0"
   }
 }

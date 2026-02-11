@@ -59,3 +59,21 @@ services:
         sync: false
       - key: ZHIHUIYA_PASSWORD
         sync: false
+      - key: CF_KV_ENABLED
+        value: "false"
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_KV_NAMESPACE_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
+      - key: CF_KV_PREFIX
+        value: patent-report
+      - key: AUTH_SECRET
+        sync: false
+      - key: AUTH_TOKEN_TTL_DAYS
+        value: "30"
+      - key: MAX_DAILY_ANALYSIS
+        value: "3"
+      - key: APP_TZ_OFFSET_HOURS
+        value: "8"
