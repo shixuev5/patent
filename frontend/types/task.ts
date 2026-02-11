@@ -3,7 +3,7 @@ export interface Task {
   backendId?: string;
   title: string;
   type: 'patent' | 'file';
-  status: 'pending' | 'processing' | 'completed' | 'error';
+  status: 'pending' | 'processing' | 'completed' | 'error' | 'failed' | 'cancelled';
   progress: number;
   currentStep: string;
   downloadUrl?: string;
@@ -20,7 +20,7 @@ export interface CreateTaskInput {
 export interface TaskProgress {
   progress: number;
   step: string;
-  status: Task['status'];
+  status: string;
   downloadUrl?: string;
   error?: string;
 }

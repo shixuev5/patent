@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from loguru import logger
 
+from config import settings
 from .models import Task, TaskStep, TaskStatus
 
 
@@ -79,8 +80,7 @@ class TaskStorage:
         """
         if db_path is None:
             # 默认路径: 项目根目录/data/tasks.db
-            project_root = Path(__file__).resolve().parent.parent.parent
-            db_path = project_root / "data" / "tasks.db"
+            db_path = settings.DATA_DIR / "tasks.db"
 
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

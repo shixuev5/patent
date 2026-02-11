@@ -46,7 +46,7 @@ fi
 
 # 部署到 Cloudflare Pages
 echo "🚀 部署到 Cloudflare Pages..."
-npx wrangler pages deploy dist --project-name="patent-analyzer-frontend"
+npx wrangler pages deploy .output/public --project-name="patent-analyzer-frontend"
 
 echo "✅ 部署完成！"
 echo ""
@@ -54,4 +54,3 @@ echo "📝 提示:"
 echo "   - 部署 URL: https://patent-analyzer-frontend.pages.dev"
 echo "   - 如需自定义域名，请在 Cloudflare Dashboard 中配置"
 echo "   - 生产环境请修改 API_BASE_URL 环境变量指向您的后端服务"
-
