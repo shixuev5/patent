@@ -7,22 +7,42 @@
 
 ## 1. 后端部署到 Render
 
-仓库已提供 `render.yaml`，可直接用 Blueprint 部署。
+### 方案 A：免费计划（Hobby）手动部署（不支持 Blueprint）
+
+Render 免费计划不能通过 `New +` -> `Blueprint` 从 `render.yaml` 一键创建服务，请改用手动创建 `Web Service`：
+（参考：<https://render.com/docs/free>）
 
 1. 将代码推送到 GitHub/GitLab 仓库。
-2. 在 Render 控制台选择 `New +` -> `Blueprint`，连接该仓库。
-3. Render 会读取根目录 `render.yaml` 并创建 `patent-backend` 服务。
-4. 在 Render 中补充 `sync: false` 的密钥类环境变量（如 `LLM_API_KEY`、`VLM_API_KEY`）。
+2. 在 Render 控制台选择 `New +` -> `Web Service`，连接该仓库。
+3. 按以下配置填写（与 `render.yaml` 保持一致）：
+   - Runtime: `Python`
+   - Build Command:
+     ```bash
+     pip install --upgrade pip uv
+     uv sync --frozen --no-dev
+     uv run playwright install chromium
+     ```
+   - Start Command: `uv run --no-sync uvicorn api:app --host 0.0.0.0 --port $PORT`
+   - Health Check Path: `/api/health`
+4. 在 Render 中补充环境变量（尤其是密钥类变量，如 `LLM_API_KEY`、`VLM_API_KEY`、`AUTH_SECRET`）。
+   - 推荐同时配置持久化外部存储：
+     - `TASK_DATABASE_URL`（Supabase/Neon Postgres）
+     - `R2_ENABLED=true` + `R2_*`（Cloudflare R2，用于 PDF/上传文件）
 5. 首次构建完成后，访问健康检查：
    - `https://<your-render-domain>/api/health`
 
-说明：
+免费计划注意事项：
 
-- `render.yaml` 已配置持久化磁盘 `/var/data`。
-- 后端使用 `APP_STORAGE_ROOT=/var/data/patent`，数据文件会写入该目录：
-  - `data/tasks.db`
-  - `uploads/`
-  - `output/`
+- 免费实例无持久化磁盘，容器重启/重建后本地文件会丢失。
+- 如需长期保存 `tasks.db`、`uploads/`、`output/`，请升级到付费计划并挂载磁盘，或改用外部存储。
+
+### 方案 B：付费计划（Starter 及以上）使用 Blueprint
+
+仓库根目录已提供 `render.yaml`，付费计划可直接用 Blueprint 部署：
+
+1. 在 Render 控制台选择 `New +` -> `Blueprint`，连接该仓库。
+2. Render 会读取根目录 `render.yaml` 并创建 `patent-backend` 服务。
+3. Blueprint 默认配置包含持久化磁盘 `/var/data`，并使用 `APP_STORAGE_ROOT=/var/data/patent` 存储业务数据。
 
 ## 2. 前端部署到 Cloudflare Pages
 
@@ -63,7 +83,14 @@ npm run deploy
 - `APP_OUTPUT_DIR`
 - `APP_DATA_DIR`
 - `APP_UPLOAD_DIR`
-
+- `TASK_DATABASE_URL`（配置后任务状态存储改为 Postgres）
+- `R2_ENABLED`
+- `R2_ENDPOINT_URL`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+- `R2_REGION`
+- `R2_KEY_PREFIX`
 ## 5. 鉴权与每日配额
 
 后端已启用用户级鉴权与每日分析上限：

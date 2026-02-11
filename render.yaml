@@ -21,6 +21,8 @@ services:
         value: "1"
       - key: APP_STORAGE_ROOT
         value: /var/data/patent
+      - key: TASK_DATABASE_URL
+        sync: false
       - key: MINERU_MODEL_SOURCE
         value: modelscope
       - key: MINERU_API_KEY
@@ -59,16 +61,20 @@ services:
         sync: false
       - key: ZHIHUIYA_PASSWORD
         sync: false
-      - key: CF_KV_ENABLED
+      - key: R2_ENABLED
         value: "false"
-      - key: CF_ACCOUNT_ID
+      - key: R2_ENDPOINT_URL
         sync: false
-      - key: CF_KV_NAMESPACE_ID
+      - key: R2_ACCESS_KEY_ID
         sync: false
-      - key: CF_API_TOKEN
+      - key: R2_SECRET_ACCESS_KEY
         sync: false
-      - key: CF_KV_PREFIX
-        value: patent-report
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_REGION
+        value: auto
+      - key: R2_KEY_PREFIX
+        value: patent
       - key: AUTH_SECRET
         sync: false
       - key: AUTH_TOKEN_TTL_DAYS
