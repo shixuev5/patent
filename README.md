@@ -63,3 +63,27 @@ npm run deploy
 - `APP_OUTPUT_DIR`
 - `APP_DATA_DIR`
 - `APP_UPLOAD_DIR`
+
+## 5. 鉴权与每日配额
+
+后端已启用用户级鉴权与每日分析上限：
+
+- `POST /api/auth/guest`
+  - 为前端创建匿名会话令牌。
+- 受保护接口：
+  - `POST /api/tasks`
+  - `GET /api/tasks/{task_id}`
+  - `GET /api/tasks/{task_id}/progress`
+  - `GET /api/tasks/{task_id}/download`
+  - `GET /api/usage`
+- 令牌传递方式：
+  - `Authorization: Bearer <token>`（推荐）
+  - `?token=<token>`（用于 SSE/EventSource）
+- 任务以 `owner_id` 做归属隔离，用户只能访问自己的任务。
+- 每个用户每日默认最多提交 `3` 次分析。
+
+新增环境变量：
+- `AUTH_SECRET`（生产环境必填）
+- `AUTH_TOKEN_TTL_DAYS`（默认：`30`）
+- `MAX_DAILY_ANALYSIS`（默认：`3`）
+- `APP_TZ_OFFSET_HOURS`（默认：`8`）

@@ -32,6 +32,7 @@ class PipelineTaskManager:
 
     def create_task(
         self,
+        owner_id: Optional[str] = None,
         pn: Optional[str] = None,
         title: Optional[str] = None,
         raw_pdf_path: Optional[str] = None,
@@ -51,6 +52,7 @@ class PipelineTaskManager:
 
         task = Task(
             id=task_id,
+            owner_id=owner_id,
             pn=pn,
             title=title,
             status=TaskStatus.PENDING,

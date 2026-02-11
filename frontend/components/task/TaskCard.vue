@@ -9,8 +9,8 @@
           fill="none"
           viewBox="0 0 24 24"
         >
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
         <CheckCircleIcon v-else-if="displayStatus === 'completed'" class="w-5 h-5" />
         <ClockIcon v-else-if="displayStatus === 'pending'" class="w-5 h-5" />
@@ -24,9 +24,14 @@
           <span class="task-time">{{ formatTime(task.createdAt) }}</span>
         </div>
 
+        <div v-if="task.pn" class="task-pn">
+          <span class="pn-label">专利号</span>
+          <code class="pn-value">{{ task.pn }}</code>
+        </div>
+
         <div v-if="displayStatus === 'processing'" class="task-progress">
           <div class="progress-bar">
-            <div class="progress-fill" :style="{ width: `${task.progress}%` }"></div>
+            <div class="progress-fill" :style="{ width: `${task.progress}%` }" />
           </div>
           <span class="progress-text">{{ task.progress }}% - {{ task.currentStep }}</span>
         </div>
@@ -62,16 +67,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {
-  CheckCircleIcon,
-  ClockIcon,
-  XCircleIcon,
   ArrowDownTrayIcon,
   ArrowPathIcon,
-  TrashIcon,
+  CheckCircleIcon,
+  ClockIcon,
   ExclamationCircleIcon,
+  TrashIcon,
+  XCircleIcon,
 } from '@heroicons/vue/24/outline'
-import type { Task } from '~/types/task'
 import { useTaskStore } from '~/stores/task'
+import type { Task } from '~/types/task'
 
 const props = defineProps<{ task: Task }>()
 const taskStore = useTaskStore()
@@ -140,6 +145,15 @@ const deleteTask = () => {
 }
 .task-type {
   @apply px-1.5 py-0.5 bg-gray-100 rounded text-gray-600;
+}
+.task-pn {
+  @apply flex items-center gap-2 mb-2;
+}
+.pn-label {
+  @apply text-xs text-gray-500;
+}
+.pn-value {
+  @apply text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700 break-all;
 }
 .task-progress {
   @apply space-y-1.5;

@@ -2,6 +2,7 @@ export interface Task {
   id: string;
   backendId?: string;
   title: string;
+  pn?: string;
   type: 'patent' | 'file';
   status: 'pending' | 'processing' | 'completed' | 'error' | 'failed' | 'cancelled';
   progress: number;
@@ -21,6 +22,7 @@ export interface TaskProgress {
   progress: number;
   step: string;
   status: string;
+  pn?: string;
   downloadUrl?: string;
   error?: string;
 }

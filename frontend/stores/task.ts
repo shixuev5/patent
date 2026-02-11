@@ -1,19 +1,30 @@
 import { defineStore } from 'pinia'
-import type { Task, CreateTaskInput, TaskProgress } from '~/types/task'
+import type { CreateTaskInput, Task, TaskProgress } from '~/types/task'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
 const STORAGE_KEY = 'patent_tasks'
+const AUTH_TOKEN_KEY = 'patent_auth_token'
+const AUTH_USER_ID_KEY = 'patent_auth_user_id'
 
 const normalizeStatus = (status: string): Task['status'] => {
   if (status === 'failed' || status === 'cancelled') return 'error'
-  if (status === 'pending' || status === 'processing' || status === 'completed' || status === 'error') return status
+  if (status === 'pending' || status === 'processing' || status === 'completed' || status === 'error') {
+    return status
+  }
   return 'processing'
+}
+
+const withTokenQuery = (url: string, token: string): string => {
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
 }
 
 export const useTaskStore = defineStore('tasks', {
   state: () => ({
     tasks: [] as Task[],
     loading: false,
+    authToken: '' as string,
+    userId: '' as string,
   }),
 
   getters: {
@@ -46,20 +57,70 @@ export const useTaskStore = defineStore('tasks', {
   actions: {
     init() {
       if (!process.client) return
+      this.loadAuthFromStorage()
+
       const saved = localStorage.getItem(STORAGE_KEY)
       if (!saved) return
+
       try {
         this.tasks = JSON.parse(saved)
         this.restoreProcessingTasks()
-      } catch (e) {
-        console.error('Failed to parse tasks from storage:', e)
+      } catch (error) {
+        console.error('解析本地任务缓存失败：', error)
       }
+    },
+
+    loadAuthFromStorage() {
+      if (!process.client) return
+      this.authToken = localStorage.getItem(AUTH_TOKEN_KEY) || ''
+      this.userId = localStorage.getItem(AUTH_USER_ID_KEY) || ''
+    },
+
+    saveAuthToStorage(token: string, userId: string) {
+      this.authToken = token
+      this.userId = userId
+      if (!process.client) return
+      localStorage.setItem(AUTH_TOKEN_KEY, token)
+      localStorage.setItem(AUTH_USER_ID_KEY, userId)
+    },
+
+    async ensureAuth(): Promise<boolean> {
+      if (this.authToken) return true
+      this.loadAuthFromStorage()
+      if (this.authToken) return true
+
+      const config = useRuntimeConfig()
+      try {
+        const response = await fetch(`${config.public.apiBaseUrl}/api/auth/guest`, {
+          method: 'POST',
+        })
+        if (!response.ok) return false
+        const data = await response.json()
+        if (!data?.token || !data?.userId) return false
+        this.saveAuthToStorage(data.token, data.userId)
+        return true
+      } catch (error) {
+        console.error('创建匿名身份失败：', error)
+        return false
+      }
+    },
+
+    async parseApiError(response: Response): Promise<string> {
+      try {
+        const payload = await response.json()
+        if (typeof payload?.detail === 'string') return payload.detail
+        if (typeof payload?.detail?.message === 'string') return payload.detail.message
+      } catch (_error) {
+        // 忽略解析失败，使用兜底文案
+      }
+      return `请求失败（HTTP ${response.status}）`
     },
 
     async createTask(input: CreateTaskInput) {
       const task: Task = {
         id: generateId(),
         title: input.patentNumber || input.file?.name || '未命名任务',
+        pn: input.patentNumber?.trim() || undefined,
         type: input.patentNumber ? 'patent' : 'file',
         status: 'pending',
         progress: 0,
@@ -76,6 +137,15 @@ export const useTaskStore = defineStore('tasks', {
 
     async submitTask(task: Task, input: CreateTaskInput) {
       const config = useRuntimeConfig()
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        task.status = 'error'
+        task.error = '认证失败，请刷新后重试。'
+        task.updatedAt = Date.now()
+        this.saveToStorage()
+        return
+      }
+
       try {
         const formData = new FormData()
         if (input.patentNumber) formData.append('patentNumber', input.patentNumber)
@@ -83,31 +153,53 @@ export const useTaskStore = defineStore('tasks', {
 
         const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
           method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
           body: formData,
         })
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+        if (!response.ok) throw new Error(await this.parseApiError(response))
 
         const data = await response.json()
         task.backendId = data.taskId
-        task.status = 'processing'
-        task.currentStep = '正在处理'
+        task.pn = input.patentNumber?.trim() || task.pn
+        task.status = normalizeStatus(data.status || 'processing')
+        task.currentStep = task.status === 'completed' ? '已复用历史报告' : '处理中'
         task.updatedAt = Date.now()
         this.saveToStorage()
+
+        if (task.status === 'completed') {
+          task.progress = 100
+          task.downloadUrl = `/api/tasks/${task.backendId}/download`
+          this.saveToStorage()
+          return
+        }
+
         this.startProgressTracking(task)
       } catch (error) {
-        console.error('Failed to submit task:', error)
+        console.error('提交任务失败：', error)
         task.status = 'error'
-        task.error = '提交失败，请重试'
+        task.error = error instanceof Error ? error.message : '提交失败，请重试。'
         task.updatedAt = Date.now()
         this.saveToStorage()
       }
     },
 
-    startProgressTracking(task: Task) {
+    async startProgressTracking(task: Task) {
       const config = useRuntimeConfig()
       if (!task.backendId || task.status === 'completed' || task.status === 'error') return
 
-      const eventSource = new EventSource(`${config.public.apiBaseUrl}/api/tasks/${task.backendId}/progress`)
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        task.status = 'error'
+        task.error = '认证已过期，请重试。'
+        task.updatedAt = Date.now()
+        this.saveToStorage()
+        return
+      }
+
+      const baseUrl = `${config.public.apiBaseUrl}/api/tasks/${task.backendId}/progress`
+      const eventSource = new EventSource(withTokenQuery(baseUrl, this.authToken))
 
       eventSource.onmessage = (event) => {
         try {
@@ -116,6 +208,7 @@ export const useTaskStore = defineStore('tasks', {
 
           task.progress = data.progress ?? task.progress
           task.currentStep = data.step || task.currentStep
+          if (data.pn) task.pn = data.pn
           task.status = normalized
           task.updatedAt = Date.now()
 
@@ -123,13 +216,13 @@ export const useTaskStore = defineStore('tasks', {
             task.downloadUrl = data.downloadUrl
             eventSource.close()
           } else if (normalized === 'error') {
-            task.error = data.error || '任务执行失败'
+            task.error = data.error || '任务执行失败。'
             eventSource.close()
           }
 
           this.saveToStorage()
-        } catch (e) {
-          console.error('Failed to parse progress data:', e)
+        } catch (error) {
+          console.error('解析任务进度失败：', error)
         }
       }
 
@@ -158,23 +251,35 @@ export const useTaskStore = defineStore('tasks', {
       if (!task.downloadUrl) return
       const config = useRuntimeConfig()
       const baseUrl = config.public.apiBaseUrl
-      const downloadUrl = task.downloadUrl.startsWith('http') ? task.downloadUrl : `${baseUrl}${task.downloadUrl}`
+      const rawDownloadUrl = task.downloadUrl.startsWith('http') ? task.downloadUrl : `${baseUrl}${task.downloadUrl}`
+
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        window.open(rawDownloadUrl, '_blank')
+        return
+      }
+
+      const downloadUrl = withTokenQuery(rawDownloadUrl, this.authToken)
 
       try {
-        const response = await fetch(downloadUrl)
-        if (!response.ok) throw new Error(`下载失败: ${response.status} ${response.statusText}`)
+        const response = await fetch(downloadUrl, {
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
+        })
+        if (!response.ok) throw new Error(`下载失败：${response.status} ${response.statusText}`)
 
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
-        link.download = `专利分析报告_${task.title}.pdf`
+        link.download = `专利分析报告_${task.pn || task.title}.pdf`
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
         window.URL.revokeObjectURL(url)
       } catch (error) {
-        console.error('下载失败:', error)
+        console.error('下载失败：', error)
         window.open(downloadUrl, '_blank')
       }
     },
@@ -187,7 +292,7 @@ export const useTaskStore = defineStore('tasks', {
       task.updatedAt = Date.now()
       this.saveToStorage()
 
-      const input: CreateTaskInput = task.type === 'patent' ? { patentNumber: task.title } : { file: undefined }
+      const input: CreateTaskInput = task.type === 'patent' ? { patentNumber: task.pn || task.title } : { file: undefined }
       await this.submitTask(task, input)
     },
 
