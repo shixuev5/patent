@@ -1,23 +1,26 @@
 """
-SQLite task storage layer.
+PostgreSQL task storage layer.
 """
 
 import json
-import os
-import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from config import settings
 from .models import Task, TaskStep, TaskStatus
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - guarded by runtime env
+    psycopg = None
+    dict_row = None
 
-class TaskStorage:
+
+class PostgresTaskStorage:
     CREATE_TABLES_SQL = """
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -37,7 +40,7 @@ class TaskStorage:
     );
 
     CREATE TABLE IF NOT EXISTS task_steps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id BIGSERIAL PRIMARY KEY,
         task_id TEXT NOT NULL,
         step_name TEXT NOT NULL,
         step_order INTEGER NOT NULL,
@@ -50,80 +53,114 @@ class TaskStorage:
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
+    CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_steps_task_id ON task_steps(task_id);
     """
 
-    def __init__(self, db_path: Union[str, Path, None] = None):
-        if db_path is None:
-            db_path = settings.DATA_DIR / "tasks.db"
+    def __init__(self, database_url: str):
+        if not database_url:
+            raise ValueError("database_url is required for PostgresTaskStorage")
+        if psycopg is None:
+            raise RuntimeError(
+                "psycopg is not installed. Please add dependency `psycopg[binary]`."
+            )
 
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database_url = database_url
         self._local = threading.local()
         self._init_database()
-        logger.info(f"TaskStorage initialized: {self.db_path}")
+        logger.info("PostgresTaskStorage initialized")
 
-    def _init_database(self):
-        with self._get_connection() as conn:
-            conn.executescript(self.CREATE_TABLES_SQL)
-            self._ensure_schema(conn)
-            conn.commit()
-
-    def _ensure_schema(self, conn: sqlite3.Connection):
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-        if "owner_id" not in columns:
-            conn.execute("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id)")
+    def _get_or_create_connection(self):
+        conn = getattr(self._local, "connection", None)
+        if conn is None or conn.closed:
+            conn = psycopg.connect(
+                self.database_url,
+                autocommit=False,
+                row_factory=dict_row,
+            )
+            self._local.connection = conn
+        return conn
 
     @contextmanager
     def _get_connection(self):
-        if not hasattr(self._local, "connection") or self._local.connection is None:
-            self._local.connection = sqlite3.connect(
-                self.db_path,
-                check_same_thread=False,
-                isolation_level=None,
-            )
-            self._local.connection.execute("PRAGMA foreign_keys = ON")
-            self._local.connection.row_factory = sqlite3.Row
-
+        conn = self._get_or_create_connection()
         try:
-            yield self._local.connection
+            yield conn
         except Exception:
-            self._local.connection.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
 
-    def _row_to_task(self, row: sqlite3.Row) -> Task:
+    def _init_database(self):
+        with self._get_connection() as conn:
+            conn.execute(self.CREATE_TABLES_SQL)
+            conn.commit()
+
+    @staticmethod
+    def _parse_metadata(raw: Any) -> Dict[str, Any]:
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {}
+        return {}
+
+    def _row_to_task(self, row: Dict[str, Any]) -> Task:
         return Task(
             id=row["id"],
-            owner_id=row["owner_id"] if "owner_id" in row.keys() else None,
-            pn=row["pn"],
-            title=row["title"],
+            owner_id=row.get("owner_id"),
+            pn=row.get("pn"),
+            title=row.get("title"),
             status=TaskStatus(row["status"]),
-            progress=row["progress"],
-            current_step=row["current_step"],
-            output_dir=row["output_dir"],
-            raw_pdf_path=row["raw_pdf_path"],
-            error_message=row["error_message"],
+            progress=row.get("progress", 0),
+            current_step=row.get("current_step"),
+            output_dir=row.get("output_dir"),
+            raw_pdf_path=row.get("raw_pdf_path"),
+            error_message=row.get("error_message"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            completed_at=datetime.fromisoformat(row["completed_at"])
+            if row.get("completed_at")
+            else None,
+            metadata=self._parse_metadata(row.get("metadata")),
         )
 
-    def _row_to_step(self, row: sqlite3.Row) -> TaskStep:
+    def _row_to_step(self, row: Dict[str, Any]) -> TaskStep:
         return TaskStep(
             step_name=row["step_name"],
             step_order=row["step_order"],
-            status=row["status"],
-            progress=row["progress"],
-            start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
-            end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
-            error_message=row["error_message"],
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            status=row.get("status", "pending"),
+            progress=row.get("progress", 0),
+            start_time=datetime.fromisoformat(row["start_time"])
+            if row.get("start_time")
+            else None,
+            end_time=datetime.fromisoformat(row["end_time"]) if row.get("end_time") else None,
+            error_message=row.get("error_message"),
+            metadata=self._parse_metadata(row.get("metadata")),
         )
+
+    @staticmethod
+    def _encode_metadata(value: Any) -> Any:
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    @staticmethod
+    def _normalize_update_value(value: Any) -> Any:
+        if isinstance(value, TaskStatus):
+            return value.value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return value
 
     def create_task(self, task: Task) -> Task:
         with self._get_connection() as conn:
@@ -133,7 +170,7 @@ class TaskStorage:
                     id, owner_id, pn, title, status, progress, current_step,
                     output_dir, raw_pdf_path, error_message,
                     created_at, updated_at, completed_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task.id,
@@ -157,7 +194,7 @@ class TaskStorage:
 
     def get_task(self, task_id: str) -> Optional[Task]:
         with self._get_connection() as conn:
-            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            row = conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
         return self._row_to_task(row) if row else None
 
     def get_task_with_steps(self, task_id: str) -> Optional[Task]:
@@ -187,17 +224,20 @@ class TaskStorage:
             return False
 
         updates["updated_at"] = datetime.now().isoformat()
-        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+        for key in list(updates.keys()):
+            updates[key] = self._normalize_update_value(self._encode_metadata(updates[key]))
+
+        set_clause = ", ".join([f"{k} = %s" for k in updates.keys()])
         values = list(updates.values()) + [task_id]
 
         with self._get_connection() as conn:
-            cursor = conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
+            cursor = conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = %s", values)
             conn.commit()
             return cursor.rowcount > 0
 
     def delete_task(self, task_id: str) -> bool:
         with self._get_connection() as conn:
-            cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            cursor = conn.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
             conn.commit()
             return cursor.rowcount > 0
 
@@ -208,7 +248,7 @@ class TaskStorage:
                 INSERT INTO task_steps (
                     task_id, step_name, step_order, status, progress,
                     start_time, end_time, error_message, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task_id,
@@ -228,7 +268,7 @@ class TaskStorage:
     def get_task_steps(self, task_id: str) -> List[TaskStep]:
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM task_steps WHERE task_id = ? ORDER BY step_order ASC",
+                "SELECT * FROM task_steps WHERE task_id = %s ORDER BY step_order ASC",
                 (task_id,),
             ).fetchall()
         return [self._row_to_step(row) for row in rows]
@@ -239,20 +279,17 @@ class TaskStorage:
         if not updates:
             return False
 
-        params = []
         clauses = []
+        params = []
         for key, value in updates.items():
-            if key in ("start_time", "end_time") and isinstance(value, datetime):
-                value = value.isoformat()
-            elif key == "metadata" and value is not None:
-                value = json.dumps(value, ensure_ascii=False)
-            clauses.append(f"{key} = ?")
+            value = self._normalize_update_value(self._encode_metadata(value))
+            clauses.append(f"{key} = %s")
             params.append(value)
 
         params.extend([task_id, step_name])
         with self._get_connection() as conn:
             cursor = conn.execute(
-                f"UPDATE task_steps SET {', '.join(clauses)} WHERE task_id = ? AND step_name = ?",
+                f"UPDATE task_steps SET {', '.join(clauses)} WHERE task_id = %s AND step_name = %s",
                 params,
             )
             conn.commit()
@@ -260,7 +297,7 @@ class TaskStorage:
 
     def delete_task_steps(self, task_id: str) -> bool:
         with self._get_connection() as conn:
-            conn.execute("DELETE FROM task_steps WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM task_steps WHERE task_id = %s", (task_id,))
             conn.commit()
         return True
 
@@ -278,21 +315,24 @@ class TaskStorage:
         params: List[Any] = []
 
         if status:
-            where.append("status = ?")
+            where.append("status = %s")
             params.append(status.value)
         if pn:
-            where.append("pn LIKE ?")
+            where.append("pn LIKE %s")
             params.append(f"%{pn}%")
         if owner_id:
-            where.append("owner_id = ?")
+            where.append("owner_id = %s")
             params.append(owner_id)
 
+        allowed_order_columns = {"created_at", "updated_at", "progress", "status", "pn"}
+        safe_order_by = order_by if order_by in allowed_order_columns else "created_at"
         direction = "DESC" if order_desc else "ASC"
+
         sql = f"""
             SELECT * FROM tasks
             WHERE {' AND '.join(where)}
-            ORDER BY {order_by} {direction}
-            LIMIT ? OFFSET ?
+            ORDER BY {safe_order_by} {direction}
+            LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
 
@@ -310,33 +350,33 @@ class TaskStorage:
         params: List[Any] = []
 
         if status:
-            where.append("status = ?")
+            where.append("status = %s")
             params.append(status.value)
         if pn:
-            where.append("pn LIKE ?")
+            where.append("pn LIKE %s")
             params.append(f"%{pn}%")
         if owner_id:
-            where.append("owner_id = ?")
+            where.append("owner_id = %s")
             params.append(owner_id)
 
-        sql = f"SELECT COUNT(*) FROM tasks WHERE {' AND '.join(where)}"
+        sql = f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}"
         with self._get_connection() as conn:
-            return conn.execute(sql, params).fetchone()[0]
+            row = conn.execute(sql, params).fetchone()
+        return int(row["c"]) if row else 0
 
     def count_user_tasks_today(self, owner_id: str, tz_offset_hours: int = 8) -> int:
         today = datetime.utcnow() + timedelta(hours=tz_offset_hours)
         today_str = today.strftime("%Y-%m-%d")
-        modifier = f"{tz_offset_hours:+d} hours"
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT COUNT(*) FROM tasks
-                WHERE owner_id = ?
-                AND DATE(created_at, ?) = ?
+                SELECT COUNT(*) AS c FROM tasks
+                WHERE owner_id = %s
+                AND ((created_at::timestamp + (%s || ' hours')::interval)::date = %s::date)
                 """,
-                (owner_id, modifier, today_str),
+                (owner_id, tz_offset_hours, today_str),
             ).fetchone()
-        return row[0] if row else 0
+        return int(row["c"]) if row else 0
 
     def get_statistics(self) -> Dict[str, Any]:
         with self._get_connection() as conn:
@@ -345,50 +385,46 @@ class TaskStorage:
             ).fetchall()
             status_counts = {row["status"]: row["count"] for row in rows}
 
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_count = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE DATE(created_at) = ?",
-                (today,),
-            ).fetchone()[0]
+            today_count_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM tasks WHERE created_at::date = CURRENT_DATE"
+            ).fetchone()
+            today_count = int(today_count_row["c"]) if today_count_row else 0
 
             avg_row = conn.execute(
                 """
-                SELECT AVG((julianday(completed_at) - julianday(created_at)) * 24 * 60) AS avg_minutes
+                SELECT AVG(EXTRACT(EPOCH FROM (completed_at::timestamp - created_at::timestamp)) / 60.0) AS avg_minutes
                 FROM tasks
                 WHERE status = 'completed' AND completed_at IS NOT NULL
                 """
             ).fetchone()
 
-        total = sum(status_counts.values())
-        avg_duration = avg_row[0] if avg_row and avg_row[0] else None
+        total = int(sum(status_counts.values()))
+        avg_duration = avg_row["avg_minutes"] if avg_row else None
         return {
             "total": total,
             "by_status": status_counts,
             "today_created": today_count,
-            "avg_duration_minutes": round(avg_duration, 2) if avg_duration else None,
+            "avg_duration_minutes": round(float(avg_duration), 2) if avg_duration else None,
         }
 
     def cleanup_old_tasks(self, days: int = 30, dry_run: bool = False) -> int:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         with self._get_connection() as conn:
-            task_ids = [
-                row["id"]
-                for row in conn.execute(
-                    """
-                    SELECT id FROM tasks
-                    WHERE updated_at < ?
-                    AND status IN ('completed', 'failed', 'cancelled')
-                    """,
-                    (cutoff,),
-                ).fetchall()
-            ]
+            rows = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE updated_at < %s
+                AND status IN ('completed', 'failed', 'cancelled')
+                """,
+                (cutoff,),
+            ).fetchall()
+            task_ids = [row["id"] for row in rows]
 
             if dry_run:
                 return len(task_ids)
 
             if task_ids:
-                placeholders = ",".join(["?"] * len(task_ids))
-                conn.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
+                conn.execute("DELETE FROM tasks WHERE id = ANY(%s)", (task_ids,))
                 conn.commit()
         return len(task_ids)
 
@@ -396,28 +432,3 @@ class TaskStorage:
         with self._get_connection() as conn:
             conn.execute("VACUUM")
             conn.commit()
-
-
-_storage_instance: Optional[Any] = None
-_storage_lock = threading.Lock()
-
-
-def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
-    global _storage_instance
-    if _storage_instance is None:
-        with _storage_lock:
-            if _storage_instance is None:
-                database_url = os.getenv("TASK_DATABASE_URL", "").strip()
-                if database_url:
-                    from .postgres_storage import PostgresTaskStorage
-
-                    _storage_instance = PostgresTaskStorage(database_url)
-                else:
-                    _storage_instance = TaskStorage(db_path)
-    return _storage_instance
-
-
-def reset_storage_instance():
-    global _storage_instance
-    with _storage_lock:
-        _storage_instance = None

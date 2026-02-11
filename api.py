@@ -6,7 +6,7 @@
 - 按用户每日配额限制
 - 创建任务与进度追踪
 - 报告下载
-- 基于 Cloudflare KV 的跨用户结果复用缓存
+- 基于 R2 的跨用户结果复用缓存
 """
 
 import asyncio
@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from config import settings
 from main import PatentPipeline
 from src.storage import TaskStatus, get_pipeline_manager
-from src.storage.cloudflare_kv import CloudflareKVConfig, CloudflareKVStorage
+from src.storage.r2_storage import R2Config, R2Storage
 
 
 class TaskResponse(BaseModel):
@@ -89,15 +89,17 @@ def _parse_int(value: Optional[str], default: int) -> int:
         return default
 
 
-def _build_kv_storage() -> CloudflareKVStorage:
-    config = CloudflareKVConfig(
-        account_id=os.getenv("CF_ACCOUNT_ID", ""),
-        namespace_id=os.getenv("CF_KV_NAMESPACE_ID", ""),
-        api_token=os.getenv("CF_API_TOKEN", ""),
-        enabled=_parse_bool(os.getenv("CF_KV_ENABLED", "false")),
-        key_prefix=os.getenv("CF_KV_PREFIX", "patent-report"),
+def _build_r2_storage() -> R2Storage:
+    config = R2Config(
+        endpoint_url=os.getenv("R2_ENDPOINT_URL", ""),
+        access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),
+        secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY", ""),
+        bucket=os.getenv("R2_BUCKET", ""),
+        enabled=_parse_bool(os.getenv("R2_ENABLED", "false")),
+        region=os.getenv("R2_REGION", "auto"),
+        key_prefix=os.getenv("R2_KEY_PREFIX", "patent"),
     )
-    return CloudflareKVStorage(config)
+    return R2Storage(config)
 
 
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-secret-in-production")
@@ -105,7 +107,7 @@ AUTH_TOKEN_TTL_DAYS = _parse_int(os.getenv("AUTH_TOKEN_TTL_DAYS"), 30)
 MAX_DAILY_ANALYSIS = _parse_int(os.getenv("MAX_DAILY_ANALYSIS"), 3)
 APP_TZ_OFFSET_HOURS = _parse_int(os.getenv("APP_TZ_OFFSET_HOURS"), 8)
 
-kv_storage = _build_kv_storage()
+r2_storage = _build_r2_storage()
 
 
 def _read_local_pdf_bytes(pdf_path: str) -> Optional[bytes]:
@@ -315,9 +317,8 @@ async def run_pipeline_task(
     task_id: str,
     pn: str,
     upload_file_path: Optional[str] = None,
-    cache_key: Optional[str] = None,
 ):
-    """后台执行分析流程，并在成功后按需写入 Cloudflare KV 缓存。"""
+    """后台执行分析流程，并在成功后按需写入对象存储缓存。"""
     try:
         print(f"[任务 {task_id}] 开始处理：{pn}")
         task_manager.start_task(task_id)
@@ -352,14 +353,17 @@ async def run_pipeline_task(
                 "pn": resolved_pn or pn,
             }
 
-            if kv_storage.enabled:
-                cache_key = cache_key or kv_storage.build_patent_pdf_key(resolved_pn or pn)
-                pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
-                if pdf_bytes:
-                    stored = await asyncio.to_thread(kv_storage.put_bytes, cache_key, pdf_bytes)
-                    if stored:
-                        output_files["kv_key"] = cache_key
-                        output_files["cache_stored"] = True
+            pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
+            if pdf_bytes and r2_storage.enabled:
+                r2_key = r2_storage.build_patent_pdf_cache_key(resolved_pn or pn)
+                stored_in_r2 = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    r2_key,
+                    pdf_bytes,
+                    "application/pdf",
+                )
+                if stored_in_r2:
+                    output_files["r2_key"] = r2_key
 
             task_manager.complete_task(task_id, output_files=output_files)
             print(f"[任务 {task_id}] 已完成：{output_pdf}")
@@ -416,26 +420,45 @@ async def create_task(
     if file:
         upload_dir = settings.UPLOAD_DIR
         upload_dir.mkdir(parents=True, exist_ok=True)
-        upload_file_path = upload_dir / f"{task.id}_{file.filename}"
+        safe_filename = Path(file.filename or "upload.pdf").name
+        upload_file_path = upload_dir / f"{task.id}_{safe_filename}"
         content = await file.read()
         with open(upload_file_path, "wb") as handle:
             handle.write(content)
+        if r2_storage.enabled and content:
+            upload_r2_key = r2_storage.build_upload_key(task.id, safe_filename)
+            stored_upload = await asyncio.to_thread(
+                r2_storage.put_bytes,
+                upload_r2_key,
+                content,
+                file.content_type or "application/pdf",
+            )
+            if stored_upload:
+                task_manager.storage.update_task(
+                    task.id,
+                    metadata=json.dumps({"upload_r2_key": upload_r2_key}, ensure_ascii=False),
+                )
 
     # 仅在“专利号提交”场景进行预先缓存命中；上传文件需先完成解析后才能确定专利号。
-    cache_key = None
-    if patentNumber and not file and kv_storage.enabled:
-        cache_key = kv_storage.build_patent_pdf_key(pn)
-        cached_pdf = await asyncio.to_thread(kv_storage.get_bytes, cache_key)
+    if patentNumber and not file:
+        cached_pdf = None
+        r2_cache_key = None
+        r2_hit = False
+        if r2_storage.enabled:
+            r2_cache_key = r2_storage.build_patent_pdf_cache_key(pn)
+            cached_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_cache_key)
+            r2_hit = cached_pdf is not None
+
         if cached_pdf:
             task_manager.start_task(task.id)
             task_manager.update_progress(task.id, 100, "命中缓存，直接复用")
+            output_files = {"pn": pn}
+            if r2_hit and r2_cache_key:
+                output_files["r2_key"] = r2_cache_key
+                output_files["source"] = "r2_cache"
             task_manager.complete_task(
                 task.id,
-                output_files={
-                    "pn": pn,
-                    "kv_key": cache_key,
-                    "source": "cloudflare_kv_cache",
-                },
+                output_files=output_files,
             )
             return TaskResponse(
                 taskId=task.id,
@@ -448,7 +471,6 @@ async def create_task(
             task.id,
             pn,
             str(upload_file_path) if upload_file_path else None,
-            cache_key=cache_key,
         )
     )
 
@@ -547,13 +569,14 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
         raise HTTPException(status_code=400, detail="任务尚未完成。")
 
     output_files = task.metadata.get("output_files", {}) if task.metadata else {}
-    cache_key = output_files.get("kv_key")
-    if cache_key and kv_storage.enabled:
-        cached_pdf = await asyncio.to_thread(kv_storage.get_bytes, cache_key)
-        if cached_pdf:
-            filename = f"专利分析报告_{task.pn or task_id}.pdf"
+    filename = f"专利分析报告_{task.pn or task_id}.pdf"
+
+    r2_key = output_files.get("r2_key")
+    if r2_key and r2_storage.enabled:
+        r2_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_key)
+        if r2_pdf:
             return StreamingResponse(
-                BytesIO(cached_pdf),
+                BytesIO(r2_pdf),
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
@@ -580,7 +603,7 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
 
     return FileResponse(
         path=str(pdf_path),
-        filename=f"专利分析报告_{task.pn or task_id}.pdf",
+        filename=filename,
         media_type="application/pdf",
     )
 
@@ -600,7 +623,10 @@ async def health_check():
             "today_created": stats.get("today_created", 0),
         },
         "cache": {
-            "cloudflare_kv_enabled": kv_storage.enabled,
+            "r2_enabled": r2_storage.enabled,
+        },
+        "storage": {
+            "backend": task_manager.storage.__class__.__name__,
         },
         "auth": {
             "daily_limit": MAX_DAILY_ANALYSIS,
