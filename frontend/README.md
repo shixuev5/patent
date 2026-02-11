@@ -80,6 +80,7 @@ npx wrangler login
 4. 构建设置：
    - Build command: `npm run generate`
    - Build output directory: `.output/public`
+   - Node.js version: `22.12.0`（建议在 Cloudflare 环境变量中设置 `NODE_VERSION=22.12.0`）
 
 ## 项目结构
 
