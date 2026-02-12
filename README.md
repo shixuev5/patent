@@ -18,9 +18,7 @@ Render 免费计划不能通过 `New +` -> `Blueprint` 从 `render.yaml` 一键�
    - Runtime: `Python`
    - Build Command:
      ```bash
-     pip install --upgrade pip uv
-     uv sync --frozen --no-dev
-     uv run playwright install chromium
+     pip install --upgrade pip uv && uv sync --frozen --no-dev && uv run playwright install chromium
      ```
    - Start Command: `uv run --no-sync uvicorn api:app --host 0.0.0.0 --port $PORT`
    - Health Check Path: `/api/health`
