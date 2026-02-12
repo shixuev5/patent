@@ -25,7 +25,10 @@
       </p>
 
       <div class="w-full max-w-xl space-y-6">
-        <div class="bg-white/80 backdrop-blur-xl rounded-3xl shadow-xl shadow-slate-200/60 border border-slate-100/50 p-3">
+        <div
+          class="bg-white/80 backdrop-blur-xl rounded-3xl shadow-xl shadow-slate-200/60 border border-slate-100/50 p-3"
+          :class="patentNumberError ? 'border-red-200 ring-1 ring-red-100' : ''"
+        >
           <div class="flex items-center gap-2">
             <div class="pl-4 text-slate-400">
               <MagnifyingGlassIcon class="w-6 h-6" />
@@ -38,7 +41,7 @@
               @keyup.enter="submitPatent"
             />
             <button
-              :disabled="!patentNumber.trim() || loading"
+              :disabled="!canSubmitPatent"
               class="px-8 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-blue-300 disabled:to-blue-300 text-white font-semibold rounded-2xl transition-all duration-300 flex items-center gap-2 shadow-lg shadow-blue-600/30 hover:shadow-xl hover:-translate-y-0.5"
               @click="submitPatent"
             >
@@ -47,6 +50,7 @@
             </button>
           </div>
         </div>
+        <p v-if="patentNumberError" class="text-sm text-red-500 px-2">{{ patentNumberError }}</p>
 
         <div class="flex items-center gap-4">
           <div class="flex-1 h-px bg-gradient-to-r from-transparent via-slate-300 to-transparent"></div>
@@ -280,6 +284,20 @@ const selectedFile = ref<File | null>(null)
 const isDragging = ref(false)
 const loading = ref(false)
 const fileInput = ref<HTMLInputElement>()
+const patentNumberPattern = /^[A-Z]{2}\d{5,12}[A-Z0-9]{1,2}$/
+
+const normalizedPatentNumber = computed(() => patentNumber.value.trim().toUpperCase())
+
+const patentNumberError = computed(() => {
+  if (!patentNumber.value.trim()) return ''
+  return patentNumberPattern.test(normalizedPatentNumber.value)
+    ? ''
+    : '请输入有效的专利公开号（示例：CN116745575A、US20230123456A1）'
+})
+
+const canSubmitPatent = computed(() => {
+  return !!patentNumber.value.trim() && !patentNumberError.value && !loading.value
+})
 
 const analyzedPatentCount = ref<number | null>(null)
 let statsTimer: ReturnType<typeof setInterval> | null = null
@@ -302,10 +320,12 @@ const fetchHealthStats = async () => {
 }
 
 const submitPatent = async () => {
-  if (!patentNumber.value.trim()) return
+  const pn = normalizedPatentNumber.value
+  if (!pn) return
+  if (!patentNumberPattern.test(pn)) return
   loading.value = true
   try {
-    await taskStore.createTask({ patentNumber: patentNumber.value.trim() })
+    await taskStore.createTask({ patentNumber: pn })
     patentNumber.value = ''
   } finally {
     loading.value = false
