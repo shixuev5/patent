@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -383,8 +383,13 @@ async def run_pipeline_task(
 
 
 @app.post("/api/auth/guest", response_model=GuestAuthResponse)
-async def create_guest_auth():
-    user_id = f"u_{uuid.uuid4().hex[:16]}"
+async def create_guest_auth(request: Request):
+    # 基于IP地址生成用户ID
+    client_ip = request.client.host
+    # 使用哈希函数对IP地址进行处理，确保生成固定长度的用户ID
+    import hashlib
+    ip_hash = hashlib.sha256(client_ip.encode('utf-8')).hexdigest()[:16]
+    user_id = f"ip_{ip_hash}"
     token, exp = _issue_token(user_id)
     return GuestAuthResponse(
         token=token,
@@ -396,6 +401,30 @@ async def create_guest_auth():
 @app.get("/api/usage", response_model=UsageResponse)
 async def get_usage(current_user: CurrentUser = Depends(_get_current_user)):
     return _get_user_usage(current_user.user_id)
+
+
+@app.get("/api/tasks")
+async def list_tasks(current_user: CurrentUser = Depends(_get_current_user)):
+    """获取用户的任务列表"""
+    tasks = task_manager.list_tasks(owner_id=current_user.user_id)
+    return {
+        "tasks": [
+            {
+                "id": task.id,
+                "pn": task.pn,
+                "title": task.title,
+                "status": task.status.value,
+                "progress": task.progress,
+                "step": task.current_step,
+                "error": task.error_message,
+                "created_at": task.created_at.isoformat(),
+                "updated_at": task.updated_at.isoformat(),
+                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+            }
+            for task in tasks
+        ],
+        "total": len(tasks),
+    }
 
 
 @app.post("/api/tasks", response_model=TaskResponse)

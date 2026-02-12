@@ -153,12 +153,14 @@ class PipelineTaskManager:
         self,
         status: Optional[TaskStatus] = None,
         pn: Optional[str] = None,
+        owner_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Task]:
         return self.storage.list_tasks(
             status=status,
             pn=pn,
+            owner_id=owner_id,
             limit=limit,
             offset=offset,
         )

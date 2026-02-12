@@ -55,19 +55,80 @@ export const useTaskStore = defineStore('tasks', {
   },
 
   actions: {
-    init() {
+    async init() {
       if (!process.client) return
       this.loadAuthFromStorage()
 
       const saved = localStorage.getItem(STORAGE_KEY)
-      if (!saved) return
-
-      try {
-        this.tasks = JSON.parse(saved)
-        this.restoreProcessingTasks()
-      } catch (error) {
-        console.error('解析本地任务缓存失败：', error)
+      if (saved) {
+        try {
+          this.tasks = JSON.parse(saved)
+        } catch (error) {
+          console.error('解析本地任务缓存失败：', error)
+        }
       }
+
+      // 查询服务器任务队列状态
+      const authed = await this.ensureAuth()
+      if (authed && this.authToken) {
+        try {
+          const config = useRuntimeConfig()
+          const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
+            headers: {
+              Authorization: `Bearer ${this.authToken}`,
+            },
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            // 根据服务器返回的任务队列状态更新本地任务
+            if (data.tasks && Array.isArray(data.tasks)) {
+              // 遍历服务器返回的任务
+              data.tasks.forEach((serverTask: any) => {
+                // 查找本地是否已存在该任务
+                const localTaskIndex = this.tasks.findIndex(t => t.backendId === serverTask.id)
+                if (localTaskIndex !== -1) {
+                  // 更新本地任务状态
+                  const localTask = this.tasks[localTaskIndex]
+                  localTask.status = normalizeStatus(serverTask.status)
+                  localTask.progress = serverTask.progress || localTask.progress
+                  localTask.currentStep = serverTask.step || localTask.currentStep
+                  localTask.error = serverTask.error || localTask.error
+                  localTask.updatedAt = Date.now()
+
+                  if (localTask.status === 'completed' && !localTask.downloadUrl) {
+                    localTask.downloadUrl = `/api/tasks/${serverTask.id}/download`
+                  }
+                } else {
+                  // 添加新任务到本地
+                  const newTask: Task = {
+                    id: generateId(),
+                    backendId: serverTask.id,
+                    title: serverTask.title || serverTask.pn || '未命名任务',
+                    pn: serverTask.pn,
+                    type: serverTask.pn ? 'patent' : 'file',
+                    status: normalizeStatus(serverTask.status),
+                    progress: serverTask.progress || 0,
+                    currentStep: serverTask.step || '等待处理',
+                    error: serverTask.error,
+                    createdAt: new Date(serverTask.created_at).getTime(),
+                    updatedAt: Date.now(),
+                    downloadUrl: serverTask.status === 'completed' ? `/api/tasks/${serverTask.id}/download` : undefined,
+                  }
+                  this.tasks.unshift(newTask)
+                }
+              })
+
+              this.saveToStorage()
+              console.log('任务队列已同步：', data.tasks.length, '个任务')
+            }
+          }
+        } catch (error) {
+          console.error('查询任务队列状态失败：', error)
+        }
+      }
+
+      this.restoreProcessingTasks()
     },
 
     loadAuthFromStorage() {
