@@ -637,14 +637,18 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 读取 PORT 环境变量，默认使用 8000
+    port = int(os.getenv("PORT", 8000))
+
     uvicorn.run(
         "api:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=True,
         log_level="info",
     )
