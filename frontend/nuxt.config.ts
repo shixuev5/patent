@@ -1,4 +1,6 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+console.log('Build API URL:', process.env.NUXT_PUBLIC_API_BASE_URL);
+
 export default defineNuxtConfig({
   devtools: { enabled: process.env.NODE_ENV === 'development' },
   

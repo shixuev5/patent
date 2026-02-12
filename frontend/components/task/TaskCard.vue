@@ -24,7 +24,7 @@
           <span class="task-time">{{ formatTime(task.createdAt) }}</span>
         </div>
 
-        <div v-if="task.pn" class="task-pn">
+        <div v-if="showPatentNumber" class="task-pn">
           <span class="pn-label">专利号</span>
           <code class="pn-value">{{ task.pn }}</code>
         </div>
@@ -84,6 +84,12 @@ const taskStore = useTaskStore()
 const displayStatus = computed(() => {
   if (props.task.status === 'failed' || props.task.status === 'cancelled') return 'error'
   return props.task.status
+})
+
+const showPatentNumber = computed(() => {
+  if (!props.task.pn) return false
+  if (props.task.type !== 'patent') return true
+  return props.task.title !== props.task.pn
 })
 
 const formatTime = (timestamp: number): string => {
