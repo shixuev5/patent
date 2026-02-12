@@ -21,7 +21,7 @@
       </h1>
 
       <p class="text-xl md:text-2xl text-center text-slate-600 mb-12 max-w-2xl leading-relaxed">
-        输入专利号或上传 PDF，系统自动完成解析、检索与报告生成，让专利分析更简单。
+        输入专利公开号或上传 PDF，系统自动完成解析、检索与报告生成，让专利分析更简单。
       </p>
 
       <div class="w-full max-w-xl space-y-6">
@@ -33,7 +33,7 @@
             <input
               v-model="patentNumber"
               type="text"
-              placeholder="请输入专利号（如：CN116745575A）"
+              placeholder="请输入专利公开号（如：CN116745575A）"
               class="flex-1 py-4 px-2 text-slate-900 placeholder-slate-400 bg-transparent border-none outline-none text-base"
               @keyup.enter="submitPatent"
             />
@@ -246,9 +246,9 @@
       </div>
 
       <!-- 页面底部区域 -->
-      <footer class="w-full max-w-7xl mt-24 mb-12 text-center text-slate-500 text-sm">
-        <div class="bg-white/90 backdrop-blur-xl rounded-3xl p-8 shadow-xl shadow-slate-200/50 border border-slate-100/50">
-          <p>© 2024 专利智能分析平台. All rights reserved.</p>
+      <footer class="w-full max-w-7xl mt-16 mb-6 text-center text-slate-500 text-sm">
+        <div class="bg-white/90 backdrop-blur-xl rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100/50">
+          <p>© 2026 专利智能分析平台. All rights reserved.</p>
         </div>
       </footer>
 
