@@ -31,7 +31,6 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
-from main import PatentPipeline
 from src.storage import TaskStatus, get_pipeline_manager
 from src.storage.r2_storage import R2Config, R2Storage
 
@@ -325,6 +324,8 @@ async def run_pipeline_task(
         task_manager.update_progress(task_id, 1, "任务已开始")
 
         loop = asyncio.get_event_loop()
+        # 延迟导入，避免启动时加载重型依赖导致端口迟迟无法绑定
+        from main import PatentPipeline
         pipeline = PatentPipeline(pn, upload_file_path)
 
         def run_pipeline():
