@@ -18,11 +18,13 @@ import os
 import re
 import time
 import uuid
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from threading import Event
+from typing import Optional, Dict
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
@@ -31,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
-from src.storage import TaskStatus, get_pipeline_manager
+from src.storage import Task, TaskStatus, get_pipeline_manager
 from src.storage.r2_storage import R2Config, R2Storage
 
 
@@ -58,6 +60,16 @@ class UsageResponse(BaseModel):
 @dataclass
 class CurrentUser:
     user_id: str
+
+
+@dataclass
+class TaskRuntime:
+    cancel_event: Event
+    upload_file_path: Optional[str] = None
+    output_dir: Optional[str] = None
+
+
+RUNNING_TASKS: Dict[str, TaskRuntime] = {}
 
 
 app = FastAPI(
@@ -108,6 +120,55 @@ APP_TZ_OFFSET_HOURS = _parse_int(os.getenv("APP_TZ_OFFSET_HOURS"), 8)
 
 r2_storage = _build_r2_storage()
 
+
+def _register_runtime(task_id: str, runtime: TaskRuntime):
+    RUNNING_TASKS[task_id] = runtime
+
+
+def _get_runtime(task_id: str) -> Optional[TaskRuntime]:
+    return RUNNING_TASKS.get(task_id)
+
+
+def _pop_runtime(task_id: str) -> Optional[TaskRuntime]:
+    return RUNNING_TASKS.pop(task_id, None)
+
+
+def _cleanup_path(path: Optional[str]):
+    if not path:
+        return
+    try:
+        target = Path(path)
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        elif target.exists():
+            target.unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"[清理] 删除资源失败: {path} - {exc}")
+
+
+def _cleanup_task_resources(task: Task, runtime: Optional[TaskRuntime] = None):
+    output_dir = (runtime.output_dir if runtime else None) or task.output_dir
+    upload_path = _get_upload_path(task, runtime)
+
+    _cleanup_path(output_dir)
+    _cleanup_path(upload_path)
+
+
+def _get_upload_path(task: Task, runtime: Optional[TaskRuntime] = None) -> Optional[str]:
+    if runtime and runtime.upload_file_path:
+        return runtime.upload_file_path
+    if task.metadata and isinstance(task.metadata, dict):
+        upload_path = task.metadata.get("upload_path")
+        if upload_path:
+            return upload_path
+    if task.raw_pdf_path:
+        return task.raw_pdf_path
+    return None
+
+
+def _cleanup_upload_only(task: Task, runtime: Optional[TaskRuntime] = None):
+    upload_path = _get_upload_path(task, runtime)
+    _cleanup_path(upload_path)
 
 def _read_local_pdf_bytes(pdf_path: str) -> Optional[bytes]:
     if not pdf_path:
@@ -316,6 +377,7 @@ async def run_pipeline_task(
     task_id: str,
     pn: str,
     upload_file_path: Optional[str] = None,
+    cancel_event: Optional[Event] = None,
 ):
     """后台执行分析流程，并在成功后按需写入对象存储缓存。"""
     try:
@@ -326,7 +388,7 @@ async def run_pipeline_task(
         loop = asyncio.get_event_loop()
         # 延迟导入，避免启动时加载重型依赖导致端口迟迟无法绑定
         from main import PatentPipeline
-        pipeline = PatentPipeline(pn, upload_file_path)
+        pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event)
 
         def run_pipeline():
             return pipeline.run()
@@ -335,11 +397,24 @@ async def run_pipeline_task(
 
         progress = 5
         while not pipeline_future.done():
+            if cancel_event and cancel_event.is_set():
+                await asyncio.sleep(0.5)
+                continue
             task_manager.update_progress(task_id, progress, "正在分析专利")
             progress = min(progress + 3, 90)
             await asyncio.sleep(2)
 
         result = await pipeline_future
+
+        if cancel_event and cancel_event.is_set():
+            task_manager.cancel_task(task_id, "任务已取消")
+            print(f"[任务 {task_id}] 已取消")
+            return
+
+        if result.get("status") == "cancelled":
+            task_manager.cancel_task(task_id, result.get("error") or "任务已取消")
+            print(f"[任务 {task_id}] 已取消")
+            return
 
         if result.get("status") == "success":
             output_pdf = result.get("output", "")
@@ -375,7 +450,7 @@ async def run_pipeline_task(
 
     except asyncio.CancelledError:
         print(f"[任务 {task_id}] 已取消")
-        task_manager.fail_task(task_id, "任务已取消")
+        task_manager.cancel_task(task_id, "任务已取消")
         raise
     except Exception as exc:
         print(f"[任务 {task_id}] 异常失败：{str(exc)}")
@@ -447,6 +522,7 @@ async def create_task(
     )
 
     upload_file_path = None
+    task_metadata: Dict[str, str] = {}
     if file:
         upload_dir = settings.UPLOAD_DIR
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -455,6 +531,7 @@ async def create_task(
         content = await file.read()
         with open(upload_file_path, "wb") as handle:
             handle.write(content)
+        task_metadata["upload_path"] = str(upload_file_path)
         if r2_storage.enabled and content:
             upload_r2_key = r2_storage.build_upload_key(task.id, safe_filename)
             stored_upload = await asyncio.to_thread(
@@ -464,10 +541,12 @@ async def create_task(
                 file.content_type or "application/pdf",
             )
             if stored_upload:
-                task_manager.storage.update_task(
-                    task.id,
-                    metadata=json.dumps({"upload_r2_key": upload_r2_key}, ensure_ascii=False),
-                )
+                task_metadata["upload_r2_key"] = upload_r2_key
+        task_manager.storage.update_task(
+            task.id,
+            raw_pdf_path=str(upload_file_path),
+            metadata=task_metadata or None,
+        )
 
     # 仅在“专利号提交”场景进行预先缓存命中；上传文件需先完成解析后才能确定专利号。
     if patentNumber and not file:
@@ -496,13 +575,22 @@ async def create_task(
                 message="已复用历史分析结果。",
             )
 
-    asyncio.create_task(
+    cancel_event = Event()
+    runtime = TaskRuntime(
+        cancel_event=cancel_event,
+        upload_file_path=str(upload_file_path) if upload_file_path else None,
+        output_dir=task.output_dir,
+    )
+    pipeline_task = asyncio.create_task(
         run_pipeline_task(
             task.id,
             pn,
             str(upload_file_path) if upload_file_path else None,
+            cancel_event=cancel_event,
         )
     )
+    _register_runtime(task.id, runtime)
+    pipeline_task.add_done_callback(lambda _task: _pop_runtime(task.id))
 
     return TaskResponse(
         taskId=task.id,
@@ -526,6 +614,45 @@ async def get_task(task_id: str, current_user: CurrentUser = Depends(_get_curren
         "updated_at": task.updated_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
+    task = _get_owned_task(task_id, current_user.user_id)
+    runtime = _get_runtime(task_id)
+
+    if task.status.value in {"processing", "pending"} and runtime:
+        runtime.cancel_event.set()
+
+    if task.status.value == "completed":
+        _cleanup_upload_only(task, runtime)
+    else:
+        _cleanup_task_resources(task, runtime)
+
+    task_manager.delete_task(task_id)
+    _pop_runtime(task_id)
+    return {"deleted": True}
+
+
+@app.delete("/api/tasks")
+async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
+    tasks = task_manager.list_tasks(owner_id=current_user.user_id, limit=1000)
+    deleted = 0
+    for task in tasks:
+        runtime = _get_runtime(task.id)
+        if task.status.value in {"processing", "pending"} and runtime:
+            runtime.cancel_event.set()
+
+        if task.status.value == "completed":
+            _cleanup_upload_only(task, runtime)
+        else:
+            _cleanup_task_resources(task, runtime)
+
+        if task_manager.delete_task(task.id):
+            deleted += 1
+        _pop_runtime(task.id)
+
+    return {"deleted": deleted}
 
 
 @app.get("/api/tasks/{task_id}/progress")

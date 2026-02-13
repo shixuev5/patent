@@ -144,6 +144,17 @@ class PipelineTaskManager:
             logger.error(f"Task failed: {task_id} - {error_message}")
         return success
 
+    def cancel_task(self, task_id: str, error_message: str = "任务已取消") -> bool:
+        success = self.storage.update_task(
+            task_id,
+            status=TaskStatus.CANCELLED.value,
+            error_message=error_message,
+            updated_at=datetime.now().isoformat(),
+        )
+        if success:
+            logger.info(f"Task cancelled: {task_id} - {error_message}")
+        return success
+
     def get_task(self, task_id: str, include_steps: bool = False) -> Optional[Task]:
         if include_steps:
             return self.storage.get_task_with_steps(task_id)
