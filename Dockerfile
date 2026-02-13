@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     gnupg2 \
     build-essential \
     libgl1 \
+    libglib2.0-0 \
     libssl-dev \
     libffi-dev \
     python3-dev \
