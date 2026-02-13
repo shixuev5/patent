@@ -25,6 +25,7 @@ export const useTaskStore = defineStore('tasks', {
     loading: false,
     authToken: '' as string,
     userId: '' as string,
+    progressStreams: {} as Record<string, EventSource>,
   }),
 
   getters: {
@@ -260,7 +261,10 @@ export const useTaskStore = defineStore('tasks', {
       }
 
       const baseUrl = `${config.public.apiBaseUrl}/api/tasks/${task.backendId}/progress`
+      const existing = this.progressStreams[task.backendId]
+      if (existing) existing.close()
       const eventSource = new EventSource(withTokenQuery(baseUrl, this.authToken))
+      this.progressStreams[task.backendId] = eventSource
 
       eventSource.onmessage = (event) => {
         try {
@@ -276,9 +280,11 @@ export const useTaskStore = defineStore('tasks', {
           if (normalized === 'completed') {
             task.downloadUrl = data.downloadUrl
             eventSource.close()
+            delete this.progressStreams[task.backendId as string]
           } else if (normalized === 'error') {
             task.error = data.error || '任务执行失败。'
             eventSource.close()
+            delete this.progressStreams[task.backendId as string]
           }
 
           this.saveToStorage()
@@ -289,23 +295,82 @@ export const useTaskStore = defineStore('tasks', {
 
       eventSource.onerror = () => {
         eventSource.close()
+        delete this.progressStreams[task.backendId as string]
         setTimeout(() => {
           if (task.status === 'processing') this.startProgressTracking(task)
         }, 3000)
       }
     },
 
-    deleteTask(taskId: string) {
+    stopProgressTracking(backendId?: string) {
+      if (!backendId) return
+      const existing = this.progressStreams[backendId]
+      if (existing) {
+        existing.close()
+        delete this.progressStreams[backendId]
+      }
+    },
+
+    async deleteTask(taskId: string) {
       const index = this.tasks.findIndex((t) => t.id === taskId)
-      if (index > -1) {
+      if (index < 0) return
+      const task = this.tasks[index]
+      if (!task.backendId) {
         this.tasks.splice(index, 1)
+        this.saveToStorage()
+        return
+      }
+
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        task.error = '认证失败，请刷新后重试。'
+        task.updatedAt = Date.now()
+        this.saveToStorage()
+        return
+      }
+
+      try {
+        const config = useRuntimeConfig()
+        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks/${task.backendId}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
+        })
+        if (!response.ok) throw new Error(await this.parseApiError(response))
+        this.stopProgressTracking(task.backendId)
+        this.tasks.splice(index, 1)
+        this.saveToStorage()
+      } catch (error) {
+        console.error('删除任务失败：', error)
+        task.error = error instanceof Error ? error.message : '删除失败，请重试。'
+        task.updatedAt = Date.now()
         this.saveToStorage()
       }
     },
 
-    clearAllTasks() {
-      this.tasks = []
-      if (process.client) localStorage.removeItem(STORAGE_KEY)
+    async clearAllTasks() {
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        console.error('认证失败，无法清空任务')
+        return
+      }
+
+      try {
+        const config = useRuntimeConfig()
+        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
+        })
+        if (!response.ok) throw new Error(await this.parseApiError(response))
+        Object.keys(this.progressStreams).forEach((key) => this.stopProgressTracking(key))
+        this.tasks = []
+        if (process.client) localStorage.removeItem(STORAGE_KEY)
+      } catch (error) {
+        console.error('清空任务失败：', error)
+      }
     },
 
     async downloadResult(task: Task) {

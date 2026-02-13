@@ -3,6 +3,8 @@ import argparse
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Event
+from typing import Optional
 
 from loguru import logger
 from config import settings
@@ -20,15 +22,20 @@ from src.graph.entrypoint import run_search_graph
 from src.renderer import ReportRenderer
 
 
+class PipelineCancelled(RuntimeError):
+    pass
+
+
 class PatentPipeline:
     """
     单条专利处理流水线。
     负责：下载 -> 解析 -> 提取 -> 检索 -> 生成报告
     """
 
-    def __init__(self, pn: str, upload_file_path: str = None):
+    def __init__(self, pn: str, upload_file_path: str = None, cancel_event: Optional[Event] = None):
         self.pn = pn.strip()
         self.upload_file_path = upload_file_path
+        self.cancel_event = cancel_event
         # 获取基于 PN 的项目路径配置 (例如: output/CN123456)
         self.paths = settings.get_project_paths(self.pn)
 
@@ -39,6 +46,10 @@ class PatentPipeline:
         # raw.pdf 的目标路径
         self.raw_pdf_path = self.paths["raw_pdf"]
 
+    def _check_cancelled(self):
+        if self.cancel_event and self.cancel_event.is_set():
+            raise PipelineCancelled("任务已取消")
+
     def run(self) -> dict:
         """
         执行完整的处理流程
@@ -47,8 +58,10 @@ class PatentPipeline:
         logger.info(f"[{self.pn}] Starting pipeline processing...")
         
         try:
+            self._check_cancelled()
             # --- Step 0: 下载专利文件 ---
             self._step_download()
+            self._check_cancelled()
 
             # --- Step 1: 解析 PDF ---
             if not self.paths["raw_md"].exists():
@@ -59,6 +72,7 @@ class PatentPipeline:
                 logger.info(f"[{self.pn}] Step 1: PDF already parsed, skipping.")
                 
             md_content = self.paths["raw_md"].read_text(encoding="utf-8")
+            self._check_cancelled()
 
             # --- Step 2: 专利结构化转换 ---
             patent_data = {}
@@ -72,6 +86,7 @@ class PatentPipeline:
                 self.paths["patent_json"].write_text(
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._check_cancelled()
 
             # --- Step 3: 知识提取 ---
             parts_db = {}
@@ -85,6 +100,7 @@ class PatentPipeline:
                 self.paths["parts_json"].write_text(
                     json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._check_cancelled()
 
             # --- Step 4: 视觉处理 (OCR + Annotate) ---
             image_parts = {}
@@ -103,6 +119,7 @@ class PatentPipeline:
                 self.paths["image_parts_json"].write_text(
                     json.dumps(image_parts, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._check_cancelled()
 
             # --- Step 5: 形式缺陷检查 ---
             logger.info(f"[{self.pn}] Step 5: Running Formal Defect Check...")
@@ -112,6 +129,7 @@ class PatentPipeline:
             self.paths["check_json"].write_text(
                 json.dumps(check_result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            self._check_cancelled()
 
             # --- Step 6: 报告内容生成 ---
             report_json = {}
@@ -132,6 +150,7 @@ class PatentPipeline:
                 self.paths["report_json"].write_text(
                     json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._check_cancelled()
 
             # --- Step 7: 检索策略生成 ---
             logger.info("Step 7: Generating Search Strategy & Queries...")
@@ -155,6 +174,7 @@ class PatentPipeline:
                 self.paths["search_strategy_json"].write_text(
                     json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._check_cancelled()
 
             # # --- Step 7: 查新检索 (LangGraph) ---
             # logger.info(f"[{self.pn}] Step 7: Running Graph Search...")
@@ -190,12 +210,16 @@ class PatentPipeline:
             logger.success(f"[{self.pn}] Completed! Output: {self.paths['final_pdf']}")
             return {"status": "success", "pn": self.pn, "output": str(self.paths["final_pdf"])}
 
+        except PipelineCancelled as exc:
+            logger.warning(f"[{self.pn}] Pipeline cancelled: {str(exc)}")
+            return {"status": "cancelled", "pn": self.pn, "error": str(exc)}
         except Exception as e:
             logger.exception(f"[{self.pn}] Pipeline failed: {str(e)}")
             return {"status": "failed", "pn": self.pn, "error": str(e)}
 
     def _step_download(self):
         """处理文件下载与归档（支持上传文件或下载专利）"""
+        self._check_cancelled()
         if self.raw_pdf_path.exists():
             logger.info(f"[{self.pn}] Step 0: raw.pdf already exists in output dir, skipping download.")
             return
