@@ -130,6 +130,17 @@ class PipelineTaskManager:
 
         success = self.storage.update_task(task_id, **updates)
         if success:
+            try:
+                task = self.storage.get_task(task_id)
+                analysis_pn = None
+                if output_files and isinstance(output_files, dict):
+                    analysis_pn = output_files.get("pn")
+                if not analysis_pn and task:
+                    analysis_pn = task.pn
+                if analysis_pn:
+                    self.storage.record_patent_analysis(analysis_pn)
+            except Exception as exc:
+                logger.warning(f"Failed to record patent analysis for {task_id}: {exc}")
             logger.info(f"Task completed: {task_id}")
         return success
 

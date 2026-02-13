@@ -50,10 +50,16 @@ class TaskStorage:
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS patent_analyses (
+        pn TEXT PRIMARY KEY,
+        first_completed_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_steps_task_id ON task_steps(task_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
     """
 
     def __init__(self, db_path: Union[str, Path, None] = None):
@@ -77,6 +83,27 @@ class TaskStorage:
         if "owner_id" not in columns:
             conn.execute("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id)")
+        self._backfill_patent_analyses_if_empty(conn)
+
+    def _backfill_patent_analyses_if_empty(self, conn: sqlite3.Connection):
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM patent_analyses").fetchone()
+            if row and row[0] == 0:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
+                    SELECT pn, MIN(completed_at)
+                    FROM tasks
+                    WHERE status = 'completed'
+                      AND pn IS NOT NULL
+                      AND TRIM(pn) != ''
+                      AND completed_at IS NOT NULL
+                    GROUP BY pn
+                    """
+                )
+        except sqlite3.OperationalError:
+            # Table not ready yet; safe to skip.
+            pass
 
     @contextmanager
     def _get_connection(self):
@@ -390,6 +417,10 @@ class TaskStorage:
                 """
             ).fetchone()
 
+            completed_patents = conn.execute(
+                "SELECT COUNT(*) AS count FROM patent_analyses"
+            ).fetchone()[0]
+
         total = sum(status_counts.values())
         avg_duration = avg_row[0] if avg_row and avg_row[0] else None
         return {
@@ -397,7 +428,25 @@ class TaskStorage:
             "by_status": status_counts,
             "today_created": today_count,
             "avg_duration_minutes": round(avg_duration, 2) if avg_duration else None,
+            "completed_patents": int(completed_patents or 0),
         }
+
+    def record_patent_analysis(self, pn: Optional[str]) -> bool:
+        if not pn:
+            return False
+        normalized = pn.strip().upper()
+        if not normalized:
+            return False
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
+                VALUES (?, ?)
+                """,
+                (normalized, datetime.now().isoformat()),
+            )
+            conn.commit()
+        return True
 
     def cleanup_old_tasks(self, days: int = 30, dry_run: bool = False) -> int:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()

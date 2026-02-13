@@ -45,11 +45,17 @@ class D1TaskStorage:
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS patent_analyses (
+        pn TEXT PRIMARY KEY,
+        first_completed_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_steps_task_id ON task_steps(task_id);
+    CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
     """
 
     def __init__(
@@ -131,6 +137,26 @@ class D1TaskStorage:
         if "owner_id" not in columns:
             self._request("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
         self._request("CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id)")
+        self._backfill_patent_analyses_if_empty()
+
+    def _backfill_patent_analyses_if_empty(self):
+        try:
+            row = self._fetchone("SELECT COUNT(*) AS c FROM patent_analyses")
+            if row and int(row.get("c", 0)) == 0:
+                self._request(
+                    """
+                    INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
+                    SELECT pn, MIN(completed_at)
+                    FROM tasks
+                    WHERE status = 'completed'
+                      AND pn IS NOT NULL
+                      AND TRIM(pn) != ''
+                      AND completed_at IS NOT NULL
+                    GROUP BY pn
+                    """
+                )
+        except Exception as exc:
+            logger.warning(f"D1 backfill patent analyses skipped: {exc}")
 
     @staticmethod
     def _parse_metadata(raw: Any) -> Dict[str, Any]:
@@ -409,6 +435,9 @@ class D1TaskStorage:
             """
         )
 
+        completed_patents_row = self._fetchone("SELECT COUNT(*) AS c FROM patent_analyses")
+        completed_patents = int(completed_patents_row["c"]) if completed_patents_row else 0
+
         total = int(sum(status_counts.values()))
         avg_duration = avg_row.get("avg_minutes") if avg_row else None
         return {
@@ -416,7 +445,23 @@ class D1TaskStorage:
             "by_status": status_counts,
             "today_created": today_count,
             "avg_duration_minutes": round(float(avg_duration), 2) if avg_duration else None,
+            "completed_patents": completed_patents,
         }
+
+    def record_patent_analysis(self, pn: Optional[str]) -> bool:
+        if not pn:
+            return False
+        normalized = pn.strip().upper()
+        if not normalized:
+            return False
+        self._request(
+            """
+            INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
+            VALUES (?, ?)
+            """,
+            [normalized, datetime.now().isoformat()],
+        )
+        return True
 
     def cleanup_old_tasks(self, days: int = 30, dry_run: bool = False) -> int:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()

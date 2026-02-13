@@ -29,7 +29,7 @@
           <code class="pn-value">{{ task.pn }}</code>
         </div>
 
-        <div v-if="displayStatus === 'processing'" class="task-progress">
+        <div v-if="displayStatus === 'processing' || displayStatus === 'pending'" class="task-progress">
           <div class="progress-bar">
             <div class="progress-fill" :style="{ width: `${task.progress}%` }" />
           </div>

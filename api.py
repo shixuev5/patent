@@ -430,7 +430,13 @@ async def run_pipeline_task(
             }
 
             pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
-            if pdf_bytes and r2_storage.enabled:
+            if not pdf_bytes:
+                error_msg = f"报告文件不存在或为空：{output_pdf}"
+                task_manager.fail_task(task_id, error_msg)
+                print(f"[任务 {task_id}] 失败：{error_msg}")
+                return
+
+            if r2_storage.enabled:
                 r2_key = r2_storage.build_patent_pdf_cache_key(resolved_pn or pn)
                 stored_in_r2 = await asyncio.to_thread(
                     r2_storage.put_bytes,

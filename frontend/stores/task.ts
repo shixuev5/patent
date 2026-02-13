@@ -56,6 +56,10 @@ export const useTaskStore = defineStore('tasks', {
   },
 
   actions: {
+    resolveTaskRef(task: Task): Task {
+      return this.tasks.find((t) => t.id === task.id) || task
+    },
+
     async init() {
       if (!process.client) return
       this.loadAuthFromStorage()
@@ -178,7 +182,7 @@ export const useTaskStore = defineStore('tasks', {
       return `请求失败（HTTP ${response.status}）`
     },
 
-    async createTask(input: CreateTaskInput) {
+    async createTask(input: CreateTaskInput): Promise<{ ok: boolean; message?: string; error?: string }> {
       const task: Task = {
         id: generateId(),
         title: input.patentNumber || input.file?.name || '未命名任务',
@@ -193,19 +197,20 @@ export const useTaskStore = defineStore('tasks', {
 
       this.tasks.unshift(task)
       this.saveToStorage()
-      await this.submitTask(task, input)
-      return task
+      const taskRef = this.resolveTaskRef(task)
+      return await this.submitTask(taskRef, input)
     },
 
-    async submitTask(task: Task, input: CreateTaskInput) {
+    async submitTask(task: Task, input: CreateTaskInput): Promise<{ ok: boolean; message?: string; error?: string }> {
+      const taskRef = this.resolveTaskRef(task)
       const config = useRuntimeConfig()
       const authed = await this.ensureAuth()
       if (!authed || !this.authToken) {
-        task.status = 'error'
-        task.error = '认证失败，请刷新后重试。'
-        task.updatedAt = Date.now()
+        taskRef.status = 'error'
+        taskRef.error = '认证失败，请刷新后重试。'
+        taskRef.updatedAt = Date.now()
         this.saveToStorage()
-        return
+        return { ok: false, error: taskRef.error }
       }
 
       try {
@@ -223,68 +228,77 @@ export const useTaskStore = defineStore('tasks', {
         if (!response.ok) throw new Error(await this.parseApiError(response))
 
         const data = await response.json()
-        task.backendId = data.taskId
-        task.pn = input.patentNumber?.trim() || task.pn
-        task.status = normalizeStatus(data.status || 'processing')
-        task.currentStep = task.status === 'completed' ? '已复用历史报告' : '处理中'
-        task.updatedAt = Date.now()
+        taskRef.backendId = data.taskId
+        taskRef.pn = input.patentNumber?.trim() || taskRef.pn
+        taskRef.status = normalizeStatus(data.status || 'processing')
+        taskRef.currentStep = taskRef.status === 'completed' ? '已复用历史报告' : '处理中'
+        taskRef.updatedAt = Date.now()
         this.saveToStorage()
 
-        if (task.status === 'completed') {
-          task.progress = 100
-          task.downloadUrl = `/api/tasks/${task.backendId}/download`
+        if (taskRef.status === 'completed') {
+          taskRef.progress = 100
+          taskRef.downloadUrl = `/api/tasks/${taskRef.backendId}/download`
           this.saveToStorage()
-          return
+          return {
+            ok: true,
+            message: data?.message || '已复用历史报告。',
+          }
         }
 
-        this.startProgressTracking(task)
+        await this.startProgressTracking(taskRef)
+        return {
+          ok: true,
+          message: data?.message || '任务已创建，正在分析。',
+        }
       } catch (error) {
         console.error('提交任务失败：', error)
-        task.status = 'error'
-        task.error = error instanceof Error ? error.message : '提交失败，请重试。'
-        task.updatedAt = Date.now()
+        taskRef.status = 'error'
+        taskRef.error = error instanceof Error ? error.message : '提交失败，请重试。'
+        taskRef.updatedAt = Date.now()
         this.saveToStorage()
+        return { ok: false, error: taskRef.error }
       }
     },
 
     async startProgressTracking(task: Task) {
       const config = useRuntimeConfig()
-      if (!task.backendId || task.status === 'completed' || task.status === 'error') return
+      const taskRef = this.resolveTaskRef(task)
+      if (!taskRef.backendId || taskRef.status === 'completed' || taskRef.status === 'error') return
 
       const authed = await this.ensureAuth()
       if (!authed || !this.authToken) {
-        task.status = 'error'
-        task.error = '认证已过期，请重试。'
-        task.updatedAt = Date.now()
+        taskRef.status = 'error'
+        taskRef.error = '认证已过期，请重试。'
+        taskRef.updatedAt = Date.now()
         this.saveToStorage()
         return
       }
 
-      const baseUrl = `${config.public.apiBaseUrl}/api/tasks/${task.backendId}/progress`
-      const existing = this.progressStreams[task.backendId]
+      const baseUrl = `${config.public.apiBaseUrl}/api/tasks/${taskRef.backendId}/progress`
+      const existing = this.progressStreams[taskRef.backendId]
       if (existing) existing.close()
       const eventSource = new EventSource(withTokenQuery(baseUrl, this.authToken))
-      this.progressStreams[task.backendId] = eventSource
+      this.progressStreams[taskRef.backendId] = eventSource
 
       eventSource.onmessage = (event) => {
         try {
           const data: TaskProgress = JSON.parse(event.data)
           const normalized = normalizeStatus(data.status)
 
-          task.progress = data.progress ?? task.progress
-          task.currentStep = data.step || task.currentStep
-          if (data.pn) task.pn = data.pn
-          task.status = normalized
-          task.updatedAt = Date.now()
+          taskRef.progress = data.progress ?? taskRef.progress
+          taskRef.currentStep = data.step || taskRef.currentStep
+          if (data.pn) taskRef.pn = data.pn
+          taskRef.status = normalized
+          taskRef.updatedAt = Date.now()
 
           if (normalized === 'completed') {
-            task.downloadUrl = data.downloadUrl
+            taskRef.downloadUrl = data.downloadUrl
             eventSource.close()
-            delete this.progressStreams[task.backendId as string]
+            delete this.progressStreams[taskRef.backendId as string]
           } else if (normalized === 'error') {
-            task.error = data.error || '任务执行失败。'
+            taskRef.error = data.error || '任务执行失败。'
             eventSource.close()
-            delete this.progressStreams[task.backendId as string]
+            delete this.progressStreams[taskRef.backendId as string]
           }
 
           this.saveToStorage()
@@ -295,9 +309,9 @@ export const useTaskStore = defineStore('tasks', {
 
       eventSource.onerror = () => {
         eventSource.close()
-        delete this.progressStreams[task.backendId as string]
+        delete this.progressStreams[taskRef.backendId as string]
         setTimeout(() => {
-          if (task.status === 'processing') this.startProgressTracking(task)
+          if (taskRef.status === 'processing') this.startProgressTracking(taskRef)
         }, 3000)
       }
     },
