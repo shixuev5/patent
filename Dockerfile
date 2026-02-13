@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     gnupg2 \
     build-essential \
+    libgl1 \
     libssl-dev \
     libffi-dev \
     python3-dev \
