@@ -1,5 +1,16 @@
 <template>
   <div class="min-h-screen flex flex-col bg-gradient-to-b from-slate-50 via-blue-50 to-indigo-50 relative overflow-hidden">
+    <transition name="toast">
+      <div
+        v-if="submitNotice"
+        class="fixed top-5 left-1/2 z-50 -translate-x-1/2 rounded-full border px-5 py-3 text-sm font-semibold shadow-lg backdrop-blur-md"
+        :class="submitNotice.type === 'success'
+          ? 'border-emerald-200/70 bg-emerald-50/95 text-emerald-700 shadow-emerald-200/60'
+          : 'border-rose-200/70 bg-rose-50/95 text-rose-700 shadow-rose-200/60'"
+      >
+        {{ submitNotice.text }}
+      </div>
+    </transition>
     <div class="absolute inset-0 pointer-events-none">
       <div class="absolute -top-40 left-1/2 -translate-x-1/2 w-[1000px] h-[1000px] bg-gradient-to-br from-cyan-200/30 via-blue-200/20 to-purple-100/20 rounded-full blur-3xl"></div>
       <div class="absolute top-32 right-[-100px] w-96 h-96 bg-gradient-to-br from-sky-200/25 to-indigo-200/25 rounded-full blur-3xl"></div>
@@ -125,6 +136,7 @@
           <span v-if="loading" class="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
           <span>上传并分析</span>
         </button>
+
       </div>
 
       <!-- 服务状态和统计信息 -->
@@ -283,6 +295,8 @@ const patentNumber = ref('')
 const selectedFile = ref<File | null>(null)
 const isDragging = ref(false)
 const loading = ref(false)
+const submitNotice = ref<{ type: 'success' | 'error'; text: string } | null>(null)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
 const fileInput = ref<HTMLInputElement>()
 const patentNumberPattern = /^[A-Z]{2}\d{5,12}[A-Z0-9]{1,2}$/
 
@@ -312,7 +326,9 @@ const fetchHealthStats = async () => {
     const response = await fetch(`${config.public.apiBaseUrl}/api/health`)
     if (!response.ok) throw new Error(`status: ${response.status}`)
     const data = await response.json()
-    analyzedPatentCount.value = Number(data?.statistics?.by_status?.completed ?? 0)
+    analyzedPatentCount.value = Number(
+      data?.statistics?.completed_patents ?? data?.statistics?.by_status?.completed ?? 0
+    )
   } catch (error) {
     if (analyzedPatentCount.value === null) analyzedPatentCount.value = 0
     console.error('Failed to fetch health stats:', error)
@@ -324,9 +340,25 @@ const submitPatent = async () => {
   if (!pn) return
   if (!patentNumberPattern.test(pn)) return
   loading.value = true
+  submitNotice.value = null
   try {
-    await taskStore.createTask({ patentNumber: pn })
-    patentNumber.value = ''
+    const result = await taskStore.createTask({ patentNumber: pn })
+    if (result.ok) {
+      patentNumber.value = ''
+      submitNotice.value = {
+        type: 'success',
+        text: result.message || '任务已创建，正在分析。',
+      }
+    } else {
+      submitNotice.value = {
+        type: 'error',
+        text: result.error || '任务创建失败，请重试。',
+      }
+    }
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      submitNotice.value = null
+    }, 4000)
   } finally {
     loading.value = false
   }
@@ -364,9 +396,25 @@ const clearFile = () => {
 const submitFile = async () => {
   if (!selectedFile.value) return
   loading.value = true
+  submitNotice.value = null
   try {
-    await taskStore.createTask({ file: selectedFile.value })
-    clearFile()
+    const result = await taskStore.createTask({ file: selectedFile.value })
+    if (result.ok) {
+      clearFile()
+      submitNotice.value = {
+        type: 'success',
+        text: result.message || '任务已创建，正在分析。',
+      }
+    } else {
+      submitNotice.value = {
+        type: 'error',
+        text: result.error || '任务创建失败，请重试。',
+      }
+    }
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      submitNotice.value = null
+    }, 4000)
   } finally {
     loading.value = false
   }
@@ -388,8 +436,18 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (statsTimer) clearInterval(statsTimer)
+  if (noticeTimer) clearTimeout(noticeTimer)
 })
 </script>
 
 <style scoped>
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -6px);
+}
 </style>

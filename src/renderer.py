@@ -75,10 +75,12 @@ class ReportRenderer:
             logger.success(f"Markdown report generated: {md_path}")
         except Exception as e:
             logger.error(f"Failed to write markdown: {e}")
-            return
+            raise
 
         # 4. 导出 .pdf 文件
         self._export_pdf(full_md_content, pdf_path)
+        if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            raise RuntimeError(f"PDF generation failed: output file missing or empty: {pdf_path}")
 
     def _render_analysis_section(self, data: Dict[str, Any]) -> str:
         """
@@ -618,6 +620,7 @@ class ReportRenderer:
 
         except Exception as e:
             logger.error(f"PDF generation failed: {e}")
+            raise
         finally:
             # 清理临时文件
             if temp_html_path.exists():
