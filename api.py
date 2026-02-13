@@ -672,8 +672,8 @@ if __name__ == "__main__":
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 读取 PORT 环境变量，默认使用 8000
-    port = int(os.getenv("PORT", 8000))
+    # 读取 PORT 环境变量，Hugging Face Spaces 默认使用 7860
+    port = int(os.getenv("PORT", 7860))
 
     uvicorn.run(
         "api:app",

@@ -1,46 +1,117 @@
 # Patent Analyzer Deployment Guide
 
-本项目建议采用以下部署架构：
+本项目支持以下部署架构：
 
-- 后端：Render（FastAPI）
+## 部署选项
+
+### 选项 1：Hugging Face Spaces（推荐免费部署）
+- 后端：Hugging Face Spaces（Docker 容器）
 - 前端：Cloudflare Pages（Nuxt3 静态站点）
 
-## 1. 后端部署到 Render
+## 1. 后端部署到 Hugging Face Spaces（推荐免费部署）
 
-### 方案 A：免费计划（Hobby）手动部署（不支持 Blueprint）
+### 方案：Docker 容器部署
 
-Render 免费计划不能通过 `New +` -> `Blueprint` 从 `render.yaml` 一键创建服务，请改用手动创建 `Web Service`：
-（参考：<https://render.com/docs/free>）
+Hugging Face Spaces 提供了免费的 Docker 容器部署选项，支持 GPU 加速（部分计划）。
 
-1. 将代码推送到 GitHub/GitLab 仓库。
-2. 在 Render 控制台选择 `New +` -> `Web Service`，连接该仓库。
-3. 按以下配置填写（与 `render.yaml` 保持一致）：
-   - Runtime: `Python`
-   - Build Command:
+#### 部署步骤
+
+1. **创建 Space**
+   - 访问 [Hugging Face Spaces](https://huggingface.co/spaces)
+   - 点击 "Create new Space"
+   - 填写信息：
+     - **Space name**: 输入您的空间名称（例如 `patent-analysis-system`）
+     - **Visibility**: 选择 "Public"（免费版只能选择 Public）
+     - **License**: 选择 "Apache 2.0" 或其他合适的许可证
+     - **Space SDK**: 选择 "Docker"
+   - 点击 "Create Space"
+
+2. **上传代码**
+   - 克隆您的代码仓库到本地
+   - 进入仓库目录
+   - 复制代码到 Space 目录：
      ```bash
-     pip install --upgrade pip uv && uv sync --frozen --no-dev && uv run playwright install chromium
+     git clone https://huggingface.co/spaces/your-username/patent-analysis-system
+     cd patent-analysis-system
+     cp -r ../your-patent-repo/* .
      ```
-   - Start Command: `uv run --no-sync uvicorn api:app --host 0.0.0.0 --port $PORT`
-   - Health Check Path: `/api/health`
-4. 在 Render 中补充环境变量（尤其是密钥类变量，如 `LLM_API_KEY`、`VLM_API_KEY`、`AUTH_SECRET`）。
-   - 推荐同时配置持久化外部存储：
-     - `TASK_STORAGE_BACKEND=d1` + `D1_ACCOUNT_ID` + `D1_DATABASE_ID` + `D1_API_TOKEN`
-     - `R2_ENABLED=true` + `R2_*`（Cloudflare R2，用于 PDF/上传文件）
-5. 首次构建完成后，访问健康检查：
-   - `https://<your-render-domain>/api/health`
 
-免费计划注意事项：
+3. **配置环境变量**
+   在 Hugging Face Spaces 界面的 "Settings" -> "Variables" 中添加以下环境变量：
 
-- 免费实例无持久化磁盘，容器重启/重建后本地文件会丢失。
-- 如需长期保存 `tasks.db`、`uploads/`、`output/`，请升级到付费计划并挂载磁盘，或改用外部存储。
+   ```bash
+   # 基础配置
+   PORT=7860
+   APP_STORAGE_ROOT=/app
 
-### 方案 B：付费计划（Starter 及以上）使用 Blueprint
+   # LLM 配置
+   LLM_API_KEY=your_deepseek_api_key
+   LLM_BASE_URL=https://api.deepseek.com
+   LLM_MODEL=deepseek-chat
+   LLM_MODEL_REASONING=deepseek-reasoner
 
-仓库根目录已提供 `render.yaml`，付费计划可直接用 Blueprint 部署：
+   # 专利审查模型配置
+   LLM_EXAM_API_KEY=your_siliconflow_api_key
+   LLM_EXAM_BASE_URL=https://api.siliconflow.cn/v1
+   LLM_MODEL_EXAM=deepseek-chat
 
-1. 在 Render 控制台选择 `New +` -> `Blueprint`，连接该仓库。
-2. Render 会读取根目录 `render.yaml` 并创建 `patent-backend` 服务。
-3. Blueprint 默认配置包含持久化磁盘 `/var/data`，并使用 `APP_STORAGE_ROOT=/var/data/patent` 存储业务数据。
+   # VLM 配置
+   VLM_API_KEY=your_baidu_api_key
+   VLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+   VLM_MODEL=glm-4.6v
+
+   # Mineru 配置
+   MINERU_API_KEY=your_mineru_api_key
+   MINERU_BASE_URL=https://mineru.net/api/v4
+   MINERU_MODEL_SOURCE=modelscope
+
+   # OCR 配置
+   OCR_API_KEY=your_ocr_api_key
+   OCR_BASE_URL=https://j9dd7babo5tcocz9.aistudio-app.com/ocr
+   OCR_ENGINE=local
+
+   # 智慧芽配置
+   ZHIHUIYA_USERNAME=your_zhihuiya_username
+   ZHIHUIYA_PASSWORD=your_zhihuiya_password
+
+   # 存储配置
+   TASK_STORAGE_BACKEND=d1
+   R2_ENABLED=false
+
+   # D1 数据库配置（Cloudflare D1）
+   D1_ACCOUNT_ID=your_d1_account_id
+   D1_DATABASE_ID=your_d1_database_id
+   D1_API_TOKEN=your_d1_api_token
+   D1_API_BASE_URL=https://api.cloudflare.com/client/v4
+
+   # 认证配置
+   AUTH_SECRET=your_auth_secret
+   AUTH_TOKEN_TTL_DAYS=30
+
+   # 配额限制
+   MAX_DAILY_ANALYSIS=3
+   APP_TZ_OFFSET_HOURS=8
+   ```
+
+4. **构建和部署**
+   - 提交代码到 Hugging Face：
+     ```bash
+     git add .
+     git commit -m "Initial commit"
+     git push
+     ```
+   - Hugging Face Spaces 会自动构建和部署您的应用
+
+5. **验证部署**
+   - 访问 `https://your-username-patent-analysis-system.hf.space/api/health` 检查健康状态
+
+### 注意事项
+
+- **资源限制**：免费版有资源限制（CPU 1 核，RAM 8GB，存储 5GB，每日带宽 10GB）
+- **数据持久化**：免费版的存储是临时的，重启后数据会丢失。如需持久存储，建议使用外部存储服务（如 Cloudflare R2）
+- **端口配置**：Hugging Face Spaces 默认使用端口 7860
+- **访问控制**：如果需要设置访问密码，可以使用 Hugging Face Spaces 的访问控制功能
+
 
 ## 2. 前端部署到 Cloudflare Pages
 

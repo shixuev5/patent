@@ -1,0 +1,54 @@
+# 排除不必要的文件，减小镜像大小
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+*.log.*
+
+# 临时文件
+*.tmp
+*.temp
+.cache/
+
+# 输出目录
+output/
+uploads/
+data/
+
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+
+# Git
+.git/
+.gitignore
+
+# 环境变量文件
+.env
+.env.local
+.env.development
+.env.production
+
+# 文档
+README.md
+README_HF_SPACES.md
+CLAUDE.md

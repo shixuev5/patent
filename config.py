@@ -5,6 +5,15 @@ from dotenv import load_dotenv
 # 加载 .env 环境变量
 load_dotenv()
 
+# 检测是否在 Hugging Face Spaces 上运行
+def is_huggingface_spaces():
+    """检测是否在 Hugging Face Spaces 环境中运行"""
+    return "SPACE_ID" in os.environ or "SPACES_DOMAIN" in os.environ or "HF_TOKEN" in os.environ
+
+# Hugging Face Spaces 特定配置
+if is_huggingface_spaces():
+    print("检测到 Hugging Face Spaces 环境，使用相应配置")
+
 
 class Settings:
     # --- 基础路径配置 ---
@@ -14,6 +23,15 @@ class Settings:
     DATA_DIR = Path(os.getenv("APP_DATA_DIR", STORAGE_ROOT / "data"))
     UPLOAD_DIR = Path(os.getenv("APP_UPLOAD_DIR", STORAGE_ROOT / "uploads"))
     ASSETS_DIR = BASE_DIR / "assets"
+
+    # Hugging Face Spaces 特定配置
+    if is_huggingface_spaces():
+        # 在 Spaces 上，使用 /app 作为存储根目录
+        STORAGE_ROOT = Path(os.getenv("APP_STORAGE_ROOT", "/app"))
+        OUTPUT_DIR = Path(os.getenv("APP_OUTPUT_DIR", STORAGE_ROOT / "output"))
+        DATA_DIR = Path(os.getenv("APP_DATA_DIR", STORAGE_ROOT / "data"))
+        UPLOAD_DIR = Path(os.getenv("APP_UPLOAD_DIR", STORAGE_ROOT / "uploads"))
+        print(f"Spaces 配置: 存储根目录 = {STORAGE_ROOT}")
 
     # 确保字体文件路径 (请手动放入 simhei.ttf 到 assets 目录)
     FONT_PATH = ASSETS_DIR / "simhei.ttf"
