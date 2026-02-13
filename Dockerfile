@@ -25,8 +25,8 @@ COPY . .
 RUN pip install --upgrade pip uv && \
     uv sync --frozen --no-dev
 
-# 安装 Playwright 浏览器
-RUN playwright install chromium
+# 安装 Playwright 浏览器（使用 uv 虚拟环境）
+RUN uv run playwright install chromium
 
 # 创建必要的目录
 RUN mkdir -p output uploads data assets
