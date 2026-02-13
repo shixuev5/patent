@@ -1,3 +1,14 @@
+---
+title: Patent Analyzer
+emoji: 📋
+colorFrom: blue
+colorTo: green
+sdk: docker
+sdk_version: "24.0.7"
+app_file: api.py
+pinned: false
+---
+
 # Patent Analyzer Deployment Guide
 
 本项目支持以下部署架构：
