@@ -18,7 +18,6 @@ from src.vision import VisualProcessor
 from src.checker import FormalExaminer
 from src.generator import ContentGenerator
 from src.search import SearchStrategyGenerator
-from src.graph.entrypoint import run_search_graph
 from src.renderer import ReportRenderer
 
 
@@ -32,10 +31,11 @@ class PatentPipeline:
     负责：下载 -> 解析 -> 提取 -> 检索 -> 生成报告
     """
 
-    def __init__(self, pn: str, upload_file_path: str = None, cancel_event: Optional[Event] = None):
+    def __init__(self, pn: str, upload_file_path: str = None, cancel_event: Optional[Event] = None, task_id: str = None):
         self.pn = pn.strip()
         self.upload_file_path = upload_file_path
         self.cancel_event = cancel_event
+        self.task_id = task_id
         # 获取基于 PN 的项目路径配置 (例如: output/CN123456)
         self.paths = settings.get_project_paths(self.pn)
 
@@ -46,9 +46,23 @@ class PatentPipeline:
         # raw.pdf 的目标路径
         self.raw_pdf_path = self.paths["raw_pdf"]
 
+        # 初始化任务管理器
+        if self.task_id:
+            from src.storage import get_pipeline_manager
+            self.task_manager = get_pipeline_manager()
+
     def _check_cancelled(self):
         if self.cancel_event and self.cancel_event.is_set():
             raise PipelineCancelled("任务已取消")
+
+    def _update_step_status(self, step_name: str, status: str):
+        """更新任务步骤状态"""
+        if self.task_id and self.task_manager:
+            # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名
+            from src.storage import DEFAULT_PIPELINE_STEPS
+            step_name_map = {en: zh for en, zh in DEFAULT_PIPELINE_STEPS}
+            chinese_step_name = step_name_map.get(step_name, step_name)
+            self.task_manager.update_progress(self.task_id, 0, chinese_step_name, step_status=status)
 
     def run(self) -> dict:
         """
@@ -56,25 +70,30 @@ class PatentPipeline:
         :return: 包含处理状态和结果路径的字典
         """
         logger.info(f"[{self.pn}] Starting pipeline processing...")
-        
+
         try:
             self._check_cancelled()
             # --- Step 0: 下载专利文件 ---
+            self._update_step_status("download", "processing")
             self._step_download()
+            self._update_step_status("download", "completed")
             self._check_cancelled()
 
             # --- Step 1: 解析 PDF ---
+            self._update_step_status("parse", "processing")
             if not self.paths["raw_md"].exists():
                 logger.info(f"[{self.pn}] Step 1: Parsing PDF...")
                 # Mineru 解析 PDF
                 PDFParser.parse(self.raw_pdf_path, self.paths["mineru_dir"])
             else:
                 logger.info(f"[{self.pn}] Step 1: PDF already parsed, skipping.")
-                
+
             md_content = self.paths["raw_md"].read_text(encoding="utf-8")
+            self._update_step_status("parse", "completed")
             self._check_cancelled()
 
             # --- Step 2: 专利结构化转换 ---
+            self._update_step_status("transform", "processing")
             patent_data = {}
             if self.paths["patent_json"].exists():
                 logger.info(f"[{self.pn}] Step 2: Loading patent JSON...")
@@ -86,9 +105,11 @@ class PatentPipeline:
                 self.paths["patent_json"].write_text(
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._update_step_status("transform", "completed")
             self._check_cancelled()
 
             # --- Step 3: 知识提取 ---
+            self._update_step_status("extract", "processing")
             parts_db = {}
             if self.paths["parts_json"].exists():
                 logger.info(f"[{self.pn}] Step 3: Loading parts DB...")
@@ -100,9 +121,11 @@ class PatentPipeline:
                 self.paths["parts_json"].write_text(
                     json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._update_step_status("extract", "completed")
             self._check_cancelled()
 
             # --- Step 4: 视觉处理 (OCR + Annotate) ---
+            self._update_step_status("vision", "processing")
             image_parts = {}
             if self.paths["image_parts_json"].exists():
                 logger.info(f"[{self.pn}] Step 4: Loading image parts json...")
@@ -119,9 +142,11 @@ class PatentPipeline:
                 self.paths["image_parts_json"].write_text(
                     json.dumps(image_parts, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._update_step_status("vision", "completed")
             self._check_cancelled()
 
             # --- Step 5: 形式缺陷检查 ---
+            self._update_step_status("check", "processing")
             logger.info(f"[{self.pn}] Step 5: Running Formal Defect Check...")
             # 即使文件存在也重新跑检查，因为检查逻辑可能很快且需要最新状态
             examiner = FormalExaminer(parts_db=parts_db, image_parts=image_parts)
@@ -129,9 +154,11 @@ class PatentPipeline:
             self.paths["check_json"].write_text(
                 json.dumps(check_result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            self._update_step_status("check", "completed")
             self._check_cancelled()
 
             # --- Step 6: 报告内容生成 ---
+            self._update_step_status("generate", "processing")
             report_json = {}
             if self.paths["report_json"].exists():
                 logger.info(f"[{self.pn}] Step 6: Loading report json...")
@@ -150,9 +177,11 @@ class PatentPipeline:
                 self.paths["report_json"].write_text(
                     json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._update_step_status("generate", "completed")
             self._check_cancelled()
 
             # --- Step 7: 检索策略生成 ---
+            self._update_step_status("search", "processing")
             logger.info("Step 7: Generating Search Strategy & Queries...")
             search_json = {}
             if self.paths["search_strategy_json"].exists():
@@ -174,29 +203,11 @@ class PatentPipeline:
                 self.paths["search_strategy_json"].write_text(
                     json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._update_step_status("search", "completed")
             self._check_cancelled()
 
-            # # --- Step 7: 查新检索 (LangGraph) ---
-            # logger.info(f"[{self.pn}] Step 7: Running Graph Search...")
-            # search_strategy_data = {}
-            # examination_results = []
-            
-            # # 检查缓存
-            # if self.paths["examination_results_json"].exists() and self.paths["search_strategy_json"].exists():
-            #     logger.info(f"[{self.pn}] Loading cached search results...")
-            #     search_strategy_data = json.loads(self.paths["search_strategy_json"].read_text(encoding="utf-8"))
-            # else:
-            #     search_strategy_data, examination_results = run_search_graph(
-            #         patent_data=patent_data, report_data=report_json
-            #     )
-            #     self.paths["search_strategy_json"].write_text(
-            #         json.dumps(search_strategy_data, ensure_ascii=False, indent=2), encoding="utf-8",
-            #     )
-            #     self.paths["examination_results_json"].write_text(
-            #         json.dumps(examination_results, ensure_ascii=False, indent=2), encoding="utf-8",
-            #     )
-
             # --- Step 8: 渲染 ---
+            self._update_step_status("render", "processing")
             logger.info(f"[{self.pn}] Step 8: Rendering Report...")
             renderer = ReportRenderer(patent_data)
             renderer.render(
@@ -206,6 +217,7 @@ class PatentPipeline:
                 md_path=self.paths["final_md"],
                 pdf_path=self.paths["final_pdf"],
             )
+            self._update_step_status("render", "completed")
 
             logger.success(f"[{self.pn}] Completed! Output: {self.paths['final_pdf']}")
             return {"status": "success", "pn": self.pn, "output": str(self.paths["final_pdf"])}
@@ -253,7 +265,6 @@ def main():
     parser = argparse.ArgumentParser(description="Patent Analysis Pipeline")
     parser.add_argument("--pn", type=str, help="Single PN or comma-separated PNs (e.g., CN116745575A,CN123)")
     parser.add_argument("--file", type=str, help="Path to a text file containing PNs (one per line)")
-    parser.add_argument("--workers", type=int, default=1, help="Number of concurrent workers (default: 1)")
     
     args = parser.parse_args()
 
@@ -282,14 +293,13 @@ def main():
         return
 
     logger.info(f"Total patents to process: {len(pns)}")
-    logger.info(f"Concurrency level: {args.workers}")
 
     # 2. 批量执行
     results = []
     start_time = time.time()
 
     # 使用线程池并发处理
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         future_to_pn = {executor.submit(worker_wrapper, pn): pn for pn in pns}
         
         for future in as_completed(future_to_pn):

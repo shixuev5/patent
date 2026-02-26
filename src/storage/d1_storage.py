@@ -13,6 +13,35 @@ from .models import Task, TaskStep, TaskStatus
 
 
 class D1TaskStorage:
+    REQUIRED_COLUMNS = {
+        "tasks": [
+            ("owner_id", "owner_id TEXT"),
+            ("pn", "pn TEXT"),
+            ("title", "title TEXT"),
+            ("status", "status TEXT NOT NULL DEFAULT 'pending'"),
+            ("progress", "progress INTEGER DEFAULT 0"),
+            ("current_step", "current_step TEXT"),
+            ("output_dir", "output_dir TEXT"),
+            ("raw_pdf_path", "raw_pdf_path TEXT"),
+            ("error_message", "error_message TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+            ("completed_at", "completed_at TEXT"),
+            ("deleted_at", "deleted_at TEXT"),
+            ("metadata", "metadata TEXT"),
+        ],
+        "task_steps": [
+            ("step_name", "step_name TEXT NOT NULL"),
+            ("step_order", "step_order INTEGER NOT NULL"),
+            ("status", "status TEXT DEFAULT 'pending'"),
+            ("progress", "progress INTEGER DEFAULT 0"),
+            ("start_time", "start_time TEXT"),
+            ("end_time", "end_time TEXT"),
+            ("error_message", "error_message TEXT"),
+            ("metadata", "metadata TEXT"),
+        ],
+    }
+
     CREATE_TABLES_SQL = """
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
@@ -28,6 +57,7 @@ class D1TaskStorage:
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT,
+        deleted_at TEXT,
         metadata TEXT
     );
 
@@ -130,33 +160,25 @@ class D1TaskStorage:
             sql = statement.strip()
             if sql:
                 self._request(sql)
-        self._ensure_schema()
+        self._apply_schema_migrations()
 
-    def _ensure_schema(self):
-        columns = {row.get("name") for row in self._fetchall("PRAGMA table_info(tasks)")}
-        if "owner_id" not in columns:
-            self._request("ALTER TABLE tasks ADD COLUMN owner_id TEXT")
-        self._request("CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id)")
-        self._backfill_patent_analyses_if_empty()
+    def _apply_schema_migrations(self):
+        for table_name, columns in self.REQUIRED_COLUMNS.items():
+            existing = self._get_existing_columns(table_name)
+            for column_name, definition in columns:
+                if column_name in existing:
+                    continue
+                self._request(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
+                logger.info(f"[D1 Migration] Added column {table_name}.{column_name}")
 
-    def _backfill_patent_analyses_if_empty(self):
-        try:
-            row = self._fetchone("SELECT COUNT(*) AS c FROM patent_analyses")
-            if row and int(row.get("c", 0)) == 0:
-                self._request(
-                    """
-                    INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
-                    SELECT pn, MIN(completed_at)
-                    FROM tasks
-                    WHERE status = 'completed'
-                      AND pn IS NOT NULL
-                      AND TRIM(pn) != ''
-                      AND completed_at IS NOT NULL
-                    GROUP BY pn
-                    """
-                )
-        except Exception as exc:
-            logger.warning(f"D1 backfill patent analyses skipped: {exc}")
+    def _get_existing_columns(self, table_name: str) -> set[str]:
+        rows = self._fetchall(f"PRAGMA table_info({table_name})")
+        columns = set()
+        for row in rows:
+            name = row.get("name")
+            if name:
+                columns.add(str(name))
+        return columns
 
     @staticmethod
     def _parse_metadata(raw: Any) -> Dict[str, Any]:
@@ -199,9 +221,8 @@ class D1TaskStorage:
             error_message=row.get("error_message"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
-            completed_at=datetime.fromisoformat(row["completed_at"])
-            if row.get("completed_at")
-            else None,
+            completed_at=datetime.fromisoformat(row["completed_at"]) if row.get("completed_at") else None,
+            deleted_at=datetime.fromisoformat(row["deleted_at"]) if row.get("deleted_at") else None,
             metadata=self._parse_metadata(row.get("metadata")),
         )
 
@@ -210,7 +231,6 @@ class D1TaskStorage:
             step_name=row["step_name"],
             step_order=row["step_order"],
             status=row.get("status", "pending"),
-            progress=row.get("progress", 0),
             start_time=datetime.fromisoformat(row["start_time"])
             if row.get("start_time")
             else None,
@@ -270,6 +290,7 @@ class D1TaskStorage:
             "raw_pdf_path",
             "error_message",
             "completed_at",
+            "deleted_at",
             "metadata",
             "updated_at",
         }
@@ -287,23 +308,25 @@ class D1TaskStorage:
         return self._changed_rows(result) > 0
 
     def delete_task(self, task_id: str) -> bool:
-        result = self._request("DELETE FROM tasks WHERE id = ?", [task_id])
+        result = self._request(
+            "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            [datetime.now().isoformat(), datetime.now().isoformat(), task_id]
+        )
         return self._changed_rows(result) > 0
 
     def add_task_step(self, task_id: str, step: TaskStep) -> bool:
         self._request(
             """
             INSERT INTO task_steps (
-                task_id, step_name, step_order, status, progress,
+                task_id, step_name, step_order, status,
                 start_time, end_time, error_message, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 task_id,
                 step.step_name,
                 step.step_order,
                 step.status,
-                step.progress,
                 step.start_time.isoformat() if step.start_time else None,
                 step.end_time.isoformat() if step.end_time else None,
                 step.error_message,
@@ -320,7 +343,7 @@ class D1TaskStorage:
         return [self._row_to_step(row) for row in rows]
 
     def update_task_step(self, task_id: str, step_name: str, **kwargs) -> bool:
-        allowed_fields = {"status", "progress", "start_time", "end_time", "error_message", "metadata"}
+        allowed_fields = {"status", "start_time", "end_time", "error_message", "metadata"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False
@@ -353,7 +376,7 @@ class D1TaskStorage:
         order_by: str = "created_at",
         order_desc: bool = True,
     ) -> List[Task]:
-        where = ["1=1"]
+        where = ["deleted_at IS NULL"]
         params: List[Any] = []
 
         if status:
@@ -386,7 +409,7 @@ class D1TaskStorage:
         pn: Optional[str] = None,
         owner_id: Optional[str] = None,
     ) -> int:
-        where = ["1=1"]
+        where = ["deleted_at IS NULL"]
         params: List[Any] = []
 
         if status:
@@ -411,18 +434,19 @@ class D1TaskStorage:
             SELECT COUNT(*) AS c FROM tasks
             WHERE owner_id = ?
             AND DATE(created_at, ?) = ?
+            AND deleted_at IS NULL
             """,
             [owner_id, modifier, today_str],
         )
         return int(row["c"]) if row else 0
 
     def get_statistics(self) -> Dict[str, Any]:
-        rows = self._fetchall("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status")
+        rows = self._fetchall("SELECT status, COUNT(*) AS count FROM tasks WHERE deleted_at IS NULL GROUP BY status")
         status_counts = {row["status"]: int(row["count"]) for row in rows}
 
         today = datetime.now().strftime("%Y-%m-%d")
         today_count_row = self._fetchone(
-            "SELECT COUNT(*) AS c FROM tasks WHERE DATE(created_at) = ?",
+            "SELECT COUNT(*) AS c FROM tasks WHERE DATE(created_at) = ? AND deleted_at IS NULL",
             [today],
         )
         today_count = int(today_count_row["c"]) if today_count_row else 0
@@ -431,7 +455,7 @@ class D1TaskStorage:
             """
             SELECT AVG((julianday(completed_at) - julianday(created_at)) * 24 * 60) AS avg_minutes
             FROM tasks
-            WHERE status = 'completed' AND completed_at IS NOT NULL
+            WHERE status = 'completed' AND completed_at IS NOT NULL AND deleted_at IS NULL
             """
         )
 
@@ -463,15 +487,15 @@ class D1TaskStorage:
         )
         return True
 
-    def cleanup_old_tasks(self, days: int = 30, dry_run: bool = False) -> int:
+    def cleanup_old_tasks(self, days: int = 365, dry_run: bool = False) -> int:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         rows = self._fetchall(
             """
             SELECT id FROM tasks
-            WHERE updated_at < ?
-            AND status IN ('completed', 'failed', 'cancelled')
+            WHERE deleted_at IS NOT NULL AND deleted_at < ?
+            OR (updated_at < ? AND status IN ('completed', 'failed', 'cancelled') AND deleted_at IS NULL)
             """,
-            [cutoff],
+            [cutoff, cutoff],
         )
         task_ids = [row["id"] for row in rows]
 

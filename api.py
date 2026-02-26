@@ -388,7 +388,7 @@ async def run_pipeline_task(
         loop = asyncio.get_event_loop()
         # 延迟导入，避免启动时加载重型依赖导致端口迟迟无法绑定
         from main import PatentPipeline
-        pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event)
+        pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event, task_id=task_id)
 
         def run_pipeline():
             return pipeline.run()
@@ -437,7 +437,7 @@ async def run_pipeline_task(
                 return
 
             if r2_storage.enabled:
-                r2_key = r2_storage.build_patent_pdf_cache_key(resolved_pn or pn)
+                r2_key = r2_storage.build_patent_pdf_key(resolved_pn or pn)
                 stored_in_r2 = await asyncio.to_thread(
                     r2_storage.put_bytes,
                     r2_key,
@@ -560,7 +560,7 @@ async def create_task(
         r2_cache_key = None
         r2_hit = False
         if r2_storage.enabled:
-            r2_cache_key = r2_storage.build_patent_pdf_cache_key(pn)
+            r2_cache_key = r2_storage.build_patent_pdf_key(pn)
             cached_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_cache_key)
             r2_hit = cached_pdf is not None
 

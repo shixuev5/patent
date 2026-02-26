@@ -69,15 +69,9 @@ class R2Storage:
         cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip())
         return cleaned.strip("-._") or fallback
 
-    def build_pdf_key(self, task_id: str, patent_number: str) -> str:
+    def build_patent_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        tid = self._clean_token(task_id, fallback="task")
-        date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
-        return f"{self.config.key_prefix}/reports/{date_prefix}/{pn}-{tid}.pdf"
-
-    def build_patent_pdf_cache_key(self, patent_number: str) -> str:
-        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/cache/{pn}.pdf"
+        return f"{self.config.key_prefix}/reports/{pn}.pdf"
 
     def build_upload_key(self, task_id: str, filename: str) -> str:
         tid = self._clean_token(task_id, fallback="task")

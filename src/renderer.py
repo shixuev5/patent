@@ -432,33 +432,29 @@ class ReportRenderer:
 
         # 获取数据源
         matrix = data.get("search_matrix", [])
-        plan = data.get("search_plan", {})
+        semantic = data.get("semantic_strategy", {})
 
         # --- 2. 检索要素表 (包含分类号) ---
-        lines.append("## 2. 检索要素与分类号映射表")
+        lines.append("## 2. 检索要素表")
         lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
 
         if matrix:
-            # 定义分块映射逻辑 (Emoji + 换行符优化显示)
+            # 定义分块映射逻辑
             role_mapping = {
                 "Subject": "Block A<br>(检索主语)",
                 "KeyFeature": "Block B<br>(核心特征)",
                 "Functional": "Block C<br>(功能/限定)"
             }
-            
-            # Markdown 表格构建：增加分类号列
-            # 使用 HTML 换行符 <br> 在单元格内区分 IPC 和 CPC，或区分太长的词
+
             lines.append("| 检索分块 | 核心概念 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
             lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
             for item in matrix:
                 concept = item.get("concept_key", "-").replace("|", "\|")
                 role_key = item.get("role", "Other")
-                
-                # 获取分块显示文本，如果未定义则显示原值
+
                 block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
 
-                # 处理列表转字符串
                 zh_list = item.get("zh_expand", [])
                 en_list = item.get("en_expand", [])
                 ref_list = item.get("ipc_cpc_ref", [])
@@ -467,49 +463,18 @@ class ReportRenderer:
                 en_str = ", ".join(en_list) if en_list else "-"
                 class_str = "<br>".join(ref_list) if ref_list else "-"
 
-                # 组装表格行
                 lines.append(f"| **{block_display}** | **{concept}** | {zh_str} | {en_str} | {class_str} |")
             lines.append("\n")
         else:
             lines.append("> 未生成检索要素表。\n")
 
-        # --- 3. 分步检索策略 (Strategies) ---
-        lines.append("## 3. 分步检索策略构建")
-        strategies = plan.get("strategies", [])
-
-        if not strategies:
-            lines.append("未生成具体的检索策略步骤。\n")
-
-        for idx, strategy in enumerate(strategies, 1):
-            s_name = strategy.get("name", f"策略 {idx}")
-            s_desc = strategy.get("description", "暂无描述")
-            queries = strategy.get("queries", [])
-
-            lines.append(f"### Step {idx}: {s_name}")
-            lines.append(f"> **策略逻辑**: {s_desc}\n")
-
-            if queries:
-                for q_item in queries:
-                    db_name = q_item.get("db", "General")
-                    step_info = q_item.get("step", "")  # 获取具体步骤描述
-                    query_str = q_item.get("query", "").strip()
-
-                    if db_name == 'Patsnap' or not query_str:
-                        continue
-
-                    # 标题格式：[数据库] 步骤描述
-                    header_text = f"**[{db_name}]**"
-                    if step_info:
-                        header_text += f" - *{step_info}*"
-
-                    lines.append(f"{header_text}")
-                    # 使用 text 格式代码块，避免 markdown 对逻辑算符的错误高亮
-                    lines.append(f"```text\n{query_str}\n```\n")
-            else:
-                lines.append("*本步骤无需特定检索式 (如人工浏览或语义输入)*\n")
-
-            lines.append("---\n")  # 分隔线
-
+        # --- 3. 语义检索策略 ---
+        lines.append("## 3. 语义检索策略")
+        
+        lines.append(f"### {semantic.get('name')}")
+        lines.append(f"> **策略逻辑**: {semantic.get('description')}\n")
+        lines.append(f"```text\n{semantic.get('content')}\n```\n")
+            
         return "\n".join(lines)
 
     def _export_pdf(self, md_text: str, output_path: Path):
