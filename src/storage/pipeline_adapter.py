@@ -5,13 +5,13 @@ Pipeline 适配器：将 TaskStorage 与 PatentPipeline 集成。
 import json
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from loguru import logger
 
 from config import settings
 from .models import Task, TaskStatus, TaskStep
-from .task_storage import TaskStorage, get_task_storage
+from .task_storage import get_task_storage
 
 DEFAULT_PIPELINE_STEPS = [
     ("download", "下载专利文档"),
@@ -27,7 +27,7 @@ DEFAULT_PIPELINE_STEPS = [
 
 
 class PipelineTaskManager:
-    def __init__(self, storage: TaskStorage = None):
+    def __init__(self, storage: Any = None):
         self.storage = storage or get_task_storage()
 
     def create_task(
@@ -204,5 +204,5 @@ class PipelineTaskManager:
         return success
 
 
-def get_pipeline_manager(storage: TaskStorage = None) -> PipelineTaskManager:
+def get_pipeline_manager(storage: Any = None) -> PipelineTaskManager:
     return PipelineTaskManager(storage)
