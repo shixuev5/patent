@@ -45,4 +45,4 @@ ENV MINERU_MODEL_SOURCE=modelscope
 EXPOSE 7860
 
 # 启动应用（使用 uv）
-CMD ["uv", "run", "python", "api.py"]
+CMD ["uv", "run", "python", "-m", "backend.main"]

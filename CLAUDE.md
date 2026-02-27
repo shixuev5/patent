@@ -33,6 +33,20 @@ d:\Codes\patent\
 ├── .env.example            # Example environment file with placeholders
 ├── assets/                 # Static assets (fonts: simhei.ttf)
 ├── output/                 # Generated outputs (patent-specific directories)
+├── frontend/               # Frontend application files
+├── backend/                # Backend API service
+│   ├── __init__.py         # Package initialization
+│   ├── main.py             # FastAPI application entry point
+│   ├── models.py           # Pydantic data models
+│   ├── auth.py             # Authentication and authorization
+│   ├── usage.py            # Usage quota management
+│   ├── utils.py            # Utility functions
+│   └── routes/             # API route handlers
+│       ├── __init__.py     # Routes aggregation
+│       ├── auth.py         # Authentication routes
+│       ├── tasks.py        # Task management routes
+│       ├── usage.py        # Usage query routes
+│       └── health.py       # Health check route
 └── src/                    # Main source code
     ├── parser.py           # PDF parsing (Mineru API or local)
     ├── transformer.py      # Markdown to structured patent data (LLM-based)
