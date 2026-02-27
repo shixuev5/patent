@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 sdk_version: "24.0.7"
-app_file: api.py
+app_file: backend/main.py
 pinned: false
 ---
 
