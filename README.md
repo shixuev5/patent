@@ -61,11 +61,6 @@ Hugging Face Spaces 提供了免费的 Docker 容器部署选项，支持 GPU �
    LLM_MODEL=deepseek-chat
    LLM_MODEL_REASONING=deepseek-reasoner
 
-   # 专利审查模型配置
-   LLM_EXAM_API_KEY=your_siliconflow_api_key
-   LLM_EXAM_BASE_URL=https://api.siliconflow.cn/v1
-   LLM_MODEL_EXAM=deepseek-chat
-
    # VLM 配置
    VLM_API_KEY=your_baidu_api_key
    VLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
