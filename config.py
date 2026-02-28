@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# 项目版本号
+VERSION = "1.0.0"
+
 # 加载 .env 环境变量
 load_dotenv()
 

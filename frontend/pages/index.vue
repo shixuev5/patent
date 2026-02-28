@@ -265,6 +265,7 @@
       <footer class="w-full max-w-7xl mt-16 mb-6 text-center text-slate-500 text-sm">
         <div class="bg-white/90 backdrop-blur-xl rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100/50">
           <p>© 2026 专利智能分析平台. All rights reserved.</p>
+          <p class="mt-2 text-xs text-slate-400">Version {{ serviceVersion }}</p>
         </div>
       </footer>
 
@@ -314,6 +315,7 @@ const canSubmitPatent = computed(() => {
 })
 
 const analyzedPatentCount = ref<number | null>(null)
+const serviceVersion = ref<string | null>(null)
 let statsTimer: ReturnType<typeof setInterval> | null = null
 
 const analyzedPatentCountText = computed(() => {
@@ -329,6 +331,7 @@ const fetchHealthStats = async () => {
     analyzedPatentCount.value = Number(
       data?.statistics?.completed_patents ?? data?.statistics?.by_status?.completed ?? 0
     )
+    serviceVersion.value = data?.version ?? null
   } catch (error) {
     if (analyzedPatentCount.value === null) analyzedPatentCount.value = 0
     console.error('Failed to fetch health stats:', error)
