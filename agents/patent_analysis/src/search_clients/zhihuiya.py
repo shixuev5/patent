@@ -5,8 +5,8 @@ import threading
 from typing import List, Dict, Optional, Any
 from loguru import logger
 from config import settings
-from src.utils.crypto import rsa_encrypt
-from src.search_clients.base import BaseSearchClient
+from agents.patent_analysis.src.utils.crypto import rsa_encrypt
+from agents.patent_analysis.src.search_clients.base import BaseSearchClient
 
 
 class ZhihuiyaClient(BaseSearchClient):

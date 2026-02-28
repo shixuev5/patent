@@ -10,15 +10,15 @@ from loguru import logger
 from config import settings
 
 # 引入各个处理模块
-from src.search_clients.factory import SearchClientFactory
-from src.parser import PDFParser
-from src.transformer import PatentTransformer
-from src.knowledge import KnowledgeExtractor
-from src.vision import VisualProcessor
-from src.checker import FormalExaminer
-from src.generator import ContentGenerator
-from src.search import SearchStrategyGenerator
-from src.renderer import ReportRenderer
+from agents.patent_analysis.src.search_clients.factory import SearchClientFactory
+from agents.patent_analysis.src.parser import PDFParser
+from agents.patent_analysis.src.transformer import PatentTransformer
+from agents.patent_analysis.src.knowledge import KnowledgeExtractor
+from agents.patent_analysis.src.vision import VisualProcessor
+from agents.patent_analysis.src.checker import FormalExaminer
+from agents.patent_analysis.src.generator import ContentGenerator
+from agents.patent_analysis.src.search import SearchStrategyGenerator
+from agents.patent_analysis.src.renderer import ReportRenderer
 
 
 class PipelineCancelled(RuntimeError):
@@ -48,7 +48,7 @@ class PatentPipeline:
 
         # 初始化任务管理器
         if self.task_id:
-            from src.storage import get_pipeline_manager
+            from agents.patent_analysis.src.storage import get_pipeline_manager
             self.task_manager = get_pipeline_manager()
 
     def _check_cancelled(self):
@@ -59,7 +59,7 @@ class PatentPipeline:
         """更新任务步骤状态"""
         if self.task_id and self.task_manager:
             # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名
-            from src.storage import DEFAULT_PIPELINE_STEPS
+            from agents.patent_analysis.src.storage import DEFAULT_PIPELINE_STEPS
             step_name_map = {en: zh for en, zh in DEFAULT_PIPELINE_STEPS}
             chinese_step_name = step_name_map.get(step_name, step_name)
             self.task_manager.update_progress(self.task_id, 0, chinese_step_name, step_status=status)
@@ -265,7 +265,7 @@ def main():
     parser = argparse.ArgumentParser(description="Patent Analysis Pipeline")
     parser.add_argument("--pn", type=str, help="Single PN or comma-separated PNs (e.g., CN116745575A,CN123)")
     parser.add_argument("--file", type=str, help="Path to a text file containing PNs (one per line)")
-    
+
     args = parser.parse_args()
 
     # 1. 解析输入的 PN 列表
@@ -274,7 +274,7 @@ def main():
         # 支持逗号分隔
         parts = args.pn.replace("，", ",").split(",")
         pns.extend([p.strip() for p in parts if p.strip()])
-    
+
     if args.file:
         file_path = Path(args.file)
         if file_path.exists():
@@ -282,14 +282,14 @@ def main():
             pns.extend([line.strip() for line in content.splitlines() if line.strip()])
         else:
             logger.error(f"File not found: {args.file}")
-    
+
     # 去重
     pns = list(set(pns))
-    
+
     if not pns:
         logger.warning("No PNs provided. Usage examples:")
-        logger.warning("  python main.py --pn CN116745575A")
-        logger.warning("  python main.py --file list.txt")
+        logger.warning("  python -m agents.patent_analysis.main --pn CN116745575A")
+        logger.warning("  python -m agents.patent_analysis.main --file list.txt")
         return
 
     logger.info(f"Total patents to process: {len(pns)}")
@@ -301,7 +301,7 @@ def main():
     # 使用线程池并发处理
     with ThreadPoolExecutor(max_workers=1) as executor:
         future_to_pn = {executor.submit(worker_wrapper, pn): pn for pn in pns}
-        
+
         for future in as_completed(future_to_pn):
             pn = future_to_pn[future]
             try:
@@ -318,7 +318,7 @@ def main():
     # 3. 统计结果
     duration = time.time() - start_time
     success_count = sum(1 for r in results if r["status"] == "success")
-    
+
     logger.info("="*40)
     logger.info(f"Batch Processing Completed in {duration:.2f}s")
     logger.info(f"Total: {len(pns)}, Success: {success_count}, Failed: {len(pns) - success_count}")

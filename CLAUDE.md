@@ -19,13 +19,12 @@ The `PatentPipeline` class in `main.py` orchestrates the end-to-end workflow:
 5. **Visual Processing**: OCR on patent images and match parts to text descriptions
 6. **Formal Defect Check**: Verify consistency between text descriptions and figure labels
 7. **Content Generation**: Generate report sections using LLM
-8. **Search & Retrieval**: LangGraph-based search for prior art and examination
+8. **Search Strategy Generation**: LLM-based search strategy and query generation
 9. **Render Report**: Convert Markdown to HTML to PDF using Playwright
 
 ### Directory Structure
 ```
 d:\Codes\patent\
-├── main.py                 # Entry point and pipeline orchestrator
 ├── config.py               # Configuration management (paths, API keys, settings)
 ├── pyproject.toml          # Project dependencies and metadata
 ├── uv.lock                 # Dependency lock file (uv package manager)
@@ -47,17 +46,19 @@ d:\Codes\patent\
 │       ├── tasks.py        # Task management routes
 │       ├── usage.py        # Usage query routes
 │       └── health.py       # Health check route
-└── src/                    # Main source code
-    ├── parser.py           # PDF parsing (Mineru API or local)
-    ├── transformer.py      # Markdown to structured patent data (LLM-based)
-    ├── knowledge.py        # Entity/parts extraction from patent content
-    ├── vision.py           # Image processing and OCR (PaddleOCR)
-    ├── checker.py          # Formal defect checks (part-text consistency)
-    ├── generator.py        # Report content generation (LLM-based)
-    ├── renderer.py         # Report rendering (HTML -> PDF via Playwright)
-    ├── search_clients/     # Patent search APIs (Zhihuiya/PatSnap)
-    ├── graph/              # LangGraph-based search workflow
-    └── utils/              # Utility modules (LLM, cache, crypto, reranker)
+└── agents/                 # AI agents for patent analysis
+    └── patent_analysis/    # Patent analysis agent
+        ├── main.py         # Entry point and pipeline orchestrator
+        └── src/            # Main source code
+            ├── parser.py           # PDF parsing (Mineru API or local)
+            ├── transformer.py      # Markdown to structured patent data (LLM-based)
+            ├── knowledge.py        # Entity/parts extraction from patent content
+            ├── vision.py           # Image processing and OCR (PaddleOCR)
+            ├── checker.py          # Formal defect checks (part-text consistency)
+            ├── generator.py        # Report content generation (LLM-based)
+            ├── renderer.py         # Report rendering (HTML -> PDF via Playwright)
+            ├── search_clients/     # Patent search APIs (Zhihuiya/PatSnap)
+            └── utils/              # Utility modules (LLM, cache, crypto, reranker)
 ```
 
 ## Development Commands
@@ -73,16 +74,16 @@ uv pip freeze              # List installed packages
 ### Running the Pipeline
 ```bash
 # Process a single patent
-uv run python main.py --pn CN116745575A
+uv run python -m agents.patent_analysis.main --pn CN116745575A
 
 # Process multiple patents (comma-separated)
-uv run python main.py --pn CN116745575A,CN123456789
+uv run python -m agents.patent_analysis.main --pn CN116745575A,CN123456789
 
 # Process patents from a file (one per line)
-uv run python main.py --file patents.txt
+uv run python -m agents.patent_analysis.main --file patents.txt
 
 # Run with multiple workers (parallel processing)
-uv run python main.py --pn CN116745575A --workers 3
+uv run python -m agents.patent_analysis.main --pn CN116745575A --workers 3
 ```
 
 ### Configuration
@@ -112,22 +113,22 @@ Each processed patent creates a directory in `output/` with:
 
 ## Key Modules
 
-### 1. Search Clients (`src/search_clients/`)
+### 1. Search Clients (`agents/patent_analysis/src/search_clients/`)
 - Factory pattern for different patent search APIs
 - Zhihuiya API implementation for downloading patents
 - Extensible to support other search providers (PatSnap, etc.)
 
-### 2. LangGraph Search Workflow (`src/graph/`)
-- Stateful search orchestration with LangGraph
-- Nodes: brain (query generation), eye (search execution), hand (result processing), reporter (reporting)
-- Query relaxation and document reranking for improved search results
+### 2. Search Strategy Generation (`agents/patent_analysis/src/search.py`)
+- LLM-based search strategy and query generation
+- Patent content analysis for effective search queries
+- Search query optimization and refinement
 
-### 3. Visual Processing (`src/vision.py`)
+### 3. Visual Processing (`agents/patent_analysis/src/vision.py`)
 - PaddleOCR for text extraction from patent figures
 - Image annotation with part labels
 - Matching OCR text to extracted technical parts
 
-### 4. Report Generation (`src/generator.py`, `src/renderer.py`)
+### 4. Report Generation (`agents/patent_analysis/src/generator.py`, `agents/patent_analysis/src/renderer.py`)
 - LLM-based content generation for report sections
 - Markdown to HTML to PDF rendering with Playwright
 - Custom CSS styling for professional report formatting

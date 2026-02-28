@@ -1,7 +1,7 @@
 import threading
 from typing import Dict
-from src.search_clients.base import BaseSearchClient
-from src.search_clients.zhihuiya import ZhihuiyaClient
+from agents.patent_analysis.src.search_clients.base import BaseSearchClient
+from agents.patent_analysis.src.search_clients.zhihuiya import ZhihuiyaClient
 
 class SearchClientFactory:
     _instances: Dict[str, BaseSearchClient] = {}

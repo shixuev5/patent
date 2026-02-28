@@ -14,7 +14,7 @@ from paddleocr import PaddleOCR
 from tqdm import tqdm
 from config import settings
 from loguru import logger
-from src.utils.llm import get_llm_service
+from agents.patent_analysis.src.utils.llm import get_llm_service
 
 
 class VisualProcessor:
