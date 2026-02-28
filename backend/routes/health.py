@@ -7,7 +7,7 @@ from fastapi import APIRouter
 
 from backend.auth import MAX_DAILY_ANALYSIS, AUTH_TOKEN_TTL_DAYS
 from backend.utils import _build_r2_storage
-from agents.patent_analysis.src.storage import TaskStatus, get_pipeline_manager
+from backend.storage import TaskStatus, get_pipeline_manager
 
 
 router = APIRouter()

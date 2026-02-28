@@ -21,7 +21,7 @@ from backend.utils import (
     _read_local_pdf_bytes,
     _build_r2_storage
 )
-from agents.patent_analysis.src.storage import get_pipeline_manager
+from backend.storage import get_pipeline_manager
 
 
 router = APIRouter()

@@ -5,15 +5,28 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from config import settings
 from backend.routes import router as api_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时的初始化操作
+    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+    # 关闭时的清理操作（如果需要）
 
 
 app = FastAPI(
     title="专利分析 API",
     description="提供任务创建、进度追踪和报告下载能力。",
     version="2.2.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -25,15 +38,6 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时的初始化操作"""
-    # 确保必要的目录存在
-    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":

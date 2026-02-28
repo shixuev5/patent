@@ -85,12 +85,16 @@ class R2Storage:
         try:
             response = self.client.get_object(Bucket=self.config.bucket, Key=key)
             body = response.get("Body")
-            return body.read() if body else None
+            data = body.read() if body else None
+            if data:
+                logger.info(f"[R2] 文件已成功读取，key={key}，大小={len(data)}字节")
+            return data
         except ClientError as exc:
             error_code = (
                 exc.response.get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
             )
             if str(error_code) in {"NoSuchKey", "404"}:
+                logger.debug(f"[R2] 文件不存在，key={key}")
                 return None
             logger.warning(f"[R2] 读取失败，key={key}，错误：{exc}")
             return None
@@ -108,6 +112,7 @@ class R2Storage:
                 Body=content,
                 ContentType=content_type,
             )
+            logger.info(f"[R2] 文件已成功存储，key={key}")
             return True
         except (ClientError, BotoCoreError) as exc:
             logger.warning(f"[R2] 写入失败，key={key}，错误：{exc}")
