@@ -57,7 +57,7 @@ class LLMService:
                 model=model or settings.LLM_MODEL,
                 messages=messages,
                 temperature=temperature,
-                max_completion_tokens=max_tokens,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
                 extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}}
             )

@@ -122,30 +122,72 @@ class PatentDocument(BaseModel):
 class PatentTransformer:
     def __init__(self):
         self.llm_service = get_llm_service()
-        # 预先生成 JSON Schema 字符串
-        self.json_schema = json.dumps(
-            PatentDocument.model_json_schema(), ensure_ascii=False, indent=2
-        )
 
     def _get_system_prompt(self):
-        return f"""你是一个精通专利文档结构的AI助手。请将Markdown文本解析为JSON。
+        return r"""你是一个精通专利文档结构的AI助手。请将Markdown文本解析为符合专利文档结构的JSON格式。
 
 ### 核心指令 (Critical Instructions)
 1. **去噪**：忽略所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
 2. **公式转义与保留**：
    - 严禁修改或删除文本中的 LaTeX 公式（如 `$$...$$` 或 `$...$`）。
-   - **JSON转义铁律**：在生成 JSON 字符串时，原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\\\`。
+   - **JSON转义铁律**：在生成 JSON 字符串时，原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\`。
      - 错误示例：`"content": "$120 \mathrm{{mm}}$"` (会导致 JSON 解析错误)
-     - 正确示例：`"content": "$120 \\\\mathrm{{mm}}$"`
+     - 正确示例：`"content": "$120 \\mathrm{{mm}}$"`
 3. **完整性**：如果某个字段在文中完全缺失，请返回 null 或空列表，严禁编造数据。
 4. **章节识别**：说明书的标题可能存在变体（如 "1. 技术领域" 或 "[技术领域]"），请根据语义灵活切分。
 
 ### 输出格式要求
-请严格遵守以下 JSON Schema 输出 JSON 数据：
+请严格按照以下 JSON 示例格式输出：
 
 ```json
-{self.json_schema}
+{
+  "bibliographic_data": {
+    "application_number": "202310001234.5",
+    "application_date": "2023.01.01",
+    "priority_date": null,
+    "publication_number": "CN116793681A",
+    "publication_date": "2024.03.20",
+    "invention_title": "一种高效节能的电动机",
+    "ipc_classifications": ["H02K5/04", "H02K7/00"],
+    "applicants": [{"name": "某科技有限公司", "address": "北京市海淀区"}] ,
+    "inventors": ["张三", "李四"],
+    "agency": {"agency_name": "某专利代理事务所", "agents": ["王五"]},
+    "abstract": "本发明公开了一种高效节能的电动机...",
+    "abstract_figure": null
+  },
+  "claims": [
+    {
+      "claim_text": "一种高效节能的电动机，包括定子、转子和外壳...",
+      "claim_type": "independent"
+    },
+    {
+      "claim_text": "根据权利要求1所述的电动机，其特征在于：所述定子包括...",
+      "claim_type": "dependent"
+    }
+  ],
+  "description": {
+    "technical_field": "本发明涉及电动机技术领域...",
+    "background_art": "目前的电动机存在效率低、能耗高等问题...",
+    "summary_of_invention": "本发明提供了一种高效节能的电动机...",
+    "technical_effect": "本发明具有高效、节能、噪音低等优点...",
+    "brief_description_of_drawings": "1-定子，2-转子，3-外壳，4-绕组...",
+    "detailed_description": "下面结合附图对本发明的具体实施方式进行详细描述..."
+  },
+  "drawings": [
+    {
+      "file_path": "figures/figure1.jpg",
+      "figure_label": "图1",
+      "caption": "电动机整体结构示意图"
+    }
+  ]
+}
 ```
+
+### 字段约束说明
+- **bibliographic_data**：包含申请号、申请日、发明名称、申请人等专利著录信息
+- **claims**：权利要求列表，每个权利要求包含内容和类型（独立/从属）
+- **description**：说明书各章节内容，包括技术领域、背景技术、发明内容、技术效果等
+- **drawings**：附图资源引用，包括文件路径、图号标签和说明文字
 """
 
     def transform(self, md_content: str) -> dict:
@@ -156,7 +198,7 @@ class PatentTransformer:
 
         try:
             json_data = self.llm_service.chat_completion_json(
-                model=Settings.LLM_MODEL_REASONING,
+                model=Settings.LLM_MODEL,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": md_content},
@@ -177,6 +219,10 @@ class PatentTransformer:
 
         except Exception as e:
             logger.error(f"[Transformer] Parsing failed: {e}")
+            # 提供更详细的错误信息
+            logger.error(f"[Transformer] Error type: {type(e).__name__}")
+            if 'json_data' in locals():
+                logger.error(f"[Transformer] Invalid JSON data: {json.dumps(json_data, ensure_ascii=False, indent=2)}")
             raise e
 
 
