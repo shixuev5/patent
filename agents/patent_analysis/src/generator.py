@@ -759,22 +759,65 @@ class ContentGenerator:
             else:
                 local_parts_context_str = "（该图未识别到具体部件标号）"
 
-            # 2. 获取说明书上下文
-            # 查找包含 "图1" 或 "Fig.1" 的段落
+            # 获取说明书上下文 (核心优化：基于索引的滑动窗口法)
             related_text = ""
-            clean_label = label.replace(" ", "")  # 去空格匹配
+            clean_label = label.replace(" ", "")  # 去除空格，统一为 "图1"
 
             if clean_label:
-                pattern = re.compile(rf"{clean_label}(?!\d)")
+                # re.escape 增强鲁棒性，防止特殊字符报错
+                # (?!\d) 断言后面不能紧跟数字，避免 "图1" 匹配到 "图10"
+                pattern = re.compile(rf"{re.escape(clean_label)}(?!\d)")
+                
+                matched_indices =[]
+                for idx, p in enumerate(paragraphs):
+                    # 匹配时忽略原文中的空格，容错 "图 1" 或 "图  1"
+                    if pattern.search(p.replace(" ", "")):
+                        matched_indices.append(idx)
+                
+                if matched_indices:
+                    # 定义上下文窗口大小（以物理换行段落为单位）
+                    # 专利习惯：上文通常是引出语或前提条件，下文是核心的具体实施细节/公式
+                    WINDOW_BEFORE = 1
+                    WINDOW_AFTER = 3
+                    
+                    target_indices = set()
+                    for idx in matched_indices:
+                        start_idx = max(0, idx - WINDOW_BEFORE)
+                        end_idx = min(len(paragraphs), idx + WINDOW_AFTER + 1)
+                        target_indices.update(range(start_idx, end_idx))
+                    
+                    # 按照数组原本的顺序进行排序，确保行文逻辑从上到下连贯
+                    sorted_indices = sorted(list(target_indices))
+                    
+                    context_blocks =[]
+                    current_block =[]
+                    last_idx = -2  # 初始化的虚拟索引
+                    
+                    # 遍历提取索引，合并连续段落，剥离无关段落
+                    for idx in sorted_indices:
+                        # 判断是否出现段落断层 (非连续索引)
+                        if last_idx != -2 and idx != last_idx + 1:
+                            if current_block:
+                                context_blocks.append("\n".join(current_block))
+                            current_block = []
+                        
+                        text_content = paragraphs[idx].strip()
+                        # 仅保留非空行，但索引断层计算不受空行内容影响
+                        if text_content:
+                            current_block.append(text_content)
+                            
+                        last_idx = idx
+                        
+                    # 把最后一个区块加进去
+                    if current_block:
+                        context_blocks.append("\n".join(current_block))
+                        
+                    # 用明显的分隔符拼接不连续的区块，提示大模型这里有跳转
+                    related_text = "\n\n[...省略其它段落...]\n\n".join(context_blocks)
 
-                matches = [
-                    p.strip() for p in paragraphs if pattern.search(p.replace(" ", ""))
-                ]
-                matches.sort(key=len, reverse=True)
-                related_text = "\n---\n".join(matches[:2])
-
-            if not related_text:
-                related_text = caption  # 降级使用标题
+            # 兜底策略：如果全文找不到图号匹配，或 label 为空，则仅提供 caption 标题
+            if not related_text.strip():
+                related_text = caption
 
             # 3. 生成图片解说
             image_explanation = self._generate_single_figure_caption(
