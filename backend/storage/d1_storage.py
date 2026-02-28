@@ -34,11 +34,9 @@ class D1TaskStorage:
             ("step_name", "step_name TEXT NOT NULL"),
             ("step_order", "step_order INTEGER NOT NULL"),
             ("status", "status TEXT DEFAULT 'pending'"),
-            ("progress", "progress INTEGER DEFAULT 0"),
             ("start_time", "start_time TEXT"),
             ("end_time", "end_time TEXT"),
             ("error_message", "error_message TEXT"),
-            ("metadata", "metadata TEXT"),
         ],
     }
 
@@ -67,11 +65,9 @@ class D1TaskStorage:
         step_name TEXT NOT NULL,
         step_order INTEGER NOT NULL,
         status TEXT DEFAULT 'pending',
-        progress INTEGER DEFAULT 0,
         start_time TEXT,
         end_time TEXT,
         error_message TEXT,
-        metadata TEXT,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
@@ -171,6 +167,14 @@ class D1TaskStorage:
                 self._request(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
                 logger.info(f"[D1 Migration] Added column {table_name}.{column_name}")
 
+            # 直接指定要删除的列，以确保安全
+            if table_name == "task_steps":
+                columns_to_drop = ["progress", "metadata"]
+                for column_name in columns_to_drop:
+                    if column_name in existing:
+                        self._request(f"ALTER TABLE {table_name} DROP COLUMN {column_name}")
+                        logger.info(f"[D1 Migration] Dropped column {table_name}.{column_name}")
+
     def _get_existing_columns(self, table_name: str) -> set[str]:
         rows = self._fetchall(f"PRAGMA table_info({table_name})")
         columns = set()
@@ -236,7 +240,6 @@ class D1TaskStorage:
             else None,
             end_time=datetime.fromisoformat(row["end_time"]) if row.get("end_time") else None,
             error_message=row.get("error_message"),
-            metadata=self._parse_metadata(row.get("metadata")),
         )
 
     def create_task(self, task: Task) -> Task:
@@ -319,8 +322,8 @@ class D1TaskStorage:
             """
             INSERT INTO task_steps (
                 task_id, step_name, step_order, status,
-                start_time, end_time, error_message, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                start_time, end_time, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 task_id,
@@ -330,7 +333,6 @@ class D1TaskStorage:
                 step.start_time.isoformat() if step.start_time else None,
                 step.end_time.isoformat() if step.end_time else None,
                 step.error_message,
-                json.dumps(step.metadata, ensure_ascii=False) if step.metadata else None,
             ],
         )
         return True
@@ -343,7 +345,7 @@ class D1TaskStorage:
         return [self._row_to_step(row) for row in rows]
 
     def update_task_step(self, task_id: str, step_name: str, **kwargs) -> bool:
-        allowed_fields = {"status", "start_time", "end_time", "error_message", "metadata"}
+        allowed_fields = {"status", "start_time", "end_time", "error_message"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False
@@ -351,7 +353,7 @@ class D1TaskStorage:
         clauses = []
         params = []
         for key, value in updates.items():
-            value = self._normalize_update_value(self._encode_metadata(value))
+            value = self._normalize_update_value(value)
             clauses.append(f"{key} = ?")
             params.append(value)
 
