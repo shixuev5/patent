@@ -26,6 +26,7 @@ export const useTaskStore = defineStore('tasks', {
     authToken: '' as string,
     userId: '' as string,
     progressStreams: {} as Record<string, EventSource>,
+    downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
   }),
 
   getters: {
@@ -39,6 +40,8 @@ export const useTaskStore = defineStore('tasks', {
     hasProcessingTasks: (state) => state.tasks.some((t) => t.status === 'processing'),
 
     completedCount: (state) => state.tasks.filter((t) => t.status === 'completed').length,
+
+    isDownloading: (state) => (taskId: string) => state.downloadingTaskIds.has(taskId),
 
     sortedTasks: (state) => {
       const statusOrder: Record<string, number> = {
@@ -388,6 +391,9 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     async downloadResult(task: Task) {
+      // 检查是否正在下载
+      if (this.downloadingTaskIds.has(task.id)) return
+
       if (!task.downloadUrl) return
       const config = useRuntimeConfig()
       const baseUrl = config.public.apiBaseUrl
@@ -402,6 +408,9 @@ export const useTaskStore = defineStore('tasks', {
       const downloadUrl = withTokenQuery(rawDownloadUrl, this.authToken)
 
       try {
+        // 标记为正在下载
+        this.downloadingTaskIds.add(task.id)
+
         const response = await fetch(downloadUrl, {
           headers: {
             Authorization: `Bearer ${this.authToken}`,
@@ -421,6 +430,9 @@ export const useTaskStore = defineStore('tasks', {
       } catch (error) {
         console.error('下载失败：', error)
         window.open(downloadUrl, '_blank')
+      } finally {
+        // 移除下载标记
+        this.downloadingTaskIds.delete(task.id)
       }
     },
 

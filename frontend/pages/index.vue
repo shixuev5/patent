@@ -339,6 +339,21 @@ const submitPatent = async () => {
   const pn = normalizedPatentNumber.value
   if (!pn) return
   if (!patentNumberPattern.test(pn)) return
+
+  // 检查是否有正在进行中的任务
+  const hasProcessingTasks = taskStore.hasProcessingTasks
+  if (hasProcessingTasks) {
+    submitNotice.value = {
+      type: 'error',
+      text: '有任务正在分析中，请等待完成后再创建新任务。',
+    }
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      submitNotice.value = null
+    }, 4000)
+    return
+  }
+
   loading.value = true
   submitNotice.value = null
   try {
@@ -395,6 +410,21 @@ const clearFile = () => {
 
 const submitFile = async () => {
   if (!selectedFile.value) return
+
+  // 检查是否有正在进行中的任务
+  const hasProcessingTasks = taskStore.hasProcessingTasks
+  if (hasProcessingTasks) {
+    submitNotice.value = {
+      type: 'error',
+      text: '有任务正在分析中，请等待完成后再创建新任务。',
+    }
+    if (noticeTimer) clearTimeout(noticeTimer)
+    noticeTimer = setTimeout(() => {
+      submitNotice.value = null
+    }, 4000)
+    return
+  }
+
   loading.value = true
   submitNotice.value = null
   try {

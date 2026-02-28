@@ -48,8 +48,10 @@
           class="action-btn primary"
           @click="download"
           title="下载报告"
+          :disabled="taskStore.isDownloading(task.id)"
         >
-          <ArrowDownTrayIcon class="w-4 h-4" />
+          <span v-if="taskStore.isDownloading(task.id)" class="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></span>
+          <ArrowDownTrayIcon v-else class="w-4 h-4" />
         </button>
 
         <button v-if="displayStatus === 'error'" class="action-btn secondary" @click="retry" title="重试">
