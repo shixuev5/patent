@@ -5,6 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter
 
+from config import VERSION
 from backend.auth import MAX_DAILY_ANALYSIS, AUTH_TOKEN_TTL_DAYS
 from backend.utils import _build_r2_storage
 from backend.storage import TaskStatus, get_pipeline_manager
@@ -23,13 +24,9 @@ async def health_check():
     return {
         "status": "正常",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0",
+        "version": VERSION,
         "active_tasks": active_count,
-        "statistics": {
-            "total": stats.get("total", 0),
-            "by_status": stats.get("by_status", {}),
-            "today_created": stats.get("today_created", 0),
-        },
+        "statistics": stats,
         "cache": {
             "r2_enabled": r2_storage.enabled,
         },
