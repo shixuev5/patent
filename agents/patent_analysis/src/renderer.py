@@ -469,9 +469,7 @@ class ReportRenderer:
             lines.append("> 未生成检索要素表。\n")
 
         # --- 3. 语义检索策略 ---
-        lines.append("## 3. 语义检索策略")
-        
-        lines.append(f"### {semantic.get('name')}")
+        lines.append(f"## 3. {semantic.get('name')}\n")
         lines.append(f"> **策略逻辑**: {semantic.get('description')}\n")
         lines.append(f"```text\n{semantic.get('content')}\n```\n")
             
