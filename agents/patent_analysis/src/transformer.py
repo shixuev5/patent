@@ -2,7 +2,7 @@ import json
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from loguru import logger
-from src.utils.llm import get_llm_service
+from agents.patent_analysis.src.utils.llm import get_llm_service
 from config import Settings
 
 

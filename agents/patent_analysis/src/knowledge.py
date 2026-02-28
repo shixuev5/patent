@@ -1,6 +1,6 @@
 from typing import Dict
 from loguru import logger
-from src.utils.llm import get_llm_service
+from agents.patent_analysis.src.utils.llm import get_llm_service
 from config import Settings
 
 
