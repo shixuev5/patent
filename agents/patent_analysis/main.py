@@ -48,7 +48,7 @@ class PatentPipeline:
 
         # 初始化任务管理器
         if self.task_id:
-            from agents.patent_analysis.src.storage import get_pipeline_manager
+            from backend.storage import get_pipeline_manager
             self.task_manager = get_pipeline_manager()
 
     def _check_cancelled(self):
@@ -59,7 +59,7 @@ class PatentPipeline:
         """更新任务步骤状态"""
         if self.task_id and self.task_manager:
             # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名
-            from agents.patent_analysis.src.storage import DEFAULT_PIPELINE_STEPS
+            from backend.storage import DEFAULT_PIPELINE_STEPS
             step_name_map = {en: zh for en, zh in DEFAULT_PIPELINE_STEPS}
             chinese_step_name = step_name_map.get(step_name, step_name)
             self.task_manager.update_progress(self.task_id, 0, chinese_step_name, step_status=status)

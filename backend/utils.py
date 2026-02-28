@@ -82,7 +82,7 @@ def _score_patent_candidate(candidate: str) -> int:
 
 
 def _build_r2_storage():
-    from agents.patent_analysis.src.storage.r2_storage import R2Config, R2Storage
+    from backend.storage.r2_storage import R2Config, R2Storage
     config = R2Config(
         endpoint_url=os.getenv("R2_ENDPOINT_URL", ""),
         access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),
