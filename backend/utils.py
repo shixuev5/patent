@@ -1,7 +1,6 @@
 """
 API 工具函数
 """
-import base64
 import json
 import os
 import re
@@ -49,15 +48,6 @@ def _read_local_pdf_bytes(pdf_path: str) -> Optional[bytes]:
     if not path.exists() or not path.is_file():
         return None
     return path.read_bytes()
-
-
-def _b64_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _b64_decode(raw: str) -> bytes:
-    padding = "=" * (-len(raw) % 4)
-    return base64.urlsafe_b64decode(raw + padding)
 
 
 def _normalize_patent_candidate(value: Optional[str]) -> str:

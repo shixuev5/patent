@@ -441,10 +441,8 @@ class SQLiteTaskStorage:
                 "SELECT COUNT(*) AS count FROM patent_analyses"
             ).fetchone()[0]
 
-        total = sum(status_counts.values())
         avg_duration = avg_row[0] if avg_row and avg_row[0] else None
         return {
-            "total": total,
             "by_status": status_counts,
             "today_created": today_count,
             "avg_duration_minutes": round(avg_duration, 2) if avg_duration else None,

@@ -464,10 +464,8 @@ class D1TaskStorage:
         completed_patents_row = self._fetchone("SELECT COUNT(*) AS c FROM patent_analyses")
         completed_patents = int(completed_patents_row["c"]) if completed_patents_row else 0
 
-        total = int(sum(status_counts.values()))
         avg_duration = avg_row.get("avg_minutes") if avg_row else None
         return {
-            "total": total,
             "by_status": status_counts,
             "today_created": today_count,
             "avg_duration_minutes": round(float(avg_duration), 2) if avg_duration else None,

@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from backend.auth import _quota_reset_utc
 from backend.models import UsageResponse
-from agents.patent_analysis.src.storage import get_pipeline_manager
+from backend.storage import get_pipeline_manager
 
 
 task_manager = get_pipeline_manager()
