@@ -26,7 +26,6 @@ class TaskStep:
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     error_message: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,7 +35,6 @@ class TaskStep:
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "error_message": self.error_message,
-            "metadata": json.dumps(self.metadata, ensure_ascii=False) if self.metadata else None,
         }
 
     @classmethod
@@ -48,7 +46,6 @@ class TaskStep:
             start_time=datetime.fromisoformat(data["start_time"]) if data.get("start_time") else None,
             end_time=datetime.fromisoformat(data["end_time"]) if data.get("end_time") else None,
             error_message=data.get("error_message"),
-            metadata=json.loads(data["metadata"]) if data.get("metadata") else {},
         )
 
 

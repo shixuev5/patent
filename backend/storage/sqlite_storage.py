@@ -42,7 +42,6 @@ class SQLiteTaskStorage:
             ("start_time", "start_time TEXT"),
             ("end_time", "end_time TEXT"),
             ("error_message", "error_message TEXT"),
-            ("metadata", "metadata TEXT"),
         ],
     }
 
@@ -74,7 +73,6 @@ class SQLiteTaskStorage:
         start_time TEXT,
         end_time TEXT,
         error_message TEXT,
-        metadata TEXT,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
@@ -114,6 +112,14 @@ class SQLiteTaskStorage:
                     continue
                 conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
                 logger.info(f"[SQLite Migration] Added column {table_name}.{column_name}")
+
+            # 直接指定要删除的列，以确保安全
+            if table_name == "task_steps":
+                columns_to_drop = ["progress", "metadata"]
+                for column_name in columns_to_drop:
+                    if column_name in existing:
+                        conn.execute(f"ALTER TABLE {table_name} DROP COLUMN {column_name}")
+                        logger.info(f"[SQLite Migration] Dropped column {table_name}.{column_name}")
 
     @staticmethod
     def _get_existing_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -164,7 +170,6 @@ class SQLiteTaskStorage:
             start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
             end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
             error_message=row["error_message"],
-            metadata=self._parse_metadata(row["metadata"]),
         )
 
     @staticmethod
@@ -281,8 +286,8 @@ class SQLiteTaskStorage:
                 """
                 INSERT INTO task_steps (
                     task_id, step_name, step_order, status,
-                    start_time, end_time, error_message, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    start_time, end_time, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -292,7 +297,6 @@ class SQLiteTaskStorage:
                     step.start_time.isoformat() if step.start_time else None,
                     step.end_time.isoformat() if step.end_time else None,
                     step.error_message,
-                    json.dumps(step.metadata, ensure_ascii=False) if step.metadata else None,
                 ),
             )
             conn.commit()
@@ -307,7 +311,7 @@ class SQLiteTaskStorage:
         return [self._row_to_step(row) for row in rows]
 
     def update_task_step(self, task_id: str, step_name: str, **kwargs) -> bool:
-        allowed_fields = {"status", "start_time", "end_time", "error_message", "metadata"}
+        allowed_fields = {"status", "start_time", "end_time", "error_message"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
         if not updates:
             return False
@@ -317,8 +321,6 @@ class SQLiteTaskStorage:
         for key, value in updates.items():
             if key in ("start_time", "end_time") and isinstance(value, datetime):
                 value = value.isoformat()
-            elif key == "metadata" and value is not None:
-                value = json.dumps(value, ensure_ascii=False)
             clauses.append(f"{key} = ?")
             params.append(value)
 

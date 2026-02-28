@@ -76,7 +76,6 @@ class PipelineTaskManager:
                 step_name=step_name,
                 step_order=order,
                 status="pending",
-                progress=0,
             )
             self.storage.add_task_step(task_id, step)
 
