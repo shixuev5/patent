@@ -42,13 +42,6 @@ class Settings:
     LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
     LLM_MODEL_REASONING = os.getenv("LLM_MODEL_REASONING", "deepseek-reasoner")
 
-    # --- 专利审查模型配置 (Patent Examination) ---
-    LLM_MODEL_EXAM = os.getenv("LLM_MODEL_EXAM", "deepseek-chat")
-    LLM_EXAM_API_KEY = os.getenv("LLM_EXAM_API_KEY")  # 可选，若为空则复用 LLM_API_KEY
-    LLM_EXAM_BASE_URL = os.getenv(
-        "LLM_EXAM_BASE_URL"
-    )  # 可选，若为空则复用 LLM_BASE_URL
-
     # --- 视觉模型配置 ---
     VLM_API_KEY = os.getenv("VLM_API_KEY")
     VLM_BASE_URL = os.getenv("VLM_BASE_URL")
