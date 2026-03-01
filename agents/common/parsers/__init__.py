@@ -5,6 +5,6 @@ This module provides interfaces and implementations for parsing various document
 
 from agents.common.parsers.base import BaseParser
 from agents.common.parsers.pdf_parser import LocalPDFParser, OnlinePDFParser, PDFParser
-from agents.common.parsers.word_parser import LocalWordParser, WordParser
+from agents.common.parsers.word_parser import OnlineWordParser, WordParser
 
-__all__ = ["BaseParser", "LocalPDFParser", "OnlinePDFParser", "PDFParser", "LocalWordParser", "WordParser"]
+__all__ = ["BaseParser", "LocalPDFParser", "OnlinePDFParser", "PDFParser", "OnlineWordParser", "WordParser"]
