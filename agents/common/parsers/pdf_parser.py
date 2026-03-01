@@ -8,6 +8,7 @@ from loguru import logger
 
 # Import config
 from config import settings
+from agents.common.parsers.base import BaseParser
 
 # Import Mineru local backend (only used if local parsing is active)
 try:
@@ -22,7 +23,7 @@ except ImportError:
     pass
 
 
-class LocalPDFParser:
+class LocalPDFParser(BaseParser):
     """
     Executes PDF parsing using the local Mineru Python library (requires GPU/heavy CPU).
     """
@@ -84,7 +85,7 @@ class LocalPDFParser:
             raise e
 
 
-class OnlinePDFParser:
+class OnlinePDFParser(BaseParser):
     """
     Executes PDF parsing using the Mineru.net REST API.
     Flow: Get Upload URL -> Upload File -> Create Task -> Poll Status -> Download Result
@@ -243,7 +244,7 @@ class OnlinePDFParser:
         return target_md
 
 
-class PDFParser:
+class PDFParser(BaseParser):
     """
     Factory class that routes to Local or Online parser based on configuration.
     """

@@ -1,92 +1,183 @@
 import os
+import time
+import zipfile
+import requests
 import shutil
 from pathlib import Path
 from loguru import logger
-from docx import Document
-from PIL import Image
-import io
 
 # Import config
 from config import settings
 from agents.common.parsers.base import BaseParser
 
 
-class LocalWordParser(BaseParser):
+class OnlineWordParser(BaseParser):
     """
-    Executes Word document parsing using python-docx library (local parsing).
+    Executes Word document parsing using the Mineru.net REST API.
+    Flow: Get Upload URL -> Upload File -> Create Task -> Poll Status -> Download Result
     """
+    def __init__(self):
+        self.api_key = settings.MINERU_API_KEY
+        self.base_url = settings.MINERU_BASE_URL.rstrip("/")
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
     def parse(self, docx_path: Path, output_dir: Path) -> Path:
-        docx_name = docx_path.stem
-        logger.info(f"[LocalWordParser] Starting to parse: {docx_path}")
+        logger.info(f"[OnlineWordParser] Starting online parsing for: {docx_path}")
+
+        if not self.api_key:
+            raise ValueError("MINERU_API_KEY is missing in config.")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # 1. Prepare environment
-            local_md_dir = output_dir
-            local_image_dir = output_dir / "images"
-            local_md_dir.mkdir(parents=True, exist_ok=True)
-            local_image_dir.mkdir(parents=True, exist_ok=True)
+            # 1. Upload File (Get Data ID)
+            batch_id = self._upload_file(docx_path)
+            logger.info(f"[OnlineWordParser] File uploaded. Batch ID: {batch_id}")
 
-            logger.info(f"[LocalWordParser] Output directory set to: {local_md_dir}")
+            # 2. Poll for Completion
+            result_data = self._poll_task(batch_id)
 
-            # 2. Read Word document
-            doc = Document(str(docx_path))
+            # 3. Process Results (Download and unzip)
+            final_md_path = self._process_results(result_data, output_dir)
 
-            # 3. Extract content
-            md_content = []
-            image_index = 1
-
-            for para in doc.paragraphs:
-                if para.text.strip():
-                    md_content.append(para.text)
-
-            # Extract images
-            for rel in doc.part.rels.values():
-                if "image" in rel.target_ref:
-                    image_data = rel.target_part.blob
-                    image_stream = io.BytesIO(image_data)
-
-                    try:
-                        # Try to identify image format
-                        with Image.open(image_stream) as img:
-                            img_format = img.format.lower()
-                            image_filename = f"image_{image_index}.{img_format}"
-                            image_path = local_image_dir / image_filename
-
-                            with open(image_path, "wb") as f:
-                                f.write(image_data)
-
-                            md_content.append(f"![Figure {image_index}](images/{image_filename})")
-                            image_index += 1
-                    except Exception as e:
-                        logger.warning(f"[LocalWordParser] Failed to process image: {e}")
-                        continue
-
-            # 4. Save Markdown
-            md_content_str = "\n\n".join(md_content)
-            md_file_name = "raw.md"
-            md_file_path = local_md_dir / md_file_name
-
-            with open(md_file_path, "w", encoding="utf-8") as f:
-                f.write(md_content_str)
-
-            final_md_path = Path(local_md_dir) / md_file_name
-
-            if not final_md_path.exists():
-                logger.error(f"[LocalWordParser] File check failed: {final_md_path} does not exist.")
-            else:
-                logger.success(f"[LocalWordParser] Success. MD saved at: {final_md_path}")
-
+            logger.success(f"[OnlineWordParser] Success. MD saved at: {final_md_path}")
             return final_md_path
 
         except Exception as e:
-            logger.exception(f"[LocalWordParser] Failed to parse Word document: {e}")
+            logger.exception(f"[OnlineWordParser] API Processing failed: {e}")
             raise e
+
+    def _upload_file(self, file_path: Path) -> str:
+        """
+        Uploads a local file.
+        Strategy: Request a presigned URL batch, then PUT the file.
+        """
+        file_name = file_path.name
+
+        # A. Request Upload URL
+        url_batch = f"{self.base_url}/file-urls/batch"
+        payload = {"files": [{"name": file_name}], "model_version": "vlm"}
+
+        resp = requests.post(url_batch, headers=self.headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("code") != 0:
+            raise Exception(f"Failed to get upload URL: {data}")
+
+        res_data = data["data"]
+
+        if "file_urls" not in res_data or not res_data["file_urls"]:
+             raise Exception(f"Invalid API response: 'file_urls' missing. Data: {res_data}")
+
+        upload_url = res_data["file_urls"][0]
+        batch_id = res_data["batch_id"]
+
+        # B. Upload Content (PUT)
+        with open(file_path, "rb") as f:
+            put_resp = requests.put(upload_url, data=f)
+
+            if put_resp.status_code != 200:
+                logger.error(f"OSS Upload Failed [{put_resp.status_code}]: {put_resp.text}")
+
+            put_resp.raise_for_status()
+
+        return batch_id
+
+    def _poll_task(self, batch_id: str, interval=5, timeout=600) -> dict:
+        """Polls the task status until success or failure."""
+        url = f"{self.base_url}/extract-results/batch/{batch_id}"
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            resp = requests.get(url, headers=self.headers)
+            if resp.status_code != 200:
+                logger.warning(f"[OnlineWordParser] Poll status check failed: {resp.status_code}")
+                time.sleep(interval)
+                continue
+
+            data = resp.json()
+            if data.get("code") != 0:
+                raise Exception(f"Poll API Error: {data}")
+
+            # The API returns a list of extracts for the batch. We uploaded one file.
+            task_info = data["data"]["extract_result"][0]
+            state = task_info["state"]
+
+            if state == "done":
+                return task_info
+            elif state == "failed":
+                raise Exception(f"Task failed on server: {task_info.get('err_msg')}")
+            else:
+                logger.info(f"[OnlineWordParser] Status: {state}... waiting {interval}s")
+                time.sleep(interval)
+
+        raise TimeoutError("Extraction task timed out.")
+
+    def _process_results(self, task_info: dict, output_dir: Path) -> Path:
+        """Downloads the zip, extracts it, and arranges files."""
+        # 1. Ensure output directory exists
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 2. Download
+        download_url = task_info.get("full_zip_url")
+
+        if not download_url:
+            raise Exception("No download URL found in task response.")
+
+        zip_path = output_dir / "result.zip"
+
+        with requests.get(download_url, stream=True, verify=False) as r:
+            r.raise_for_status()
+            with open(zip_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        # 2. Extract
+        extract_tmp = output_dir / "tmp_extract"
+        extract_tmp.mkdir(exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_tmp)
+
+        # 3. Organize (Move files to expected structure)
+        # Expected: output_dir/raw.md, output_dir/images/
+
+        # Find the markdown file in the extracted folders
+        md_files = list(extract_tmp.rglob("*.md"))
+        if not md_files:
+            raise FileNotFoundError("No markdown file found in the downloaded zip.")
+
+        source_md = md_files[0]
+        target_md = output_dir / "raw.md"
+        shutil.move(str(source_md), str(target_md))
+
+        # Find images folder (usually in the same dir as the md file)
+        source_img_dir = source_md.parent / "images"
+        target_img_dir = output_dir / "images"
+
+        if source_img_dir.exists():
+            if target_img_dir.exists():
+                shutil.rmtree(target_img_dir)
+            shutil.move(str(source_img_dir), str(target_img_dir))
+        else:
+            target_img_dir.mkdir(exist_ok=True)
+
+        # Cleanup
+        zip_path.unlink()
+        shutil.rmtree(extract_tmp)
+
+        return target_md
 
 
 class WordParser(BaseParser):
     """
-    Factory class for Word document parsing (only local parsing supported).
+    Factory class that routes to Online parser for Word document parsing.
     """
-    def parse(self, docx_path: Path, output_dir: Path) -> Path:
-        logger.info("Using Local Word Parser (python-docx)")
-        return LocalWordParser().parse(docx_path, output_dir)
+    @staticmethod
+    def parse(docx_path: Path, output_dir: Path) -> Path:
+        logger.info("Using Online Word Parser (Mineru API)")
+        return OnlineWordParser().parse(docx_path, output_dir)
