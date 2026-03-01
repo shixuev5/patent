@@ -1,7 +1,7 @@
 import threading
 from typing import Dict
-from agents.patent_analysis.src.search_clients.base import BaseSearchClient
-from agents.patent_analysis.src.search_clients.zhihuiya import ZhihuiyaClient
+from agents.common.search_clients.base import BaseSearchClient
+from agents.common.search_clients.zhihuiya import ZhihuiyaClient
 
 class SearchClientFactory:
     _instances: Dict[str, BaseSearchClient] = {}
@@ -10,7 +10,7 @@ class SearchClientFactory:
     @staticmethod
     def get_client(provider: str = "zhihuiya") -> BaseSearchClient:
         provider = provider.lower().strip()
-        
+
         # 双重检查锁定 (Double-Checked Locking) 确保线程安全且高效
         if provider not in SearchClientFactory._instances:
             with SearchClientFactory._lock:
@@ -20,5 +20,5 @@ class SearchClientFactory:
                         SearchClientFactory._instances[provider] = ZhihuiyaClient()
                     else:
                         raise ValueError(f"Unknown search provider: {provider}")
-        
+
         return SearchClientFactory._instances[provider]

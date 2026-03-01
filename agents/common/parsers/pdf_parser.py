@@ -99,7 +99,7 @@ class OnlinePDFParser:
 
     def parse(self, pdf_path: Path, output_dir: Path) -> Path:
         logger.info(f"[OnlineParser] Starting online parsing for: {pdf_path}")
-        
+
         if not self.api_key:
             raise ValueError("MINERU_API_KEY is missing in config.")
 
@@ -112,10 +112,10 @@ class OnlinePDFParser:
 
             # 2. Poll for Completion
             result_data = self._poll_task(batch_id)
-            
+
             # 3. Process Results (Download and unzip)
             final_md_path = self._process_results(result_data, output_dir)
-            
+
             logger.success(f"[OnlineParser] Success. MD saved at: {final_md_path}")
             return final_md_path
 
@@ -129,57 +129,57 @@ class OnlinePDFParser:
         Strategy: Request a presigned URL batch, then PUT the file.
         """
         file_name = file_path.name
-        
+
         # A. Request Upload URL
         url_batch = f"{self.base_url}/file-urls/batch"
         payload = {"files": [{"name": file_name}], "model_version": "vlm"}
-        
+
         resp = requests.post(url_batch, headers=self.headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
-        
+
         if data.get("code") != 0:
             raise Exception(f"Failed to get upload URL: {data}")
 
         res_data = data["data"]
-        
+
         if "file_urls" not in res_data or not res_data["file_urls"]:
              raise Exception(f"Invalid API response: 'file_urls' missing. Data: {res_data}")
-         
+
         upload_url = res_data["file_urls"][0]
         batch_id = res_data["batch_id"]
 
         # B. Upload Content (PUT)
         with open(file_path, "rb") as f:
             put_resp = requests.put(upload_url, data=f)
-            
+
             if put_resp.status_code != 200:
                 logger.error(f"OSS Upload Failed [{put_resp.status_code}]: {put_resp.text}")
-                
+
             put_resp.raise_for_status()
-            
+
         return batch_id
 
     def _poll_task(self, batch_id: str, interval=5, timeout=600) -> dict:
         """Polls the task status until success or failure."""
         url = f"{self.base_url}/extract-results/batch/{batch_id}"
         start_time = time.time()
-        
+
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self.headers)
             if resp.status_code != 200:
                 logger.warning(f"[OnlineParser] Poll status check failed: {resp.status_code}")
                 time.sleep(interval)
                 continue
-                
+
             data = resp.json()
             if data.get("code") != 0:
                 raise Exception(f"Poll API Error: {data}")
-            
+
             # The API returns a list of extracts for the batch. We uploaded one file.
             task_info = data["data"]["extract_result"][0]
             state = task_info["state"]
-            
+
             if state == "done":
                 return task_info
             elif state == "failed":
@@ -187,19 +187,19 @@ class OnlinePDFParser:
             else:
                 logger.info(f"[OnlineParser] Status: {state}... waiting {interval}s")
                 time.sleep(interval)
-        
+
         raise TimeoutError("Extraction task timed out.")
 
     def _process_results(self, task_info: dict, output_dir: Path) -> Path:
         """Downloads the zip, extracts it, and arranges files."""
         # 1. Download
-        download_url = task_info.get("full_zip_url") 
+        download_url = task_info.get("full_zip_url")
 
         if not download_url:
             raise Exception("No download URL found in task response.")
 
         zip_path = output_dir / "result.zip"
-        
+
         with requests.get(download_url, stream=True, verify=False) as r:
             r.raise_for_status()
             with open(zip_path, 'wb') as f:
@@ -209,26 +209,26 @@ class OnlinePDFParser:
         # 2. Extract
         extract_tmp = output_dir / "tmp_extract"
         extract_tmp.mkdir(exist_ok=True)
-        
+
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(extract_tmp)
 
         # 3. Organize (Move files to expected structure)
         # Expected: output_dir/raw.md, output_dir/images/
-        
+
         # Find the markdown file in the extracted folders
         md_files = list(extract_tmp.rglob("*.md"))
         if not md_files:
             raise FileNotFoundError("No markdown file found in the downloaded zip.")
-        
+
         source_md = md_files[0]
         target_md = output_dir / "raw.md"
         shutil.move(str(source_md), str(target_md))
-        
+
         # Find images folder (usually in the same dir as the md file)
         source_img_dir = source_md.parent / "images"
         target_img_dir = output_dir / "images"
-        
+
         if source_img_dir.exists():
             if target_img_dir.exists():
                 shutil.rmtree(target_img_dir)
@@ -239,7 +239,7 @@ class OnlinePDFParser:
         # Cleanup
         zip_path.unlink()
         shutil.rmtree(extract_tmp)
-        
+
         return target_md
 
 

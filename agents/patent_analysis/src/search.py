@@ -2,8 +2,8 @@ import re
 from pathlib import Path
 from typing import Dict, Any, List
 from loguru import logger
-from agents.patent_analysis.src.utils.llm import get_llm_service
-from agents.patent_analysis.src.utils.cache import StepCache
+from agents.common.utils.llm import get_llm_service
+from agents.common.utils.cache import StepCache
 from config import settings
 
 

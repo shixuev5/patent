@@ -34,7 +34,7 @@ class StepCache:
             try:
                 # 写入原子性通过锁保证，但文件系统层面建议 write+rename，这里简化为直接覆盖
                 self.file_path.write_text(
-                    json.dumps(self.data, ensure_ascii=False, indent=2), 
+                    json.dumps(self.data, ensure_ascii=False, indent=2),
                     encoding='utf-8'
                 )
                 logger.debug(f"缓存已更新: [{key}]")
@@ -53,13 +53,13 @@ class StepCache:
         if key in self.data:
             logger.info(f"Step [{key}]: 跳过 (命中缓存)")
             return self.data[key]
-        
+
         # 执行计算
         logger.info(f"Step [{key}]: 开始执行...")
         result = func(*args, **kwargs)
-        
+
         # 保存结果
         if result is not None:
             self.save(key, result)
-        
+
         return result

@@ -10,9 +10,9 @@ from loguru import logger
 from config import settings
 
 # 引入各个处理模块
-from agents.patent_analysis.src.search_clients.factory import SearchClientFactory
-from agents.patent_analysis.src.parser import PDFParser
-from agents.patent_analysis.src.transformer import PatentTransformer
+from agents.common.search_clients.factory import SearchClientFactory
+from agents.common.parsers.pdf_parser import PDFParser
+from agents.common.patent_structuring import extract_structured_data
 from agents.patent_analysis.src.knowledge import KnowledgeExtractor
 from agents.patent_analysis.src.vision import VisualProcessor
 from agents.patent_analysis.src.checker import FormalExaminer
@@ -100,8 +100,7 @@ class PatentPipeline:
                 patent_data = json.loads(self.paths["patent_json"].read_text(encoding="utf-8"))
             else:
                 logger.info(f"[{self.pn}] Step 2: Transforming MD to structured JSON...")
-                transformer = PatentTransformer()
-                patent_data = transformer.transform(md_content)
+                patent_data = extract_structured_data(md_content, method="hybrid")
                 self.paths["patent_json"].write_text(
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )

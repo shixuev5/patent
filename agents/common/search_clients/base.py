@@ -19,7 +19,7 @@ class BaseSearchClient(ABC):
                  }
         """
         pass
-    
+
     @abstractmethod
     def search_semantic(self, text: str, to_date: str = "", limit: int = 50) -> Dict[str, Any]:
         """

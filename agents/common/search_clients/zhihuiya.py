@@ -22,7 +22,7 @@ def rsa_encrypt(message: str, public_key_pem: str) -> str:
         return base64.b64encode(ciphertext).decode('utf-8')
     except Exception as e:
         raise ValueError(f"Encryption failed: {e}")
-from agents.patent_analysis.src.search_clients.base import BaseSearchClient
+from agents.common.search_clients.base import BaseSearchClient
 
 
 class ZhihuiyaClient(BaseSearchClient):
@@ -42,7 +42,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         if self.token:
             return
-        
+
         with self._login_lock:
             if self.token: return
 
@@ -79,7 +79,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 self.token = data.get("token")
                 self.headers["Authorization"] = f"Bearer {self.token}"
                 logger.success("[Zhihuiya] Login successful.")
-                
+
                 # 4. 登录成功后，初始化查询字段配置
                 self._configure_search_settings()
             except Exception as e:
@@ -97,20 +97,20 @@ class ZhihuiyaClient(BaseSearchClient):
             "_type": "query",
             "source_type": "search_result",
             "q": f"PATENT_ID:{patent_id}",
-            "rows": "1", 
+            "rows": "1",
             "page": 1
         }
-        
+
         try:
             resp = self.session.post(url, headers=self.headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            
+
             if not data.get("status"):
                 return {}
-            
+
             info = data.get("data", {})
-            
+
             # 数据清洗
             # 1. 标题 (优先中文)
             title = info.get("TITLE", {}).get("CN", "") or info.get("TITLE", {}).get("EN", "")
@@ -119,13 +119,13 @@ class ZhihuiyaClient(BaseSearchClient):
 
             # 2. 摘要 (优先中文)
             abst = info.get("ABST", {}).get("CN", "") or info.get("ABST", {}).get("EN", "")
-            
+
             # 3. 申请人 (归一化)
             assignees = info.get("AN", {}).get("OFFICIAL", [])
-            
+
             # 4. 发明人
             inventors = [p.get("name") for p in info.get("IN", {}).get("CN", [])]
-            
+
             return {
                 "pn": info.get("PN"),
                 "patent_id": info.get("PATENT_ID"),
@@ -160,7 +160,7 @@ class ZhihuiyaClient(BaseSearchClient):
             resp = self.session.post(url, headers=self.headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            
+
             # 提取 HTML 内容 (优先 CN)
             clms_html = data.get("data", {}).get("CLMS", {}).get("CN", "")
             return self._clean_html(clms_html)
@@ -184,7 +184,7 @@ class ZhihuiyaClient(BaseSearchClient):
             resp = self.session.post(url, headers=self.headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            
+
             # 提取 HTML 内容 (优先 CN)
             desc_html = data.get("data", {}).get("DESC", {}).get("CN", "")
             return self._clean_html(desc_html)
@@ -198,24 +198,24 @@ class ZhihuiyaClient(BaseSearchClient):
         URL: /patent/id/{id}/official-image (GET)
         """
         url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/official-image"
-        
+
         try:
             resp = self.session.get(url, headers=self.headers)
             resp.raise_for_status()
             data = resp.json()
-            
+
             # 数据结构: data -> data -> {patent_id} -> OFFICIAL_IMAGE -> {ImageID: {url...}}
             images_map = data.get("data", {}).get(patent_id, {}).get("OFFICIAL_IMAGE", {})
-            
+
             image_urls = []
             # 按 Image ID 排序 (通常 HDA...1, HDA...2) 保证顺序
             sorted_keys = sorted(images_map.keys())
-            
+
             for key in sorted_keys:
                 img_obj = images_map[key]
                 if isinstance(img_obj, dict) and "url" in img_obj:
                     image_urls.append(img_obj["url"])
-                    
+
             return image_urls
         except Exception as e:
             logger.error(f"[Zhihuiya] Fetch official images failed: {e}")
@@ -232,7 +232,7 @@ class ZhihuiyaClient(BaseSearchClient):
         # 1. 确保持有 ID
         patent_id = pn_or_id
         # 如果看起来像 PN (包含字母且长度较短)，尝试转换。ID通常是UUID格式 (36位)
-        if len(pn_or_id) < 30: 
+        if len(pn_or_id) < 30:
             resolved_id = self._get_patent_id_by_pn(pn_or_id)
             if resolved_id:
                 patent_id = resolved_id
@@ -243,7 +243,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         # 2. 并行或串行获取各部分数据 (这里使用串行，简单可靠)
         # 如果追求性能，可以使用 ThreadPoolExecutor 并发这4个请求
-        
+
         basic_info = self._fetch_basic_info(patent_id)
         if not basic_info:
             logger.error(f"[Zhihuiya] Failed to get basic info for {patent_id}")
@@ -266,10 +266,10 @@ class ZhihuiyaClient(BaseSearchClient):
                 f"【说明书】\n{desc_text}"
             )
         }
-        
+
         logger.success(f"[Zhihuiya] Details fetched for {basic_info.get('pn', patent_id)}")
         return detail
-        
+
     def _configure_search_settings(self):
         """
         配置搜索结果返回字段 (PUT 请求)
@@ -281,7 +281,7 @@ class ZhihuiyaClient(BaseSearchClient):
             "fields": "PN,TITLE,ABST,ANC,PBD,ICLMS,ADC",
             "search_mode": "publication"
         }
-        
+
         try:
             logger.info("[Zhihuiya] Configuring search result settings...")
             resp = self.session.put(url, headers=self.headers, json=payload)
@@ -305,7 +305,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
     def _normalize_result(self, raw_item: Dict) -> Dict:
         """将智慧芽原始数据标准化为系统通用格式 (适配语义检索返回字段)"""
-        
+
         # 1. 处理分数: 将 "88%" 转换为 88.0
         raw_score = raw_item.get("RELEVANCY", 0)
         score = 0.0
@@ -328,7 +328,7 @@ class ZhihuiyaClient(BaseSearchClient):
         assignees = []
         if "ANC" in raw_item and isinstance(raw_item["ANC"], dict):
             assignees = raw_item["ANC"].get("OFFICIAL", [])
-        
+
         # 4. 安全提取图片 URL
         image_info = raw_item.get("PATSNAP_IMAGE")
         image_url = None
@@ -436,7 +436,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         return self._do_post_request(step2_url, step2_payload)
-    
+
     def get_similar_patents(self, pn: str, limit: int = 50) -> Dict[str, Any]:
         """
         [Similar] 查询本专利的相似专利 (基于 PN 语义跳转)
@@ -461,7 +461,7 @@ class ZhihuiyaClient(BaseSearchClient):
         try:
             logger.info(f"[Zhihuiya] Generating semantic ID for similar patents of {pn}...")
             resp = self.session.post(jump_url, headers=self.headers, json=jump_payload)
-            
+
             # Token 过期重试逻辑
             if resp.status_code == 401:
                 self.token = None
@@ -508,7 +508,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         # 复用统一的请求处理方法
         return self._do_post_request(search_url, search_payload)
-    
+
     def get_family(self, pn: str, limit: int = 50) -> List[Dict]:
         """
         [Spider] 获取目标专利的同族专利 (Family members)
@@ -516,14 +516,14 @@ class ZhihuiyaClient(BaseSearchClient):
         """
         if not pn:
             return []
-            
+
         # 构建同族检索式
         query = f"EFAM:({pn})"
         logger.debug(f"[Zhihuiya] Fetching family for {pn} with query: {query}")
-        
+
         # 调用基础检索
         res = self.search(query=query, limit=limit)
-        
+
         # Spider 逻辑只需要结果列表，过滤掉自身
         results = [doc for doc in res.get("results", []) if doc.get("pn") != pn]
         return results
@@ -535,14 +535,14 @@ class ZhihuiyaClient(BaseSearchClient):
         """
         if not pn:
             return []
-            
+
         # 构建引证检索式
         query = f"BF_CITES:({pn})"
         logger.debug(f"[Zhihuiya] Fetching citations for {pn} with query: {query}")
-        
+
         # 调用基础检索
         res = self.search(query=query, limit=limit)
-        
+
         return res.get("results", [])
 
     def _do_post_request(self, url: str, payload: Dict) -> List[Dict]:
@@ -582,7 +582,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 logger.error(f"[Zhihuiya] Request failed: {e}")
                 return {"total": 0, "results": []}
         return {"total": 0, "results": []}
-    
+
     # =========================================================================
     # PDF 下载相关功能
     # =========================================================================
@@ -604,7 +604,7 @@ class ZhihuiyaClient(BaseSearchClient):
         for attempt in range(2):
             try:
                 resp = self.session.post(url, headers=self.headers, json=payload)
-                
+
                 if resp.status_code == 401:
                     logger.warning("[Zhihuiya] Token expired during ID query, refreshing...")
                     self.token = None
@@ -620,11 +620,11 @@ class ZhihuiyaClient(BaseSearchClient):
 
                 patent_info = data.get("data", {}).get("patent_info", {})
                 patent_id = patent_info.get("PATENT_ID")
-                
+
                 if not patent_id:
                     logger.warning(f"[Zhihuiya] No patent ID found for {pn}")
                     return None
-                
+
                 return patent_id
 
             except Exception as e:
@@ -697,13 +697,13 @@ class ZhihuiyaClient(BaseSearchClient):
         try:
             # 确保目标文件夹存在
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            
+
             with self.session.get(pdf_url, stream=True) as r:
                 r.raise_for_status()
                 with open(save_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
-            
+
             logger.success(f"[Zhihuiya] Downloaded: {save_path}")
             return True
         except Exception as e:
