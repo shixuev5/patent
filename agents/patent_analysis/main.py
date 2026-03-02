@@ -58,11 +58,26 @@ class PatentPipeline:
     def _update_step_status(self, step_name: str, status: str):
         """更新任务步骤状态"""
         if self.task_id and self.task_manager:
-            # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名
+            # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名和进度百分比
             from backend.storage import DEFAULT_PIPELINE_STEPS
             step_name_map = {en: zh for en, zh in DEFAULT_PIPELINE_STEPS}
             chinese_step_name = step_name_map.get(step_name, step_name)
-            self.task_manager.update_progress(self.task_id, 0, chinese_step_name, step_status=status)
+
+            # 计算进度百分比（总共有9个步骤，每个步骤大约占11%）
+            total_steps = len(DEFAULT_PIPELINE_STEPS)
+            step_index = next((i for i, (en, zh) in enumerate(DEFAULT_PIPELINE_STEPS) if en == step_name), 0)
+
+            if status == "processing":
+                # 步骤开始时，进度为当前步骤的起始百分比
+                progress = int((step_index / total_steps) * 100)
+            elif status == "completed":
+                # 步骤完成时，进度为当前步骤的结束百分比
+                progress = int(((step_index + 1) / total_steps) * 100)
+            else:
+                # 其他状态（如pending）保持当前进度
+                progress = 0
+
+            self.task_manager.update_progress(self.task_id, progress, chinese_step_name, step_status=status)
 
     def run(self) -> dict:
         """

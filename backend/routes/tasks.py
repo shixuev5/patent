@@ -84,16 +84,6 @@ async def run_pipeline_task(
             return pipeline.run()
 
         pipeline_future = loop.run_in_executor(None, run_pipeline)
-
-        progress = 5
-        while not pipeline_future.done():
-            if cancel_event and cancel_event.is_set():
-                await asyncio.sleep(0.5)
-                continue
-            task_manager.update_progress(task_id, progress, "正在分析专利")
-            progress = min(progress + 3, 90)
-            await asyncio.sleep(2)
-
         result = await pipeline_future
 
         if cancel_event and cancel_event.is_set():

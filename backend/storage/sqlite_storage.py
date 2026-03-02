@@ -101,25 +101,7 @@ class SQLiteTaskStorage:
     def _init_database(self):
         with self._get_connection() as conn:
             conn.executescript(self.CREATE_TABLES_SQL)
-            self._apply_schema_migrations(conn)
             conn.commit()
-
-    def _apply_schema_migrations(self, conn: sqlite3.Connection):
-        for table_name, columns in self.REQUIRED_COLUMNS.items():
-            existing = self._get_existing_columns(conn, table_name)
-            for column_name, definition in columns:
-                if column_name in existing:
-                    continue
-                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
-                logger.info(f"[SQLite Migration] Added column {table_name}.{column_name}")
-
-            # 直接指定要删除的列，以确保安全
-            if table_name == "task_steps":
-                columns_to_drop = ["progress", "metadata"]
-                for column_name in columns_to_drop:
-                    if column_name in existing:
-                        conn.execute(f"ALTER TABLE {table_name} DROP COLUMN {column_name}")
-                        logger.info(f"[SQLite Migration] Dropped column {table_name}.{column_name}")
 
     @staticmethod
     def _get_existing_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
