@@ -77,7 +77,7 @@ async def run_pipeline_task(
         task_manager.update_progress(task_id, 1, "任务已开始")
 
         loop = asyncio.get_event_loop()
-        from main import PatentPipeline
+        from agents.patent_analysis.main import PatentPipeline
         pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event, task_id=task_id)
 
         def run_pipeline():
