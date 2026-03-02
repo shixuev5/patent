@@ -590,16 +590,31 @@ class ZhihuiyaClient(BaseSearchClient):
     def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
         """
         Step 1: 查询专利ID
-        :param pn: 专利公开号 (如 CN116745575A)
+        :param pn: 专利公开号 (如 CN116745575A) 或 专利申请号 (如 202211411308.6)
         :return: PATENT_ID 或 None
         """
         url = "https://search-service.zhihuiya.com/core-search-api/search/patent/query/count"
-        payload = {
-            "search_mode": "publication",
-            "q": f"PN:({pn})",
-            "simple": True,
-            "check_complexity": True
-        }
+
+        # 判断输入是专利公开号还是申请号
+        # 专利申请号格式通常为：YYYYXXXXXXXXX.X (如 202211411308.6)
+        if re.match(r'\d{4}\d{7,8}\.\d', pn):
+            # 申请号格式，使用 APNO 字段查询
+            logger.info(f"[Zhihuiya] Recognized as application number: {pn}")
+            payload = {
+                "search_mode": "publication",
+                "q": f"APNO:({pn})",
+                "simple": True,
+                "check_complexity": True
+            }
+        else:
+            # 公开号格式，使用 PN 字段查询
+            logger.info(f"[Zhihuiya] Recognized as publication number: {pn}")
+            payload = {
+                "search_mode": "publication",
+                "q": f"PN:({pn})",
+                "simple": True,
+                "check_complexity": True
+            }
 
         for attempt in range(2):
             try:
