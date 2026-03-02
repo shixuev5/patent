@@ -3,7 +3,6 @@
 优先基于规则进行抽取，只有当关键字段内容缺失时，才使用LLM进行完整抽取
 """
 
-import re
 from loguru import logger
 from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
 from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
@@ -68,7 +67,7 @@ class HybridExtractor:
                 "technical_field", "background_art", "summary_of_invention",
                 "detailed_description"
             ],
-            "drawings": []  # drawings是列表，检查是否为空及每个对象的字段完整性
+            # drawings 和 brief_description_of_drawings 字段可能缺失，不强制检查
         }
 
         # 检查各个字段
@@ -91,19 +90,5 @@ class HybridExtractor:
                 for i, claim in enumerate(patent_data["claims"]):
                     if not claim.get("claim_text") or not claim.get("claim_type"):
                         missing_fields.append(f"claims[{i}]")
-
-        # 检查drawings列表是否为空或内容不完整
-        if "drawings" in patent_data:
-            if not patent_data["drawings"]:
-                missing_fields.append("drawings")
-            else:
-                for i, drawing in enumerate(patent_data["drawings"]):
-                    if not drawing.get("file_path") or not drawing.get("figure_label"):
-                        missing_fields.append(f"drawings[{i}]")
-
-        # brief_description_of_drawings 字段在非机械结构专利中可能缺失，这是正常现象，不作为判断依据
-        if "description" in patent_data and "brief_description_of_drawings" in patent_data["description"]:
-            if "description.brief_description_of_drawings" in missing_fields:
-                missing_fields.remove("description.brief_description_of_drawings")
 
         return missing_fields

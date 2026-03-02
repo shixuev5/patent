@@ -50,7 +50,10 @@
           title="下载报告"
           :disabled="taskStore.isDownloading(task.id)"
         >
-          <span v-if="taskStore.isDownloading(task.id)" class="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></span>
+          <svg v-if="taskStore.isDownloading(task.id)" class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
           <ArrowDownTrayIcon v-else class="w-4 h-4" />
         </button>
 

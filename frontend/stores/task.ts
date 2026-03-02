@@ -27,6 +27,7 @@ export const useTaskStore = defineStore('tasks', {
     userId: '' as string,
     progressStreams: {} as Record<string, EventSource>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
+    globalNotice: { type: 'info' as 'success' | 'error' | 'info', text: '' as string, show: false }, // 全局通知
   }),
 
   getters: {
@@ -390,6 +391,14 @@ export const useTaskStore = defineStore('tasks', {
       }
     },
 
+    showGlobalNotice(type: 'success' | 'error' | 'info', text: string, duration: number = 4000) {
+      this.globalNotice = { type, text, show: true }
+      // 自动隐藏通知
+      setTimeout(() => {
+        this.globalNotice.show = false
+      }, duration)
+    },
+
     async downloadResult(task: Task) {
       // 检查是否正在下载
       if (this.downloadingTaskIds.has(task.id)) return
@@ -410,6 +419,8 @@ export const useTaskStore = defineStore('tasks', {
       try {
         // 标记为正在下载
         this.downloadingTaskIds.add(task.id)
+        // 显示下载准备中通知
+        this.showGlobalNotice('info', '下载文件正在准备中，请耐心等待...')
 
         const response = await fetch(downloadUrl, {
           headers: {
@@ -429,6 +440,7 @@ export const useTaskStore = defineStore('tasks', {
         window.URL.revokeObjectURL(url)
       } catch (error) {
         console.error('下载失败：', error)
+        this.showGlobalNotice('error', '下载失败，请稍后重试。')
         window.open(downloadUrl, '_blank')
       } finally {
         // 移除下载标记
