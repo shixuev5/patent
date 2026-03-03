@@ -47,18 +47,29 @@ d:\Codes\patent\
 │       ├── usage.py        # Usage query routes
 │       └── health.py       # Health check route
 └── agents/                 # AI agents for patent analysis
-    └── patent_analysis/    # Patent analysis agent
-        ├── main.py         # Entry point and pipeline orchestrator
+    ├── patent_analysis/    # Patent analysis agent
+    │   ├── main.py         # Entry point and pipeline orchestrator
+    │   └── src/            # Main source code
+    │       ├── parser.py           # PDF parsing (Mineru API or local)
+    │       ├── transformer.py      # Markdown to structured patent data (LLM-based)
+    │       ├── knowledge.py        # Entity/parts extraction from patent content
+    │       ├── vision.py           # Image processing and OCR (PaddleOCR)
+    │       ├── checker.py          # Formal defect checks (part-text consistency)
+    │       ├── generator.py        # Report content generation (LLM-based)
+    │       ├── renderer.py         # Report rendering (HTML -> PDF via Playwright)
+    │       ├── search_clients/     # Patent search APIs (Zhihuiya/PatSnap)
+    │       └── utils/              # Utility modules (LLM, cache, crypto, reranker)
+    └── office_action_reply/ # Office action reply assistant agent
+        ├── main.py         # Entry point and LangGraph workflow
         └── src/            # Main source code
-            ├── parser.py           # PDF parsing (Mineru API or local)
-            ├── transformer.py      # Markdown to structured patent data (LLM-based)
-            ├── knowledge.py        # Entity/parts extraction from patent content
-            ├── vision.py           # Image processing and OCR (PaddleOCR)
-            ├── checker.py          # Formal defect checks (part-text consistency)
-            ├── generator.py        # Report content generation (LLM-based)
-            ├── renderer.py         # Report rendering (HTML -> PDF via Playwright)
-            ├── search_clients/     # Patent search APIs (Zhihuiya/PatSnap)
-            └── utils/              # Utility modules (LLM, cache, crypto, reranker)
+            ├── nodes/              # LangGraph node implementations
+            │   ├── document_processing.py  # File parsing and content extraction
+            │   ├── patent_retrieval.py     # Patent download and parsing
+            │   ├── data_validation.py      # Data validation and integrity checking
+            │   └── __init__.py
+            ├── edges.py            # LangGraph edge condition judgments
+            ├── state.py            # Workflow state management
+            └── utils.py            # Utility functions
 ```
 
 ## Development Commands
@@ -72,6 +83,8 @@ uv pip freeze              # List installed packages
 ```
 
 ### Running the Pipeline
+
+#### Patent Analysis Agent
 ```bash
 # Process a single patent
 uv run python -m agents.patent_analysis.main --pn CN116745575A
@@ -84,6 +97,24 @@ uv run python -m agents.patent_analysis.main --file patents.txt
 
 # Run with multiple workers (parallel processing)
 uv run python -m agents.patent_analysis.main --pn CN116745575A --workers 3
+```
+
+#### Office Action Reply Agent
+```bash
+# Process office action reply
+uv run python -m agents.office_action_reply.main \
+  --office-action "审查意见通知书.pdf" \
+  --response "意见陈述书.docx" \
+  --claims "权利要求书.pdf" \
+  --comparison-docs "对比文件1.pdf,对比文件2.pdf"
+
+# Specify output directory
+uv run python -m agents.office_action_reply.main \
+  --office-action "审查意见通知书.pdf" \
+  --response "意见陈述书.docx" \
+  --claims "权利要求书.pdf" \
+  --comparison-docs "对比文件1.pdf,对比文件2.pdf" \
+  --output "output/office_action_reply"
 ```
 
 ### Configuration

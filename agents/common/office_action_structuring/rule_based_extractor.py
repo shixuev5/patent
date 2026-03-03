@@ -10,6 +10,7 @@ from agents.common.office_action_structuring.models import (
     ComparisonDocument,
     OfficeActionParagraph
 )
+from agents.office_action_reply.src.utils import is_patent_document
 from loguru import logger
 
 
@@ -66,8 +67,12 @@ class OfficeActionExtractor:
                     cells = re.findall(cell_pattern, row, re.DOTALL)
 
                     if len(cells) >= 3:
+                        document_index = len(comparison_documents) + 1
+                        document_number = cells[1].strip()
                         doc = ComparisonDocument(
-                            document_number=cells[1].strip(),
+                            document_id=f"D{document_index}",
+                            document_number=document_number,
+                            is_patent=is_patent_document(document_number),
                             publication_date=cells[2].strip() if cells[2].strip() else None
                         )
                         comparison_documents.append(doc)
@@ -108,7 +113,10 @@ class OfficeActionExtractor:
                     content = content.split("基于上述理由")[0].strip()
 
                 if content:
+                    paragraph_index = len(paragraphs) + 1
                     paragraphs.append(OfficeActionParagraph(
+                        paragraph_id=f"Claim{paragraph_index}",
+                        claim_ids=self._extract_claim_ids(content),
                         content=content
                     ))
 
@@ -117,3 +125,32 @@ class OfficeActionExtractor:
             logger.warning("未找到审查意见通知书章节")
 
         return paragraphs
+
+    def _extract_claim_ids(self, content: str) -> List[str]:
+        """提取段落中关联的权利要求编号，兼容单点与区间表达（如 1-3）。"""
+        claim_ids: List[str] = []
+
+        # 1. 提取区间表达：权利要求1-3 / 权利要求1至3 / 权利要求1到3 / 权利要求1~3
+        range_pattern = r"权利要求\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)"
+        for start_raw, end_raw in re.findall(range_pattern, content):
+            try:
+                start = int(start_raw)
+                end = int(end_raw)
+            except ValueError:
+                continue
+            if start <= 0 or end <= 0:
+                continue
+            low, high = (start, end) if start <= end else (end, start)
+            for value in range(low, high + 1):
+                claim_id = str(value)
+                if claim_id not in claim_ids:
+                    claim_ids.append(claim_id)
+
+        # 2. 提取单个表达：权利要求1
+        single_pattern = r"权利要求\s*(\d+)"
+        for claim_raw in re.findall(single_pattern, content):
+            claim_id = str(int(claim_raw))
+            if claim_id not in claim_ids:
+                claim_ids.append(claim_id)
+
+        return claim_ids

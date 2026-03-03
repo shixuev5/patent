@@ -23,7 +23,7 @@ class BibliographicData(BaseModel):
     priority_date: Optional[str] = Field(None, description="最早优先权日")
     publication_number: Optional[str] = Field(None, description="申请公布号或授权公告号")
     publication_date: Optional[str] = Field(None, description="申请公布日或授权公告日")
-    invention_title: str = Field(..., description="发明名称")
+    invention_title: str = Field(..., description="发明/实用新型/外观设计名称")
     ipc_classifications: List[str] = Field(..., description="IPC 国际专利分类号列表")
     applicants: List[EntityInfo] = Field(..., description="申请人列表")
     inventors: List[str] = Field(..., description="发明人姓名列表")
@@ -33,6 +33,7 @@ class BibliographicData(BaseModel):
 
 
 class PatentClaim(BaseModel):
+    claim_id: str = Field("", description="权利要求编号")
     claim_text: str = Field(..., description="权利要求纯文本，不包含序号")
     claim_type: Literal["independent", "dependent"] = Field(..., description="独立或从属权利要求")
 

@@ -1,4 +1,5 @@
 import re
+from typing import List, Dict
 from loguru import logger
 
 class RuleBasedExtractor:
@@ -57,26 +58,13 @@ class RuleBasedExtractor:
     @staticmethod
     def _parse_claims(md_content: str) -> list:
         """解析 claims (权利要求) 部分"""
-        claims =[]
-        claim_texts = RuleBasedExtractor._extract_claim_texts(md_content)
-
-        for text in claim_texts:
-            clean_text = text.strip()
-            
-            # 规则 1：根据是否以 "一种" 开头为独权、以 "根据权利要求" 开头为从权
-            if clean_text.startswith("一种"):
-                claim_type = "independent"
-            elif clean_text.startswith("根据权利要求"):
-                claim_type = "dependent"
-            else:
-                # 兜底：如果都不匹配，默认视作独权
-                claim_type = "independent"
-
+        claims = []
+        for item in RuleBasedExtractor.extract_structured_claims(md_content):
             claims.append({
-                "claim_text": text,
-                "claim_type": claim_type
+                "claim_id": item.get("claim_id", ""),
+                "claim_text": item["claim_text"],
+                "claim_type": item["claim_type"],
             })
-
         return claims
 
     @staticmethod
@@ -167,7 +155,7 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_invention_title(md_content: str) -> str:
-        pattern = r"\(54\)\s*发明名称\s*\n*\s*([^\n]+)"
+        pattern = r"\(54\)\s*(?:发明名称|实用新型名称|外观设计名称)\s*\n*\s*([^\n#]+)"
         match = re.search(pattern, md_content)
         return match.group(1).strip() if match else None
 
@@ -277,7 +265,7 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_claim_texts(md_content: str) -> list:
-        claims =[]
+        claims = []
         abstract_match = re.search(r"\(57\)\s*摘要", md_content)
         start_search_pos = abstract_match.end() if abstract_match else 0
         
@@ -292,15 +280,53 @@ class RuleBasedExtractor:
             
         claims_section = md_content[start_idx:end_idx].strip()
         
-        pattern = r"(?m)^(\d+)\s*[\.．]\s*([\s\S]*?)(?=(?:^\d+\s*[\.．]\s*)|\Z)"
-        matches = re.finditer(pattern, claims_section)
-        
-        for match in matches:
-            claim_text = match.group(2).strip()
+        for item in RuleBasedExtractor.extract_structured_claims(claims_section):
+            claim_text = item.get("claim_text", "").strip()
             if claim_text:
                 claims.append(claim_text)
 
         return claims
+
+    @staticmethod
+    def extract_structured_claims(claims_section: str) -> List[Dict[str, str]]:
+        """
+        解析权利要求文本为结构化列表。
+        从 1. 开始到结尾，每个序号之间文本为一项权利要求。
+        """
+        claims: List[Dict[str, str]] = []
+        if not claims_section:
+            return claims
+
+        pattern = r"(?m)^(\d+)\s*[\.．]\s*([\s\S]*?)(?=(?:^\d+\s*[\.．]\s*)|\Z)"
+        matches = re.finditer(pattern, claims_section)
+
+        for match in matches:
+            claim_id = match.group(1).strip()
+            claim_text = match.group(2).strip()
+            if not claim_text:
+                continue
+
+            claim_type = RuleBasedExtractor._classify_claim_type(claim_text)
+            claims.append({
+                "claim_id": claim_id,
+                "claim_text": claim_text,
+                "claim_type": claim_type,
+            })
+
+        return claims
+
+    @staticmethod
+    def _classify_claim_type(claim_text: str) -> str:
+        """
+        根据是否以“一种”开头判定独权；
+        根据是否以“根据权利要求”开头判定从权。
+        """
+        text = str(claim_text or "").strip()
+        if text.startswith("一种"):
+            return "independent"
+        if text.startswith("根据权利要求"):
+            return "dependent"
+        return "unknown"
 
     @staticmethod
     def _extract_technical_field(md_content: str) -> str:
@@ -321,14 +347,14 @@ class RuleBasedExtractor:
     @staticmethod
     def _extract_summary_and_effect(md_content: str) -> tuple:
         """从发明内容中精准拆分 技术方案(summary) 与 技术效果(effect)"""
-        pattern = r"#+\s*发明内容\s*([\s\S]*?)(?=#|$)"
+        pattern = r"#+\s*(?:发明内容|实用新型内容|外观设计简要说明)\s*([\s\S]*?)(?=#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
         if not match:
             return None, None
             
         content = match.group(1).strip()
         
-        split_pattern = r"(\[?\d{4}\]?\s*(?:总体而言[，,]\s*)?(?:通过.*?)?与现有技术相比[^\n]*?(?:有益|技术)效果[。：]?|\[?\d{4}\]?\s*(?:有益|技术)效果[：为。]|\[?\d{4}\]?\s*优点[：为。]|\[?\d{4}\]?\s*本发明的?(?:有益)?效果[^\n]*?[：。])"
+        split_pattern = r"(\[?\d{4}\]?\s*(?:总体而言[，,]\s*)?(?:通过.*?)?与现有技术相比[^\n]*?(?:有益|技术)效果[。：]?|\[?\d{4}\]?\s*(?:有益|技术)效果[：为。]|\[?\d{4}\]?\s*优点[：为。]|\[?\d{4}\]?\s*本(?:发明|实用新型)的?(?:有益)?效果[^\n]*?[：。])"
         
         matches = list(re.finditer(split_pattern, content))
         if matches:
@@ -340,7 +366,7 @@ class RuleBasedExtractor:
             effect = re.sub(r"\[\d{4}\]\s*", "", effect).strip()
             return summary, effect if effect else None
             
-        backup_pattern = r"(\[?\d{4}\]?\s*[^\[\n]*(?:本发明.*?(?:有益|效果|优点)|通过.*?实现.*?效果)[^\n]*)"
+        backup_pattern = r"(\[?\d{4}\]?\s*[^\[\n]*(?:本(?:发明|实用新型).*?(?:有益|效果|优点)|通过.*?实现.*?效果)[^\n]*)"
         backup_matches = list(re.finditer(backup_pattern, content))
         if backup_matches:
             split_idx = backup_matches[-1].start()

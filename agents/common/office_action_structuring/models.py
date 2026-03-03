@@ -9,12 +9,16 @@ from pydantic import BaseModel, Field
 
 class ComparisonDocument(BaseModel):
     """对比文件信息"""
+    document_id: str = Field(..., description="对比文件编号，如 D1、D2")
     document_number: str = Field(..., description="对比文件号或名称")
+    is_patent: bool = Field(..., description="是否为专利文献（True=专利，False=非专）")
     publication_date: Optional[str] = Field(None, description="公开日期或抵触申请的申请日")
 
 
 class OfficeActionParagraph(BaseModel):
     """审查意见通知书段落内容"""
+    paragraph_id: str = Field(..., description="段落编号，如 Claim1、Claim2")
+    claim_ids: List[str] = Field(default_factory=list, description="关联权利要求编号列表，如 [\"1\", \"2\"]")
     content: str = Field(..., description="段落内容")
 
 

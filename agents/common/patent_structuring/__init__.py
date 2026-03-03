@@ -6,6 +6,8 @@
 from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
 from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
 from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
+import re
+from typing import List, Dict
 
 
 def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
@@ -27,3 +29,16 @@ def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
         return HybridExtractor().extract(md_content)
     else:
         raise ValueError(f"Unknown extraction method: {method}")
+
+
+def extract_structured_claims(md_content: str) -> List[Dict[str, str]]:
+    """
+    从新权利要求书文本中提取结构化权利要求：
+    从以 1. 开始的位置，直到文本结尾，按序号切分。
+    """
+    content = str(md_content or "").replace("\r\n", "\n")
+    start_match = re.search(r"(?m)^1\s*[\.．]\s*", content)
+    if not start_match:
+        return []
+    claims_section = content[start_match.start():]
+    return RuleBasedExtractor.extract_structured_claims(claims_section)

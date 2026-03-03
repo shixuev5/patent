@@ -78,6 +78,7 @@ class LLMBasedExtractor:
    - 必须删除所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
 2. **权利要求清洗 (Claims Cleaning)**:
    - `claim_text` 必须去除开头的序号和标点！(例如原文是 "1. 一种装置..." 或 "2、根据权利要求1...", 提取后必须变成 "一种装置..." 和 "根据权利要求1...")。
+   - `claim_id` 必须填写对应权利要求编号（字符串形式，如 "1"、"2"）。
 3. **附图标记说明 (Brief Description of Drawings) 提取规则**:
    - 此字段**仅用于**提取类似 "1-定子，2-转子" 或 "101: 处理器" 的**部件标号说明**。
    - **严禁**提取 "图1是...的示意图" 这类图解说明文字。
@@ -89,6 +90,7 @@ class LLMBasedExtractor:
    - **JSON转义铁律**: 原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\` (例如 `$120 \\mathrm{{mm}}$`)。
 
 ### 字段边界识别规则
+- **invention_title (标题字段)**: 对应 `(54)` 项，可能是“发明名称”/“实用新型名称”/“外观设计名称”，统一写入 `invention_title`。
 - **summary_of_invention (发明内容)**: 仅保留技术方案本体，遇到"本发明的有益效果"或"技术效果"时必须截断。
 - **technical_effect (有益效果)**: 单独提取"有益效果"段落，若文中未明确写出，则返回 null。
 - **claim_type (权利要求类型)**: 即使内容提到其他权利要求（如"一种用于权利要求1所述装置的方法"），只要不以"根据/如权利要求X所述"开头，就是独立(independent)权利要求。
@@ -103,7 +105,7 @@ class LLMBasedExtractor:
     "priority_date": null,
     "publication_number": "CN116793681A",
     "publication_date": "2024.03.20",
-    "invention_title": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法",
+    "invention_title": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法（对应发明名称/实用新型名称/外观设计名称）",
     "ipc_classifications": ["G01K 7/36"],
     "applicants": [{"name": "华中科技大学", "address": "湖北省武汉市..."}] ,
     "inventors": ["张三", "李四"],
@@ -113,10 +115,12 @@ class LLMBasedExtractor:
   },
   "claims": [
     {
+      "claim_id": "1",
       "claim_text": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法，包括...",
       "claim_type": "independent"
     },
     {
+      "claim_id": "2",
       "claim_text": "根据权利要求1所述的方法，其特征在于...",
       "claim_type": "dependent"
     }
