@@ -161,7 +161,7 @@ class ContentGenerator:
         适配 claim_text/claim_type 结构。
         """
         lines = []
-        # 自动生成编号 (如果原始数据没有 id 字段)
+        # 优先使用结构化 claim_id 字段
         for idx, claim in enumerate(self.claims):
             # 1. 类型过滤
             c_type_raw = claim.get("claim_type", "dependent").lower()
@@ -174,8 +174,7 @@ class ContentGenerator:
             content = claim.get("claim_text") or claim.get("content") or ""
 
             # 3. 构建标题
-            # 假设 idx+1 为权利要求编号，实际项目中建议尽量使用原始编号
-            claim_id = claim.get("id", str(idx + 1))
+            claim_id = str(claim.get("claim_id", "")).strip() or str(idx + 1)
             type_label = (
                 "独立权利要求 (Independent)" if is_indep else "从属权利要求 (Dependent)"
             )

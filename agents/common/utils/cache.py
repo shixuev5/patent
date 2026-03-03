@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from loguru import logger
+from agents.common.utils.serialization import to_jsonable
 
 class StepCache:
     """
@@ -32,9 +33,10 @@ class StepCache:
         with self._lock:
             self.data[key] = value
             try:
+                self.file_path.parent.mkdir(parents=True, exist_ok=True)
                 # 写入原子性通过锁保证，但文件系统层面建议 write+rename，这里简化为直接覆盖
                 self.file_path.write_text(
-                    json.dumps(self.data, ensure_ascii=False, indent=2),
+                    json.dumps(self.data, ensure_ascii=False, indent=2, default=self._json_default),
                     encoding='utf-8'
                 )
                 logger.debug(f"缓存已更新: [{key}]")
@@ -63,3 +65,7 @@ class StepCache:
             self.save(key, result)
 
         return result
+
+    def _json_default(self, obj: Any):
+        """将常见不可序列化对象转换为 JSON 兼容结构。"""
+        return to_jsonable(obj)
