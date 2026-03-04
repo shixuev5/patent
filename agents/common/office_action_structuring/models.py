@@ -13,6 +13,7 @@ class ComparisonDocument(BaseModel):
     document_number: str = Field(..., description="对比文件号或名称")
     is_patent: bool = Field(..., description="是否为专利文献（True=专利，False=非专）")
     publication_date: Optional[str] = Field(None, description="公开日期或抵触申请的申请日")
+    page_range: List[str] = Field(default_factory=list, description="对比文件引用页码范围，格式如 [\"12\", \"15\"]")
 
 
 class OfficeActionParagraph(BaseModel):

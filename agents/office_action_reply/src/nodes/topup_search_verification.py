@@ -185,7 +185,8 @@ class TopupSearchVerificationNode:
   "assessment": {
     "verdict": "INCONCLUSIVE",
     "reasoning": "裁决理由",
-    "confidence": 0.62
+    "confidence": 0.62,
+    "examiner_rejection_reason": "当裁决偏向申请人时，仍可支持审查员维持驳回的说理理由"
   },
   "evidence": [
     {
@@ -204,6 +205,7 @@ class TopupSearchVerificationNode:
 - examiner_opinion.type 只能是 novelty_lack 或 obviousness。
 - applicant_opinion.type 固定为 fact_dispute。
 - assessment.verdict 只能是 APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE。
+- 若 assessment.verdict=APPLICANT_CORRECT，assessment.examiner_rejection_reason 必须给出具体且有说服力的驳回说理；否则留空字符串。
 - evidence.doc_id 必须来自给定证据 doc_id 列表或 MODEL。"""
 
     def _build_user_prompt(
@@ -279,6 +281,15 @@ feature_text: {feature_text}
         if confidence < 0.0 or confidence > 1.0:
             raise ValueError(f"topup_search_verification 输出非法 confidence 范围: {confidence}")
 
+        reasoning = str(assessment.get("reasoning", "")).strip()
+        if "examiner_rejection_reason" not in assessment:
+            raise ValueError("topup_search_verification 输出缺少 assessment.examiner_rejection_reason")
+        rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
+        if verdict == "APPLICANT_CORRECT" and not rejection_reason:
+            raise ValueError("topup_search_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空")
+        if verdict != "APPLICANT_CORRECT":
+            rejection_reason = ""
+
         evidence_items = []
         used_doc_ids: List[str] = []
         evidence_raw = output.get("evidence", [])
@@ -318,8 +329,9 @@ feature_text: {feature_text}
             },
             "assessment": {
                 "verdict": verdict,
-                "reasoning": str(assessment.get("reasoning", "")).strip(),
+                "reasoning": reasoning,
                 "confidence": confidence,
+                "examiner_rejection_reason": rejection_reason,
             },
             "evidence": evidence_items,
             "used_doc_ids": used_doc_ids,

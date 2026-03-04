@@ -69,11 +69,13 @@ class OfficeActionExtractor:
                     if len(cells) >= 3:
                         document_index = len(comparison_documents) + 1
                         document_number = cells[1].strip()
+                        is_patent = is_patent_document(document_number)
                         doc = ComparisonDocument(
                             document_id=f"D{document_index}",
                             document_number=document_number,
-                            is_patent=is_patent_document(document_number),
-                            publication_date=cells[2].strip() if cells[2].strip() else None
+                            is_patent=is_patent,
+                            publication_date=cells[2].strip() if cells[2].strip() else None,
+                            page_range=[] if is_patent else self._extract_page_range(document_number)
                         )
                         comparison_documents.append(doc)
 
@@ -126,12 +128,35 @@ class OfficeActionExtractor:
 
         return paragraphs
 
+    def _extract_page_range(self, text: str) -> List[str]:
+        """
+        从文本中提取“第x-y页”页码范围，提取失败返回空列表。
+        兼容连接符：-、－、—、~、～、至、到
+        """
+        clean_text = re.sub(r"<[^>]+>", " ", text or "")
+        range_match = re.search(r"第\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)\s*页", clean_text)
+        if range_match:
+            start, end = range_match.group(1), range_match.group(2)
+            try:
+                low, high = sorted((int(start), int(end)))
+                return [str(low), str(high)]
+            except ValueError:
+                return [start, end]
+
+        single_match = re.search(r"第\s*(\d+)\s*页", clean_text)
+        if single_match:
+            page = single_match.group(1)
+            return [page, page]
+
+        return []
+
     def _extract_claim_ids(self, content: str) -> List[str]:
         """提取段落中关联的权利要求编号，兼容单点与区间表达（如 1-3）。"""
         claim_ids: List[str] = []
+        claim_keyword_pattern = r"权\s*利\s*要\s*求"
 
         # 1. 提取区间表达：权利要求1-3 / 权利要求1至3 / 权利要求1到3 / 权利要求1~3
-        range_pattern = r"权利要求\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)"
+        range_pattern = rf"{claim_keyword_pattern}\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)"
         for start_raw, end_raw in re.findall(range_pattern, content):
             try:
                 start = int(start_raw)
@@ -147,7 +172,7 @@ class OfficeActionExtractor:
                     claim_ids.append(claim_id)
 
         # 2. 提取单个表达：权利要求1
-        single_pattern = r"权利要求\s*(\d+)"
+        single_pattern = rf"{claim_keyword_pattern}\s*(\d+)"
         for claim_raw in re.findall(single_pattern, content):
             claim_id = str(int(claim_raw))
             if claim_id not in claim_ids:

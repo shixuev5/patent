@@ -5,7 +5,7 @@
 
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from loguru import logger
 from agents.office_action_reply.src.utils import get_node_cache
 from agents.common.utils.serialization import to_jsonable, item_get
@@ -94,6 +94,12 @@ class ReportGenerationNode:
 
         # 添加汇总信息
         report["summary"] = self._generate_summary(report["disputes"])
+        second_notice_items = self._collect_second_office_action_items(report["disputes"])
+        report["summary"]["second_office_action_points"] = len(second_notice_items)
+        report["second_office_action_notice"] = {
+            "text": self._build_second_office_action_text(second_notice_items),
+            "items": second_notice_items,
+        }
 
         return report
 
@@ -141,6 +147,52 @@ class ReportGenerationNode:
             "rebuttal_type_distribution": rebuttal_type_distribution,
             "verdict_distribution": verdict_distribution,
         }
+
+    def _collect_second_office_action_items(self, disputes: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """收集可用于二次审查意见通知书的驳回说理点。"""
+        items: List[Dict[str, str]] = []
+        for dispute in disputes:
+            evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
+            assessment = item_get(evidence_assessment, "assessment", {}) or {}
+            verdict = str(item_get(assessment, "verdict", "")).strip()
+            if verdict != "APPLICANT_CORRECT":
+                continue
+
+            rejection_reason = str(item_get(assessment, "examiner_rejection_reason", "")).strip()
+            if not rejection_reason:
+                dispute_id = str(item_get(dispute, "dispute_id", "")).strip() or "<unknown_dispute>"
+                raise ValueError(
+                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_reason"
+                )
+
+            items.append({
+                "dispute_id": str(item_get(dispute, "dispute_id", "")).strip(),
+                "original_claim_id": str(item_get(dispute, "original_claim_id", "")).strip(),
+                "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
+                "examiner_rejection_reason": rejection_reason,
+            })
+        return items
+
+    def _build_second_office_action_text(self, items: List[Dict[str, str]]) -> str:
+        """将驳回说理点汇总为一段可直接用于二次审查意见通知书的文本。"""
+        if not items:
+            return ""
+
+        clauses: List[str] = []
+        for item in items:
+            dispute_id = item.get("dispute_id", "") or "未标注争议项"
+            claim_id = item.get("original_claim_id", "") or "未标注权利要求"
+            feature_text = item.get("feature_text", "") or "未提取争议特征"
+            reason = item.get("examiner_rejection_reason", "").strip().rstrip("。；;")
+            clauses.append(
+                f"针对争议项{dispute_id}（权利要求{claim_id}，争议特征“{feature_text}”），{reason}"
+            )
+
+        return (
+            "经对申请人意见陈述书与现有证据再次审查，本局形成如下进一步审查意见："
+            + "；".join(clauses)
+            + "。"
+        )
 
     def _save_report(self, report: Dict[str, Any], state) -> Path:
         """保存报告到文件"""

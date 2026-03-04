@@ -51,6 +51,10 @@ class EvidenceAssessmentDecision(BaseModel):
     verdict: str = Field(..., description="裁决结果: APPLICANT_CORRECT/EXAMINER_CORRECT/INCONCLUSIVE")
     reasoning: str = Field(default="", description="判断理由")
     confidence: float = Field(0.0, description="置信度 0~1")
+    examiner_rejection_reason: str = Field(
+        ...,
+        description="当 verdict=APPLICANT_CORRECT 时必须给出有利于审查员维持驳回的说理理由；其他情况为空字符串",
+    )
 
 
 class EvidenceAssessmentQuote(BaseModel):
@@ -129,6 +133,7 @@ class PreparedComparisonDocument(BaseModel):
     document_number: str = Field("", description="对比文件号或名称")
     is_patent: bool = Field(False, description="是否为专利文献")
     publication_date: Optional[str] = Field(None, description="公开日期或申请日")
+    page_range: List[str] = Field(default_factory=list, description="页码范围，格式如 [\"12\", \"15\"]")
     data: Union[Dict[str, Any], str] = Field(default_factory=dict, description="专利为结构化数据，非专为markdown内容")
 
 

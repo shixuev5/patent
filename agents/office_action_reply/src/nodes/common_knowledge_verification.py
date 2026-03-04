@@ -309,7 +309,8 @@ class CommonKnowledgeVerificationNode:
   "assessment": {
     "verdict": "APPLICANT_CORRECT",
     "reasoning": "判断理由",
-    "confidence": 0.78
+    "confidence": 0.78,
+    "examiner_rejection_reason": "当裁决偏向申请人时，仍可支持审查员维持驳回的说理理由"
   },
   "evidence": [
     {
@@ -327,6 +328,7 @@ class CommonKnowledgeVerificationNode:
 字段约束：
 - verdict 只能是 APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE
 - confidence 必须为 0~1
+- 若 verdict=APPLICANT_CORRECT，examiner_rejection_reason 必须给出具体且有说服力的驳回说理；否则留空字符串
 - 优先引用 EXT* 证据；若无外部证据可用，可给出一条 doc_id=MODEL 的模型知识证据（source_type=model_knowledge）"""
 
     def _build_prefix_messages(
@@ -397,23 +399,12 @@ retrieval_queries: {json.dumps(queries, ensure_ascii=False)}
             if item.get("doc_id")
         }
 
-        parsed = {
-            "assessment": {
-                "verdict": "INCONCLUSIVE",
-                "reasoning": "证据不足，无法稳定判断是否属于本领域公知常识",
-                "confidence": 0.0,
-            },
-            "evidence": [],
-        }
-        try:
-            response = self.llm_service.chat_completion_json(
-                messages,
-                temperature=0.05,
-                thinking=True,
-            )
-            parsed = self._normalize_llm_output(response, allowed_doc_ids, external_doc_map)
-        except Exception as e:
-            logger.warning(f"逻辑争议核查失败，使用兜底结果: {e}")
+        response = self.llm_service.chat_completion_json(
+            messages,
+            temperature=0.05,
+            thinking=True,
+        )
+        parsed = self._normalize_llm_output(response, allowed_doc_ids, external_doc_map)
 
         original_claim_id = str(dispute.get("original_claim_id", "")).strip()
         feature_text = str(dispute.get("feature_text", "")).strip()
@@ -449,16 +440,28 @@ retrieval_queries: {json.dumps(queries, ensure_ascii=False)}
         output = self._to_dict(response)
         assessment = self._to_dict(output.get("assessment", {}))
 
-        verdict = str(assessment.get("verdict", "INCONCLUSIVE")).strip()
+        verdict = str(assessment.get("verdict", "")).strip()
         if verdict not in {"APPLICANT_CORRECT", "EXAMINER_CORRECT", "INCONCLUSIVE"}:
-            verdict = "INCONCLUSIVE"
+            raise ValueError(f"common_knowledge_verification 输出非法 verdict: {verdict}")
 
         confidence = assessment.get("confidence", 0.0)
         try:
             confidence = float(confidence)
-        except Exception:
-            confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
+        except Exception as e:
+            raise ValueError(f"common_knowledge_verification 输出非法 confidence: {confidence}") from e
+        if confidence < 0.0 or confidence > 1.0:
+            raise ValueError(f"common_knowledge_verification 输出非法 confidence 范围: {confidence}")
+
+        reasoning = str(assessment.get("reasoning", "")).strip()
+        if "examiner_rejection_reason" not in assessment:
+            raise ValueError("common_knowledge_verification 输出缺少 assessment.examiner_rejection_reason")
+        rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
+        if verdict == "APPLICANT_CORRECT" and not rejection_reason:
+            raise ValueError(
+                "common_knowledge_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空"
+            )
+        if verdict != "APPLICANT_CORRECT":
+            rejection_reason = ""
 
         evidence_items: List[Dict[str, Any]] = []
         for item in output.get("evidence", []) or []:
@@ -483,8 +486,9 @@ retrieval_queries: {json.dumps(queries, ensure_ascii=False)}
         return {
             "assessment": {
                 "verdict": verdict,
-                "reasoning": str(assessment.get("reasoning", "")).strip(),
+                "reasoning": reasoning,
                 "confidence": confidence,
+                "examiner_rejection_reason": rejection_reason,
             },
             "evidence": evidence_items,
         }
