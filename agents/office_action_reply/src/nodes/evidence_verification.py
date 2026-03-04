@@ -26,7 +26,7 @@ class EvidenceVerificationNode:
         try:
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence",
+                "verify_evidence_v3",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -53,14 +53,14 @@ class EvidenceVerificationNode:
         return updates
 
     def _verify_evidence(self, disputes, prepared_materials):
-        fact_disputes = self._get_fact_disputes(disputes)
-        if not fact_disputes:
+        document_disputes = self._get_document_based_disputes(disputes)
+        if not document_disputes:
             return []
 
         prepared = self._to_dict(prepared_materials)
         claims = self._extract_claims(prepared)
         comparison_doc_map = self._build_comparison_doc_map(prepared)
-        grouped_disputes = self._group_disputes_by_docs(fact_disputes)
+        grouped_disputes = self._group_disputes_by_docs(document_disputes)
 
         assessments = []
         for doc_group, group_items in grouped_disputes.items():
@@ -79,14 +79,15 @@ class EvidenceVerificationNode:
 
         return assessments
 
-    def _get_fact_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
-        fact_disputes: List[Dict[str, Any]] = []
+    def _get_document_based_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
+        document_disputes: List[Dict[str, Any]] = []
         for item in disputes or []:
             dispute = self._to_dict(item)
-            applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
-            if applicant_opinion.get("type") == "fact_dispute":
-                fact_disputes.append(dispute)
-        return fact_disputes
+            examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
+            dispute_type = str(examiner_opinion.get("type", "")).strip()
+            if dispute_type in {"document_based", "mixed_basis"}:
+                document_disputes.append(dispute)
+        return document_disputes
 
     def _extract_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
         original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
@@ -109,13 +110,12 @@ class EvidenceVerificationNode:
         grouped: Dict[Tuple[str, ...], List[Dict[str, Any]]] = defaultdict(list)
         for dispute in disputes:
             examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
-            supporting_doc_ids = examiner_opinion.get("supporting_doc_ids", [])
-            if not isinstance(supporting_doc_ids, list):
-                supporting_doc_ids = []
-
+            supporting_docs = examiner_opinion.get("supporting_docs", [])
+            if not isinstance(supporting_docs, list):
+                supporting_docs = []
             normalized_ids = []
-            for doc_id in supporting_doc_ids:
-                value = str(doc_id).strip()
+            for item in supporting_docs:
+                value = str(self._to_dict(item).get("doc_id", "")).strip()
                 if value and value not in normalized_ids:
                     normalized_ids.append(value)
             grouped[tuple(normalized_ids)].append(dispute)
@@ -221,7 +221,17 @@ class EvidenceVerificationNode:
 - verdict 只能是 APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE。
 - confidence 必须是 0~1 之间数字。
 - 若 verdict=APPLICANT_CORRECT，examiner_rejection_reason 必须给出具体且有说服力的驳回说理；否则留空字符串。
-- evidence.doc_id 必须是当前争议项的 supporting_doc_ids 之一。"""
+- evidence.doc_id 必须是当前争议项 supporting_docs 中出现的 doc_id 之一。
+
+examiner_rejection_reason 口吻与内容约束（强制）：
+- 该字段将直接拼接进 second_office_action_notice.text，必须写成“审查意见通知书正文口吻”，面向申请人。
+- 必须使用确定性陈述，不得写策略建议或元话术。
+- 禁止使用：审查员可主张、可认为、可以、建议、应补充、如需、若…则…。
+- 建议用法：以“经审查认为…”“本局认为…”开头，随后写明证据链与驳回结论。
+
+示例：
+- 合格示例：经审查认为，对比文件D1已公开……，对比文件D2进一步公开……，本领域技术人员据此能够得到该区别技术特征，故权利要求1相对于D1结合D2不具备显著进步。
+- 不合格示例：审查员可主张D1和D2可以结合，建议补充证据后维持驳回。"""
 
     def _verify_single_dispute(
         self,
@@ -241,7 +251,7 @@ claim_text: {claim_text}
 feature_text: {dispute.get("feature_text", "")}
 examiner_opinion: {json.dumps(examiner_opinion, ensure_ascii=False)}
 applicant_opinion: {json.dumps(applicant_opinion, ensure_ascii=False)}
-supporting_doc_ids: {json.dumps(list(doc_group), ensure_ascii=False)}
+supporting_docs_doc_ids: {json.dumps(list(doc_group), ensure_ascii=False)}
 missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
 """
         messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]

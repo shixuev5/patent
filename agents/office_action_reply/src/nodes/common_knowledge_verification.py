@@ -32,7 +32,7 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge",
+                "verify_common_knowledge_v2",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -67,8 +67,8 @@ class CommonKnowledgeVerificationNode:
         serpapi_key: Optional[str],
         base_url: str,
     ) -> List[Dict[str, Any]]:
-        logic_disputes = self._get_logic_disputes(disputes)
-        if not logic_disputes:
+        common_knowledge_disputes = self._get_common_knowledge_disputes(disputes)
+        if not common_knowledge_disputes:
             return []
 
         prepared = self._to_dict(prepared_materials)
@@ -76,7 +76,7 @@ class CommonKnowledgeVerificationNode:
         priority_date = self._extract_priority_date(prepared)
 
         assessments: List[Dict[str, Any]] = []
-        for dispute in logic_disputes:
+        for dispute in common_knowledge_disputes:
             claim_text = self._get_claim_text(dispute, claims)
             queries = self._build_search_queries(dispute, claim_text)
 
@@ -102,14 +102,15 @@ class CommonKnowledgeVerificationNode:
 
         return assessments
 
-    def _get_logic_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
-        logic_disputes: List[Dict[str, Any]] = []
+    def _get_common_knowledge_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
+        common_knowledge_disputes: List[Dict[str, Any]] = []
         for item in disputes or []:
             dispute = self._to_dict(item)
-            applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
-            if applicant_opinion.get("type") == "logic_dispute":
-                logic_disputes.append(dispute)
-        return logic_disputes
+            examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
+            dispute_type = str(examiner_opinion.get("type", "")).strip()
+            if dispute_type in {"common_knowledge_based", "mixed_basis"}:
+                common_knowledge_disputes.append(dispute)
+        return common_knowledge_disputes
 
     def _extract_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
         original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
@@ -329,7 +330,17 @@ class CommonKnowledgeVerificationNode:
 - verdict 只能是 APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE
 - confidence 必须为 0~1
 - 若 verdict=APPLICANT_CORRECT，examiner_rejection_reason 必须给出具体且有说服力的驳回说理；否则留空字符串
-- 优先引用 EXT* 证据；若无外部证据可用，可给出一条 doc_id=MODEL 的模型知识证据（source_type=model_knowledge）"""
+- 优先引用 EXT* 证据；若无外部证据可用，可给出一条 doc_id=MODEL 的模型知识证据（source_type=model_knowledge）
+
+examiner_rejection_reason 口吻与内容约束（强制）：
+- 该字段将直接拼接进 second_office_action_notice.text，必须写成“审查意见通知书正文口吻”，面向申请人。
+- 必须使用确定性陈述，不得写策略建议或元话术。
+- 禁止使用：审查员可主张、可认为、可以、建议、应补充、如需、若…则…。
+- 对公知常识类争点，必须体现“申请日前技术常识/检索证据”与结论之间的因果关系。
+
+示例：
+- 合格示例：经检索并结合申请日前公开的技术资料可知，……属于本领域常规设计手段，本领域技术人员在D1基础上引入该手段不需要创造性劳动，故相关权利要求不具备创造性。
+- 不合格示例：审查员可主张这是公知常识，建议补充材料后继续驳回。"""
 
     def _build_prefix_messages(
         self,

@@ -31,7 +31,7 @@ class ReportGenerationNode:
             cache = get_node_cache(self.config, "report_generation")
 
             # 使用缓存运行报告生成
-            report = cache.run_step("generate_report", self._generate_report, state)
+            report = cache.run_step("generate_report_v2", self._generate_report, state)
 
             # 保存到文件
             output_path = self._save_report(report, state)

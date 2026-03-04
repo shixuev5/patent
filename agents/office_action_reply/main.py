@@ -101,22 +101,22 @@ def create_workflow(config: WorkflowConfig = None):
         if state.status == "failed":
             return "failed"
 
-        has_fact_dispute = False
-        has_logic_dispute = False
+        has_document_based_dispute = False
+        has_common_knowledge_dispute = False
         has_topup_tasks = bool(_item_get(state, "topup_tasks", []))
 
         for dispute in _item_get(state, "disputes", []) or []:
-            applicant_opinion = _item_get(dispute, "applicant_opinion", {}) or {}
-            dispute_type = _item_get(applicant_opinion, "type", "")
-            if dispute_type == "fact_dispute":
-                has_fact_dispute = True
-            elif dispute_type == "logic_dispute":
-                has_logic_dispute = True
+            examiner_opinion = _item_get(dispute, "examiner_opinion", {}) or {}
+            dispute_type = _item_get(examiner_opinion, "type", "")
+            if dispute_type in {"document_based", "mixed_basis"}:
+                has_document_based_dispute = True
+            if dispute_type in {"common_knowledge_based", "mixed_basis"}:
+                has_common_knowledge_dispute = True
 
         next_nodes = []
-        if has_fact_dispute:
+        if has_document_based_dispute:
             next_nodes.append("evidence_verification")
-        if has_logic_dispute:
+        if has_common_knowledge_dispute:
             next_nodes.append("common_knowledge_verification")
         if has_topup_tasks:
             next_nodes.append("topup_search_verification")
