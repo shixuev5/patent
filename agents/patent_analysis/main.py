@@ -276,6 +276,9 @@ def worker_wrapper(pn: str) -> dict:
 
 
 def main():
+    from backend.logging_setup import setup_logging_utc8
+    setup_logging_utc8(level="INFO")
+
     parser = argparse.ArgumentParser(description="Patent Analysis Pipeline")
     parser.add_argument("--pn", type=str, help="Single PN or comma-separated PNs (e.g., CN116745575A,CN123)")
     parser.add_argument("--file", type=str, help="Path to a text file containing PNs (one per line)")

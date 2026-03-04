@@ -105,7 +105,15 @@ class PipelineTaskManager:
 
         success = self.storage.update_task(task_id, **updates)
         if success and step and step_status:
-            self.storage.update_task_step(task_id, step, status=step_status)
+            step_updates: Dict[str, Any] = {"status": step_status}
+            now = datetime.now()
+
+            if step_status == "processing":
+                step_updates["start_time"] = now
+            elif step_status in {"completed", "failed", "cancelled"}:
+                step_updates["end_time"] = now
+
+            self.storage.update_task_step(task_id, step, **step_updates)
         return success
 
     def complete_task(self, task_id: str, output_files: Optional[Dict[str, str]] = None) -> bool:
