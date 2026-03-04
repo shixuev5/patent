@@ -8,6 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
+from backend.logging_setup import setup_logging_utc8
+
+setup_logging_utc8(level="INFO")
 from backend.routes import router as api_router
 
 

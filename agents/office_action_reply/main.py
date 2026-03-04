@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from loguru import logger
 from langgraph.graph import StateGraph, END
+from backend.logging_setup import setup_logging_utc8
 from agents.office_action_reply.src.state import WorkflowState, InputFile, WorkflowConfig
 from agents.office_action_reply.src.nodes.document_processing import DocumentProcessingNode
 from agents.office_action_reply.src.nodes.patent_retrieval import PatentRetrievalNode
@@ -175,25 +176,12 @@ def create_workflow(config: WorkflowConfig = None):
 
 def setup_logging(log_dir: str = None):
     """设置日志配置"""
-    logger.remove()  # 移除默认日志配置
-
-    # 添加控制台输出
-    logger.add(
-        lambda msg: print(msg, end=""),
-        level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
-    )
-
-    # 添加文件输出
+    log_file = None
     if log_dir:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
-        logger.add(
-            str(log_dir / "workflow.log"),
-            level="DEBUG",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            rotation="10 MB"
-        )
+        log_file = str(log_dir / "workflow.log")
+    setup_logging_utc8(level="INFO", log_file=log_file, file_level="DEBUG", rotation="10 MB")
 
 
 def main():
