@@ -5,6 +5,7 @@
 
 import json
 import hashlib
+import re
 from agents.common.utils.llm import get_llm_service
 from loguru import logger
 from typing import Dict, List, Any
@@ -50,7 +51,7 @@ class DisputeExtractionNode:
 
             # 使用缓存运行争辩焦点提取
             valid_disputes = cache.run_step(
-                "extract_disputes",
+                "extract_disputes_v4",
                 self._extract_and_validate_disputes,
                 prepared_materials
             )
@@ -130,9 +131,20 @@ class DisputeExtractionNode:
         return """你是一位专利审查意见分析专家，负责提取审查员与申请人的核心争论点。
 
 你必须在内部按以下步骤进行思考，但不要输出任何思考过程，只输出最终JSON：
-1. 分析申请人的修改与陈述：从 response 中定位申请人具体反驳点、对应权利要求序号和技术特征。
-2. 回溯审查员的原始评述：在 paragraphs 中找到对应段落，提取审查员观点、引用位置和支撑文献编号。
-3. 提取并结构化争点：合并双方观点，形成可核查的冲突项。
+1. 先逐条整理申请人陈述：
+   - 从 response 中提取申请人按编号列举的每一项区别技术特征（如“1.”“2.”“3.”）。
+   - 同时提取“对于区别技术特征X”对应的逐条论证段落。
+   - 形成“申请人逐条陈述清单”，不得漏项。
+2. 再逐条回溯审查员意见：
+   - 对清单中的每一项，在 paragraphs 中定位对应 claim 段落与审查员原始说理。
+   - 提取审查员观点，并整理支撑文献关联 supporting_docs（doc_id + cited_text）。
+3. 逐条对齐并输出争点：
+   - 每个申请人条目至少映射到一个 dispute；若一个条目包含多个独立冲突，可拆为多个 dispute。
+   - 对“对比文件结合启示/结合动机/技术障碍”类反驳，必须单列 logic_dispute。
+4. 输出前进行覆盖校验（强制）：
+   - response 中编号条目全部被 disputes 覆盖；
+   - “对于区别技术特征X”段落全部被覆盖；
+   - 不得出现“申请人已论证但 disputes 未体现”的遗漏。
 
 输出要求：
 1. 只输出 JSON 对象，不要额外说明。
@@ -144,9 +156,17 @@ class DisputeExtractionNode:
       "dispute_id": "DSP_1_a1b2c3d4",
       "feature_text": "具体技术特征",
       "examiner_opinion": {
-        "type": "novelty_lack",
-        "supporting_doc_ids": ["D1", "D2"],
-        "cited_ref": "第3段中引用D1段落[0023]并结合D2图2",
+        "type": "document_based",
+        "supporting_docs": [
+          {
+            "doc_id": "D1",
+            "cited_text": "面板定位架100，用于固定待检测的柜内机出风面板"
+          },
+          {
+            "doc_id": "D2",
+            "cited_text": "提供转速、周期等参数可配置的手动、自动、组合控制方法"
+          }
+        ],
         "reasoning": "审查员认为该特征由D1公开且可由D2补充得到"
       },
       "applicant_opinion": {
@@ -159,11 +179,13 @@ class DisputeExtractionNode:
 }
 
 字段约束：
-- examiner_opinion.type 只能是 "novelty_lack" 或 "obviousness"
+- examiner_opinion.type 只能是 "document_based"、"common_knowledge_based" 或 "mixed_basis"
 - applicant_opinion.type 只能是 "fact_dispute" 或 "logic_dispute"
-- supporting_doc_ids 必须优先使用 comparison_documents 的 document_id（如 D1、D2）
-- 若审查员主张为公知常识，supporting_doc_ids 必须为 []
-- supporting_doc_ids 可以有多个编号
+- supporting_docs 的 doc_id 必须优先使用 comparison_documents 的 document_id（如 D1、D2）
+- 当 examiner_opinion.type="common_knowledge_based" 时，supporting_docs 必须为 []
+- 当 examiner_opinion.type="document_based" 或 "mixed_basis" 时，supporting_docs 应至少包含一个 doc_id
+- supporting_docs 每项必须包含 doc_id 和 cited_text
+- cited_text 必须严格来自审查意见原文中“对比文件X公开了：”之后的内容，逐字摘录，不得改写、缩写、总结或添加省略号
 - 每个争点必须包含 original_claim_id、feature_text、examiner_opinion、applicant_opinion
 
 original_claim_id 取值与来源规则（强约束）：
@@ -209,8 +231,12 @@ original_claim_id 取值与来源规则（强约束）：
 【申请人 response】
 {response_excerpt if response_excerpt else "未提供"}
 
-【对比文件上下文 comparison_documents（用于关联 supporting_doc_ids）】
-{comparison_context_json if comparison_context_json else "[]"}"""
+【对比文件上下文 comparison_documents（用于关联 supporting_docs.doc_id）】
+{comparison_context_json if comparison_context_json else "[]"}
+
+请特别注意：
+1. 必须对 response 中编号条目（如 1/2/3）与“对于区别技术特征X”段落逐条回溯，不得遗漏。
+2. 每条输出都要能在 paragraphs 中找到对应审查员说理依据。"""
 
     def _validate_disputes(self, disputes: List, valid_doc_ids: set[str]) -> List[Dict]:
         """验证和修复争辩焦点数据"""
@@ -235,7 +261,7 @@ original_claim_id 取值与来源规则（强约束）：
                     continue
 
                 examiner_type = str(examiner_opinion.get("type", "")).strip()
-                if examiner_type not in {"novelty_lack", "obviousness"}:
+                if examiner_type not in {"document_based", "common_knowledge_based", "mixed_basis"}:
                     logger.warning(f"第{i+1}个争辩焦点 examiner_opinion.type 非法: {examiner_type}")
                     continue
 
@@ -244,17 +270,54 @@ original_claim_id 取值与来源规则（强约束）：
                     logger.warning(f"第{i+1}个争辩焦点 applicant_opinion.type 非法: {applicant_type}")
                     continue
 
-                supporting_doc_ids = examiner_opinion.get("supporting_doc_ids", [])
-                if not isinstance(supporting_doc_ids, list):
-                    supporting_doc_ids = []
+                supporting_docs_raw = examiner_opinion.get("supporting_docs", [])
+                if not isinstance(supporting_docs_raw, list):
+                    supporting_docs_raw = []
 
-                normalized_doc_ids = []
-                for doc_id in supporting_doc_ids:
-                    doc_id_value = str(doc_id).strip()
-                    if doc_id_value and (not valid_doc_ids or doc_id_value in valid_doc_ids):
-                        normalized_doc_ids.append(doc_id_value)
-                    elif doc_id_value and valid_doc_ids:
-                        logger.debug(f"第{i+1}个争辩焦点包含未识别的文献编号: {doc_id_value}")
+                normalized_supporting_docs = []
+                for item in supporting_docs_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    doc_id_value = str(item.get("doc_id", "")).strip()
+                    if not doc_id_value:
+                        continue
+                    if valid_doc_ids and doc_id_value not in valid_doc_ids:
+                        continue
+                    cited_text_value = str(item.get("cited_text", "")).strip()
+                    normalized_supporting_docs.append({
+                        "doc_id": doc_id_value,
+                        "cited_text": cited_text_value,
+                    })
+
+                deduped_supporting_docs = []
+                seen_doc_ids = set()
+                for item in normalized_supporting_docs:
+                    doc_id = str(item.get("doc_id", "")).strip()
+                    if not doc_id or doc_id in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(doc_id)
+                    deduped_supporting_docs.append(item)
+                normalized_supporting_docs = deduped_supporting_docs
+
+                if examiner_type == "common_knowledge_based":
+                    normalized_supporting_docs = []
+                else:
+                    if not normalized_supporting_docs:
+                        fallback_doc_ids = self._extract_doc_ids_from_text(
+                            " ".join(
+                                [
+                                    str(examiner_opinion.get("reasoning", "")),
+                                    str(dispute.get("feature_text", "")),
+                                ]
+                            ),
+                            valid_doc_ids,
+                        )
+                        normalized_supporting_docs = [
+                            {"doc_id": doc_id, "cited_text": ""}
+                            for doc_id in fallback_doc_ids
+                        ]
+                    if not normalized_supporting_docs:
+                        logger.warning(f"第{i+1}个争辩焦点 document_based/mixed_basis 但 supporting_docs 为空")
 
                 valid_disputes.append({
                     "dispute_id": self._build_dispute_id(
@@ -266,8 +329,7 @@ original_claim_id 取值与来源规则（强约束）：
                     "feature_text": str(dispute.get("feature_text", "")).strip(),
                     "examiner_opinion": {
                         "type": examiner_type,
-                        "supporting_doc_ids": normalized_doc_ids,
-                        "cited_ref": str(examiner_opinion.get("cited_ref", "")).strip(),
+                        "supporting_docs": normalized_supporting_docs,
                         "reasoning": str(examiner_opinion.get("reasoning", "")).strip()
                     },
                     "applicant_opinion": {
@@ -281,6 +343,16 @@ original_claim_id 取值与来源规则（强约束）：
                 logger.warning(f"验证第{i+1}个争辩焦点时出错: {e}")
 
         return valid_disputes
+
+    def _extract_doc_ids_from_text(self, text: str, valid_doc_ids: set[str]) -> List[str]:
+        doc_ids: List[str] = []
+        for match in re.finditer(r"(?:对比文件\s*|D\s*)(\d+)", text or "", re.I):
+            value = f"D{match.group(1)}"
+            if valid_doc_ids and value not in valid_doc_ids:
+                continue
+            if value not in doc_ids:
+                doc_ids.append(value)
+        return doc_ids
 
     def _build_dispute_id(self, raw_dispute_id: Any, original_claim_id: str, feature_text: str) -> str:
         """生成稳定的 dispute_id。"""

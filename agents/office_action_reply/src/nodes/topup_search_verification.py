@@ -37,7 +37,7 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v2",
+                "verify_topup_v3",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
@@ -172,9 +172,13 @@ class TopupSearchVerificationNode:
 输出结构（仅 JSON）：
 {
   "examiner_opinion": {
-    "type": "obviousness",
-    "supporting_doc_ids": ["D1"],
-    "cited_ref": "引用位置说明",
+    "type": "document_based",
+    "supporting_docs": [
+      {
+        "doc_id": "D1",
+        "cited_text": "证据片段"
+      }
+    ],
     "reasoning": "审查员观点"
   },
   "applicant_opinion": {
@@ -202,11 +206,22 @@ class TopupSearchVerificationNode:
 }
 
 约束：
-- examiner_opinion.type 只能是 novelty_lack 或 obviousness。
+- examiner_opinion.type 只能是 document_based、common_knowledge_based、mixed_basis。
 - applicant_opinion.type 固定为 fact_dispute。
 - assessment.verdict 只能是 APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE。
 - 若 assessment.verdict=APPLICANT_CORRECT，assessment.examiner_rejection_reason 必须给出具体且有说服力的驳回说理；否则留空字符串。
-- evidence.doc_id 必须来自给定证据 doc_id 列表或 MODEL。"""
+- 当 examiner_opinion.type 为 document_based/mixed_basis 时，supporting_docs 必须至少包含一个 doc_id。
+- 当 examiner_opinion.type 为 common_knowledge_based 时，supporting_docs 必须为空数组。
+- evidence.doc_id 必须来自给定证据 doc_id 列表或 MODEL。
+
+examiner_rejection_reason 口吻与内容约束（强制）：
+- 该字段将直接拼接进 second_office_action_notice.text，必须写成“审查意见通知书正文口吻”，面向申请人。
+- 必须使用确定性陈述，不得写策略建议或元话术。
+- 禁止使用：审查员可主张、可认为、可以、建议、应补充、如需、若…则…。
+
+示例：
+- 合格示例：经审查认为，现有技术已公开……，并且将……应用于……属于本领域技术人员的常规技术选择，故该新增特征不足以克服现有创造性缺陷。
+- 不合格示例：审查员可主张该特征可能显而易见，建议进一步补证后维持驳回。"""
 
     def _build_user_prompt(
         self,
@@ -247,21 +262,39 @@ feature_text: {feature_text}
 
         examiner_opinion = self._to_dict(output.get("examiner_opinion", {}))
         examiner_type = str(examiner_opinion.get("type", "")).strip()
-        if examiner_type not in {"novelty_lack", "obviousness"}:
+        if examiner_type not in {"document_based", "common_knowledge_based", "mixed_basis"}:
             raise ValueError(f"topup_search_verification 输出非法 examiner_opinion.type: {examiner_type}")
 
-        supporting_doc_ids_raw = examiner_opinion.get("supporting_doc_ids", [])
-        if not isinstance(supporting_doc_ids_raw, list):
-            raise ValueError("topup_search_verification 输出非法 supporting_doc_ids，必须为列表")
-        supporting_doc_ids = []
-        for doc_id in supporting_doc_ids_raw:
-            value = str(doc_id).strip()
-            if not value:
-                raise ValueError("topup_search_verification 输出非法 supporting_doc_id: 空值")
-            if value not in allowed_doc_ids or value == "MODEL":
-                raise ValueError(f"topup_search_verification 输出非法 supporting_doc_id: {value}")
-            if value not in supporting_doc_ids:
-                supporting_doc_ids.append(value)
+        supporting_docs_raw = examiner_opinion.get("supporting_docs", [])
+        if not isinstance(supporting_docs_raw, list):
+            raise ValueError("topup_search_verification 输出非法 supporting_docs，必须为列表")
+        supporting_docs = []
+        for item in supporting_docs_raw:
+            item_dict = self._to_dict(item)
+            doc_id = str(item_dict.get("doc_id", "")).strip()
+            if not doc_id:
+                continue
+            if doc_id not in allowed_doc_ids or doc_id == "MODEL":
+                raise ValueError(f"topup_search_verification 输出非法 supporting_docs.doc_id: {doc_id}")
+            supporting_docs.append({
+                "doc_id": doc_id,
+                "cited_text": str(item_dict.get("cited_text", "")).strip(),
+            })
+
+        deduped_supporting_docs = []
+        seen_doc_ids = set()
+        for item in supporting_docs:
+            doc_id = item["doc_id"]
+            if doc_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(doc_id)
+            deduped_supporting_docs.append(item)
+        supporting_docs = deduped_supporting_docs
+
+        if examiner_type in {"document_based", "mixed_basis"} and not supporting_docs:
+            raise ValueError("topup_search_verification 输出非法: document_based/mixed_basis 时 supporting_docs 不能为空")
+        if examiner_type == "common_knowledge_based":
+            supporting_docs = []
 
         applicant_opinion = self._to_dict(output.get("applicant_opinion", {}))
         applicant_type = str(applicant_opinion.get("type", "")).strip()
@@ -318,8 +351,7 @@ feature_text: {feature_text}
         return {
             "examiner_opinion": {
                 "type": examiner_type,
-                "supporting_doc_ids": supporting_doc_ids,
-                "cited_ref": str(examiner_opinion.get("cited_ref", "")).strip(),
+                "supporting_docs": supporting_docs,
                 "reasoning": str(examiner_opinion.get("reasoning", "")).strip(),
             },
             "applicant_opinion": {

@@ -23,11 +23,22 @@ class ParsedFile(BaseModel):
     content: str = Field("", description="markdown内容")
 
 
+class SupportingDocCitation(BaseModel):
+    """审查员观点中的文献-引用关联"""
+    doc_id: str = Field(..., description="对比文件编号，如 D1")
+    cited_text: str = Field("", description="审查员用于支撑观点的原文描述或关键短语")
+
+
 class ExaminerOpinion(BaseModel):
     """审查员观点"""
-    type: str = Field(..., description="观点类型: novelty_lack 或 obviousness")
-    supporting_doc_ids: List[str] = Field(default_factory=list, description="支撑观点的对比文件编号列表，如 D1、D2")
-    cited_ref: str = Field("", description="审查员引用位置描述")
+    type: str = Field(
+        ...,
+        description="观点类型: document_based 或 common_knowledge_based 或 mixed_basis",
+    )
+    supporting_docs: List[SupportingDocCitation] = Field(
+        default_factory=list,
+        description="支撑文献关联信息，每项包含 doc_id/cited_text，用于定位原文上下文",
+    )
     reasoning: str = Field("", description="审查员理由")
 
 
