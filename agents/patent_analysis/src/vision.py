@@ -46,11 +46,10 @@ class VisualProcessor:
                 use_doc_orientation_classify=False,  # 不使用文档方向分类模型
                 use_doc_unwarping=False,  # 不使用文本图像矫正模型
                 use_textline_orientation=False,  # 不使用文本行方向分类模型
-                text_rec_score_thresh=0.8,  # 识别置信度
+                text_rec_score_thresh=0.7,  # 识别置信度
                 text_det_thresh=0.2,  # 文本检测像素阈值
                 text_det_box_thresh=0.3,  # 文本检测框阈值
-                text_det_unclip_ratio=2.0,  # 文本检测扩张系数
-                text_det_limit_side_len=1216 # 增大图像尺寸
+                text_det_unclip_ratio=1.7  # 文本检测扩张系数
             )
 
         elif self.engine_type == "online":
@@ -175,6 +174,19 @@ class VisualProcessor:
                     # 但是要加入 found_pids，这样 FormalExaminer 就会发现它在 parts_db 里不存在
                     found_pids.append(match_key)
 
+            # 有效标注占比校验：占比过低说明图中干扰文本过多，跳过该图标注
+            total_labels = len(ocr_results)
+            min_valid_ratio = 0.6
+            if total_labels > 0:
+                valid_ratio = len(valid_labels) / total_labels
+                if valid_ratio < min_valid_ratio:
+                    logger.warning(
+                        f"[Vision] Skip marking {img_path.name}: "
+                        f"valid_ratio={valid_ratio:.2%} ({len(valid_labels)}/{total_labels}) < {min_valid_ratio:.0%}"
+                    )
+                    shutil.copy2(img_path, out_path)
+                    return []
+
             # 3. 绘图或复制
             # 如果有有效标注，或者至少识别出了一些东西（避免空图被覆盖），则进行标注
             if len(valid_labels) > 0:
@@ -247,13 +259,20 @@ class VisualProcessor:
         # 1. 智能放大逻辑
         # 目标：确保短边至少 1600px，使 10px 的小数字变成 ~25px 以上
         target_min_side = 1600
+        # 与 PaddleOCR 文本检测侧长上限对齐，避免预处理放大后再被模型内部缩小
+        det_max_side_limit = 4000
         min_side = min(h, w)
+        max_side = max(h, w)
 
         if min_side < target_min_side:
             scale_factor = target_min_side / min_side
             scale_factor = min(scale_factor, 4.0)  # 限制最大 4 倍
         else:
             scale_factor = 1.0
+
+        # 防止放大后超过检测上限，导致二次插值损失细节并增加耗时
+        if max_side * scale_factor > det_max_side_limit:
+            scale_factor = det_max_side_limit / max_side
 
         if scale_factor > 1.0:
             # 使用 Lanczos 插值，保持线条平滑
@@ -300,11 +319,11 @@ class VisualProcessor:
             dtype=cv2.CV_8UC1,
         )
 
-        # # A. 微量加粗 (Erosion)
-        # # 注意：在白底黑字中，Erosion(腐蚀) 会让黑色区域变大(加粗)，Dilation(膨胀) 会让黑色区域变小(变细)
-        # # 我们使用一个极小的 kernel (2x2) 进行一次腐蚀，让细断的笔画连起来
-        # kernel = np.ones((2, 2), np.uint8)
-        # result = cv2.erode(result, kernel, iterations=1)
+        # 对浅灰底细线稿做极轻加粗，提升小标号(如 1/2/3/S1)可读性
+        dark_ratio = float(np.mean(final_result < 170))
+        if dark_ratio < 0.12:
+            kernel = np.ones((2, 2), np.uint8)
+            final_result = cv2.erode(final_result, kernel, iterations=1)
 
         # # B. 高斯模糊 (Smoothing)
         # # 这一步非常关键：它能消除锯齿，把"马赛克"变成"线条"，极大提升 OCR 识别率
@@ -370,8 +389,16 @@ class VisualProcessor:
             logger.warning(f"Failed to preprocess image: {img_path}")
             return []
 
+        # PaddleOCR 3.x text-det expects 3-channel input (H, W, C).
+        # _preprocess_for_ocr may return grayscale (H, W), so convert before predict.
+        ocr_input = processed_img
+        if len(ocr_input.shape) == 2:
+            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_GRAY2BGR)
+        elif len(ocr_input.shape) == 3 and ocr_input.shape[2] == 4:
+            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_BGRA2BGR)
+
         try:
-            result = self.ocr_engine.predict(processed_img)
+            result = self.ocr_engine.predict(ocr_input)
         except Exception as e:
             logger.error(f"PaddleOCR inference failed: {e}")
             return []
@@ -428,9 +455,8 @@ class VisualProcessor:
                 "useTextlineOrientation": False,
                 "textDetThresh": 0.2,
                 "textDetBoxThresh": 0.3,
-                "textDetUnclipRatio": 2.0,
-                "textRecScoreThresh": 0.8,
-                "textDetLimitSideLen": 1216
+                "textDetUnclipRatio": 1.7,
+                "textRecScoreThresh": 0.7
             }
 
             # 4. 发送请求
