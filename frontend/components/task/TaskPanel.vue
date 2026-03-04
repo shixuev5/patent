@@ -24,11 +24,11 @@
       <div v-if="taskStore.tasks.length > 0" class="header-right" @click.stop>
         <button v-if="taskStore.completedCount > 0" class="action-btn" @click="downloadAll">
           <ArrowDownTrayIcon class="w-4 h-4" />
-          全部下载
+          <span class="action-label">全部下载</span>
         </button>
         <button class="action-btn danger" @click="confirmClearAll">
           <TrashIcon class="w-4 h-4" />
-          清空
+          <span class="action-label">清空</span>
         </button>
       </div>
     </div>
@@ -131,6 +131,7 @@ onMounted(() => {
 }
 .panel-header {
   @apply flex items-center justify-between px-6 py-4 cursor-pointer hover:bg-gray-50 transition-colors;
+  min-height: 64px;
 }
 .header-left {
   @apply flex items-center gap-3;
@@ -158,6 +159,7 @@ onMounted(() => {
 }
 .action-btn {
   @apply flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors;
+  white-space: nowrap;
 }
 .action-btn.danger {
   @apply text-red-600 border-red-200 hover:bg-red-50;
@@ -224,5 +226,47 @@ onMounted(() => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+@media (max-width: 640px) {
+  .panel-header {
+    @apply px-3 py-2.5;
+    min-height: 60px;
+  }
+
+  .header-left {
+    @apply gap-2;
+    min-width: 0;
+  }
+
+  .panel-title {
+    @apply text-sm gap-1.5;
+    white-space: nowrap;
+  }
+
+  .badge {
+    @apply px-2 py-0.5;
+    font-size: 11px;
+  }
+
+  .header-right {
+    @apply gap-1.5;
+  }
+
+  .action-btn {
+    @apply px-2 py-1.5;
+  }
+
+  .action-label {
+    display: none;
+  }
+
+  .task-panel:not(.expanded).has-tasks {
+    transform: translateY(calc(100% - 60px));
+  }
+
+  .task-list {
+    @apply p-4 space-y-3;
+  }
 }
 </style>

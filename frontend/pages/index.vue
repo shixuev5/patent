@@ -19,43 +19,45 @@
       <div class="absolute bottom-[-150px] left-[-150px] w-[500px] h-[500px] bg-gradient-to-tr from-blue-200/20 to-cyan-200/20 rounded-full blur-3xl"></div>
     </div>
 
-    <main class="relative z-10 flex-1 flex flex-col items-center px-4 py-16 md:py-24">
+    <main class="relative z-10 flex-1 flex flex-col items-center w-full px-4 pt-10 pb-28 sm:pt-12 md:py-24 md:pb-16">
       <!-- 服务状态和统计信息 - 调整到上传区域下方 -->
 
-      <div class="mb-8">
-        <div class="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-500/10 to-indigo-500/10 border border-blue-200/50 rounded-full backdrop-blur-sm">
+      <div class="mb-6 sm:mb-8">
+        <div class="inline-flex items-center gap-2 px-4 py-2.5 sm:px-5 sm:py-3 bg-gradient-to-r from-blue-500/10 to-indigo-500/10 border border-blue-200/50 rounded-full backdrop-blur-sm">
           <BoltIcon class="w-5 h-5 text-blue-600" />
           <span class="text-sm font-semibold text-blue-700">AI 驱动的智能分析</span>
         </div>
       </div>
 
-      <h1 class="text-5xl md:text-7xl font-bold text-center text-slate-900 mb-6 tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">
+      <h1 class="text-3xl sm:text-4xl md:text-7xl font-bold text-center text-slate-900 mb-4 sm:mb-6 tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">
         专利智能分析平台
       </h1>
 
-      <p class="text-xl md:text-2xl text-center text-slate-600 mb-12 max-w-2xl leading-relaxed">
+      <p class="text-base sm:text-lg md:text-2xl text-center text-slate-600 mb-8 sm:mb-12 max-w-2xl leading-relaxed">
         输入专利公开号或上传 PDF，系统自动完成解析、检索与报告生成，让专利分析更简单。
       </p>
 
       <div class="w-full max-w-xl space-y-6">
         <div
-          class="bg-white/80 backdrop-blur-xl rounded-3xl shadow-xl shadow-slate-200/60 border border-slate-100/50 p-3"
+          class="bg-white/80 backdrop-blur-xl rounded-3xl shadow-xl shadow-slate-200/60 border border-slate-100/50 p-2.5 sm:p-3"
           :class="patentNumberError ? 'border-red-200 ring-1 ring-red-100' : ''"
         >
-          <div class="flex items-center gap-2">
-            <div class="pl-4 text-slate-400">
-              <MagnifyingGlassIcon class="w-6 h-6" />
+          <div class="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-2">
+            <div class="flex items-center gap-2 w-full min-w-0">
+              <div class="pl-3 sm:pl-4 text-slate-400">
+                <MagnifyingGlassIcon class="w-5 h-5 sm:w-6 sm:h-6" />
+              </div>
+              <input
+                v-model="patentNumber"
+                type="text"
+                placeholder="请输入专利公开号（如：CN116745575A）"
+                class="flex-1 min-w-0 py-3.5 sm:py-4 pr-3 text-slate-900 placeholder-slate-400 bg-transparent border-none outline-none text-base"
+                @keyup.enter="submitPatent"
+              />
             </div>
-            <input
-              v-model="patentNumber"
-              type="text"
-              placeholder="请输入专利公开号（如：CN116745575A）"
-              class="flex-1 py-4 px-2 text-slate-900 placeholder-slate-400 bg-transparent border-none outline-none text-base"
-              @keyup.enter="submitPatent"
-            />
             <button
               :disabled="!canSubmitPatent"
-              class="px-8 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-blue-300 disabled:to-blue-300 text-white font-semibold rounded-2xl transition-all duration-300 flex items-center gap-2 shadow-lg shadow-blue-600/30 hover:shadow-xl hover:-translate-y-0.5"
+              class="w-full sm:w-auto shrink-0 px-6 sm:px-8 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-blue-300 disabled:to-blue-300 text-white font-semibold rounded-2xl transition-all duration-300 flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 hover:shadow-xl hover:-translate-y-0.5 whitespace-nowrap"
               @click="submitPatent"
             >
               <span v-if="loading" class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -87,7 +89,7 @@
 
           <div
             :class="[
-              'relative border-2 border-dashed rounded-3xl p-10 text-center transition-all duration-300 cursor-pointer overflow-hidden backdrop-blur-sm',
+              'relative border-2 border-dashed rounded-3xl p-6 sm:p-10 text-center transition-all duration-300 cursor-pointer overflow-hidden backdrop-blur-sm',
               isDragging ? 'border-blue-500 bg-blue-50/80' : 'border-slate-300/70 hover:border-slate-400 hover:bg-slate-50/80',
             ]"
             @click="!selectedFile && $refs.fileInput?.click()"
@@ -99,11 +101,11 @@
 
             <div class="relative z-10">
               <div v-if="!selectedFile" class="space-y-4">
-                <div class="mx-auto w-20 h-20 rounded-3xl bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center group-hover:from-slate-200 group-hover:to-slate-300 transition-all duration-300">
-                  <DocumentArrowUpIcon class="w-10 h-10 text-slate-400" />
+                <div class="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center group-hover:from-slate-200 group-hover:to-slate-300 transition-all duration-300">
+                  <DocumentArrowUpIcon class="w-8 h-8 sm:w-10 sm:h-10 text-slate-400" />
                 </div>
                 <div>
-                  <p class="text-lg font-semibold text-slate-900">拖拽 PDF 文件到此处</p>
+                  <p class="text-base sm:text-lg font-semibold text-slate-900">拖拽 PDF 文件到此处</p>
                   <p class="text-sm text-slate-500 mt-1">或点击选择文件</p>
                 </div>
                 <p class="text-xs text-slate-400">支持 .pdf 格式，最大 50MB</p>
@@ -142,7 +144,7 @@
       </div>
 
       <!-- 服务状态和统计信息 -->
-      <div class="w-full max-w-6xl mt-10 flex flex-wrap justify-center gap-5">
+      <div class="w-full max-w-6xl mt-10 flex flex-wrap justify-center gap-4 sm:gap-5">
         <div class="inline-flex items-center gap-2 rounded-full border border-emerald-200/80 bg-emerald-50/80 px-5 py-3 text-sm text-emerald-700 backdrop-blur-sm">
           <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
           服务状态正常
@@ -152,6 +154,11 @@
           <CheckCircleIcon class="w-5 h-5 text-blue-600" />
           <span class="text-sm text-slate-500">已分析专利数</span>
           <span class="text-xl font-bold text-slate-900 tabular-nums">{{ analyzedPatentCountText }}</span>
+        </div>
+
+        <div v-if="serviceVersion" class="flex items-center gap-2 rounded-2xl border border-slate-200/80 bg-white/90 backdrop-blur-xl px-5 py-3">
+          <span class="text-sm text-slate-500">版本</span>
+          <span class="text-sm font-semibold text-slate-900 tabular-nums">v{{ serviceVersion }}</span>
         </div>
       </div>
 
@@ -267,7 +274,6 @@
       <footer class="w-full max-w-7xl mt-16 mb-6 text-center text-slate-500 text-sm">
         <div class="bg-white/90 backdrop-blur-xl rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100/50">
           <p>© 2026 专利智能分析平台. All rights reserved.</p>
-          <p class="mt-2 text-xs text-slate-400">Version {{ serviceVersion }}</p>
         </div>
       </footer>
 
