@@ -161,23 +161,38 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_ipc_classifications(md_content: str) -> list:
-        pattern = r"\(51\)\s*Int\s*\.\s*[Cc][LlIi1]\.?\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
+        pattern = r"\(51\)\s*Int\s*\.\s*[Cc][LlIi1]\.?\s*([\s\S]*?)(?=(?:\(\d+\)|\([A-Z]{2,}\)|#|$))"
         match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            ipc_text = match.group(1).strip()
-            ipc_pattern = r"([A-Z][0-9]{2}[A-Z]?\s*\d+/\d+(?:\s*\(\d{4}\.\d{2}\))?)"
-            matches = re.findall(ipc_pattern, ipc_text)
-            processed_matches =[]
-            for m in matches:
-                main_class = re.sub(r"\s*\(\d{4}\.\d{2}\)", "", m).strip()
-                processed_matches.append(main_class)
-            return processed_matches
-        return[]
+        if not match:
+            return []
+
+        ipc_text = match.group(1).strip()
+        ipc_pattern = re.compile(
+            r"([A-Z])([0-9OIlL])([0-9OIlL])([A-Z])\s*([0-9OIlL]+)\s*/\s*([0-9OIlL]+)(?:\s*\(\d{4}\.\d{2}\))?",
+            re.IGNORECASE,
+        )
+        ipc_codes = []
+
+        for item in ipc_pattern.finditer(ipc_text):
+            section = item.group(1).upper()
+            class_digits = RuleBasedExtractor._normalize_ocr_digits(item.group(2) + item.group(3))
+            subclass = item.group(4).upper()
+            main_group = RuleBasedExtractor._normalize_ocr_digits(item.group(5))
+            sub_group = RuleBasedExtractor._normalize_ocr_digits(item.group(6))
+
+            if not (class_digits.isdigit() and main_group.isdigit() and sub_group.isdigit()):
+                continue
+
+            ipc_code = f"{section}{class_digits}{subclass} {main_group}/{sub_group}"
+            if ipc_code not in ipc_codes:
+                ipc_codes.append(ipc_code)
+
+        return ipc_codes
 
     @staticmethod
     def _extract_applicants(md_content: str) -> list:
         applicants =[]
-        pattern = r"\(71\)\s*申请人\s*([\s\S]*?)(?=\(\d+\)|#|$)"
+        pattern = r"\((?:71|73)\)\s*(?:申请人|专利权人)\s*([\s\S]*?)(?=\(\d+\)|#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
         
         if match:
@@ -206,6 +221,17 @@ class RuleBasedExtractor:
                 applicants.append(current_applicant)
 
         return applicants
+
+    @staticmethod
+    def _normalize_ocr_digits(text: str) -> str:
+        """将 OCR 常见字符误识别归一化为数字。"""
+        return (text or "").translate(str.maketrans({
+            "O": "0",
+            "o": "0",
+            "I": "1",
+            "l": "1",
+            "L": "1",
+        }))
 
     @staticmethod
     def _extract_inventors(md_content: str) -> list:

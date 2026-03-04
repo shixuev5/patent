@@ -3,6 +3,7 @@
 负责校验非专文件数量并将数据整理为下游可消费的新结构
 """
 
+import re
 from typing import Any, Dict, List
 from loguru import logger
 from agents.office_action_reply.src.state import WorkflowState
@@ -70,8 +71,7 @@ class DataPreparationNode:
 
         patent_data_map = self._build_patent_data_map(search_results)
         application_number = str(office_action.get("application_number", "")).strip()
-        non_patent_contents = [item.get("content", "") for item in uploaded_non_patent_files]
-        non_patent_index = 0
+        non_patent_content_map = self._build_non_patent_content_map(non_patent_docs, uploaded_non_patent_files)
 
         normalized_comparison_documents = []
         for doc in comparison_documents:
@@ -79,18 +79,19 @@ class DataPreparationNode:
             document_number = doc.get("document_number", "")
             is_patent = bool(doc.get("is_patent", False))
             publication_date = doc.get("publication_date")
+            page_range = doc.get("page_range", []) or []
 
             if is_patent:
                 data = patent_data_map.get(document_number, {})
             else:
-                data = non_patent_contents[non_patent_index]
-                non_patent_index += 1
+                data = non_patent_content_map.get(document_id, "")
 
             normalized_comparison_documents.append({
                 "document_id": document_id,
                 "document_number": document_number,
                 "is_patent": is_patent,
                 "publication_date": publication_date,
+                "page_range": page_range,
                 "data": data
             })
 
@@ -125,6 +126,89 @@ class DataPreparationNode:
             for patent_number, structured_data in item_dict.items():
                 patent_data_map[str(patent_number)] = structured_data
         return patent_data_map
+
+    def _build_non_patent_content_map(
+        self,
+        non_patent_docs: List[Dict[str, Any]],
+        uploaded_non_patent_files: List[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """基于 document_number 中提取的标题，在上传非专 markdown 内容中命中并完成一对一映射。"""
+        content_map: Dict[str, str] = {}
+        remaining_indices = set(range(len(uploaded_non_patent_files)))
+
+        for doc in non_patent_docs:
+            document_id = str(doc.get("document_id", "")).strip()
+            document_number = str(doc.get("document_number", "")).strip()
+            title = self._extract_non_patent_title(document_number)
+
+            if not document_id:
+                raise ValueError(f"非专文献映射失败: document_number={document_number} 缺少 document_id")
+            if not title:
+                raise ValueError(f"非专文献映射失败: {document_id} 的 document_number 为空，无法提取标题")
+
+            candidate_indices = [
+                idx for idx in sorted(remaining_indices)
+                if self._title_in_content(title, str(uploaded_non_patent_files[idx].get("content", "")))
+            ]
+
+            if len(candidate_indices) == 1:
+                matched_idx = candidate_indices[0]
+                remaining_indices.remove(matched_idx)
+                content_map[document_id] = str(uploaded_non_patent_files[matched_idx].get("content", ""))
+                continue
+
+            if len(candidate_indices) > 1:
+                matched_files = [
+                    self._non_patent_file_label(uploaded_non_patent_files[idx])
+                    for idx in candidate_indices
+                ]
+                raise ValueError(
+                    f"非专文献映射冲突: {document_id} 标题「{title}」匹配到多个上传文件: {', '.join(matched_files)}"
+                )
+
+            all_candidate_indices = [
+                idx for idx, item in enumerate(uploaded_non_patent_files)
+                if self._title_in_content(title, str(item.get("content", "")))
+            ]
+            if all_candidate_indices:
+                matched_files = [
+                    self._non_patent_file_label(uploaded_non_patent_files[idx])
+                    for idx in all_candidate_indices
+                ]
+                raise ValueError(
+                    f"非专文献映射冲突: {document_id} 标题「{title}」仅在已映射文件中出现: {', '.join(matched_files)}"
+                )
+
+            raise ValueError(
+                f"非专文献映射失败: {document_id} 标题「{title}」未在任何上传非专文件的 markdown 内容中命中"
+            )
+
+        return content_map
+
+    def _extract_non_patent_title(self, document_number: str) -> str:
+        """提取 document_number 中第一个逗号（中英文）之前的内容作为标题。"""
+        normalized_number = str(document_number or "").strip()
+        if not normalized_number:
+            return ""
+        return re.split(r"[,，]", normalized_number, maxsplit=1)[0].strip()
+
+    def _title_in_content(self, title: str, content: str) -> bool:
+        if not title or not content:
+            return False
+        if title in content:
+            return True
+        normalized_title = re.sub(r"\s+", "", title)
+        normalized_content = re.sub(r"\s+", "", content)
+        return bool(normalized_title) and normalized_title in normalized_content
+
+    def _non_patent_file_label(self, item: Dict[str, Any]) -> str:
+        file_path = str(item.get("file_path", "")).strip()
+        if file_path:
+            return file_path
+        markdown_path = str(item.get("markdown_path", "")).strip()
+        if markdown_path:
+            return markdown_path
+        return "<unknown>"
 
     def _get_parsed_content(self, parsed_files, file_type: str) -> str:
         for item in parsed_files or []:
