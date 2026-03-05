@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from config import settings
 from backend.auth import _get_current_user
+from backend.log_context import bind_task_logger, task_log_context
 from backend.usage import _enforce_daily_quota
 from backend.models import CurrentUser, TaskResponse
 from backend.utils import (
@@ -166,8 +167,9 @@ async def run_pipeline_task(
     cancel_event: Optional[Event] = None,
 ):
     """后台执行专利分析流程，并在成功后按需写入对象存储缓存。"""
+    task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_pipeline_task")
     try:
-        print(f"[任务 {task_id}] 开始处理：{pn}")
+        task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
         task_manager.update_progress(task_id, 1, "任务已开始")
 
@@ -177,19 +179,20 @@ async def run_pipeline_task(
         pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event, task_id=task_id)
 
         def run_pipeline():
-            return pipeline.run()
+            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn):
+                return pipeline.run()
 
         pipeline_future = loop.run_in_executor(None, run_pipeline)
         result = await pipeline_future
 
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
-            print(f"[任务 {task_id}] 已取消")
+            task_logger.warning("任务已取消")
             return
 
         if result.get("status") == "cancelled":
             task_manager.cancel_task(task_id, result.get("error") or "任务已取消")
-            print(f"[任务 {task_id}] 已取消")
+            task_logger.warning("任务已取消")
             return
 
         if result.get("status") == "success":
@@ -209,7 +212,7 @@ async def run_pipeline_task(
             if not pdf_bytes:
                 error_msg = f"报告文件不存在或为空：{output_pdf}"
                 task_manager.fail_task(task_id, error_msg)
-                print(f"[任务 {task_id}] 失败：{error_msg}")
+                task_logger.bind(stage="finalize_report").error(error_msg)
                 return
 
             r2_storage = _build_r2_storage()
@@ -225,18 +228,18 @@ async def run_pipeline_task(
                     output_files["r2_key"] = r2_key
 
             task_manager.complete_task(task_id, output_files=output_files)
-            print(f"[任务 {task_id}] 已完成：{output_pdf}")
+            task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
         else:
             error_msg = result.get("error", "未知流程错误")
             task_manager.fail_task(task_id, error_msg)
-            print(f"[任务 {task_id}] 失败：{error_msg}")
+            task_logger.error(f"任务失败：{error_msg}")
 
     except asyncio.CancelledError:
-        print(f"[任务 {task_id}] 已取消")
+        task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
         raise
     except Exception as exc:
-        print(f"[任务 {task_id}] 异常失败：{str(exc)}")
+        task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
 
 
@@ -246,8 +249,9 @@ async def run_office_action_reply_task(
     cancel_event: Optional[Event] = None,
 ):
     """后台执行审查意见答复流程。"""
+    task_logger = bind_task_logger(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-", stage="run_office_action_reply_task")
     try:
-        print(f"[任务 {task_id}] 开始处理：office_action_reply")
+        task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
         task_manager.update_progress(task_id, 5, "正在准备材料")
 
@@ -282,7 +286,8 @@ async def run_office_action_reply_task(
             )
 
             workflow = create_workflow(config)
-            result = workflow.invoke(initial_state)
+            with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"):
+                result = workflow.invoke(initial_state)
             return _to_dict(result)
 
         task_manager.update_progress(task_id, 20, "正在解析文档")
@@ -290,7 +295,7 @@ async def run_office_action_reply_task(
 
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
-            print(f"[任务 {task_id}] 已取消")
+            task_logger.warning("任务已取消")
             return
 
         status = str(result.get("status", "failed")).strip().lower()
@@ -301,7 +306,7 @@ async def run_office_action_reply_task(
                 first_error = str(_to_dict(errors[0]).get("error_message", "")).strip()
             error_msg = first_error or "审查意见答复任务执行失败"
             task_manager.fail_task(task_id, error_msg)
-            print(f"[任务 {task_id}] 失败：{error_msg}")
+            task_logger.error(f"任务失败：{error_msg}")
             return
 
         task_manager.update_progress(task_id, 95, "正在整理报告")
@@ -316,7 +321,7 @@ async def run_office_action_reply_task(
         if not pdf_bytes:
             error_msg = f"报告文件不存在或为空：{pdf_path}"
             task_manager.fail_task(task_id, error_msg)
-            print(f"[任务 {task_id}] 失败：{error_msg}")
+            task_logger.bind(stage="finalize_report").error(error_msg)
             return
 
         output_files: Dict[str, str] = {"pdf": pdf_path}
@@ -326,14 +331,14 @@ async def run_office_action_reply_task(
             output_files["json"] = json_path
 
         task_manager.complete_task(task_id, output_files=output_files)
-        print(f"[任务 {task_id}] 已完成：{pdf_path}")
+        task_logger.bind(stage="finalize_report").success(f"任务已完成：{pdf_path}")
 
     except asyncio.CancelledError:
-        print(f"[任务 {task_id}] 已取消")
+        task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
         raise
     except Exception as exc:
-        print(f"[任务 {task_id}] 异常失败：{str(exc)}")
+        task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
 
 
@@ -541,7 +546,8 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
 
 @router.get("/api/tasks/{task_id}/progress")
 async def get_task_progress(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
-    _get_owned_task(task_id, current_user.user_id)
+    task = _get_owned_task(task_id, current_user.user_id)
+    progress_logger = bind_task_logger(task_id, _task_type(task), pn=task.pn or "-", stage="progress_stream")
 
     async def event_stream():
         last_status = None
@@ -584,10 +590,10 @@ async def get_task_progress(task_id: str, current_user: CurrentUser = Depends(_g
 
                 await asyncio.sleep(0.5)
             except asyncio.CancelledError:
-                print(f"[进度流] 任务 {task_id} 已取消")
+                progress_logger.warning("进度流任务已取消")
                 break
             except Exception as exc:
-                print(f"[进度流] 任务 {task_id} 推送异常：{str(exc)}")
+                progress_logger.exception(f"进度流推送异常：{str(exc)}")
                 payload = {"status": "error", "error": str(exc)}
                 yield f"data: {json.dumps(payload)}\\n\\n"
                 break
