@@ -7,8 +7,8 @@ import argparse
 import os
 import uuid
 from pathlib import Path
-from loguru import logger
 from langgraph.graph import StateGraph, END
+from backend.log_context import bind_task_logger, task_log_context
 from backend.logging_setup import setup_logging_utc8
 from agents.office_action_reply.src.state import WorkflowState, InputFile, WorkflowConfig
 from agents.office_action_reply.src.nodes.document_processing import DocumentProcessingNode
@@ -201,8 +201,7 @@ def main():
 
     args = parser.parse_args()
 
-    # 固定任务ID，便于测试时复用缓存
-    task_id = "vehicle_ac_blower_test_system"
+    task_id = str(uuid.uuid4())[:8]
 
     # 设置输出目录
     output_dir = Path("output") / task_id
@@ -210,9 +209,10 @@ def main():
 
     # 设置日志
     setup_logging(str(output_dir / "logs"))
+    task_logger = bind_task_logger(task_id, "office_action_reply", pn="-", stage="main")
 
-    logger.info(f"任务ID: {task_id}")
-    logger.info(f"输出目录: {output_dir}")
+    task_logger.info(f"任务ID: {task_id}")
+    task_logger.info(f"输出目录: {output_dir}")
 
     # 收集输入文件
     input_files = []
@@ -220,7 +220,7 @@ def main():
     if args.office_action:
         file_path = args.office_action
         if not os.path.exists(file_path):
-            logger.error(f"审查意见通知书文件不存在: {file_path}")
+            task_logger.error(f"审查意见通知书文件不存在: {file_path}")
             return 1
         input_files.append(InputFile(
             file_path=file_path,
@@ -231,7 +231,7 @@ def main():
     if args.response:
         file_path = args.response
         if not os.path.exists(file_path):
-            logger.error(f"意见陈述书文件不存在: {file_path}")
+            task_logger.error(f"意见陈述书文件不存在: {file_path}")
             return 1
         input_files.append(InputFile(
             file_path=file_path,
@@ -242,7 +242,7 @@ def main():
     if args.claims:
         file_path = args.claims
         if not os.path.exists(file_path):
-            logger.error(f"权利要求书文件不存在: {file_path}")
+            task_logger.error(f"权利要求书文件不存在: {file_path}")
             return 1
         input_files.append(InputFile(
             file_path=file_path,
@@ -257,7 +257,7 @@ def main():
             if not file_path:
                 continue
             if not os.path.exists(file_path):
-                logger.error(f"对比文件不存在: {file_path}")
+                task_logger.error(f"对比文件不存在: {file_path}")
                 return 1
             input_files.append(InputFile(
                 file_path=file_path,
@@ -266,10 +266,10 @@ def main():
             ))
 
     if not input_files:
-        logger.error("未指定任何输入文件")
+        task_logger.error("未指定任何输入文件")
         return 1
 
-    logger.info(f"输入文件数量: {len(input_files)}")
+    task_logger.info(f"输入文件数量: {len(input_files)}")
 
     # 初始化工作流配置
     config = WorkflowConfig(
@@ -288,44 +288,45 @@ def main():
     )
 
     # 创建并运行工作流
-    logger.info("创建LangGraph工作流")
+    task_logger.info("创建LangGraph工作流")
     workflow = create_workflow(config)
 
-    logger.info("开始执行工作流")
+    task_logger.info("开始执行工作流")
     try:
-        result = workflow.invoke(initial_state)
+        with task_log_context(task_id, "office_action_reply", pn="-"):
+            result = workflow.invoke(initial_state)
     except Exception as e:
-        logger.error(f"工作流执行过程中出现未捕获的异常: {e}")
-        logger.exception("异常堆栈信息")
+        task_logger.error(f"工作流执行过程中出现未捕获的异常: {e}")
+        task_logger.exception("异常堆栈信息")
         return 1
 
     # 输出执行结果
-    logger.info("工作流执行完成")
+    task_logger.info("工作流执行完成")
 
     # 检查结果类型，处理可能的字典返回值
     if isinstance(result, dict):
         status = result.get("status", "failed")
         errors = result.get("errors", [])
         if status == "failed":
-            logger.error(f"工作流执行失败，共 {len(errors)} 个错误")
+            task_logger.error(f"工作流执行失败，共 {len(errors)} 个错误")
             for error in errors:
                 node_name = item_get(error, "node_name", "unknown")
                 error_message = item_get(error, "error_message", str(error))
-                logger.error(f"节点 {node_name}: {error_message}")
+                task_logger.error(f"节点 {node_name}: {error_message}")
             return 1
     elif hasattr(result, "status"):
-        logger.info(f"工作流执行完成，状态: {result.status}")
+        task_logger.info(f"工作流执行完成，状态: {result.status}")
         if result.status == "failed":
-            logger.error(f"工作流执行失败，共 {len(result.errors)} 个错误")
+            task_logger.error(f"工作流执行失败，共 {len(result.errors)} 个错误")
             for error in result.errors:
-                logger.error(f"节点 {error.node_name}: {error.error_message}")
+                task_logger.error(f"节点 {error.node_name}: {error.error_message}")
             return 1
     else:
-        logger.error(f"未知的工作流执行结果类型: {type(result)}")
+        task_logger.error(f"未知的工作流执行结果类型: {type(result)}")
         return 1
 
-    logger.success("工作流执行成功")
-    logger.info(f"输出目录: {output_dir}")
+    task_logger.success("工作流执行成功")
+    task_logger.info(f"输出目录: {output_dir}")
 
     return 0
 
