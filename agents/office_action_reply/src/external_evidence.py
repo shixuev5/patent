@@ -22,7 +22,8 @@ class ExternalEvidenceAggregator:
         self.openalex_base_url = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org/works").strip()
         self.openalex_email = os.getenv("OPENALEX_EMAIL", "").strip()
 
-        self.tavily_api_key = os.getenv("TAVILY_API_KEY", "").strip()
+        self.tavily_api_keys = self._load_tavily_api_keys()
+        self._tavily_key_cursor = 0
         self.tavily_base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com/search").strip()
 
         self.zhihuiya_enabled = bool(
@@ -210,26 +211,14 @@ class ExternalEvidenceAggregator:
         priority_date: Optional[str],
         per_query: int,
     ) -> List[Dict[str, Any]]:
-        if not self.tavily_api_key:
-            logger.warning("TAVILY_API_KEY 未配置，将跳过网页证据检索")
+        if not self.tavily_api_keys:
+            logger.warning("TAVILY_API_KEYS 未配置，将跳过网页证据检索")
             return []
 
         results: List[Dict[str, Any]] = []
         for query in queries:
-            payload = {
-                "api_key": self.tavily_api_key,
-                "query": query,
-                "search_depth": "basic",
-                "max_results": per_query,
-                "include_answer": False,
-                "include_raw_content": False,
-            }
-            try:
-                response = requests.post(self.tavily_base_url, json=payload, timeout=25)
-                response.raise_for_status()
-                data = response.json()
-            except Exception as ex:
-                logger.warning(f"Tavily 检索失败，query={query[:100]} error={ex}")
+            data = self._tavily_search_with_key_rotation(query=query, per_query=per_query)
+            if not data:
                 continue
 
             for item in data.get("results", []) or []:
@@ -253,6 +242,93 @@ class ExternalEvidenceAggregator:
                 })
 
         return results
+
+    def _load_tavily_api_keys(self) -> List[str]:
+        raw_multi = os.getenv("TAVILY_API_KEYS", "").strip()
+        keys: List[str] = []
+
+        if raw_multi:
+            for key in re.split(r"[,\n;]+", raw_multi):
+                value = key.strip()
+                if value and value not in keys:
+                    keys.append(value)
+
+        return keys
+
+    def _tavily_search_with_key_rotation(self, query: str, per_query: int) -> Dict[str, Any]:
+        total_keys = len(self.tavily_api_keys)
+        if total_keys == 0:
+            return {}
+
+        for offset in range(total_keys):
+            index = (self._tavily_key_cursor + offset) % total_keys
+            api_key = self.tavily_api_keys[index]
+            payload = {
+                "api_key": api_key,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": per_query,
+                "include_answer": False,
+                "include_raw_content": False,
+            }
+            try:
+                response = requests.post(self.tavily_base_url, json=payload, timeout=25)
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = self._safe_json(response)
+            except Exception as ex:
+                logger.warning(f"Tavily 请求失败，尝试下一个 key，query={query[:80]} error={ex}")
+                self._tavily_key_cursor = (index + 1) % total_keys
+                continue
+
+            if self._is_tavily_limit_error(status_code=status_code, data=data, response_text=response_text):
+                logger.warning(
+                    f"Tavily key 触发限额/限流，切换下一个 key，status={status_code} query={query[:80]}"
+                )
+                self._tavily_key_cursor = (index + 1) % total_keys
+                continue
+
+            if status_code >= 400:
+                logger.warning(
+                    f"Tavily 检索失败（非限额类错误），status={status_code} query={query[:80]} body={response_text[:200]}"
+                )
+                return {}
+
+            self._tavily_key_cursor = index
+            return data
+
+        logger.warning(f"Tavily 所有 key 均不可用，query={query[:80]}")
+        return {}
+
+    def _is_tavily_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
+        if status_code == 429:
+            return True
+        message_parts = [
+            response_text,
+            str(data.get("error", "")),
+            str(data.get("message", "")),
+            str(data.get("detail", "")),
+        ]
+        message = " ".join(part.lower() for part in message_parts if part)
+        limit_keywords = [
+            "rate limit",
+            "quota",
+            "credit",
+            "exceed",
+            "limit reached",
+            "insufficient",
+            "too many requests",
+        ]
+        return any(keyword in message for keyword in limit_keywords)
+
+    def _safe_json(self, response: requests.Response) -> Dict[str, Any]:
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
 
     def _extract_openalex_snippet(self, item: Dict[str, Any]) -> str:
         abstract_index = self._to_dict(item.get("abstract_inverted_index", {}))
