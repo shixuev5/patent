@@ -308,7 +308,7 @@ python -m agents.office_action_reply.main \
 
 - `PDF_PARSER`：PDF 解析器（默认 `local`）
 - `OPENALEX_API_KEY` / `OPENALEX_BASE_URL`：学术证据检索
-- `TAVILY_API_KEY` / `TAVILY_BASE_URL`：网页证据检索
+- `TAVILY_API_KEYS` / `TAVILY_BASE_URL`：网页证据检索（支持多 key 轮换，单 key 也使用该变量，超限自动切换）
 - `ZHIHUIYA_*`：专利下载账号参数
 
 ---
