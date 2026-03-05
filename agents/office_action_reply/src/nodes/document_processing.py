@@ -96,7 +96,7 @@ class DocumentProcessingNode:
 
             # 使用缓存运行文档处理
             processed_result = cache.run_step(
-                "process_documents_v2",
+                "process_documents_v3",
                 self._process_documents,
                 state.input_files,
                 state.output_dir
@@ -115,10 +115,12 @@ class DocumentProcessingNode:
 
         except Exception as e:
             logger.error(f"文档处理节点执行失败: {e}")
+            error_message = str(e)
+            error_type = "missing_application_number" if "未解析出原专利号" in error_message else "document_processing"
             updates["errors"] = [{
                 "node_name": "document_processing",
-                "error_message": str(e),
-                "error_type": "document_processing"
+                "error_message": error_message,
+                "error_type": error_type
             }]
             updates["status"] = "failed"
 
@@ -166,6 +168,7 @@ class DocumentProcessingNode:
             if input_file.file_type == "office_action":
                 logger.info("开始提取审查意见结构化数据")
                 office_action_data = self.extract_office_action_structured_data(markdown_path)
+                self._validate_office_action_data(office_action_data)
                 logger.info(f"成功提取审查意见结构化数据")
             elif input_file.file_type == "claims":
                 logger.info("开始结构化提取新权利要求")
@@ -177,3 +180,11 @@ class DocumentProcessingNode:
             "office_action": office_action_data,
             "claims_new_structured": claims_new_structured,
         }
+
+    def _validate_office_action_data(self, office_action_data: dict) -> None:
+        if not office_action_data:
+            raise ValueError("审查意见结构化数据为空，无法继续")
+
+        application_number = str(office_action_data.get("application_number", "")).strip()
+        if not application_number:
+            raise ValueError("审查意见未解析出原专利号(application_number)")

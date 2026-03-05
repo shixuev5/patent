@@ -364,7 +364,7 @@ async def create_task(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     task_type = _normalize_task_type(taskType)
-    _enforce_daily_quota(current_user.user_id)
+    _enforce_daily_quota(current_user.user_id, task_type=task_type)
 
     if task_type == TaskType.PATENT_ANALYSIS.value:
         if not patentNumber and not file:
