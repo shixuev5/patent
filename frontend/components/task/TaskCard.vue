@@ -124,84 +124,98 @@ const deleteTask = () => {
 
 <style scoped>
 .task-card {
-  @apply bg-white rounded-xl border border-gray-200 overflow-hidden transition-all duration-200 hover:shadow-md;
+  @apply overflow-hidden rounded-2xl border border-slate-200/90 bg-white transition-all duration-200 hover:border-slate-300 hover:shadow-sm;
 }
 .task-card.status-processing {
-  @apply border-blue-300 ring-1 ring-blue-100;
+  @apply border-cyan-300 ring-1 ring-cyan-100;
 }
 .task-card.status-completed {
-  @apply border-green-200;
+  @apply border-emerald-200;
 }
 .task-card.status-error {
-  @apply border-red-200;
+  @apply border-rose-200;
 }
 .task-content {
-  @apply flex items-start gap-4 p-4;
+  @apply flex items-start gap-3.5 p-4;
 }
 .task-icon {
-  @apply w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0;
+  @apply flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl;
 }
 .task-icon.processing {
-  @apply bg-blue-100 text-blue-600;
+  @apply bg-cyan-100 text-cyan-700;
 }
 .task-icon.completed {
-  @apply bg-green-100 text-green-600;
+  @apply bg-emerald-100 text-emerald-700;
 }
 .task-icon.pending {
-  @apply bg-gray-100 text-gray-500;
+  @apply bg-slate-100 text-slate-500;
 }
 .task-icon.error {
-  @apply bg-red-100 text-red-600;
+  @apply bg-rose-100 text-rose-600;
 }
 .task-info {
   @apply flex-1 min-w-0;
 }
 .task-title {
-  @apply text-sm font-semibold text-gray-900 truncate mb-1;
+  @apply mb-1 truncate text-sm font-semibold text-slate-900;
 }
 .task-meta {
-  @apply flex items-center gap-2 text-xs text-gray-500 mb-2;
+  @apply mb-2 flex items-center gap-2 text-xs text-slate-500;
 }
 .task-type {
-  @apply px-1.5 py-0.5 bg-gray-100 rounded text-gray-600;
+  @apply rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600;
 }
 .task-pn {
-  @apply flex items-center gap-2 mb-2;
+  @apply mb-2 flex items-center gap-2;
 }
 .pn-label {
-  @apply text-xs text-gray-500;
+  @apply text-xs text-slate-500;
 }
 .pn-value {
-  @apply text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700 break-all;
+  @apply break-all rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700;
 }
 .task-progress {
   @apply space-y-1.5;
 }
 .progress-bar {
-  @apply h-1.5 bg-gray-100 rounded-full overflow-hidden;
+  @apply h-1.5 overflow-hidden rounded-full bg-slate-100;
 }
 .progress-fill {
-  @apply h-full bg-blue-500 rounded-full transition-all duration-300;
+  @apply h-full rounded-full bg-cyan-600 transition-all duration-300;
 }
 .progress-text {
-  @apply text-xs text-gray-500;
+  @apply text-xs text-slate-500;
 }
 .task-error {
-  @apply flex items-start gap-1.5 text-xs text-red-600 bg-red-50 p-2 rounded-lg;
+  @apply flex items-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700;
 }
 .task-actions {
-  @apply flex items-center gap-1 flex-shrink-0;
+  @apply flex flex-shrink-0 items-center gap-1.5;
 }
 .action-btn {
-  @apply p-2 rounded-lg transition-colors;
+  @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition-colors;
 }
 .action-btn.primary {
-  @apply text-blue-600 hover:bg-blue-50;
+  @apply text-cyan-700 hover:border-cyan-100 hover:bg-cyan-50;
 }
 .action-btn.secondary {
-  @apply text-gray-600 hover:bg-gray-100;
+  @apply text-slate-600 hover:border-slate-200 hover:bg-slate-100;
 }
 .action-btn.danger {
-  @apply text-red-600 hover:bg-red-50;
+  @apply text-rose-600 hover:border-rose-100 hover:bg-rose-50;
+}
+
+@media (max-width: 640px) {
+  .task-content {
+    @apply gap-3 p-3.5;
+  }
+
+  .task-icon {
+    @apply h-9 w-9;
+  }
+
+  .action-btn {
+    @apply h-8 w-8 rounded-lg;
+  }
 }
 </style>
