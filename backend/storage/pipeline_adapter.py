@@ -44,10 +44,7 @@ class PipelineTaskManager:
         elif not title:
             title = f"专利分析任务 - {task_id}"
 
-        if pn:
-            output_dir = str(settings.OUTPUT_DIR / pn)
-        else:
-            output_dir = str(settings.OUTPUT_DIR / task_id)
+        output_dir = str(settings.OUTPUT_DIR / task_id)
 
         task = Task(
             id=task_id,

@@ -19,7 +19,6 @@ from backend.usage import _enforce_daily_quota
 from backend.models import CurrentUser, TaskResponse
 from backend.utils import (
     _cleanup_path,
-    _extract_patent_number_from_outputs,
     _read_local_pdf_bytes,
     _build_r2_storage,
 )
@@ -162,7 +161,7 @@ def _get_owned_task(task_id: str, owner_id: str):
 
 async def run_pipeline_task(
     task_id: str,
-    pn: str,
+    pn: Optional[str],
     upload_file_path: Optional[str] = None,
     cancel_event: Optional[Event] = None,
 ):
@@ -199,13 +198,14 @@ async def run_pipeline_task(
             output_pdf = result.get("output", "")
             task_manager.update_progress(task_id, 95, "正在整理报告")
 
-            resolved_pn = await asyncio.to_thread(_extract_patent_number_from_outputs, output_pdf, pn)
-            if resolved_pn and resolved_pn != pn:
-                task_manager.storage.update_task(task_id, pn=resolved_pn)
+            pipeline_pn = str(result.get("pn", "")).strip()
+            final_pn = pipeline_pn or (pn or "") or task_id
+            if final_pn and final_pn != (pn or ""):
+                task_manager.storage.update_task(task_id, pn=final_pn)
 
             output_files = {
                 "pdf": output_pdf,
-                "pn": resolved_pn or pn,
+                "pn": final_pn,
             }
 
             pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
@@ -217,7 +217,7 @@ async def run_pipeline_task(
 
             r2_storage = _build_r2_storage()
             if r2_storage.enabled:
-                r2_key = r2_storage.build_patent_pdf_key(resolved_pn or pn)
+                r2_key = r2_storage.build_patent_pdf_key(final_pn)
                 stored_in_r2 = await asyncio.to_thread(
                     r2_storage.put_bytes,
                     r2_key,
@@ -373,7 +373,8 @@ async def create_task(
         if file:
             _validate_file_suffix(file, {".pdf"}, "专利文档")
 
-        pn = patentNumber or str(uuid.uuid4())[:8]
+        pn_value = (patentNumber or "").strip()
+        pn = pn_value or None
         task = task_manager.create_task(
             owner_id=current_user.user_id,
             task_type=task_type,
@@ -647,8 +648,8 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     elif task_type == TaskType.OFFICE_ACTION_REPLY.value:
         pdf_path = Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "final_report.pdf"
     else:
-        patent_number = task.pn or task_id
-        pdf_path = settings.OUTPUT_DIR / patent_number / f"{patent_number}.pdf"
+        artifact_name = task.pn or task_id
+        pdf_path = Path(task.output_dir or settings.OUTPUT_DIR / task_id) / f"{artifact_name}.pdf"
 
     if not pdf_path.exists():
         return JSONResponse(

@@ -32,14 +32,15 @@ class PatentPipeline:
     负责：下载 -> 解析 -> 提取 -> 检索 -> 生成报告
     """
 
-    def __init__(self, pn: str, upload_file_path: str = None, cancel_event: Optional[Event] = None, task_id: str = None):
-        self.pn = pn.strip()
+    def __init__(self, pn: Optional[str], upload_file_path: str = None, cancel_event: Optional[Event] = None, task_id: str = None):
+        self.pn = str(pn or "").strip()
         self.upload_file_path = upload_file_path
         self.cancel_event = cancel_event
         self.task_id = task_id
+        self.workspace_id = self.task_id or (self.pn or "task")
         self.log = bind_task_logger(self.task_id or "-", "patent_analysis", pn=self.pn, stage="pipeline")
-        # 获取基于 PN 的项目路径配置 (例如: output/CN123456)
-        self.paths = settings.get_project_paths(self.pn)
+        # 工作目录按 task_id 隔离；产物命名仍沿用专利号
+        self.paths = settings.get_project_paths(workspace_id=self.workspace_id, artifact_name=self.pn)
 
         # 确保根目录存在
         self.paths["root"].mkdir(parents=True, exist_ok=True)
@@ -56,6 +57,31 @@ class PatentPipeline:
     def _check_cancelled(self):
         if self.cancel_event and self.cancel_event.is_set():
             raise PipelineCancelled("任务已取消")
+
+    def _safe_artifact_name(self, value: str) -> str:
+        return "".join([c for c in str(value or "") if c.isalnum() or c in ("-", "_")])
+
+    def _resolve_pn_from_patent_data(self, patent_data: dict) -> str:
+        # 规则：有输入 pn 则优先使用；无输入 pn 才从结构化数据读取 publication_number
+        input_pn = self._safe_artifact_name(self.pn)
+        if input_pn:
+            return input_pn
+
+        biblio = patent_data.get("bibliographic_data", {}) if isinstance(patent_data, dict) else {}
+        publication_number = self._safe_artifact_name(str(biblio.get("publication_number", "")).strip())
+        if publication_number:
+            return publication_number
+        return self._safe_artifact_name(self.workspace_id)
+
+    def _refresh_output_artifact_paths(self, patent_data: dict):
+        resolved_pn = self._resolve_pn_from_patent_data(patent_data)
+        if not resolved_pn:
+            return
+        if resolved_pn != self.pn:
+            self._stage_log("transform").info(f"Resolved patent number: {resolved_pn}")
+            self.pn = resolved_pn
+        self.paths["final_md"] = self.paths["root"] / f"{resolved_pn}.md"
+        self.paths["final_pdf"] = self.paths["root"] / f"{resolved_pn}.pdf"
 
     def _stage_log(self, stage: str):
         return self.log.bind(stage=stage)
@@ -124,6 +150,7 @@ class PatentPipeline:
                 self.paths["patent_json"].write_text(
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            self._refresh_output_artifact_paths(patent_data)
             self._update_step_status("transform", "completed")
             self._check_cancelled()
 
