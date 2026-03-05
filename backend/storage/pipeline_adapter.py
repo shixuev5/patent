@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from config import settings
-from .models import Task, TaskStatus, TaskStep
+from .models import Task, TaskStatus
 from .task_storage import get_task_storage
 
 DEFAULT_PIPELINE_STEPS = [
@@ -36,7 +36,6 @@ class PipelineTaskManager:
         pn: Optional[str] = None,
         title: Optional[str] = None,
         raw_pdf_path: Optional[str] = None,
-        auto_create_steps: bool = True,
     ) -> Task:
         task_id = str(uuid.uuid4())[:8]
 
@@ -64,20 +63,9 @@ class PipelineTaskManager:
         )
 
         self.storage.create_task(task)
-        if auto_create_steps:
-            self._create_default_steps(task_id)
 
         logger.info(f"Task created: {task_id} (PN: {pn})")
         return task
-
-    def _create_default_steps(self, task_id: str):
-        for order, (_, step_name) in enumerate(DEFAULT_PIPELINE_STEPS):
-            step = TaskStep(
-                step_name=step_name,
-                step_order=order,
-                status="pending",
-            )
-            self.storage.add_task_step(task_id, step)
 
     def start_task(self, task_id: str) -> bool:
         success = self.storage.update_task(
@@ -104,16 +92,6 @@ class PipelineTaskManager:
             updates["current_step"] = step
 
         success = self.storage.update_task(task_id, **updates)
-        if success and step and step_status:
-            step_updates: Dict[str, Any] = {"status": step_status}
-            now = datetime.now()
-
-            if step_status == "processing":
-                step_updates["start_time"] = now
-            elif step_status in {"completed", "failed", "cancelled"}:
-                step_updates["end_time"] = now
-
-            self.storage.update_task_step(task_id, step, **step_updates)
         return success
 
     def complete_task(self, task_id: str, output_files: Optional[Dict[str, str]] = None) -> bool:
@@ -173,9 +151,7 @@ class PipelineTaskManager:
             logger.info(f"Task cancelled: {task_id} - {error_message}")
         return success
 
-    def get_task(self, task_id: str, include_steps: bool = False) -> Optional[Task]:
-        if include_steps:
-            return self.storage.get_task_with_steps(task_id)
+    def get_task(self, task_id: str) -> Optional[Task]:
         return self.storage.get_task(task_id)
 
     def list_tasks(

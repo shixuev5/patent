@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from loguru import logger
 
-from .models import Task, TaskStep, TaskStatus
+from .models import Task, TaskStatus
 
 
 class D1TaskStorage:
@@ -29,14 +29,6 @@ class D1TaskStorage:
             ("completed_at", "completed_at TEXT"),
             ("deleted_at", "deleted_at TEXT"),
             ("metadata", "metadata TEXT"),
-        ],
-        "task_steps": [
-            ("step_name", "step_name TEXT NOT NULL"),
-            ("step_order", "step_order INTEGER NOT NULL"),
-            ("status", "status TEXT DEFAULT 'pending'"),
-            ("start_time", "start_time TEXT"),
-            ("end_time", "end_time TEXT"),
-            ("error_message", "error_message TEXT"),
         ],
     }
 
@@ -59,18 +51,6 @@ class D1TaskStorage:
         metadata TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS task_steps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id TEXT NOT NULL,
-        step_name TEXT NOT NULL,
-        step_order INTEGER NOT NULL,
-        status TEXT DEFAULT 'pending',
-        start_time TEXT,
-        end_time TEXT,
-        error_message TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    );
-
     CREATE TABLE IF NOT EXISTS patent_analyses (
         pn TEXT PRIMARY KEY,
         first_completed_at TEXT NOT NULL
@@ -80,8 +60,12 @@ class D1TaskStorage:
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
-    CREATE INDEX IF NOT EXISTS idx_steps_task_id ON task_steps(task_id);
     CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
+    """
+
+    DROP_LEGACY_SQL = """
+    DROP INDEX IF EXISTS idx_steps_task_id;
+    DROP TABLE IF EXISTS task_steps;
     """
 
     def __init__(
@@ -156,6 +140,10 @@ class D1TaskStorage:
             sql = statement.strip()
             if sql:
                 self._request(sql)
+        for statement in self.DROP_LEGACY_SQL.split(";"):
+            sql = statement.strip()
+            if sql:
+                self._request(sql)
 
     def _get_existing_columns(self, table_name: str) -> set[str]:
         rows = self._fetchall(f"PRAGMA table_info({table_name})")
@@ -212,18 +200,6 @@ class D1TaskStorage:
             metadata=self._parse_metadata(row.get("metadata")),
         )
 
-    def _row_to_step(self, row: Dict[str, Any]) -> TaskStep:
-        return TaskStep(
-            step_name=row["step_name"],
-            step_order=row["step_order"],
-            status=row.get("status", "pending"),
-            start_time=datetime.fromisoformat(row["start_time"])
-            if row.get("start_time")
-            else None,
-            end_time=datetime.fromisoformat(row["end_time"]) if row.get("end_time") else None,
-            error_message=row.get("error_message"),
-        )
-
     def create_task(self, task: Task) -> Task:
         self._request(
             """
@@ -255,13 +231,6 @@ class D1TaskStorage:
     def get_task(self, task_id: str) -> Optional[Task]:
         row = self._fetchone("SELECT * FROM tasks WHERE id = ?", [task_id])
         return self._row_to_task(row) if row else None
-
-    def get_task_with_steps(self, task_id: str) -> Optional[Task]:
-        task = self.get_task(task_id)
-        if not task:
-            return None
-        task.steps = self.get_task_steps(task_id)
-        return task
 
     def update_task(self, task_id: str, **kwargs) -> bool:
         allowed_fields = {
@@ -298,57 +267,6 @@ class D1TaskStorage:
             [datetime.now().isoformat(), datetime.now().isoformat(), task_id]
         )
         return self._changed_rows(result) > 0
-
-    def add_task_step(self, task_id: str, step: TaskStep) -> bool:
-        self._request(
-            """
-            INSERT INTO task_steps (
-                task_id, step_name, step_order, status,
-                start_time, end_time, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                task_id,
-                step.step_name,
-                step.step_order,
-                step.status,
-                step.start_time.isoformat() if step.start_time else None,
-                step.end_time.isoformat() if step.end_time else None,
-                step.error_message,
-            ],
-        )
-        return True
-
-    def get_task_steps(self, task_id: str) -> List[TaskStep]:
-        rows = self._fetchall(
-            "SELECT * FROM task_steps WHERE task_id = ? ORDER BY step_order ASC",
-            [task_id],
-        )
-        return [self._row_to_step(row) for row in rows]
-
-    def update_task_step(self, task_id: str, step_name: str, **kwargs) -> bool:
-        allowed_fields = {"status", "start_time", "end_time", "error_message"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
-        if not updates:
-            return False
-
-        clauses = []
-        params = []
-        for key, value in updates.items():
-            value = self._normalize_update_value(value)
-            clauses.append(f"{key} = ?")
-            params.append(value)
-
-        params.extend([task_id, step_name])
-        result = self._request(
-            f"UPDATE task_steps SET {', '.join(clauses)} WHERE task_id = ? AND step_name = ?",
-            params,
-        )
-        return self._changed_rows(result) > 0
-
-    def delete_task_steps(self, task_id: str) -> bool:
-        self._request("DELETE FROM task_steps WHERE task_id = ?", [task_id])
-        return True
 
     def list_tasks(
         self,
