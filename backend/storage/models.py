@@ -17,10 +17,16 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class TaskType(str, Enum):
+    PATENT_ANALYSIS = "patent_analysis"
+    OFFICE_ACTION_REPLY = "office_action_reply"
+
+
 @dataclass
 class Task:
     id: str
     owner_id: Optional[str] = None
+    task_type: str = TaskType.PATENT_ANALYSIS.value
     pn: Optional[str] = None
     title: Optional[str] = None
     status: TaskStatus = TaskStatus.PENDING
@@ -39,6 +45,7 @@ class Task:
         return {
             "id": self.id,
             "owner_id": self.owner_id,
+            "task_type": self.task_type,
             "pn": self.pn,
             "title": self.title,
             "status": self.status.value,
@@ -58,6 +65,7 @@ class Task:
         return cls(
             id=data["id"],
             owner_id=data.get("owner_id"),
+            task_type=data.get("task_type", TaskType.PATENT_ANALYSIS.value),
             pn=data.get("pn"),
             title=data.get("title"),
             status=TaskStatus(data.get("status", "pending")),

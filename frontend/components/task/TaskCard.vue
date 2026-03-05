@@ -20,7 +20,7 @@
       <div class="task-info">
         <h4 class="task-title">{{ task.title }}</h4>
         <div class="task-meta">
-          <span class="task-type">{{ task.type === 'patent' ? '专利号' : 'PDF 文件' }}</span>
+          <span class="task-type">{{ taskTypeLabel }}</span>
           <span class="task-time">{{ formatTime(task.createdAt) }}</span>
         </div>
 
@@ -57,7 +57,7 @@
           <ArrowDownTrayIcon v-else class="w-4 h-4" />
         </button>
 
-        <button v-if="displayStatus === 'error'" class="action-btn secondary" @click="retry" title="重试">
+        <button v-if="displayStatus === 'error' && canRetry" class="action-btn secondary" @click="retry" title="重试">
           <ArrowPathIcon class="w-4 h-4" />
         </button>
 
@@ -93,8 +93,16 @@ const displayStatus = computed(() => {
 
 const showPatentNumber = computed(() => {
   if (!props.task.pn) return false
-  if (props.task.type !== 'patent') return true
+  if (props.task.taskType !== 'patent_analysis') return false
   return props.task.title !== props.task.pn
+})
+
+const taskTypeLabel = computed(() => {
+  return props.task.taskType === 'office_action_reply' ? '审查意见答复' : '专利分析'
+})
+
+const canRetry = computed(() => {
+  return props.task.taskType === 'patent_analysis' && !!props.task.pn
 })
 
 const formatTime = (timestamp: number): string => {

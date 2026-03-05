@@ -9,13 +9,14 @@ from typing import Any, Dict, List, Optional
 import requests
 from loguru import logger
 
-from .models import Task, TaskStatus
+from .models import Task, TaskStatus, TaskType
 
 
 class D1TaskStorage:
     REQUIRED_COLUMNS = {
         "tasks": [
             ("owner_id", "owner_id TEXT"),
+            ("task_type", f"task_type TEXT NOT NULL DEFAULT '{TaskType.PATENT_ANALYSIS.value}'"),
             ("pn", "pn TEXT"),
             ("title", "title TEXT"),
             ("status", "status TEXT NOT NULL DEFAULT 'pending'"),
@@ -36,6 +37,7 @@ class D1TaskStorage:
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         owner_id TEXT,
+        task_type TEXT NOT NULL DEFAULT 'patent_analysis',
         pn TEXT,
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -140,6 +142,14 @@ class D1TaskStorage:
             sql = statement.strip()
             if sql:
                 self._request(sql)
+        existing_columns = self._get_existing_columns("tasks")
+        for column_name, ddl in self.REQUIRED_COLUMNS["tasks"]:
+            if column_name not in existing_columns:
+                self._request(f"ALTER TABLE tasks ADD COLUMN {ddl}")
+        self._request(
+            "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
+            [TaskType.PATENT_ANALYSIS.value],
+        )
         for statement in self.DROP_LEGACY_SQL.split(";"):
             sql = statement.strip()
             if sql:
@@ -185,6 +195,7 @@ class D1TaskStorage:
         return Task(
             id=row["id"],
             owner_id=row.get("owner_id"),
+            task_type=row.get("task_type") or TaskType.PATENT_ANALYSIS.value,
             pn=row.get("pn"),
             title=row.get("title"),
             status=TaskStatus(row["status"]),
@@ -204,14 +215,15 @@ class D1TaskStorage:
         self._request(
             """
             INSERT INTO tasks (
-                id, owner_id, pn, title, status, progress, current_step,
+                id, owner_id, task_type, pn, title, status, progress, current_step,
                 output_dir, raw_pdf_path, error_message,
                 created_at, updated_at, completed_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 task.id,
                 task.owner_id,
+                task.task_type,
                 task.pn,
                 task.title,
                 task.status.value,
@@ -235,6 +247,7 @@ class D1TaskStorage:
     def update_task(self, task_id: str, **kwargs) -> bool:
         allowed_fields = {
             "owner_id",
+            "task_type",
             "pn",
             "title",
             "status",
