@@ -98,7 +98,7 @@ const showPatentNumber = computed(() => {
 })
 
 const taskTypeLabel = computed(() => {
-  return props.task.taskType === 'office_action_reply' ? '审查意见答复' : '专利分析'
+  return props.task.taskType === 'office_action_reply' ? 'AI 研判' : 'AI 分析'
 })
 
 const canRetry = computed(() => {

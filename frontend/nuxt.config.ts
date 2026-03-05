@@ -21,7 +21,7 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'static',
     prerender: {
-      routes: ['/'],
+      routes: ['/', '/tasks', '/changelog'],
     },
   },
   
@@ -35,17 +35,17 @@ export default defineNuxtConfig({
   
   app: {
     head: {
-      title: '专利智能分析平台',
+      title: 'AI Patents - 审查员智能助手',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'description', content: 'AI驱动的专利智能分析平台，支持专利号查询和PDF分析，生成专业报告' },
+        { name: 'description', content: 'aipatents.cn 审查员智能助手，通过 AI 分析、AI 研判、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。' },
         { name: 'theme-color', content: '#2563EB' },
       ],
       link: [
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
-        { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' },
+        { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap' },
       ],
     },
   },
