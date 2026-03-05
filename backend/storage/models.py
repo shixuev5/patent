@@ -33,7 +33,6 @@ class Task:
     progress: int = 0
     current_step: Optional[str] = None
     output_dir: Optional[str] = None
-    raw_pdf_path: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -52,7 +51,6 @@ class Task:
             "progress": self.progress,
             "current_step": self.current_step,
             "output_dir": self.output_dir,
-            "raw_pdf_path": self.raw_pdf_path,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
@@ -72,7 +70,6 @@ class Task:
             progress=data.get("progress", 0),
             current_step=data.get("current_step"),
             output_dir=data.get("output_dir"),
-            raw_pdf_path=data.get("raw_pdf_path"),
             error_message=data.get("error_message"),
             created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
             updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),

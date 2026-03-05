@@ -130,9 +130,6 @@ def _collect_upload_paths(task: Any) -> List[str]:
     if legacy_upload:
         paths.append(legacy_upload)
 
-    if task.raw_pdf_path:
-        paths.append(str(task.raw_pdf_path))
-
     dedup: List[str] = []
     seen = set()
     for path in paths:
@@ -393,7 +390,6 @@ async def create_task(
             )
             task_manager.storage.update_task(
                 task.id,
-                raw_pdf_path=upload_file_path,
                 metadata=task_metadata,
             )
         else:

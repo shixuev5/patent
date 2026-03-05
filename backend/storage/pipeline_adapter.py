@@ -36,7 +36,6 @@ class PipelineTaskManager:
         task_type: str = TaskType.PATENT_ANALYSIS.value,
         pn: Optional[str] = None,
         title: Optional[str] = None,
-        raw_pdf_path: Optional[str] = None,
     ) -> Task:
         task_id = str(uuid.uuid4())[:8]
 
@@ -59,7 +58,6 @@ class PipelineTaskManager:
             status=TaskStatus.PENDING,
             progress=0,
             output_dir=output_dir,
-            raw_pdf_path=raw_pdf_path,
             created_at=datetime.now(),
             updated_at=datetime.now(),
         )

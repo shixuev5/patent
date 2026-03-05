@@ -23,7 +23,6 @@ class D1TaskStorage:
             ("progress", "progress INTEGER DEFAULT 0"),
             ("current_step", "current_step TEXT"),
             ("output_dir", "output_dir TEXT"),
-            ("raw_pdf_path", "raw_pdf_path TEXT"),
             ("error_message", "error_message TEXT"),
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
@@ -44,7 +43,6 @@ class D1TaskStorage:
         progress INTEGER DEFAULT 0,
         current_step TEXT,
         output_dir TEXT,
-        raw_pdf_path TEXT,
         error_message TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -150,10 +148,19 @@ class D1TaskStorage:
             "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
             [TaskType.PATENT_ANALYSIS.value],
         )
+        self._drop_legacy_raw_pdf_path_column()
         for statement in self.DROP_LEGACY_SQL.split(";"):
             sql = statement.strip()
             if sql:
                 self._request(sql)
+
+    def _drop_legacy_raw_pdf_path_column(self):
+        existing_columns = self._get_existing_columns("tasks")
+        if "raw_pdf_path" not in existing_columns:
+            return
+
+        self._request("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
+        logger.info("Dropped legacy tasks.raw_pdf_path column in D1")
 
     def _get_existing_columns(self, table_name: str) -> set[str]:
         rows = self._fetchall(f"PRAGMA table_info({table_name})")
@@ -202,7 +209,6 @@ class D1TaskStorage:
             progress=row.get("progress", 0),
             current_step=row.get("current_step"),
             output_dir=row.get("output_dir"),
-            raw_pdf_path=row.get("raw_pdf_path"),
             error_message=row.get("error_message"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -216,9 +222,8 @@ class D1TaskStorage:
             """
             INSERT INTO tasks (
                 id, owner_id, task_type, pn, title, status, progress, current_step,
-                output_dir, raw_pdf_path, error_message,
-                created_at, updated_at, completed_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                output_dir, error_message, created_at, updated_at, completed_at, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 task.id,
@@ -230,7 +235,6 @@ class D1TaskStorage:
                 task.progress,
                 task.current_step,
                 task.output_dir,
-                task.raw_pdf_path,
                 task.error_message,
                 task.created_at.isoformat(),
                 task.updated_at.isoformat(),
@@ -254,7 +258,6 @@ class D1TaskStorage:
             "progress",
             "current_step",
             "output_dir",
-            "raw_pdf_path",
             "error_message",
             "completed_at",
             "deleted_at",
