@@ -204,6 +204,7 @@ class WorkflowState(BaseModel):
 
     # 最终报告
     final_report: Optional[Dict[str, Any]] = Field(None, description="最终JSON报告")
+    final_report_artifacts: Optional[Dict[str, str]] = Field(None, description="最终渲染产物路径（md/pdf）")
 
     # 错误信息
     errors: Annotated[List[ErrorInfo], operator.add] = Field(default_factory=list, description="错误信息列表")

@@ -23,6 +23,7 @@ from agents.office_action_reply.src.nodes.common_knowledge_verification import C
 from agents.office_action_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 from agents.office_action_reply.src.nodes.verification_join import VerificationJoinNode
 from agents.office_action_reply.src.nodes.report_generation import ReportGenerationNode
+from agents.office_action_reply.src.nodes.final_report_render import FinalReportRenderNode
 from agents.office_action_reply.src.edges import handle_error
 from agents.common.utils.serialization import item_get
 
@@ -61,6 +62,7 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_node("topup_search_verification", TopupSearchVerificationNode(config), retry=retry_policy)
     workflow.add_node("verification_join", VerificationJoinNode(config), retry=retry_policy)
     workflow.add_node("report_generation", ReportGenerationNode(config), retry=retry_policy)
+    workflow.add_node("final_report_render", FinalReportRenderNode(config), retry=retry_policy)
     workflow.add_node("handle_error", handle_error)
 
     # ---------------- 边定义重构 ----------------
@@ -165,8 +167,13 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_edge("topup_search_verification", "verification_join")
     workflow.add_conditional_edges("verification_join", create_router("report_generation"), {"failed": "handle_error", "report_generation": "report_generation"})
 
-    # 报告生成节点
-    workflow.add_conditional_edges("report_generation", create_router("end"), {"failed": "handle_error", "end": END})
+    # 报告生成后进入最终渲染节点
+    workflow.add_conditional_edges(
+        "report_generation",
+        create_router("final_report_render"),
+        {"failed": "handle_error", "final_report_render": "final_report_render"},
+    )
+    workflow.add_conditional_edges("final_report_render", create_router("end"), {"failed": "handle_error", "end": END})
 
     # 错误处理节点直接结束
     workflow.add_edge("handle_error", END)
