@@ -4,14 +4,19 @@
 """
 
 import json
-import os
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Set, Tuple
 
-import requests
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
+from agents.office_action_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.office_action_reply.src.retrieval_utils import (
+    build_trace_retrieval,
+    normalize_query_list,
+    plan_engine_queries,
+)
 from agents.office_action_reply.src.state import Dispute, EvidenceAssessment
 from agents.office_action_reply.src.utils import get_node_cache
 
@@ -21,9 +26,8 @@ class TopupSearchVerificationNode:
 
     def __init__(self, config=None):
         self.config = config
-        self.serpapi_key = os.getenv("SERPAPI_API_KEY")
-        self.base_url = os.getenv("SERPAPI_BASE_URL", "https://serpapi.com/search")
         self.llm_service = get_llm_service()
+        self.external_evidence_aggregator = ExternalEvidenceAggregator()
 
     def __call__(self, state):
         logger.info("开始补充检索与评判")
@@ -37,12 +41,10 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v3",
+                "verify_topup_v5",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
-                self.serpapi_key,
-                self.base_url,
             )
 
             updates["disputes"] = [
@@ -66,17 +68,18 @@ class TopupSearchVerificationNode:
 
         return updates
 
-    def _verify_topup(self, topup_tasks, prepared_materials, serpapi_key: str, base_url: str):
+    def _verify_topup(self, topup_tasks, prepared_materials):
         tasks = [self._to_dict(item) for item in (topup_tasks or [])]
         prepared = self._to_dict(prepared_materials)
 
         claims = self._extract_claims(prepared)
         comparison_docs = self._build_comparison_docs(prepared)
+        priority_date = self._extract_priority_date(prepared)
 
         disputes = []
         assessments = []
         for task in tasks:
-            dispute, assessment = self._evaluate_task(task, claims, comparison_docs, serpapi_key, base_url)
+            dispute, assessment = self._evaluate_task(task, claims, comparison_docs, priority_date)
             disputes.append(dispute)
             assessments.append(assessment)
 
@@ -90,8 +93,7 @@ class TopupSearchVerificationNode:
         task: Dict[str, Any],
         claims: List[Dict[str, Any]],
         comparison_docs: Dict[str, Dict[str, Any]],
-        serpapi_key: str,
-        base_url: str,
+        priority_date: str,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         task_id = str(task.get("task_id", "")).strip() or "New_FX"
         claim_id = str(task.get("original_claim_id", "")).strip() or "1"
@@ -100,8 +102,13 @@ class TopupSearchVerificationNode:
         claim_text = self._get_claim_text(claim_id, claims)
 
         local_evidence = self._scan_comparison_docs(feature_text, comparison_docs)
-        external_queries = [f"{feature_text} 专利 技术公开", f"{feature_text} 本领域公知"]
-        external_evidence = self._search_external(feature_text, external_queries, serpapi_key, base_url) if serpapi_key else []
+        external_queries = self._build_engine_queries(task, claim_text, feature_text, priority_date)
+        external_candidates, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
+            queries=external_queries,
+            priority_date=priority_date,
+            limit=6,
+        )
+        external_evidence = self._to_external_evidence_items(external_candidates)
 
         evidence_context = local_evidence + external_evidence
         allowed_doc_ids: Set[str] = {str(item.get("doc_id", "")).strip() for item in evidence_context if item.get("doc_id")}
@@ -155,8 +162,7 @@ class TopupSearchVerificationNode:
             "trace": {
                 "used_doc_ids": parsed["used_doc_ids"],
                 "missing_doc_ids": [],
-                "retrieval_queries": external_queries,
-                "retrieval_engine": "serpapi" if serpapi_key else "none",
+                "retrieval": build_trace_retrieval(external_queries, retrieval_engines, retrieval_meta),
             },
         }
         return dispute, assessment
@@ -231,7 +237,7 @@ examiner_rejection_reason 口吻与内容约束（强制）：
         feature_text: str,
         local_evidence: List[Dict[str, Any]],
         external_evidence: List[Dict[str, Any]],
-        external_queries: List[str],
+        external_queries: Dict[str, List[str]],
     ) -> str:
         return f"""请评判以下补充检索任务：
 
@@ -250,7 +256,42 @@ feature_text: {feature_text}
 {json.dumps(external_evidence, ensure_ascii=False, indent=2)}
 
 【外部检索查询】
-{json.dumps(external_queries, ensure_ascii=False)}"""
+{json.dumps(external_queries, ensure_ascii=False, indent=2)}"""
+
+    def _build_engine_queries(
+        self,
+        task: Dict[str, Any],
+        claim_text: str,
+        feature_text: str,
+        priority_date: str,
+    ) -> Dict[str, List[str]]:
+        fallback_queries = {
+            "openalex": normalize_query_list([
+                f"{feature_text} prior art conventional method",
+                f"{feature_text} patent disclosure implementation",
+            ], limit=2),
+            "zhihuiya": normalize_query_list([
+                f"{feature_text} 专利 技术公开",
+                f"{feature_text} 本领域公知",
+            ], limit=2),
+            "tavily": normalize_query_list([
+                f"{feature_text} 技术公开资料",
+                f"{feature_text} {claim_text[:120]}",
+            ], limit=2),
+        }
+        user_context = {
+            "priority_date": priority_date,
+            "task": task,
+            "feature_text": feature_text,
+            "claim_text": claim_text[:240],
+        }
+        return plan_engine_queries(
+            llm_service=self.llm_service,
+            user_context=user_context,
+            fallback_queries=fallback_queries,
+            scenario="补充检索核查",
+            per_engine_limit=2,
+        )
 
     def _normalize_llm_output(
         self,
@@ -408,42 +449,27 @@ feature_text: {feature_text}
         end = min(index + 160, len(content))
         return content[start:end].strip()
 
-    def _search_external(self, feature_text: str, queries: List[str], serpapi_key: str, base_url: str):
-        evidence = []
-        ext_index = 1
-        for query in queries:
-            params = {
-                "engine": "google",
-                "q": query,
-                "api_key": serpapi_key,
-                "num": 5,
-            }
-            try:
-                response = requests.get(base_url, params=params, timeout=25)
-                response.raise_for_status()
-                data = response.json()
-            except Exception as e:
-                logger.warning(f"外部检索失败: {e}")
+    def _to_external_evidence_items(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        evidence: List[Dict[str, Any]] = []
+        for item in candidates:
+            item_dict = self._to_dict(item)
+            doc_id = str(item_dict.get("doc_id", "")).strip()
+            if not doc_id:
                 continue
-
-            for item in data.get("organic_results", []) or []:
-                title = str(item.get("title", "")).strip()
-                snippet = str(item.get("snippet", "")).strip()
-                url = str(item.get("link", "")).strip()
-                if not (title or snippet):
-                    continue
-                evidence.append({
-                    "doc_id": f"EXT{ext_index}",
-                    "quote": snippet[:240],
-                    "location": "google organic result",
-                    "analysis": "",
-                    "source_url": url or None,
-                    "source_title": title or None,
-                    "source_type": "google_web",
-                })
-                ext_index += 1
-                if len(evidence) >= 6:
-                    return evidence
+            source_type = str(item_dict.get("source_type", "")).strip()
+            published = str(item_dict.get("published", "")).strip()
+            location = source_type
+            if published:
+                location = f"{source_type} {published}".strip()
+            evidence.append({
+                "doc_id": doc_id,
+                "quote": str(item_dict.get("snippet", "")).strip()[:240],
+                "location": location,
+                "analysis": "",
+                "source_url": str(item_dict.get("url", "")).strip() or None,
+                "source_title": str(item_dict.get("title", "")).strip() or None,
+                "source_type": source_type or None,
+            })
         return evidence
 
     def _build_comparison_docs(self, prepared_materials: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -480,6 +506,47 @@ feature_text: {feature_text}
         if not isinstance(claims, list):
             return []
         return [self._to_dict(claim) for claim in claims]
+
+    def _extract_priority_date(self, prepared_materials: Dict[str, Any]) -> str:
+        original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
+        patent_data = self._to_dict(original_patent.get("data", {}))
+        bibliographic_data = self._to_dict(patent_data.get("bibliographic_data", {}))
+
+        candidates = [
+            patent_data.get("priority_date"),
+            patent_data.get("application_date"),
+            bibliographic_data.get("priority_date"),
+            bibliographic_data.get("application_date"),
+        ]
+        for date_str in candidates:
+            normalized = self._normalize_date(date_str)
+            if normalized:
+                return normalized
+        return ""
+
+    def _normalize_date(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        patterns = [
+            r"(\d{4})(\d{2})(\d{2})",
+            r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})",
+            r"(\d{4})年(\d{1,2})月(\d{1,2})日?",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            year = match.group(1).zfill(4)
+            month = match.group(2).zfill(2)
+            day = match.group(3).zfill(2)
+            try:
+                datetime.strptime(f"{year}-{month}-{day}", "%Y-%m-%d")
+                return f"{year}-{month}-{day}"
+            except Exception:
+                continue
+        return ""
 
     def _get_claim_text(self, claim_id: str, claims: List[Dict[str, Any]]) -> str:
         try:

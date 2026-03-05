@@ -372,7 +372,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
     def search_semantic(
         self, text: str, to_date: str = "", limit: int = 50
-    ) -> List[Dict]:
+    ) -> Dict[str, Any]:
         """
         执行语义检索 (两步走)
         :param text: 自然语言文本
@@ -437,7 +437,12 @@ class ZhihuiyaClient(BaseSearchClient):
 
         return self._do_post_request(step2_url, step2_payload)
 
-    def get_similar_patents(self, pn: str, limit: int = 50) -> Dict[str, Any]:
+    def get_similar_patents(
+        self,
+        pn: str,
+        limit: int = 50,
+        min_similarity_score: float = 0.0,
+    ) -> Dict[str, Any]:
         """
         [Similar] 查询本专利的相似专利 (基于 PN 语义跳转)
         1. POST /jump 获取 semantic_id
@@ -506,8 +511,33 @@ class ZhihuiyaClient(BaseSearchClient):
             "limit": limit,
         }
 
-        # 复用统一的请求处理方法
-        return self._do_post_request(search_url, search_payload)
+        # 复用统一的请求处理方法 + 相似度过滤
+        response = self._do_post_request(search_url, search_payload)
+        if not isinstance(response, dict):
+            return {"total": 0, "results": []}
+
+        raw_results = response.get("results", []) or []
+        if not isinstance(raw_results, list):
+            return {"total": 0, "results": []}
+
+        filtered_results: List[Dict[str, Any]] = []
+        for item in raw_results:
+            item_dict = item if isinstance(item, dict) else {}
+            score_raw = item_dict.get("score", 0.0)
+            try:
+                similarity_score = float(str(score_raw).replace("%", "").strip())
+            except Exception:
+                similarity_score = 0.0
+            if similarity_score < float(min_similarity_score):
+                continue
+            item_dict["similarity_score"] = similarity_score
+            filtered_results.append(item_dict)
+
+        return {
+            "total": len(filtered_results),
+            "results": filtered_results,
+            "min_similarity_score": float(min_similarity_score),
+        }
 
     def get_family(self, pn: str, limit: int = 50) -> List[Dict]:
         """

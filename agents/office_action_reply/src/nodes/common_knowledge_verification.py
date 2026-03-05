@@ -4,14 +4,18 @@
 """
 
 import json
-import os
 import re
 from typing import Any, Dict, List, Optional, Set
 
-import requests
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
+from agents.office_action_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.office_action_reply.src.retrieval_utils import (
+    build_trace_retrieval,
+    normalize_query_list,
+    plan_engine_queries,
+)
 from agents.office_action_reply.src.state import EvidenceAssessment
 from agents.office_action_reply.src.utils import get_node_cache
 
@@ -22,8 +26,7 @@ class CommonKnowledgeVerificationNode:
     def __init__(self, config=None):
         self.config = config
         self.llm_service = get_llm_service()
-        self.serpapi_key = os.getenv("SERPAPI_API_KEY")
-        self.base_url = os.getenv("SERPAPI_BASE_URL", "https://serpapi.com/search")
+        self.external_evidence_aggregator = ExternalEvidenceAggregator()
 
     def __call__(self, state):
         logger.info("开始公知常识核查")
@@ -32,12 +35,10 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v2",
+                "verify_common_knowledge_v4",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
-                self.serpapi_key,
-                self.base_url,
             )
 
             if not assessments:
@@ -64,8 +65,6 @@ class CommonKnowledgeVerificationNode:
         self,
         disputes: List[Any],
         prepared_materials: Any,
-        serpapi_key: Optional[str],
-        base_url: str,
     ) -> List[Dict[str, Any]]:
         common_knowledge_disputes = self._get_common_knowledge_disputes(disputes)
         if not common_knowledge_disputes:
@@ -78,25 +77,23 @@ class CommonKnowledgeVerificationNode:
         assessments: List[Dict[str, Any]] = []
         for dispute in common_knowledge_disputes:
             claim_text = self._get_claim_text(dispute, claims)
-            queries = self._build_search_queries(dispute, claim_text)
-
-            external_evidence: List[Dict[str, Any]] = []
-            if serpapi_key:
-                external_evidence = self._search_external_sources(
-                    queries=queries,
-                    priority_date=priority_date,
-                    serpapi_key=serpapi_key,
-                    base_url=base_url,
-                )
-            else:
-                logger.warning("SERPAPI_API_KEY 未配置，将仅基于模型知识进行低置信度判断")
+            queries_by_engine = self._build_engine_queries(dispute, claim_text, priority_date)
+            external_evidence, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
+                queries=queries_by_engine,
+                priority_date=priority_date,
+                limit=8,
+            )
+            if not external_evidence:
+                logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
 
             assessment = self._verify_single_dispute(
                 dispute=dispute,
                 claim_text=claim_text,
-                queries=queries,
+                queries_by_engine=queries_by_engine,
                 priority_date=priority_date,
                 external_evidence=external_evidence,
+                retrieval_engines=retrieval_engines,
+                retrieval_meta=retrieval_meta,
             )
             assessments.append(assessment)
 
@@ -168,127 +165,46 @@ class CommonKnowledgeVerificationNode:
                 return f"{year}-{month}-{day}"
         return None
 
-    def _build_search_queries(self, dispute: Dict[str, Any], claim_text: str) -> List[str]:
+    def _build_engine_queries(
+        self,
+        dispute: Dict[str, Any],
+        claim_text: str,
+        priority_date: Optional[str],
+    ) -> Dict[str, List[str]]:
         feature_text = str(dispute.get("feature_text", "")).strip()
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
-
-        queries = [
-            f"{feature_text} 本领域公知常识",
-            f"{feature_text} 技术手段 常见实现",
-            f"{feature_text} {examiner_opinion.get('reasoning', '')}".strip(),
-            f"{feature_text} {applicant_opinion.get('core_conflict', '')}".strip(),
-            f"{feature_text} {claim_text[:120]}".strip(),
-        ]
-
-        deduped: List[str] = []
-        for query in queries:
-            normalized = " ".join(str(query).split())
-            if normalized and normalized not in deduped:
-                deduped.append(normalized)
-        return deduped[:4]
-
-    def _search_external_sources(
-        self,
-        queries: List[str],
-        priority_date: Optional[str],
-        serpapi_key: str,
-        base_url: str,
-    ) -> List[Dict[str, Any]]:
-        candidates: List[Dict[str, Any]] = []
-        for query in queries:
-            candidates.extend(self._search_serpapi("google_scholar", query, priority_date, serpapi_key, base_url))
-            candidates.extend(self._search_serpapi("google_patents", query, priority_date, serpapi_key, base_url))
-            candidates.extend(self._search_serpapi("google", query, priority_date, serpapi_key, base_url))
-
-        merged = self._dedupe_external_results(candidates)
-        for idx, item in enumerate(merged[:8], start=1):
-            item["doc_id"] = f"EXT{idx}"
-        return merged[:8]
-
-    def _search_serpapi(
-        self,
-        engine: str,
-        query: str,
-        priority_date: Optional[str],
-        serpapi_key: str,
-        base_url: str,
-    ) -> List[Dict[str, Any]]:
-        params: Dict[str, Any] = {
-            "engine": engine,
-            "q": query,
-            "api_key": serpapi_key,
-            "num": 5,
+        fallback_queries = {
+            "openalex": normalize_query_list([
+                f"{feature_text} common general knowledge prior to filing date",
+                f"{feature_text} conventional implementation patent",
+                f"{feature_text} {examiner_opinion.get('reasoning', '')}",
+            ], limit=2),
+            "zhihuiya": normalize_query_list([
+                f"{feature_text} 本领域公知常识",
+                f"{feature_text} 技术手段 常见实现",
+                f"{feature_text} {applicant_opinion.get('core_conflict', '')}",
+            ], limit=2),
+            "tavily": normalize_query_list([
+                f"{feature_text} 本领域公知 常见做法",
+                f"{feature_text} 技术原理 公开资料",
+                f"{feature_text} {claim_text[:120]}",
+            ], limit=2),
         }
-
-        if engine == "google_scholar" and priority_date:
-            params["as_ylo"] = "1900"
-            params["as_yhi"] = priority_date[:4]
-        elif engine == "google_patents" and priority_date:
-            params["q"] = f"{query} before:{priority_date}"
-        elif engine == "google" and priority_date:
-            params["tbs"] = f"cdr:1,cd_min:1/1/1900,cd_max:{priority_date[5:7]}/{priority_date[8:10]}/{priority_date[:4]}"
-
-        try:
-            response = requests.get(base_url, params=params, timeout=25)
-            response.raise_for_status()
-            data = response.json()
-            return self._parse_serpapi_results(engine, data)
-        except Exception as e:
-            logger.warning(f"SERPAPI {engine} 检索失败，query={query[:100]} error={e}")
-            return []
-
-    def _parse_serpapi_results(self, engine: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        source_type_map = {
-            "google_scholar": "google_scholar",
-            "google_patents": "google_patents",
-            "google": "google_web",
+        user_context = {
+            "priority_date": priority_date or "",
+            "feature_text": feature_text,
+            "claim_text": claim_text[:240],
+            "examiner_reasoning": examiner_opinion.get("reasoning", ""),
+            "applicant_core_conflict": applicant_opinion.get("core_conflict", ""),
         }
-        source_type = source_type_map.get(engine, "external")
-
-        parsed: List[Dict[str, Any]] = []
-        for item in data.get("organic_results", []) or []:
-            title = str(item.get("title", "")).strip()
-            url = str(item.get("link", "")).strip()
-            snippet = str(item.get("snippet", "")).strip()
-            published = ""
-
-            if engine == "google_scholar":
-                publication_info = self._to_dict(item.get("publication_info", {}))
-                published = str(publication_info.get("year", "")).strip()
-            elif engine == "google_patents":
-                published = str(item.get("priority_date") or item.get("publication_date") or "").strip()
-            else:
-                published = str(item.get("date", "")).strip()
-
-            if not any([title, url, snippet]):
-                continue
-
-            parsed.append({
-                "source_type": source_type,
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "published": published,
-            })
-
-        return parsed
-
-    def _dedupe_external_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen: Set[str] = set()
-        merged: List[Dict[str, Any]] = []
-
-        for item in results:
-            url = str(item.get("url", "")).strip()
-            title = str(item.get("title", "")).strip()
-            snippet = str(item.get("snippet", "")).strip()
-            key = url or f"{title}::{snippet[:120]}"
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
-
-        return merged
+        return plan_engine_queries(
+            llm_service=self.llm_service,
+            user_context=user_context,
+            fallback_queries=fallback_queries,
+            scenario="公知常识核查",
+            per_engine_limit=2,
+        )
 
     def _build_system_prompt(self) -> str:
         return """你是专利公知常识核查专家。你要判断“申请人的逻辑反驳是否成立”。
@@ -321,7 +237,7 @@ class CommonKnowledgeVerificationNode:
       "analysis": "证据与结论关系",
       "source_url": "https://...",
       "source_title": "文献标题",
-      "source_type": "google_scholar"
+      "source_type": "openalex"
     }
   ]
 }
@@ -382,14 +298,21 @@ examiner_rejection_reason 口吻与内容约束（强制）：
         self,
         dispute: Dict[str, Any],
         claim_text: str,
-        queries: List[str],
+        queries_by_engine: Dict[str, List[str]],
         priority_date: Optional[str],
         external_evidence: List[Dict[str, Any]],
+        retrieval_engines: List[str],
+        retrieval_meta: Dict[str, Any],
     ) -> Dict[str, Any]:
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
 
         prefix_messages = self._build_prefix_messages(external_evidence, priority_date)
+        flat_queries = []
+        for engine_queries in queries_by_engine.values():
+            for query in engine_queries:
+                if query not in flat_queries:
+                    flat_queries.append(query)
         dispute_prompt = f"""请核查以下逻辑争议项：
 dispute_id: {dispute.get("dispute_id", "")}
 original_claim_id: {dispute.get("original_claim_id", "")}
@@ -397,7 +320,8 @@ claim_text: {claim_text}
 feature_text: {dispute.get("feature_text", "")}
 examiner_opinion: {json.dumps(examiner_opinion, ensure_ascii=False)}
 applicant_opinion: {json.dumps(applicant_opinion, ensure_ascii=False)}
-retrieval_queries: {json.dumps(queries, ensure_ascii=False)}
+retrieval_queries: {json.dumps(flat_queries, ensure_ascii=False)}
+retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
 """
         messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]
 
@@ -437,8 +361,7 @@ retrieval_queries: {json.dumps(queries, ensure_ascii=False)}
             "trace": {
                 "used_doc_ids": used_doc_ids,
                 "missing_doc_ids": [],
-                "retrieval_queries": queries,
-                "retrieval_engine": "serpapi",
+                "retrieval": build_trace_retrieval(queries_by_engine, retrieval_engines, retrieval_meta),
             },
         }
 
