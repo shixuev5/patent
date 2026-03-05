@@ -1,12 +1,9 @@
-import os
 import re
-import markdown
 from pathlib import Path
 from typing import Dict, Any, Optional
 from loguru import logger
-from playwright.sync_api import sync_playwright
 
-from config import settings
+from agents.common.rendering.report_render import render_markdown_to_pdf
 
 
 class ReportRenderer:
@@ -480,111 +477,9 @@ class ReportRenderer:
         使用 Playwright 将 Markdown (转HTML后) 打印为 PDF
         """
         logger.info("Starting PDF generation...")
-
-        # 1. Markdown -> HTML
-        html_body = markdown.markdown(
-            md_text,
-            extensions=["tables", "fenced_code", "nl2br", "sane_lists", "extra"],
+        render_markdown_to_pdf(
+            md_text=md_text,
+            output_path=output_path,
+            title="Patent Analysis Report",
+            enable_mathjax=True,
         )
-
-        # 2. 构建完整 HTML
-        full_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Patent Analysis Report</title>
-            <!-- MathJax 配置: 自动识别 $...$ 和 \(...\) -->
-            <script>
-            window.MathJax = {{
-              tex: {{
-                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-                displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']]
-              }},
-              svg: {{
-                fontCache: 'global'
-              }},
-              startup: {{
-                // 确保 MathJax 初始化后我们能捕获状态
-                pageReady: () => {{
-                  return MathJax.startup.defaultPageReady();
-                }}
-              }}
-            }};
-            </script>
-            <script id="MathJax-script" async src="https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js"></script>
-            <style>
-                {settings.PDF_CSS}
-            </style>
-        </head>
-        <body>
-            {html_body}
-        </body>
-        </html>
-        """
-
-        # 4. 保存临时 HTML (方便 Playwright 读取本地资源)
-        temp_html_path = output_path.parent / "temp_render.html"
-        try:
-            temp_html_path.write_text(full_html, encoding="utf-8")
-
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # 加载本地 HTML
-                page.goto(
-                    f"file://{temp_html_path.absolute()}", wait_until="networkidle"
-                )
-
-                # 智能等待 MathJax 渲染完成
-                try:
-                    # 步骤 A: 确保 MathJax 对象已挂载 (脚本已下载执行)
-                    # 设置较短超时，如果因为网络问题没加载 MathJax，就不死等了
-                    page.wait_for_function("() => window.MathJax", timeout=10000)
-
-                    # 步骤 B: 等待 startup promise 解析
-                    # page.evaluate 会自动等待 JS 函数返回的 Promise 完成
-                    page.evaluate(
-                        """
-                        async () => {
-                            if (window.MathJax && window.MathJax.startup) {
-                                await window.MathJax.startup.promise;
-                            }
-                        }
-                    """
-                    )
-                    logger.info("MathJax rendering promise resolved.")
-
-                except Exception as e:
-                    # 如果等待超时（可能是没有公式导致 MathJax 懒加载，或者网络问题），记录日志但继续生成
-                    logger.warning(
-                        f"MathJax wait skipped or failed (safe to ignore if no math): {e}"
-                    )
-
-                # 生成 PDF
-                page.pdf(
-                    path=str(output_path),
-                    format="A4",
-                    print_background=True,
-                    margin={
-                        "top": "2cm",
-                        "bottom": "2cm",
-                        "left": "1.5cm",
-                        "right": "1.5cm",
-                    },
-                    display_header_footer=True,
-                    footer_template='<div style="font-size: 10px; text-align: center; width: 100%;">Page <span class="pageNumber"></span> of <span class="totalPages"></span></div>',
-                    header_template="<div></div>",
-                )
-                browser.close()
-
-            logger.success(f"PDF successfully generated: {output_path}")
-
-        except Exception as e:
-            logger.error(f"PDF generation failed: {e}")
-            raise
-        finally:
-            # 清理临时文件
-            if temp_html_path.exists():
-                os.remove(temp_html_path)

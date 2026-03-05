@@ -31,14 +31,14 @@ class ReportGenerationNode:
             cache = get_node_cache(self.config, "report_generation")
 
             # 使用缓存运行报告生成
-            report = cache.run_step("generate_report_v2", self._generate_report, state)
+            report = cache.run_step("generate_report_v3", self._generate_report, state)
 
             # 保存到文件
             output_path = self._save_report(report, state)
 
             # 更新状态
             updates["final_report"] = report
-            updates["progress"] = 100.0
+            updates["progress"] = 95.0
             updates["status"] = "completed"
 
             logger.info(f"报告已生成: {output_path}")
@@ -179,13 +179,12 @@ class ReportGenerationNode:
             return ""
 
         clauses: List[str] = []
-        for item in items:
-            dispute_id = item.get("dispute_id", "") or "未标注争议项"
+        for index, item in enumerate(items, start=1):
             claim_id = item.get("original_claim_id", "") or "未标注权利要求"
             feature_text = item.get("feature_text", "") or "未提取争议特征"
             reason = item.get("examiner_rejection_reason", "").strip().rstrip("。；;")
             clauses.append(
-                f"针对争议项{dispute_id}（权利要求{claim_id}，争议特征“{feature_text}”），{reason}"
+                f"关于第{index}项核查结论（权利要求{claim_id}，争议特征“{feature_text}”），{reason}"
             )
 
         return (
