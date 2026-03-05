@@ -69,15 +69,16 @@ class Settings:
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")  
     OCR_BASE_URL = os.getenv("OCR_BASE_URL", "https://j9dd7babo5tcocz9.aistudio-app.com/ocr")
 
-    def get_project_paths(self, pn: str):
+    def get_project_paths(self, workspace_id: str, artifact_name: str = ""):
         """
-        根据专利号生成标准化的工作区路径
-        结构: output/{pn}/...
+        根据工作区标识生成标准化路径。
+        - workspace_id: 工作目录名（建议 task_id）
+        - artifact_name: 产物命名用标识（如专利号），为空则使用 workspace_id
         """
-        # 清理文件名中的非法字符
-        safe_pn = "".join([c for c in pn if c.isalnum() or c in ('-', '_')])
+        safe_workspace_id = "".join([c for c in workspace_id if c.isalnum() or c in ("-", "_")])
+        safe_artifact_name = "".join([c for c in (artifact_name or workspace_id) if c.isalnum() or c in ("-", "_")])
 
-        project_root = self.OUTPUT_DIR / safe_pn
+        project_root = self.OUTPUT_DIR / safe_workspace_id
         mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
 
         return {
@@ -99,8 +100,8 @@ class Settings:
             "search_strategy_json": project_root / "search_strategy.json",  # 检索策略数据
 
             # 最终产物
-            "final_md": project_root / f"{safe_pn}.md",
-            "final_pdf": project_root / f"{safe_pn}.pdf",
+            "final_md": project_root / f"{safe_artifact_name}.md",
+            "final_pdf": project_root / f"{safe_artifact_name}.pdf",
         }
 
 

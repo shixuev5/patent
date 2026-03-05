@@ -111,8 +111,8 @@
   - 形式缺陷报告
   - 检索策略建议
 - 生成：
-  - `output/<pn>/<pn>.md`
-  - `output/<pn>/<pn>.pdf`
+  - `output/<task_id>/<pn>.md`
+  - `output/<task_id>/<pn>.pdf`
 
 ---
 
@@ -129,9 +129,9 @@
 
 ## 6. 目录结构与产物
 
-项目路径由 `config.Settings.get_project_paths(pn)` 统一管理：
+项目路径由 `config.Settings.get_project_paths(workspace_id, artifact_name)` 统一管理：
 
-`output/<pn>/`
+`output/<task_id>/`
 
 - 输入与中间文件
   - `raw.pdf`
@@ -164,6 +164,14 @@
 - 报告内容生成
 - 检索策略生成
 - 渲染报告
+
+---
+
+## PN 命名规则
+
+- 若任务创建时提供了 `pn`，最终产物命名直接使用该 `pn`。
+- 若未提供 `pn`（上传 PDF 场景），在结构化后从 `bibliographic_data.publication_number` 提取用于产物命名。
+- 输出目录始终按 `task_id` 隔离：`output/<task_id>/`。
 
 ---
 
@@ -220,4 +228,3 @@ python -m agents.patent_analysis.main --file /path/to/pn_list.txt
 - 专利结构化提取
 - 检索客户端
 - 报告渲染工具
-
