@@ -1,10 +1,14 @@
 import { defineStore } from 'pinia'
-import type { CreateTaskInput, Task, TaskProgress } from '~/types/task'
+import type { CreateTaskInput, Task, TaskProgress, TaskType } from '~/types/task'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
 const STORAGE_KEY = 'patent_tasks'
 const AUTH_TOKEN_KEY = 'patent_auth_token'
 const AUTH_USER_ID_KEY = 'patent_auth_user_id'
+
+const normalizeTaskType = (taskType?: string): TaskType => {
+  return taskType === 'office_action_reply' ? 'office_action_reply' : 'patent_analysis'
+}
 
 const normalizeStatus = (status: string): Task['status'] => {
   if (status === 'failed' || status === 'cancelled') return 'error'
@@ -71,7 +75,13 @@ export const useTaskStore = defineStore('tasks', {
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
         try {
-          this.tasks = JSON.parse(saved)
+          const parsed = JSON.parse(saved)
+          this.tasks = Array.isArray(parsed)
+            ? parsed.map((task: any) => ({
+                ...task,
+                taskType: normalizeTaskType(task.taskType),
+              }))
+            : []
         } catch (error) {
           console.error('解析本地任务缓存失败：', error)
         }
@@ -100,6 +110,7 @@ export const useTaskStore = defineStore('tasks', {
                   // 更新本地任务状态
                   const localTask = this.tasks[localTaskIndex]
                   localTask.status = normalizeStatus(serverTask.status)
+                  localTask.taskType = normalizeTaskType(serverTask.taskType || localTask.taskType)
                   localTask.progress = serverTask.progress || localTask.progress
                   localTask.currentStep = serverTask.step || localTask.currentStep
                   localTask.error = serverTask.error || localTask.error
@@ -114,8 +125,8 @@ export const useTaskStore = defineStore('tasks', {
                     id: generateId(),
                     backendId: serverTask.id,
                     title: serverTask.title || serverTask.pn || '未命名任务',
+                    taskType: normalizeTaskType(serverTask.taskType),
                     pn: serverTask.pn,
-                    type: serverTask.pn ? 'patent' : 'file',
                     status: normalizeStatus(serverTask.status),
                     progress: serverTask.progress || 0,
                     currentStep: serverTask.step || '等待处理',
@@ -187,11 +198,14 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     async createTask(input: CreateTaskInput): Promise<{ ok: boolean; message?: string; error?: string }> {
+      const isPatent = input.taskType === 'patent_analysis'
       const task: Task = {
         id: generateId(),
-        title: input.patentNumber || input.file?.name || '未命名任务',
-        pn: input.patentNumber?.trim() || undefined,
-        type: input.patentNumber ? 'patent' : 'file',
+        taskType: input.taskType,
+        title: isPatent
+          ? input.patentNumber || input.file?.name || '未命名任务'
+          : input.officeActionFile.name || '审查意见答复任务',
+        pn: isPatent ? input.patentNumber?.trim() || undefined : undefined,
         status: 'pending',
         progress: 0,
         currentStep: '等待处理',
@@ -219,8 +233,16 @@ export const useTaskStore = defineStore('tasks', {
 
       try {
         const formData = new FormData()
-        if (input.patentNumber) formData.append('patentNumber', input.patentNumber)
-        if (input.file) formData.append('file', input.file)
+        formData.append('taskType', input.taskType)
+        if (input.taskType === 'patent_analysis') {
+          if (input.patentNumber) formData.append('patentNumber', input.patentNumber)
+          if (input.file) formData.append('file', input.file)
+        } else {
+          formData.append('officeActionFile', input.officeActionFile)
+          formData.append('responseFile', input.responseFile)
+          if (input.claimsFile) formData.append('claimsFile', input.claimsFile)
+          input.comparisonDocs?.forEach((doc) => formData.append('comparisonDocs', doc))
+        }
 
         const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
           method: 'POST',
@@ -233,7 +255,8 @@ export const useTaskStore = defineStore('tasks', {
 
         const data = await response.json()
         taskRef.backendId = data.taskId
-        taskRef.pn = input.patentNumber?.trim() || taskRef.pn
+        taskRef.taskType = input.taskType
+        if (input.taskType === 'patent_analysis') taskRef.pn = input.patentNumber?.trim() || taskRef.pn
         taskRef.status = normalizeStatus(data.status || 'processing')
         taskRef.currentStep = taskRef.status === 'completed' ? '已复用历史报告' : '处理中'
         taskRef.updatedAt = Date.now()
@@ -433,7 +456,9 @@ export const useTaskStore = defineStore('tasks', {
         const url = window.URL.createObjectURL(blob)
         const link = document.createElement('a')
         link.href = url
-        link.download = `专利分析报告_${task.pn || task.title}.pdf`
+        link.download = task.taskType === 'office_action_reply'
+          ? `审查意见答复报告_${task.backendId || task.id}.pdf`
+          : `专利分析报告_${task.pn || task.title}.pdf`
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
@@ -449,6 +474,11 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     async retryTask(task: Task) {
+      if (task.taskType !== 'patent_analysis' || !task.pn) {
+        this.showGlobalNotice('error', '该任务类型不支持直接重试，请重新上传文件创建新任务。')
+        return
+      }
+
       task.status = 'pending'
       task.progress = 0
       task.currentStep = '等待处理'
@@ -456,7 +486,10 @@ export const useTaskStore = defineStore('tasks', {
       task.updatedAt = Date.now()
       this.saveToStorage()
 
-      const input: CreateTaskInput = task.type === 'patent' ? { patentNumber: task.pn || task.title } : { file: undefined }
+      const input: CreateTaskInput = {
+        taskType: 'patent_analysis',
+        patentNumber: task.pn || task.title,
+      }
       await this.submitTask(task, input)
     },
 

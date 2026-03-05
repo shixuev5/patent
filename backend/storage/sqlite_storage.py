@@ -13,13 +13,14 @@ from typing import Any, Dict, List, Optional, Union
 from loguru import logger
 
 from config import settings
-from .models import Task, TaskStatus
+from .models import Task, TaskStatus, TaskType
 
 
 class SQLiteTaskStorage:
     REQUIRED_COLUMNS = {
         "tasks": [
             ("owner_id", "owner_id TEXT"),
+            ("task_type", f"task_type TEXT NOT NULL DEFAULT '{TaskType.PATENT_ANALYSIS.value}'"),
             ("pn", "pn TEXT"),
             ("title", "title TEXT"),
             ("status", "status TEXT NOT NULL DEFAULT 'pending'"),
@@ -40,6 +41,7 @@ class SQLiteTaskStorage:
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         owner_id TEXT,
+        task_type TEXT NOT NULL DEFAULT 'patent_analysis',
         pn TEXT,
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -79,6 +81,14 @@ class SQLiteTaskStorage:
     def _init_database(self):
         with self._get_connection() as conn:
             conn.executescript(self.CREATE_TABLES_SQL)
+            existing_columns = self._get_existing_columns(conn, "tasks")
+            for column_name, ddl in self.REQUIRED_COLUMNS["tasks"]:
+                if column_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {ddl}")
+            conn.execute(
+                "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
+                (TaskType.PATENT_ANALYSIS.value,),
+            )
             conn.execute("DROP INDEX IF EXISTS idx_steps_task_id")
             conn.execute("DROP TABLE IF EXISTS task_steps")
             conn.commit()
@@ -109,6 +119,7 @@ class SQLiteTaskStorage:
         return Task(
             id=row["id"],
             owner_id=row["owner_id"] if "owner_id" in row.keys() else None,
+            task_type=row["task_type"] if "task_type" in row.keys() else TaskType.PATENT_ANALYSIS.value,
             pn=row["pn"],
             title=row["title"],
             status=TaskStatus(row["status"]),
@@ -156,14 +167,15 @@ class SQLiteTaskStorage:
             conn.execute(
                 """
                 INSERT INTO tasks (
-                    id, owner_id, pn, title, status, progress, current_step,
+                    id, owner_id, task_type, pn, title, status, progress, current_step,
                     output_dir, raw_pdf_path, error_message,
                     created_at, updated_at, completed_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
                     task.owner_id,
+                    task.task_type,
                     task.pn,
                     task.title,
                     task.status.value,
@@ -189,6 +201,7 @@ class SQLiteTaskStorage:
     def update_task(self, task_id: str, **kwargs) -> bool:
         allowed_fields = {
             "owner_id",
+            "task_type",
             "pn",
             "title",
             "status",

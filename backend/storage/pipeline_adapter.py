@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from config import settings
-from .models import Task, TaskStatus
+from .models import Task, TaskStatus, TaskType
 from .task_storage import get_task_storage
 
 DEFAULT_PIPELINE_STEPS = [
@@ -33,6 +33,7 @@ class PipelineTaskManager:
     def create_task(
         self,
         owner_id: Optional[str] = None,
+        task_type: str = TaskType.PATENT_ANALYSIS.value,
         pn: Optional[str] = None,
         title: Optional[str] = None,
         raw_pdf_path: Optional[str] = None,
@@ -52,6 +53,7 @@ class PipelineTaskManager:
         task = Task(
             id=task_id,
             owner_id=owner_id,
+            task_type=task_type,
             pn=pn,
             title=title,
             status=TaskStatus.PENDING,
