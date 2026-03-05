@@ -17,7 +17,6 @@ from backend.models import CurrentUser
 
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-secret-in-production")
 AUTH_TOKEN_TTL_DAYS = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
-MAX_DAILY_ANALYSIS = int(os.getenv("MAX_DAILY_ANALYSIS", "3"))
 APP_TZ_OFFSET_HOURS = int(os.getenv("APP_TZ_OFFSET_HOURS", "8"))
 
 

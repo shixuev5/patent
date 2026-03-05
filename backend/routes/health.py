@@ -6,9 +6,10 @@ from datetime import datetime
 from fastapi import APIRouter
 
 from config import VERSION
-from backend.auth import MAX_DAILY_ANALYSIS, AUTH_TOKEN_TTL_DAYS
+from backend.auth import AUTH_TOKEN_TTL_DAYS
+from backend.usage import _daily_limit_for
 from backend.utils import _build_r2_storage
-from backend.storage import TaskStatus, get_pipeline_manager
+from backend.storage import TaskStatus, TaskType, get_pipeline_manager
 
 
 router = APIRouter()
@@ -34,7 +35,8 @@ async def health_check():
             "backend": task_manager.storage.__class__.__name__,
         },
         "auth": {
-            "daily_limit": MAX_DAILY_ANALYSIS,
+            "daily_limit_patent_analysis": _daily_limit_for(TaskType.PATENT_ANALYSIS.value),
+            "daily_limit_office_action_reply": _daily_limit_for(TaskType.OFFICE_ACTION_REPLY.value),
             "token_ttl_days": AUTH_TOKEN_TTL_DAYS,
         },
     }

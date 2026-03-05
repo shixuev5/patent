@@ -343,18 +343,26 @@ class D1TaskStorage:
         row = self._fetchone(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
         return int(row["c"]) if row else 0
 
-    def count_user_tasks_today(self, owner_id: str, tz_offset_hours: int = 8) -> int:
+    def count_user_tasks_today(
+        self,
+        owner_id: str,
+        tz_offset_hours: int = 8,
+        task_type: Optional[str] = None,
+        include_deleted: bool = False,
+    ) -> int:
         today = datetime.utcnow() + timedelta(hours=tz_offset_hours)
         today_str = today.strftime("%Y-%m-%d")
         modifier = f"{tz_offset_hours:+d} hours"
+        where = ["owner_id = ?", "DATE(created_at, ?) = ?"]
+        params: List[Any] = [owner_id, modifier, today_str]
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        if not include_deleted:
+            where.append("deleted_at IS NULL")
         row = self._fetchone(
-            """
-            SELECT COUNT(*) AS c FROM tasks
-            WHERE owner_id = ?
-            AND DATE(created_at, ?) = ?
-            AND deleted_at IS NULL
-            """,
-            [owner_id, modifier, today_str],
+            f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}",
+            params,
         )
         return int(row["c"]) if row else 0
 

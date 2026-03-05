@@ -51,8 +51,7 @@
 
 ```mermaid
 flowchart TD
-    A[document_processing] -->|含comparison_documents| B[patent_retrieval]
-    A -->|否则| C[data_preparation]
+    A[document_processing] --> B[patent_retrieval]
     B --> C
     C --> D[amendment_tracking]
     D --> E[support_basis_check]
@@ -80,6 +79,7 @@ flowchart TD
 1. `document_processing`
    - 将输入文件解析为 Markdown。
    - 对 `office_action` 做结构化提取。
+   - 校验 `office_action.application_number` 必须存在，否则节点失败。
    - 对 `claims` 做结构化提取（新权利要求）。
 
 2. `patent_retrieval`
@@ -133,9 +133,9 @@ flowchart TD
 ## 6.2 关键条件路由
 
 1. `document_processing` 后路由
-   - 条件：`state.office_action.comparison_documents` 是否存在
-   - 有 -> `patent_retrieval`
-   - 无 -> `data_preparation`
+   - 条件：`state.status` 是否失败
+   - 失败 -> `handle_error`
+   - 成功 -> 固定进入 `patent_retrieval`
 
 2. `amendment_strategy` 后路由
    - 条件：

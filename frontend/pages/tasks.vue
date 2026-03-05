@@ -136,7 +136,7 @@
               @change="onComparisonChange"
             />
             <p class="mt-2 text-xs leading-5 text-amber-700">
-              仅上传非专利文件（如标准、论文、技术手册等）。
+              只需要上传非专利文件（如标准、论文、技术手册等）。
             </p>
             <p v-if="comparisonDocs.length" class="mt-1 text-xs text-slate-500">已选择 {{ comparisonDocs.length }} 个文件</p>
           </div>
@@ -295,12 +295,6 @@ const onComparisonChange = (event: Event) => {
 }
 
 const submitPatentTask = async () => {
-  const hasProcessingTasks = taskStore.hasProcessingTasks
-  if (hasProcessingTasks) {
-    taskStore.showGlobalNotice('error', '有任务正在处理中，请等待完成后再创建新任务。')
-    return
-  }
-
   const payload: CreateTaskInput = {
     taskType: 'patent_analysis',
     patentNumber: normalizedPatentNumber.value || undefined,
@@ -326,12 +320,6 @@ const submitPatentTask = async () => {
 const submitOfficeActionTask = async () => {
   if (!officeActionFile.value || !responseFile.value) {
     taskStore.showGlobalNotice('error', '请上传审查意见通知书和意见陈述书。')
-    return
-  }
-
-  const hasProcessingTasks = taskStore.hasProcessingTasks
-  if (hasProcessingTasks) {
-    taskStore.showGlobalNotice('error', '有任务正在处理中，请等待完成后再创建新任务。')
     return
   }
 

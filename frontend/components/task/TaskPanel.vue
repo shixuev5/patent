@@ -121,24 +121,24 @@ onMounted(() => {
 
 <style scoped>
 .task-panel {
-  @apply fixed bottom-0 left-0 right-0 z-50;
+  @apply fixed bottom-0 left-0 right-0 z-50 px-4 sm:px-6;
   max-height: 70vh;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .panel-shell {
-  @apply mx-auto w-full max-w-6xl rounded-t-3xl border border-slate-200/90 bg-white/95 shadow-[0_-10px_30px_-18px_rgba(15,23,42,0.5)] backdrop-blur;
+  @apply mx-auto w-full max-w-6xl overflow-hidden rounded-t-3xl border border-slate-200/90 bg-white/95 shadow-[0_-10px_30px_-18px_rgba(15,23,42,0.5)] backdrop-blur;
 }
 
 .task-panel:not(.expanded):not(.has-tasks) {
   transform: translateY(100%);
 }
 .task-panel:not(.expanded).has-tasks {
-  transform: translateY(calc(100% - 72px));
+  transform: translateY(calc(100% - 64px));
 }
 .panel-header {
-  @apply flex items-center justify-between px-5 py-4 cursor-pointer transition-colors hover:bg-slate-50/80;
-  min-height: 72px;
+  @apply flex items-center justify-between px-5 py-3 cursor-pointer transition-colors hover:bg-slate-50/80;
+  min-height: 64px;
 }
 .header-left {
   @apply flex items-center gap-3;
@@ -165,7 +165,7 @@ onMounted(() => {
   @apply flex items-center gap-2;
 }
 .action-btn {
-  @apply inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50;
+  @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50;
   white-space: nowrap;
 }
 .action-btn.danger {
@@ -173,7 +173,7 @@ onMounted(() => {
 }
 .panel-content {
   @apply overflow-y-auto;
-  max-height: calc(70vh - 72px);
+  max-height: calc(70vh - 64px);
 }
 .empty-state {
   @apply flex flex-col items-center justify-center py-14 text-center;
@@ -242,7 +242,7 @@ onMounted(() => {
 
   .panel-header {
     @apply px-3 py-2.5;
-    min-height: 60px;
+    min-height: 64px;
   }
 
   .header-left {
@@ -265,7 +265,7 @@ onMounted(() => {
   }
 
   .action-btn {
-    @apply h-8 px-2.5;
+    @apply px-2.5 py-1.5;
   }
 
   .action-label {
@@ -273,7 +273,7 @@ onMounted(() => {
   }
 
   .task-panel:not(.expanded).has-tasks {
-    transform: translateY(calc(100% - 60px));
+    transform: translateY(calc(100% - 64px));
   }
 
   .task-list {

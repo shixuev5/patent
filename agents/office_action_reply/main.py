@@ -68,21 +68,13 @@ def create_workflow(config: WorkflowConfig = None):
     # ---------------- 边定义重构 ----------------
     workflow.set_entry_point("document_processing")
 
-    # 1. 复杂条件节点：document_processing
-    def route_from_doc_processing(state):
-        if state.status == "failed":
-            return "failed"
-        if state.office_action and state.office_action.get("comparison_documents"):
-            return "patent_retrieval"
-        return "data_preparation"
-
+    # 1. document_processing 固定流向 patent_retrieval
     workflow.add_conditional_edges(
         "document_processing",
-        route_from_doc_processing,
+        lambda state: "failed" if state.status == "failed" else "patent_retrieval",
         {
             "failed": "handle_error",
             "patent_retrieval": "patent_retrieval",
-            "data_preparation": "data_preparation"
         }
     )
 

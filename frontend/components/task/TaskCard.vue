@@ -160,7 +160,7 @@ const deleteTask = () => {
   @apply mb-1 truncate text-sm font-semibold text-slate-900;
 }
 .task-meta {
-  @apply mb-2 flex items-center gap-2 text-xs text-slate-500;
+  @apply flex items-center gap-2 text-xs text-slate-500;
 }
 .task-type {
   @apply rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600;
