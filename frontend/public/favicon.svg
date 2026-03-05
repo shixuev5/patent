@@ -1,35 +1,47 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AI Patents Favicon">
   <defs>
-    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fcfdff"/>
-      <stop offset="100%" stop-color="#eef1f7"/>
+    <linearGradient id="docFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fdfefe"/>
+      <stop offset="100%" stop-color="#edf2fb"/>
     </linearGradient>
-    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#c7f4ff"/>
-      <stop offset="58%" stop-color="#5edcf4"/>
-      <stop offset="100%" stop-color="#26afe7"/>
+    <linearGradient id="aiFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b9f0ff"/>
+      <stop offset="100%" stop-color="#2daee5"/>
     </linearGradient>
-    <radialGradient id="badgeGlass" cx="30%" cy="24%" r="78%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.72"/>
-      <stop offset="38%" stop-color="#e9fbff" stop-opacity="0.34"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
   </defs>
 
-  <path d="M20 12h18l8 8v26a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V16a4 4 0 0 1 4-4z"
-        fill="url(#paper)" stroke="#b8c7ee" stroke-width="1.5"/>
-  <path d="M38 12v8h8" fill="none" stroke="#6280d8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(32 32) scale(1.22) translate(-32 -32)">
+    <path
+      d="M14 8h22l12 12v30a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V14a6 6 0 0 1 6-6z"
+      fill="url(#docFill)"
+      stroke="#b4c5ed"
+      stroke-width="1.8"
+    />
+    <path
+      d="M36 8v12h12"
+      fill="none"
+      stroke="#5f7dd8"
+      stroke-width="2.1"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M18 24h20M18 30h18M18 36h12"
+      fill="none"
+      stroke="#5f7dd8"
+      stroke-width="2.2"
+      stroke-linecap="round"
+    />
 
-  <path d="M22 23h18M22 27h18M22 31h11M22 36h14" fill="none" stroke="#5f79d9" stroke-width="1.8" stroke-linecap="round"/>
-
-  <circle cx="42.5" cy="44.5" r="8.4" fill="#7adcf2" opacity="0.28"/>
-  <circle cx="42.5" cy="44.5" r="7.8" fill="none" stroke="#9be7fa" stroke-opacity="0.95" stroke-width="1.5"/>
-  <circle cx="42.5" cy="44.5" r="6.9" fill="url(#badge)" stroke="#d9f6ff" stroke-opacity="0.82" stroke-width="0.8"/>
-  <circle cx="42.5" cy="44.5" r="6.9" fill="url(#badgeGlass)"/>
-  <ellipse cx="40.7" cy="41.3" rx="2.5" ry="1.2" fill="#ffffff" fill-opacity="0.56" transform="rotate(-20 40.7 41.3)"/>
-  <path d="M39.4 48.7l1.7-2.4 1.4 1.2-0.8 2.6zM45.5 48.7l-1.7-2.4-1.4 1.2 0.8 2.6z"
-        fill="#49cef0" fill-opacity="0.92"/>
-  <text x="42.5" y="46.8" text-anchor="middle" font-size="6.4" font-weight="800"
-        font-family="Arial, Helvetica, sans-serif" fill="#ffffff">AI</text>
-
+    <circle cx="42.5" cy="43.5" r="10.5" fill="url(#aiFill)" stroke="#9de6fa" stroke-width="2" />
+    <text
+      x="42.5"
+      y="47.2"
+      text-anchor="middle"
+      font-size="8"
+      font-weight="800"
+      font-family="Arial, Helvetica, sans-serif"
+      fill="#ffffff"
+    >AI</text>
+  </g>
 </svg>
