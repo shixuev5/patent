@@ -197,3 +197,26 @@ npm run deploy
 - `MAX_DAILY_PATENT_ANALYSIS`（默认：`3`）
 - `MAX_DAILY_OFFICE_ACTION_REPLY`（默认：`3`）
 - `APP_TZ_OFFSET_HOURS`（默认：`8`）
+
+## 6. 统一检索函数（多模态 + 轻量 RAG）
+
+新增函数入口：`agents.common.retrieval.retrieve_segments`
+
+```python
+from agents.common.retrieval import retrieve_segments
+
+hits = retrieve_segments(
+    query_text="散热通道结构",
+    query_image="",  # 可选：图片路径
+    inputs=[{"source_type": "patent", "doc_id": "D1", "content": "# 标题\n\n段落..."}],
+    mode="ephemeral",   # 或 "session"
+    session_id="",      # mode=session 时必填
+    top_n=20,
+    top_k=5,
+    filters={"sources": ["patent", "openalex"], "before_date": "2024-01-01"},
+)
+```
+
+说明：
+- 文本重排使用 `qwen3-reranker`；图文查询使用 `qwen3-vl-reranker`。
+- `mode=ephemeral` 适合一次性检索；`mode=session` 使用 Milvus Lite 做多轮复用（TTL 清理）。
