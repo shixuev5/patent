@@ -27,7 +27,6 @@ class SQLiteTaskStorage:
             ("progress", "progress INTEGER DEFAULT 0"),
             ("current_step", "current_step TEXT"),
             ("output_dir", "output_dir TEXT"),
-            ("raw_pdf_path", "raw_pdf_path TEXT"),
             ("error_message", "error_message TEXT"),
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
@@ -48,7 +47,6 @@ class SQLiteTaskStorage:
         progress INTEGER DEFAULT 0,
         current_step TEXT,
         output_dir TEXT,
-        raw_pdf_path TEXT,
         error_message TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -89,6 +87,7 @@ class SQLiteTaskStorage:
                 "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
                 (TaskType.PATENT_ANALYSIS.value,),
             )
+            self._drop_legacy_raw_pdf_path_column(conn)
             conn.execute("DROP INDEX IF EXISTS idx_steps_task_id")
             conn.execute("DROP TABLE IF EXISTS task_steps")
             conn.commit()
@@ -97,6 +96,14 @@ class SQLiteTaskStorage:
     def _get_existing_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         return {str(row["name"]) for row in rows}
+
+    def _drop_legacy_raw_pdf_path_column(self, conn: sqlite3.Connection):
+        existing_columns = self._get_existing_columns(conn, "tasks")
+        if "raw_pdf_path" not in existing_columns:
+            return
+
+        conn.execute("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
+        logger.info("Dropped legacy tasks.raw_pdf_path column")
 
     @contextmanager
     def _get_connection(self):
@@ -126,7 +133,6 @@ class SQLiteTaskStorage:
             progress=row["progress"],
             current_step=row["current_step"],
             output_dir=row["output_dir"],
-            raw_pdf_path=row["raw_pdf_path"],
             error_message=row["error_message"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
@@ -168,9 +174,8 @@ class SQLiteTaskStorage:
                 """
                 INSERT INTO tasks (
                     id, owner_id, task_type, pn, title, status, progress, current_step,
-                    output_dir, raw_pdf_path, error_message,
-                    created_at, updated_at, completed_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    output_dir, error_message, created_at, updated_at, completed_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -182,7 +187,6 @@ class SQLiteTaskStorage:
                     task.progress,
                     task.current_step,
                     task.output_dir,
-                    task.raw_pdf_path,
                     task.error_message,
                     task.created_at.isoformat(),
                     task.updated_at.isoformat(),
@@ -208,7 +212,6 @@ class SQLiteTaskStorage:
             "progress",
             "current_step",
             "output_dir",
-            "raw_pdf_path",
             "error_message",
             "completed_at",
             "metadata",
