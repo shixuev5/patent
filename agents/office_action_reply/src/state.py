@@ -79,12 +79,32 @@ class EvidenceAssessmentQuote(BaseModel):
     source_type: Optional[str] = Field(None, description="证据来源类型，如 google_scholar/google_patents/google_web/model_knowledge")
 
 
+class RetrievalResultItem(BaseModel):
+    """外部检索结果项（trace记录）"""
+    doc_id: Optional[str] = Field(None, description="证据编号，如 EXT1")
+    source_type: str = Field(default="", description="来源类型")
+    title: str = Field(default="", description="标题")
+    url: Optional[str] = Field(None, description="链接")
+    published: Optional[str] = Field(None, description="公开日期")
+    similarity_score: Optional[float] = Field(None, description="相似度分值")
+
+
+class RetrievalEngineTrace(BaseModel):
+    """单检索引擎追踪信息"""
+    queries: List[str] = Field(default_factory=list, description="该引擎实际执行的查询条件")
+    filters: Dict[str, Any] = Field(default_factory=dict, description="该引擎执行过滤条件")
+    result_count: int = Field(0, description="该引擎入选证据条数")
+    results: List[RetrievalResultItem] = Field(default_factory=list, description="该引擎入选证据摘要")
+
+
 class EvidenceAssessmentTrace(BaseModel):
     """事实核查追踪信息"""
     used_doc_ids: List[str] = Field(default_factory=list, description="本次核查使用的对比文件编号")
     missing_doc_ids: List[str] = Field(default_factory=list, description="缺失或无有效内容的对比文件编号")
-    retrieval_queries: List[str] = Field(default_factory=list, description="外部检索查询列表")
-    retrieval_engine: Optional[str] = Field(None, description="外部检索引擎标识")
+    retrieval: Dict[str, RetrievalEngineTrace] = Field(
+        default_factory=dict,
+        description="按检索引擎维度记录查询条件、过滤规则与结果摘要",
+    )
 
 
 class EvidenceAssessment(BaseModel):

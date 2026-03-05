@@ -199,17 +199,22 @@ flowchart TD
 
 ### 核心逻辑
 
-1. 生成检索查询（特征文本 + 审查员理由 + 申请人核心冲突 + claim 片段）。
-2. 若配置 `SERPAPI_API_KEY`：
-   - 通过 `google_scholar` / `google_patents` / `google` 拉取证据
-   - 对结果去重并编号为 `EXT1...`
-3. 若未配置 SERPAPI：
+1. 先调用 LLM 生成按引擎拆分的检索查询条件：
+   - `openalex`（英文偏学术）
+   - `zhihuiya`（中文偏专利语义）
+   - `tavily`（中文偏网页证据）
+   - 若 LLM 失败则使用规则兜底模板。
+2. 外部证据聚合：
+   - 学术：OpenAlex
+   - 专利：智慧芽语义检索
+   - 网页：Tavily
+   - 聚合后去重并编号为 `EXT1...`
+3. 若外部证据为空：
    - 退化为模型知识低置信判断（允许 `doc_id=MODEL`）
 4. 调用 LLM 输出统一 `assessment + evidence`。
 5. 输出 `trace`：
-   - `retrieval_queries`
-   - `retrieval_engine=serpapi`
    - `used_doc_ids`
+   - `retrieval`（按引擎记录 `queries/filters/result_count/results`）
 
 ### 严格约束
 
@@ -233,7 +238,7 @@ flowchart TD
 1. 每个 `topup_task` 先构造一个新争议 `TOPUP_<task_id>`。
 2. 两路证据准备：
    - 本地对比文件深扫（命中关键词生成 `D*` 证据片段）
-   - 外部检索（SERPAPI，生成 `EXT*`）
+   - 外部检索聚合（查询条件由 LLM 按 OpenAlex/智慧芽/Tavily 生成，结果编号 `EXT*`）
 3. 调用 LLM 同时产出：
    - `examiner_opinion`
    - `applicant_opinion`
@@ -302,8 +307,8 @@ python -m agents.office_action_reply.main \
 ## 11. 关键环境变量
 
 - `PDF_PARSER`：PDF 解析器（默认 `local`）
-- `SERPAPI_API_KEY`：公知常识/补充检索外部证据检索
-- `SERPAPI_BASE_URL`：SERPAPI 地址（默认 `https://serpapi.com/search`）
+- `OPENALEX_API_KEY` / `OPENALEX_BASE_URL`：学术证据检索
+- `TAVILY_API_KEY` / `TAVILY_BASE_URL`：网页证据检索
 - `ZHIHUIYA_*`：专利下载账号参数
 
 ---
@@ -313,4 +318,3 @@ python -m agents.office_action_reply.main \
 1. 关键前置节点失败（例如 `data_preparation`）会使 `state.status=failed`，并路由到 `handle_error`。
 2. 三个验证节点异常时，通常只写入 `errors`，最终由 `verification_join` 统一判定失败。
 3. 所有节点均支持缓存命中，避免重复调用外部 API 与 LLM。
-
