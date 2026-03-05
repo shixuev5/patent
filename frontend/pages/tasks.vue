@@ -84,7 +84,9 @@
       <div v-else class="mt-4 space-y-4">
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">审查意见通知书（必填）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">
+              <span class="mr-1 text-rose-500">*</span>审查意见通知书（.pdf/.docx）
+            </label>
             <input
               ref="officeActionInput"
               type="file"
@@ -96,7 +98,9 @@
           </div>
 
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">意见陈述书（必填）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">
+              <span class="mr-1 text-rose-500">*</span>意见陈述书（.pdf/.docx）
+            </label>
             <input
               ref="responseInput"
               type="file"
@@ -110,7 +114,7 @@
 
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">权利要求书（可选）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">权利要求书（可选，.pdf/.docx）</label>
             <input
               ref="claimsInput"
               type="file"
@@ -122,7 +126,7 @@
           </div>
 
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">对比文件（可选，多文件）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">对比文件（可选，多文件，.pdf/.docx）</label>
             <input
               ref="comparisonInput"
               type="file"
@@ -131,11 +135,12 @@
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onComparisonChange"
             />
-            <p v-if="comparisonDocs.length" class="mt-2 text-xs text-slate-500">已选择 {{ comparisonDocs.length }} 个文件</p>
+            <p class="mt-2 text-xs leading-5 text-amber-700">
+              仅上传非专利文件（如标准、论文、技术手册等）。
+            </p>
+            <p v-if="comparisonDocs.length" class="mt-1 text-xs text-slate-500">已选择 {{ comparisonDocs.length }} 个文件</p>
           </div>
         </div>
-
-        <p v-if="officeActionError" class="text-xs text-rose-600">{{ officeActionError }}</p>
 
         <button
           type="button"
@@ -196,11 +201,6 @@ const canSubmitPatent = computed(() => {
   const hasPn = !!normalizedPatentNumber.value && !patentNumberError.value
   const hasFile = !!patentFile.value
   return hasPn || hasFile
-})
-
-const officeActionError = computed(() => {
-  if (!officeActionFile.value || !responseFile.value) return '请上传审查意见通知书和意见陈述书。'
-  return ''
 })
 
 const canSubmitOfficeAction = computed(() => {
@@ -325,7 +325,7 @@ const submitPatentTask = async () => {
 
 const submitOfficeActionTask = async () => {
   if (!officeActionFile.value || !responseFile.value) {
-    taskStore.showGlobalNotice('error', '请先上传必填文件。')
+    taskStore.showGlobalNotice('error', '请上传审查意见通知书和意见陈述书。')
     return
   }
 
