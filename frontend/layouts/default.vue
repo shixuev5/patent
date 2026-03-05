@@ -6,12 +6,12 @@
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-600/90 text-xs font-bold text-white">AI</span>
           <div class="leading-tight">
             <p class="font-display text-[11px] uppercase tracking-[0.18em] text-cyan-700">Patents</p>
-            <p class="text-xs font-semibold text-slate-700">审查员智能助手</p>
+            <p class="text-xs font-semibold text-slate-700">审查员 AI 助手</p>
           </div>
         </NuxtLink>
 
         <nav class="hidden items-center gap-1 md:flex">
-          <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">AI 助理</NuxtLink>
+          <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">AI 助手</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">任务台</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
         </nav>

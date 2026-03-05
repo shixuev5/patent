@@ -35,11 +35,11 @@ export default defineNuxtConfig({
   
   app: {
     head: {
-      title: 'AI Patents - 审查员智能助手',
+      title: 'AI Patents - 审查员 AI 助手',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'description', content: 'aipatents.cn 审查员智能助手，通过 AI 分析、AI 研判、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。' },
+        { name: 'description', content: 'aipatents.cn 审查员 AI 助手，通过 AI 分析、AI 研判、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。' },
         { name: 'theme-color', content: '#2563EB' },
       ],
       link: [
