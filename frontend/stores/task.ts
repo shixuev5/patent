@@ -30,6 +30,7 @@ export const useTaskStore = defineStore('tasks', {
     authToken: '' as string,
     userId: '' as string,
     progressStreams: {} as Record<string, EventSource>,
+    progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
     globalNotice: { type: 'info' as 'success' | 'error' | 'info', text: '' as string, show: false }, // 全局通知
   }),
@@ -66,6 +67,51 @@ export const useTaskStore = defineStore('tasks', {
   actions: {
     resolveTaskRef(task: Task): Task {
       return this.tasks.find((t) => t.id === task.id) || task
+    },
+
+    applyServerTaskSnapshot(task: Task, serverTask: any) {
+      const taskRef = this.resolveTaskRef(task)
+      const normalized = normalizeStatus(serverTask?.status || taskRef.status)
+      taskRef.status = normalized
+      taskRef.taskType = normalizeTaskType(serverTask?.taskType || taskRef.taskType)
+      if (typeof serverTask?.progress === 'number') taskRef.progress = serverTask.progress
+      if (typeof serverTask?.step === 'string' && serverTask.step) taskRef.currentStep = serverTask.step
+      if (typeof serverTask?.pn === 'string' && serverTask.pn) taskRef.pn = serverTask.pn
+      taskRef.error = typeof serverTask?.error === 'string' ? serverTask.error : taskRef.error
+      taskRef.updatedAt = Date.now()
+
+      if (normalized === 'completed') {
+        taskRef.downloadUrl = serverTask?.downloadUrl || `/api/tasks/${serverTask?.id || taskRef.backendId}/download`
+        taskRef.progress = 100
+        taskRef.error = undefined
+      }
+      if (normalized === 'error' && !taskRef.error) {
+        taskRef.error = '任务执行失败。'
+      }
+    },
+
+    async fetchTaskSnapshot(task: Task): Promise<boolean> {
+      const taskRef = this.resolveTaskRef(task)
+      if (!taskRef.backendId) return false
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) return false
+
+      const config = useRuntimeConfig()
+      try {
+        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks/${taskRef.backendId}`, {
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
+        })
+        if (!response.ok) return false
+        const data = await response.json()
+        this.applyServerTaskSnapshot(taskRef, data)
+        this.saveToStorage()
+        return true
+      } catch (error) {
+        console.error('查询任务快照失败：', error)
+        return false
+      }
     },
 
     async init() {
@@ -109,16 +155,7 @@ export const useTaskStore = defineStore('tasks', {
                 if (localTaskIndex !== -1) {
                   // 更新本地任务状态
                   const localTask = this.tasks[localTaskIndex]
-                  localTask.status = normalizeStatus(serverTask.status)
-                  localTask.taskType = normalizeTaskType(serverTask.taskType || localTask.taskType)
-                  localTask.progress = serverTask.progress || localTask.progress
-                  localTask.currentStep = serverTask.step || localTask.currentStep
-                  localTask.error = serverTask.error || localTask.error
-                  localTask.updatedAt = Date.now()
-
-                  if (localTask.status === 'completed' && !localTask.downloadUrl) {
-                    localTask.downloadUrl = `/api/tasks/${serverTask.id}/download`
-                  }
+                  this.applyServerTaskSnapshot(localTask, serverTask)
                 } else {
                   // 添加新任务到本地
                   const newTask: Task = {
@@ -128,7 +165,7 @@ export const useTaskStore = defineStore('tasks', {
                     taskType: normalizeTaskType(serverTask.taskType),
                     pn: serverTask.pn,
                     status: normalizeStatus(serverTask.status),
-                    progress: serverTask.progress || 0,
+                    progress: typeof serverTask.progress === 'number' ? serverTask.progress : 0,
                     currentStep: serverTask.step || '等待处理',
                     error: serverTask.error,
                     createdAt: new Date(serverTask.created_at).getTime(),
@@ -272,6 +309,17 @@ export const useTaskStore = defineStore('tasks', {
           }
         }
 
+        await this.fetchTaskSnapshot(taskRef)
+        const latestTaskRef = this.resolveTaskRef(taskRef)
+        const latestStatus: Task['status'] = latestTaskRef.status
+        if (latestStatus === 'completed') {
+          this.saveToStorage()
+          return {
+            ok: true,
+            message: data?.message || '已复用历史报告。',
+          }
+        }
+
         await this.startProgressTracking(taskRef)
         return {
           ok: true,
@@ -310,19 +358,14 @@ export const useTaskStore = defineStore('tasks', {
       eventSource.onmessage = (event) => {
         try {
           const data: TaskProgress = JSON.parse(event.data)
-          const normalized = normalizeStatus(data.status)
+          this.applyServerTaskSnapshot(taskRef, data)
+          if (taskRef.backendId) this.stopProgressPolling(taskRef.backendId)
 
-          taskRef.progress = data.progress ?? taskRef.progress
-          taskRef.currentStep = data.step || taskRef.currentStep
-          if (data.pn) taskRef.pn = data.pn
-          taskRef.status = normalized
-          taskRef.updatedAt = Date.now()
-
-          if (normalized === 'completed') {
+          if (taskRef.status === 'completed') {
             taskRef.downloadUrl = data.downloadUrl
             eventSource.close()
             delete this.progressStreams[taskRef.backendId as string]
-          } else if (normalized === 'error') {
+          } else if (taskRef.status === 'error') {
             taskRef.error = data.error || '任务执行失败。'
             eventSource.close()
             delete this.progressStreams[taskRef.backendId as string]
@@ -337,9 +380,51 @@ export const useTaskStore = defineStore('tasks', {
       eventSource.onerror = () => {
         eventSource.close()
         delete this.progressStreams[taskRef.backendId as string]
+        if (taskRef.backendId) this.startProgressPolling(taskRef)
         setTimeout(() => {
-          if (taskRef.status === 'processing') this.startProgressTracking(taskRef)
+          if (taskRef.status === 'pending' || taskRef.status === 'processing') this.startProgressTracking(taskRef)
         }, 3000)
+      }
+    },
+
+    startProgressPolling(task: Task) {
+      const taskRef = this.resolveTaskRef(task)
+      const backendId = taskRef.backendId
+      if (!backendId || taskRef.status === 'completed' || taskRef.status === 'error') return
+      if (this.progressPollers[backendId]) return
+
+      const poll = async () => {
+        const currentTask = this.resolveTaskRef(taskRef)
+        if (!currentTask.backendId) {
+          this.stopProgressPolling(backendId)
+          return
+        }
+        if (currentTask.status === 'completed' || currentTask.status === 'error') {
+          this.stopProgressPolling(backendId)
+          return
+        }
+        const ok = await this.fetchTaskSnapshot(currentTask)
+        if (!ok) return
+        const refreshedTask = this.resolveTaskRef(taskRef)
+        const refreshedStatus: Task['status'] = refreshedTask.status
+        if (refreshedStatus === 'completed' || refreshedStatus === 'error') {
+          this.stopProgressPolling(backendId)
+          this.stopProgressTracking(backendId)
+        }
+      }
+
+      void poll()
+      this.progressPollers[backendId] = setInterval(() => {
+        void poll()
+      }, 3000)
+    },
+
+    stopProgressPolling(backendId?: string) {
+      if (!backendId) return
+      const timer = this.progressPollers[backendId]
+      if (timer) {
+        clearInterval(timer)
+        delete this.progressPollers[backendId]
       }
     },
 
@@ -380,6 +465,7 @@ export const useTaskStore = defineStore('tasks', {
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
         this.stopProgressTracking(task.backendId)
+        this.stopProgressPolling(task.backendId)
         this.tasks.splice(index, 1)
         this.saveToStorage()
       } catch (error) {
@@ -407,6 +493,7 @@ export const useTaskStore = defineStore('tasks', {
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
         Object.keys(this.progressStreams).forEach((key) => this.stopProgressTracking(key))
+        Object.keys(this.progressPollers).forEach((key) => this.stopProgressPolling(key))
         this.tasks = []
         if (process.client) localStorage.removeItem(STORAGE_KEY)
       } catch (error) {
@@ -440,29 +527,17 @@ export const useTaskStore = defineStore('tasks', {
       const downloadUrl = withTokenQuery(rawDownloadUrl, this.authToken)
 
       try {
-        // 标记为正在下载
         this.downloadingTaskIds.add(task.id)
-        // 显示下载准备中通知
-        this.showGlobalNotice('info', '下载文件正在准备中，请耐心等待...')
-
-        const response = await fetch(downloadUrl, {
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
-        })
-        if (!response.ok) throw new Error(`下载失败：${response.status} ${response.statusText}`)
-
-        const blob = await response.blob()
-        const url = window.URL.createObjectURL(blob)
         const link = document.createElement('a')
-        link.href = url
+        link.href = downloadUrl
+        link.target = '_blank'
+        link.rel = 'noopener'
         link.download = task.taskType === 'office_action_reply'
           ? `审查意见答复报告_${task.backendId || task.id}.pdf`
           : `专利分析报告_${task.pn || task.title}.pdf`
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
-        window.URL.revokeObjectURL(url)
       } catch (error) {
         console.error('下载失败：', error)
         this.showGlobalNotice('error', '下载失败，请稍后重试。')
@@ -500,7 +575,9 @@ export const useTaskStore = defineStore('tasks', {
     restoreProcessingTasks() {
       this.tasks.forEach((task) => {
         task.status = normalizeStatus(task.status)
-        if (task.status === 'processing' && task.backendId) this.startProgressTracking(task)
+        if ((task.status === 'pending' || task.status === 'processing') && task.backendId) {
+          this.startProgressTracking(task)
+        }
       })
     },
   },
