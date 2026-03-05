@@ -3,7 +3,6 @@ SQLite task storage layer implementation.
 """
 
 import json
-import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -14,7 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 from loguru import logger
 
 from config import settings
-from .models import Task, TaskStep, TaskStatus
+from .models import Task, TaskStatus
 
 
 class SQLiteTaskStorage:
@@ -34,14 +33,6 @@ class SQLiteTaskStorage:
             ("completed_at", "completed_at TEXT"),
             ("deleted_at", "deleted_at TEXT"),
             ("metadata", "metadata TEXT"),
-        ],
-        "task_steps": [
-            ("step_name", "step_name TEXT NOT NULL"),
-            ("step_order", "step_order INTEGER NOT NULL"),
-            ("status", "status TEXT DEFAULT 'pending'"),
-            ("start_time", "start_time TEXT"),
-            ("end_time", "end_time TEXT"),
-            ("error_message", "error_message TEXT"),
         ],
     }
 
@@ -64,18 +55,6 @@ class SQLiteTaskStorage:
         metadata TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS task_steps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id TEXT NOT NULL,
-        step_name TEXT NOT NULL,
-        step_order INTEGER NOT NULL,
-        status TEXT DEFAULT 'pending',
-        start_time TEXT,
-        end_time TEXT,
-        error_message TEXT,
-        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    );
-
     CREATE TABLE IF NOT EXISTS patent_analyses (
         pn TEXT PRIMARY KEY,
         first_completed_at TEXT NOT NULL
@@ -84,7 +63,6 @@ class SQLiteTaskStorage:
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
-    CREATE INDEX IF NOT EXISTS idx_steps_task_id ON task_steps(task_id);
     CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
     """
 
@@ -101,6 +79,8 @@ class SQLiteTaskStorage:
     def _init_database(self):
         with self._get_connection() as conn:
             conn.executescript(self.CREATE_TABLES_SQL)
+            conn.execute("DROP INDEX IF EXISTS idx_steps_task_id")
+            conn.execute("DROP TABLE IF EXISTS task_steps")
             conn.commit()
 
     @staticmethod
@@ -142,16 +122,6 @@ class SQLiteTaskStorage:
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
             metadata=self._parse_metadata(row["metadata"]),
-        )
-
-    def _row_to_step(self, row: sqlite3.Row) -> TaskStep:
-        return TaskStep(
-            step_name=row["step_name"],
-            step_order=row["step_order"],
-            status=row["status"],
-            start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
-            end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
-            error_message=row["error_message"],
         )
 
     @staticmethod
@@ -216,13 +186,6 @@ class SQLiteTaskStorage:
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return self._row_to_task(row) if row else None
 
-    def get_task_with_steps(self, task_id: str) -> Optional[Task]:
-        task = self.get_task(task_id)
-        if not task:
-            return None
-        task.steps = self.get_task_steps(task_id)
-        return task
-
     def update_task(self, task_id: str, **kwargs) -> bool:
         allowed_fields = {
             "owner_id",
@@ -261,65 +224,6 @@ class SQLiteTaskStorage:
             )
             conn.commit()
             return cursor.rowcount > 0
-
-    def add_task_step(self, task_id: str, step: TaskStep) -> bool:
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO task_steps (
-                    task_id, step_name, step_order, status,
-                    start_time, end_time, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    step.step_name,
-                    step.step_order,
-                    step.status,
-                    step.start_time.isoformat() if step.start_time else None,
-                    step.end_time.isoformat() if step.end_time else None,
-                    step.error_message,
-                ),
-            )
-            conn.commit()
-        return True
-
-    def get_task_steps(self, task_id: str) -> List[TaskStep]:
-        with self._get_connection() as conn:
-            rows = conn.execute(
-                "SELECT * FROM task_steps WHERE task_id = ? ORDER BY step_order ASC",
-                (task_id,),
-            ).fetchall()
-        return [self._row_to_step(row) for row in rows]
-
-    def update_task_step(self, task_id: str, step_name: str, **kwargs) -> bool:
-        allowed_fields = {"status", "start_time", "end_time", "error_message"}
-        updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
-        if not updates:
-            return False
-
-        params = []
-        clauses = []
-        for key, value in updates.items():
-            if key in ("start_time", "end_time") and isinstance(value, datetime):
-                value = value.isoformat()
-            clauses.append(f"{key} = ?")
-            params.append(value)
-
-        params.extend([task_id, step_name])
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                f"UPDATE task_steps SET {', '.join(clauses)} WHERE task_id = ? AND step_name = ?",
-                params,
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-
-    def delete_task_steps(self, task_id: str) -> bool:
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM task_steps WHERE task_id = ?", (task_id,))
-            conn.commit()
-        return True
 
     def list_tasks(
         self,

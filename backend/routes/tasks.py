@@ -184,7 +184,6 @@ async def create_task(
         owner_id=current_user.user_id,
         pn=pn,
         title=patentNumber or (file.filename if file else "未命名任务"),
-        auto_create_steps=True,
     )
 
     upload_file_path = None

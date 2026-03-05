@@ -5,7 +5,7 @@ Task data models.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class TaskStatus(str, Enum):
@@ -15,37 +15,6 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-@dataclass
-class TaskStep:
-    step_name: str
-    step_order: int
-    status: str = "pending"
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    error_message: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "step_name": self.step_name,
-            "step_order": self.step_order,
-            "status": self.status,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "end_time": self.end_time.isoformat() if self.end_time else None,
-            "error_message": self.error_message,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TaskStep":
-        return cls(
-            step_name=data["step_name"],
-            step_order=data["step_order"],
-            status=data.get("status", "pending"),
-            start_time=datetime.fromisoformat(data["start_time"]) if data.get("start_time") else None,
-            end_time=datetime.fromisoformat(data["end_time"]) if data.get("end_time") else None,
-            error_message=data.get("error_message"),
-        )
 
 
 @dataclass
@@ -64,7 +33,6 @@ class Task:
     updated_at: datetime = field(default_factory=datetime.now)
     completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
-    steps: List[TaskStep] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
