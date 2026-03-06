@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell flex min-h-screen flex-col">
     <header class="app-header sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
-      <div class="mx-auto flex h-14 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
+      <div class="mx-auto flex h-14 w-full max-w-6xl items-center px-4 sm:px-6 md:grid md:grid-cols-[auto_1fr_auto] md:gap-4">
         <NuxtLink to="/" class="flex items-center gap-2">
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-600/90 text-xs font-bold text-white">AI</span>
           <div class="leading-tight">
@@ -10,35 +10,82 @@
           </div>
         </NuxtLink>
 
-        <nav class="hidden items-center gap-1 md:flex">
+        <nav class="hidden items-center justify-center gap-1 md:flex">
           <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">首页</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">AI 任务</NuxtLink>
           <NuxtLink to="/account" :class="navClass(route.path.startsWith('/account'))">个人空间</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
         </nav>
 
-        <div class="flex items-center gap-2">
-          <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
-            进入 AI 任务
+        <div class="ml-auto flex items-center gap-1.5 md:hidden">
+          <NuxtLink to="/tasks" class="shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
+            AI任务
           </NuxtLink>
-          <NuxtLink
-            to="/account"
-            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 md:hidden"
-          >
-            个人空间
-          </NuxtLink>
+          <div class="relative md:hidden">
+            <button
+              type="button"
+              class="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
+              aria-label="打开菜单"
+              :aria-expanded="isMobileMenuOpen ? 'true' : 'false'"
+              @click="toggleMobileMenu"
+            >
+              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" />
+              </svg>
+            </button>
+
+            <button
+              v-if="isMobileMenuOpen"
+              type="button"
+              class="fixed inset-0 z-30"
+              aria-label="关闭菜单"
+              @click="closeMobileMenu"
+            />
+            <div
+              v-if="isMobileMenuOpen"
+              class="absolute right-0 top-[calc(100%+0.5rem)] z-40 w-36 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-200/80"
+            >
+              <NuxtLink
+                to="/account"
+                class="block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                @click="closeMobileMenu"
+              >
+                个人空间
+              </NuxtLink>
+              <button
+                v-if="hasAuthingEnabled && authStore.isLoggedIn"
+                type="button"
+                class="mt-1 block w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                @click="onMobileLogout"
+              >
+                退出登录
+              </button>
+              <button
+                v-else-if="hasAuthingEnabled"
+                type="button"
+                class="mt-1 block w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                @click="onMobileLogin"
+              >
+                登录
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="hidden items-center justify-end md:flex">
           <button
             v-if="hasAuthingEnabled && authStore.isLoggedIn"
             type="button"
-            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            class="shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             @click="onLogout"
           >
-            {{ displayUserName }} · 退出
+            <span>{{ displayUserName }} · </span>
+            <span>退出</span>
           </button>
           <button
             v-else-if="hasAuthingEnabled"
             type="button"
-            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            class="shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             @click="onLogin"
           >
             登录
@@ -67,7 +114,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 
 const route = useRoute()
@@ -76,6 +123,7 @@ const authStore = useAuthStore()
 const currentYear = new Date().getFullYear()
 const serviceStatus = ref<string | null>(null)
 const serviceVersion = ref<string | null>(null)
+const isMobileMenuOpen = ref(false)
 let healthTimer: ReturnType<typeof setInterval> | null = null
 
 const isServiceHealthy = computed(() => {
@@ -121,6 +169,31 @@ const onLogin = async () => {
 const onLogout = async () => {
   await authStore.logout()
 }
+
+const closeMobileMenu = () => {
+  isMobileMenuOpen.value = false
+}
+
+const toggleMobileMenu = () => {
+  isMobileMenuOpen.value = !isMobileMenuOpen.value
+}
+
+const onMobileLogin = async () => {
+  closeMobileMenu()
+  await onLogin()
+}
+
+const onMobileLogout = async () => {
+  closeMobileMenu()
+  await onLogout()
+}
+
+watch(
+  () => route.fullPath,
+  () => {
+    closeMobileMenu()
+  },
+)
 
 onMounted(() => {
   if (hasAuthingEnabled.value) authStore.ensureInitialized()

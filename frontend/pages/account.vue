@@ -23,7 +23,7 @@
           </div>
         </div>
 
-        <div class="flex max-w-xl flex-col items-end gap-2">
+        <div class="flex w-full flex-col items-end gap-2 sm:ml-auto sm:max-w-xl">
           <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1">
             <button
               type="button"
@@ -43,7 +43,7 @@
             </button>
           </div>
 
-          <div class="flex w-full flex-wrap items-center justify-end gap-2 text-xs">
+          <div class="flex w-full items-center justify-end gap-2 text-xs">
             <span class="text-slate-500">本月目标</span>
             <input
               v-model="monthTargetInput"
