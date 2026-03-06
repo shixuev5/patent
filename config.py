@@ -49,6 +49,7 @@ class Settings:
     VLM_API_KEY = os.getenv("VLM_API_KEY")
     VLM_BASE_URL = os.getenv("VLM_BASE_URL")
     VLM_MODEL = os.getenv("VLM_MODEL", "glm-4.6v")
+    VLM_MODEL_MINI = os.getenv("VLM_MODEL_MINI", "").strip()
 
     # --- 视觉处理配置 ---
     LABEL_COLOR = (0, 0, 255)
