@@ -3,6 +3,7 @@ Loguru and timezone configuration helpers.
 """
 
 import os
+import re
 import sys
 import time
 from datetime import timedelta, timezone
@@ -12,6 +13,7 @@ from loguru import logger
 
 
 UTC_PLUS_8 = timezone(timedelta(hours=8))
+_LEADING_BRACKET_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
 CONSOLE_LOG_FORMAT = (
     "<green>{extra[time_utc8]}</green> | "
     "<level>{level: <8}</level> | "
@@ -44,6 +46,42 @@ def _inject_utc8_time(record: Dict[str, Any]) -> None:
     extra.setdefault("task_type_label", "-")
     extra.setdefault("pn", "-")
     extra.setdefault("stage", record.get("module", "-") or "-")
+    _normalize_agent_log_message(record)
+
+
+def _agent_component_from_name(name: str) -> str:
+    """
+    Build a short and stable component tag from module path.
+    e.g. agents.office_action_reply.src.nodes.document_processing
+      -> office_action_reply.document_processing
+    """
+    parts = (name or "").split(".")
+    if len(parts) < 2 or parts[0] != "agents":
+        return name or "agent"
+
+    domain = parts[1]
+    if "nodes" in parts and parts[-1]:
+        return f"{domain}.{parts[-1]}"
+    if len(parts) >= 3 and parts[2] == "src" and parts[-1]:
+        return f"{domain}.{parts[-1]}"
+    if parts[-1]:
+        return f"{domain}.{parts[-1]}"
+    return domain
+
+
+def _normalize_agent_log_message(record: Dict[str, Any]) -> None:
+    """
+    Keep all logs emitted from agents.* modules in a single style:
+    [component] message
+    """
+    name = str(record.get("name", "")).strip()
+    if not name.startswith("agents."):
+        return
+
+    message = str(record.get("message", "")).strip()
+    message = _LEADING_BRACKET_PREFIX_RE.sub("", message)
+    component = _agent_component_from_name(name)
+    record["message"] = f"[{component}] {message}" if message else f"[{component}]"
 
 
 def configure_loguru_to_utc8(

@@ -175,7 +175,7 @@ const deleteTask = () => {
   @apply break-all rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700;
 }
 .task-progress {
-  @apply space-y-1.5;
+  @apply mt-2 space-y-1.5;
 }
 .progress-bar {
   @apply h-1.5 overflow-hidden rounded-full bg-slate-100;

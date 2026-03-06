@@ -142,7 +142,7 @@ class SearchStrategyGenerator:
         阶段一：基于专家策略构建检索要素表 (Search Matrix)
         """
         logger.info(
-            "[SearchAgent] Step 1: Building Search Matrix with TCS-Guided Strategy..."
+            "步骤 1/2：基于 TCS 指导策略构建检索要素矩阵"
         )
 
         system_prompt = """
@@ -218,7 +218,7 @@ class SearchStrategyGenerator:
         """
         通过独立的 LLM 调用，将原始技术交底内容重写为高密度的向量检索 Query
         """
-        logger.info("[SearchAgent] Step 2: Generating Semantic Search Query via LLM...")
+        logger.info("步骤 2/2：调用 LLM 生成语义检索 Query")
 
         if not raw_text.strip():
             return ""
