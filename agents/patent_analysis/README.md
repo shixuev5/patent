@@ -81,6 +81,12 @@
 - 检查说明书部件标号与附图识别标号的一致性：
   - 说明书有、附图无
   - 附图有、说明书无
+- 当存在疑点且配置 `VLM_MODEL_MINI` 时，自动触发图像复核模型二次复核（用于识别 OCR 误报/漏报）。
+- 二次复核仅使用官方附图范围（`drawings` + `abstract_figure`），不使用其他非附图图片。
+- 二次复核按“附图集合”分组批量调用，减少请求次数并提升对话缓存命中率。
+- `check.json` 中会包含：
+  - `consistency`：规则检查结论
+  - `secondary_review`：图像复核状态、摘要与问题级判断明细
 - 输出：`check.json`
 
 ## 4.7 generate
@@ -211,6 +217,7 @@ python -m agents.patent_analysis.main --file /path/to/pn_list.txt
 - `OCR_ENGINE`：`local` / `online` / 其他（VLM）
 - `OCR_BASE_URL` / `OCR_API_KEY`：在线 OCR 模式
 - `LLM_*`：报告与检索策略生成
+- `VLM_MODEL_MINI`：形式缺陷检查二次复核图像复核模型（复用 `VLM_API_KEY` / `VLM_BASE_URL`）
 - `APP_OUTPUT_DIR`：输出根目录
 
 ---

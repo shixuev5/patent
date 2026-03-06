@@ -74,6 +74,12 @@ class LLMService:
             logger.error(f"[LLM] JSON completion failed: {e}")
             raise
 
+    @staticmethod
+    def _to_data_url(image_path: str) -> str:
+        with open(image_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:image/jpeg;base64,{img_b64}"
+
     def analyze_image_with_thinking(
         self, image_path: str, system_prompt: str, user_prompt: str, temperature: float = 0.6
     ) -> str:
@@ -94,11 +100,7 @@ class LLMService:
             )
 
         try:
-            # 读取并编码图片
-            with open(image_path, "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-            img_url = f"data:image/jpeg;base64,{img_b64}"
+            img_url = self._to_data_url(image_path)
 
             model = settings.VLM_MODEL
             temperature = 1.0 if model == 'kimi-k2.5' else temperature
@@ -124,6 +126,62 @@ class LLMService:
             logger.error(
                 f"[LLM] Vision analysis with thinking failed for {image_path}: {e}"
             )
+            raise
+
+    def analyze_images_json_with_thinking(
+        self,
+        image_paths: List[str],
+        system_prompt: str,
+        user_prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.2,
+    ) -> Dict[str, Any]:
+        """
+        多图视觉分析，要求模型返回 JSON。
+
+        Args:
+            image_paths: 图片路径列表
+            system_prompt: 静态系统指令
+            user_prompt: 动态用户指令
+            model: 可选模型名（为空则使用 settings.VLM_MODEL）
+            temperature: 温度参数
+        """
+        if not self.vlm_client:
+            raise RuntimeError(
+                "[LLM] Vision client not initialized. Please set VLM_API_KEY in environment"
+            )
+        if not image_paths:
+            raise ValueError("image_paths is empty")
+
+        try:
+            content: List[Dict[str, Any]] = []
+            for image_path in image_paths:
+                content.append(
+                    {"type": "image_url", "image_url": {"url": self._to_data_url(image_path)}}
+                )
+            content.append({"type": "text", "text": user_prompt})
+
+            chosen_model = model or settings.VLM_MODEL
+            final_temperature = 1.0 if chosen_model == "kimi-k2.5" else temperature
+
+            response = self.vlm_client.chat.completions.create(
+                model=chosen_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
+                extra_body={"thinking": {"type": "enabled"}},
+                temperature=final_temperature,
+            )
+
+            raw_content = response.choices[0].message.content or ""
+            cleaned = str(raw_content).replace("```json", "").replace("```", "").strip()
+            return json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.error(f"[LLM] Failed to parse vision JSON response: {e}")
+            raise ValueError("Vision model output is not valid JSON")
+        except Exception as e:
+            logger.error(f"[LLM] Multi-image vision analysis failed: {e}")
             raise
 
 
