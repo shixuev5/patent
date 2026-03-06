@@ -4,7 +4,7 @@
 from .task_storage import get_task_storage
 from .sqlite_storage import SQLiteTaskStorage
 from .d1_storage import D1TaskStorage
-from .models import Task, TaskStatus, TaskType
+from .models import Task, TaskStatus, TaskType, User
 from .pipeline_adapter import PipelineTaskManager, get_pipeline_manager, DEFAULT_PIPELINE_STEPS
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "Task",
     "TaskStatus",
     "TaskType",
+    "User",
     # Pipeline Adapter
     "PipelineTaskManager",
     "get_pipeline_manager",

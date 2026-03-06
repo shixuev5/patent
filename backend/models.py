@@ -18,6 +18,29 @@ class GuestAuthResponse(BaseModel):
     token: str
     userId: str
     expiresAt: str
+    authType: str = "guest"
+
+
+class UserProfileResponse(BaseModel):
+    ownerId: str
+    authingSub: str
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    picture: Optional[str] = None
+
+
+class AuthingTokenExchangeRequest(BaseModel):
+    idToken: str
+
+
+class AuthingAuthResponse(BaseModel):
+    token: str
+    userId: str
+    expiresAt: str
+    authType: str = "authing"
+    user: UserProfileResponse
 
 
 class UsageResponse(BaseModel):

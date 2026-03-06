@@ -21,7 +21,7 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'static',
     prerender: {
-      routes: ['/', '/tasks', '/changelog'],
+      routes: ['/', '/tasks', '/changelog', '/auth/callback'],
     },
   },
   
@@ -30,6 +30,9 @@ export default defineNuxtConfig({
     public: {
       // API 基础URL - 生产环境需要配置为实际的后端地址
       apiBaseUrl: process.env.NUXT_PUBLIC_API_BASE_URL || 'http://localhost:8000',
+      authingAppId: process.env.NUXT_PUBLIC_AUTHING_APP_ID || '',
+      authingDomain: process.env.NUXT_PUBLIC_AUTHING_DOMAIN || '',
+      authingRedirectUri: process.env.NUXT_PUBLIC_AUTHING_REDIRECT_URI || '',
     },
   },
   
@@ -65,6 +68,6 @@ export default defineNuxtConfig({
   
   // 构建配置
   build: {
-    transpile: ['@heroicons/vue'],
+    transpile: ['@heroicons/vue', '@authing/guard-vue3'],
   },
 })

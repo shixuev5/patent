@@ -16,9 +16,27 @@
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
         </nav>
 
-        <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700">
-          进入 AI 任务
-        </NuxtLink>
+        <div class="flex items-center gap-2">
+          <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700">
+            进入 AI 任务
+          </NuxtLink>
+          <button
+            v-if="hasAuthingEnabled && authStore.isLoggedIn"
+            type="button"
+            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            @click="onLogout"
+          >
+            {{ displayUserName }} · 退出
+          </button>
+          <button
+            v-else-if="hasAuthingEnabled"
+            type="button"
+            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            @click="onLogin"
+          >
+            登录
+          </button>
+        </div>
       </div>
     </header>
 
@@ -43,9 +61,11 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useAuthStore } from '~/stores/auth'
 
 const route = useRoute()
 const config = useRuntimeConfig()
+const authStore = useAuthStore()
 const currentYear = new Date().getFullYear()
 const serviceStatus = ref<string | null>(null)
 const serviceVersion = ref<string | null>(null)
@@ -65,6 +85,8 @@ const isServiceHealthy = computed(() => {
 
 const serviceStatusText = computed(() => (isServiceHealthy.value ? '正常' : '异常'))
 const versionText = computed(() => serviceVersion.value || '--')
+const displayUserName = computed(() => authStore.user?.nickname || authStore.user?.name || authStore.user?.email || '已登录用户')
+const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 
 const navClass = (active: boolean) => {
   return active
@@ -85,7 +107,16 @@ const fetchHealthStats = async () => {
   }
 }
 
+const onLogin = async () => {
+  await authStore.login()
+}
+
+const onLogout = async () => {
+  await authStore.logout()
+}
+
 onMounted(() => {
+  if (hasAuthingEnabled.value) authStore.ensureInitialized()
   fetchHealthStats()
   healthTimer = setInterval(fetchHealthStats, 30000)
 })

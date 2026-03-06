@@ -23,6 +23,36 @@ class TaskType(str, Enum):
 
 
 @dataclass
+class User:
+    owner_id: str
+    authing_sub: str
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    picture: Optional[str] = None
+    raw_profile: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    last_login_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "owner_id": self.owner_id,
+            "authing_sub": self.authing_sub,
+            "name": self.name,
+            "nickname": self.nickname,
+            "email": self.email,
+            "phone": self.phone,
+            "picture": self.picture,
+            "raw_profile": self.raw_profile,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "last_login_at": self.last_login_at.isoformat(),
+        }
+
+
+@dataclass
 class Task:
     id: str
     owner_id: Optional[str] = None
