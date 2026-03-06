@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from loguru import logger
 
-from .models import Task, TaskStatus, TaskType, User
+from .models import AccountMonthTarget, Task, TaskStatus, TaskType, User
 
 
 class D1TaskStorage:
@@ -42,6 +42,14 @@ class D1TaskStorage:
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
             ("last_login_at", "last_login_at TEXT NOT NULL"),
+        ],
+        "account_month_targets": [
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("year", "year INTEGER NOT NULL"),
+            ("month", "month INTEGER NOT NULL"),
+            ("target_count", "target_count INTEGER NOT NULL"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
         ],
     }
 
@@ -83,6 +91,16 @@ class D1TaskStorage:
         last_login_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS account_month_targets (
+        owner_id TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        target_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_id, year, month)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -90,6 +108,7 @@ class D1TaskStorage:
     CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
     CREATE INDEX IF NOT EXISTS idx_users_authing_sub ON users(authing_sub);
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_account_month_targets_owner_ym ON account_month_targets(owner_id, year, month);
     """
 
     DROP_LEGACY_SQL = """
@@ -260,6 +279,16 @@ class D1TaskStorage:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             last_login_at=datetime.fromisoformat(row["last_login_at"]),
+        )
+
+    def _row_to_account_month_target(self, row: Dict[str, Any]) -> AccountMonthTarget:
+        return AccountMonthTarget(
+            owner_id=row["owner_id"],
+            year=int(row["year"]),
+            month=int(row["month"]),
+            target_count=int(row["target_count"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
     def create_task(self, task: Task) -> Task:
@@ -524,6 +553,69 @@ class D1TaskStorage:
     def get_user_by_owner_id(self, owner_id: str) -> Optional[User]:
         row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
         return self._row_to_user(row) if row else None
+
+    def upsert_account_month_target(
+        self,
+        owner_id: str,
+        year: int,
+        month: int,
+        target_count: int,
+    ) -> AccountMonthTarget:
+        now_iso = datetime.now().isoformat()
+        self._request(
+            """
+            INSERT INTO account_month_targets (
+                owner_id, year, month, target_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_id, year, month) DO UPDATE SET
+                target_count = excluded.target_count,
+                updated_at = excluded.updated_at
+            """,
+            [owner_id, year, month, target_count, now_iso, now_iso],
+        )
+        row = self._fetchone(
+            """
+            SELECT * FROM account_month_targets
+            WHERE owner_id = ? AND year = ? AND month = ?
+            """,
+            [owner_id, year, month],
+        )
+        if row is None:
+            raise RuntimeError("Failed to upsert account month target in D1")
+        return self._row_to_account_month_target(row)
+
+    def get_account_month_target(
+        self,
+        owner_id: str,
+        year: int,
+        month: int,
+    ) -> Optional[AccountMonthTarget]:
+        row = self._fetchone(
+            """
+            SELECT * FROM account_month_targets
+            WHERE owner_id = ? AND year = ? AND month = ?
+            """,
+            [owner_id, year, month],
+        )
+        return self._row_to_account_month_target(row) if row else None
+
+    def get_latest_account_month_target_before(
+        self,
+        owner_id: str,
+        year: int,
+        month: int,
+    ) -> Optional[AccountMonthTarget]:
+        row = self._fetchone(
+            """
+            SELECT * FROM account_month_targets
+            WHERE owner_id = ?
+              AND (year < ? OR (year = ? AND month < ?))
+            ORDER BY year DESC, month DESC
+            LIMIT 1
+            """,
+            [owner_id, year, year, month],
+        )
+        return self._row_to_account_month_target(row) if row else None
 
     def count_user_tasks_by_created_range(
         self,

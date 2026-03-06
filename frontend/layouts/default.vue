@@ -5,8 +5,8 @@
         <NuxtLink to="/" class="flex items-center gap-2">
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-600/90 text-xs font-bold text-white">AI</span>
           <div class="leading-tight">
-            <p class="font-display text-[11px] uppercase tracking-[0.18em] text-cyan-700">Patents</p>
-            <p class="text-xs font-semibold text-slate-700">专利审查助手</p>
+            <p class="m-0 font-display text-[11px] uppercase tracking-[0.18em] text-cyan-700">Patents</p>
+            <p class="m-0 text-xs font-semibold text-slate-700">专利审查助手</p>
           </div>
         </NuxtLink>
 
@@ -18,12 +18,12 @@
         </nav>
 
         <div class="flex items-center gap-2">
-          <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700">
+          <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
             进入 AI 任务
           </NuxtLink>
           <NuxtLink
             to="/account"
-            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 md:hidden"
           >
             个人空间
           </NuxtLink>

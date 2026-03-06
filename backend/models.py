@@ -3,7 +3,7 @@ API 数据模型定义
 """
 from dataclasses import dataclass
 from threading import Event
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -76,11 +76,26 @@ class DailyActivityPoint(BaseModel):
 class AccountDashboardResponse(BaseModel):
     year: int
     month: int
+    monthTarget: int
+    monthTargetSource: Literal["explicit", "carried", "empty"]
     workWeek: TaskWindowCounts
     workMonth: TaskWindowCounts
     summaryText: str
     weeklySeries: List[WeeklyActivityPoint]
     dailySeries: List[DailyActivityPoint]
+
+
+class AccountMonthTargetResponse(BaseModel):
+    year: int
+    month: int
+    targetCount: int
+    source: Literal["explicit", "carried", "empty"]
+
+
+class AccountMonthTargetUpsertRequest(BaseModel):
+    year: int
+    month: int
+    targetCount: int
 
 
 class UsageResponse(BaseModel):

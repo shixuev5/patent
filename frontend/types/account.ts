@@ -31,9 +31,18 @@ export interface DailyActivityPoint {
 export interface AccountDashboard {
   year: number
   month: number
+  monthTarget: number
+  monthTargetSource: 'explicit' | 'carried' | 'empty'
   workWeek: TaskWindowCounts
   workMonth: TaskWindowCounts
   summaryText: string
   weeklySeries: WeeklyActivityPoint[]
   dailySeries: DailyActivityPoint[]
+}
+
+export interface AccountMonthTargetResponse {
+  year: number
+  month: number
+  targetCount: number
+  source: 'explicit' | 'carried' | 'empty'
 }

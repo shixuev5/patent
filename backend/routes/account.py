@@ -1,14 +1,16 @@
 """
-个人空间相关路由（仅概览，不含目标管理）
+个人空间相关路由
 """
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Tuple
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.auth import _get_current_user
 from backend.models import (
     AccountDashboardResponse,
+    AccountMonthTargetResponse,
+    AccountMonthTargetUpsertRequest,
     AccountProfileResponse,
     CurrentUser,
     DailyActivityPoint,
@@ -73,7 +75,7 @@ def _build_summary_text(work_week_total: int, work_month_total: int, weekly_seri
     if second_half < first_half * 0.9:
         return "最近两周活跃度低于月初，建议适当补齐任务节奏。"
     if pace_estimate > work_month_total * 1.15:
-        return "最近一个工作周创建节奏较快，预计本月活跃度会继续提升。"
+        return "最近一个工作周创建节奏较快，建议持续优先处理高价值任务。"
     if pace_estimate < work_month_total * 0.85:
         return "最近一个工作周创建节奏偏缓，可优先安排高价值任务。"
     return "当前任务节奏整体稳定，可持续保持。"
@@ -87,6 +89,27 @@ def _count_created(owner_id: str, start_day: date, end_day: date, task_type: str
         end_iso,
         task_type=task_type,
     )
+
+
+def _resolve_effective_month_target(owner_id: str, year: int, month: int) -> Tuple[int, str]:
+    explicit = task_manager.storage.get_account_month_target(owner_id, year, month)
+    if explicit:
+        return int(explicit.target_count), "explicit"
+
+    latest_before = task_manager.storage.get_latest_account_month_target_before(owner_id, year, month)
+    if latest_before:
+        return int(latest_before.target_count), "carried"
+
+    return 0, "empty"
+
+
+def _normalize_year_month(year: int, month: int, now: datetime) -> Tuple[int, int]:
+    actual_year = int(year or now.year)
+    actual_month = int(month or now.month)
+    if actual_month < 1 or actual_month > 12:
+        actual_month = now.month
+        actual_year = now.year
+    return actual_year, actual_month
 
 
 @router.get("/api/account/profile", response_model=AccountProfileResponse)
@@ -105,6 +128,47 @@ async def get_account_profile(current_user: CurrentUser = Depends(_get_current_u
     )
 
 
+@router.get("/api/account/month-target", response_model=AccountMonthTargetResponse)
+async def get_account_month_target(
+    year: int = Query(default_factory=lambda: datetime.now().year),
+    month: int = Query(default_factory=lambda: datetime.now().month),
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    now = datetime.now()
+    actual_year, actual_month = _normalize_year_month(year, month, now)
+    target_count, source = _resolve_effective_month_target(current_user.user_id, actual_year, actual_month)
+    return AccountMonthTargetResponse(
+        year=actual_year,
+        month=actual_month,
+        targetCount=target_count,
+        source=source,
+    )
+
+
+@router.put("/api/account/month-target", response_model=AccountMonthTargetResponse)
+async def put_account_month_target(
+    payload: AccountMonthTargetUpsertRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    if payload.month < 1 or payload.month > 12:
+        raise HTTPException(status_code=400, detail="month 必须在 1-12 之间。")
+    if payload.targetCount < 0:
+        raise HTTPException(status_code=400, detail="targetCount 不能小于 0。")
+
+    saved = task_manager.storage.upsert_account_month_target(
+        current_user.user_id,
+        int(payload.year),
+        int(payload.month),
+        int(payload.targetCount),
+    )
+    return AccountMonthTargetResponse(
+        year=int(saved.year),
+        month=int(saved.month),
+        targetCount=int(saved.target_count),
+        source="explicit",
+    )
+
+
 @router.get("/api/account/dashboard", response_model=AccountDashboardResponse)
 async def get_account_dashboard(
     year: int = Query(default_factory=lambda: datetime.now().year),
@@ -112,11 +176,7 @@ async def get_account_dashboard(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     now = datetime.now()
-    actual_year = int(year or now.year)
-    actual_month = int(month or now.month)
-    if actual_month < 1 or actual_month > 12:
-        actual_month = now.month
-        actual_year = now.year
+    actual_year, actual_month = _normalize_year_month(year, month, now)
 
     month_start_dt, month_end_dt = _month_start_end(actual_year, actual_month)
     month_start_day = month_start_dt.date()
@@ -193,10 +253,17 @@ async def get_account_dashboard(
         replyCount=work_month_reply,
         totalCount=work_month_analysis + work_month_reply,
     )
+    month_target, month_target_source = _resolve_effective_month_target(
+        current_user.user_id,
+        actual_year,
+        actual_month,
+    )
 
     return AccountDashboardResponse(
         year=actual_year,
         month=actual_month,
+        monthTarget=int(month_target),
+        monthTargetSource=month_target_source,
         workWeek=work_week,
         workMonth=work_month,
         summaryText=_build_summary_text(work_week.totalCount, work_month.totalCount, weekly_series),
