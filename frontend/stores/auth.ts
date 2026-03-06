@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { useGuard } from '@authing/guard-vue3'
+import { Guard, useGuard } from '@authing/guard-vue3'
 import type { User } from '@authing/guard-vue3'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
@@ -19,6 +19,45 @@ const toAuthingUser = (userInfo: User): AuthingUser => ({
   updated_at: userInfo.updated_at,
   token: (userInfo as any)?.token,
 })
+
+const createStandaloneGuard = (): Guard | null => {
+  if (!process.client) return null
+
+  try {
+    const config = useRuntimeConfig()
+    const appId = String(config.public.authingAppId || '').trim()
+    if (!appId) return null
+
+    const host = String(config.public.authingDomain || '').trim()
+    const redirectUri = String(config.public.authingRedirectUri || '').trim()
+    return new Guard({
+      appId,
+      ...(host ? { host } : {}),
+      ...(redirectUri ? { redirectUri } : {}),
+    })
+  } catch (_error) {
+    return null
+  }
+}
+
+const getGuardClient = (): Guard | null => {
+  if (!process.client) return null
+
+  try {
+    const nuxtApp = useNuxtApp()
+    const guardFromApp = (nuxtApp.vueApp.config.globalProperties as any)?.$guard as Guard | undefined
+    if (guardFromApp) return guardFromApp
+  } catch (_error) {
+    // ignore and try useGuard()
+  }
+
+  try {
+    const guard = useGuard()
+    return guard || null
+  } catch (_error) {
+    return createStandaloneGuard()
+  }
+}
 
 export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
@@ -51,7 +90,12 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = useGuard()
+        const guard = getGuardClient()
+        if (!guard || typeof guard.trackSession !== 'function') {
+          this.user = null
+          this.isLoggedIn = false
+          return
+        }
         const userInfo = await guard.trackSession()
         if (!userInfo) {
           this.user = null
@@ -80,8 +124,11 @@ export const useAuthStore = defineStore('auth', {
       if (!String(config.public.authingAppId || '').trim()) return
       this.loading = true
       try {
-        const guard = useGuard()
-        guard.startWithRedirect()
+        const guard = getGuardClient()
+        if (!guard || typeof guard.startWithRedirect !== 'function') {
+          throw new Error('Authing Guard 未初始化。请刷新页面后重试。')
+        }
+        await guard.startWithRedirect()
       } catch (error) {
         console.error('Authing login failed:', error)
       } finally {
@@ -100,8 +147,10 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = useGuard()
-        await guard.logout()
+        const guard = getGuardClient()
+        if (guard && typeof guard.logout === 'function') {
+          await guard.logout()
+        }
       } catch (error) {
         console.error('Authing logout failed:', error)
       } finally {
@@ -116,10 +165,15 @@ export const useAuthStore = defineStore('auth', {
       if (!process.client) return
       const config = useRuntimeConfig()
       if (!String(config.public.authingAppId || '').trim()) return
-      const guard = useGuard()
       this.loading = true
       try {
+        const guard = getGuardClient()
+        if (!guard || typeof guard.handleRedirectCallback !== 'function') {
+          throw new Error('Authing Guard 未初始化，无法处理回调。')
+        }
         await guard.handleRedirectCallback()
+      } catch (error) {
+        console.error('Authing callback failed:', error)
       } finally {
         this.loading = false
       }

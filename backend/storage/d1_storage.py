@@ -3,7 +3,7 @@ Cloudflare D1 task storage layer.
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -524,3 +524,125 @@ class D1TaskStorage:
     def get_user_by_owner_id(self, owner_id: str) -> Optional[User]:
         row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
         return self._row_to_user(row) if row else None
+
+    def count_user_tasks_by_created_range(
+        self,
+        owner_id: str,
+        start_iso: str,
+        end_iso: str,
+        task_type: Optional[str] = None,
+    ) -> int:
+        where = [
+            "owner_id = ?",
+            "created_at >= ?",
+            "created_at < ?",
+            "deleted_at IS NULL",
+        ]
+        params: List[Any] = [owner_id, start_iso, end_iso]
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}",
+            params,
+        )
+        return int(row["c"]) if row else 0
+
+    def count_user_tasks_by_completed_range(
+        self,
+        owner_id: str,
+        start_iso: str,
+        end_iso: str,
+        task_type: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> int:
+        where = [
+            "owner_id = ?",
+            "completed_at IS NOT NULL",
+            "completed_at >= ?",
+            "completed_at < ?",
+            "deleted_at IS NULL",
+        ]
+        params: List[Any] = [owner_id, start_iso, end_iso]
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        row = self._fetchone(
+            f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}",
+            params,
+        )
+        return int(row["c"]) if row else 0
+
+    def aggregate_user_created_tasks_daily(
+        self,
+        owner_id: str,
+        start_day: date,
+        end_day: date,
+    ) -> List[Dict[str, Any]]:
+        rows = self._fetchall(
+            """
+            SELECT DATE(created_at) AS day, task_type, COUNT(*) AS count
+            FROM tasks
+            WHERE owner_id = ?
+              AND DATE(created_at) >= DATE(?)
+              AND DATE(created_at) <= DATE(?)
+              AND deleted_at IS NULL
+            GROUP BY day, task_type
+            ORDER BY day ASC
+            """,
+            [owner_id, start_day.isoformat(), end_day.isoformat()],
+        )
+        return [
+            {
+                "day": str(row["day"]),
+                "task_type": str(row["task_type"]),
+                "count": int(row["count"]),
+            }
+            for row in rows
+        ]
+
+    def aggregate_user_completed_tasks_daily(
+        self,
+        owner_id: str,
+        start_day: date,
+        end_day: date,
+        task_type: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        where = [
+            "owner_id = ?",
+            "completed_at IS NOT NULL",
+            "DATE(completed_at) >= DATE(?)",
+            "DATE(completed_at) <= DATE(?)",
+            "deleted_at IS NULL",
+        ]
+        params: List[Any] = [owner_id, start_day.isoformat(), end_day.isoformat()]
+        if task_type:
+            where.append("task_type = ?")
+            params.append(task_type)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+
+        rows = self._fetchall(
+            f"""
+            SELECT DATE(completed_at) AS day, task_type, status, COUNT(*) AS count
+            FROM tasks
+            WHERE {' AND '.join(where)}
+            GROUP BY day, task_type, status
+            ORDER BY day ASC
+            """,
+            params,
+        )
+        return [
+            {
+                "day": str(row["day"]),
+                "task_type": str(row["task_type"]),
+                "status": str(row["status"]),
+                "count": int(row["count"]),
+            }
+            for row in rows
+        ]
