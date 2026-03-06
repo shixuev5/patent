@@ -1,165 +1,188 @@
-```
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This document provides implementation guidance for working in this repository.
+
+## Project Snapshot
+
+Patent analysis platform with two agent workflows:
+- `patent_analysis`: single/multi patent analysis pipeline (download/parse/structure/extract/vision/check/generate/render)
+- `office_action_reply`: LangGraph workflow for office-action rebuttal assistance
+
+Runtime stack:
+- Backend: FastAPI (`backend/main.py`)
+- Frontend: Nuxt 3 (`frontend/`)
+- Agents: Python modules under `agents/`
+
+## Current Directory Layout
+
+```text
+/Users/yanhao/Documents/codes/patent
+├── backend/                     # FastAPI API + task orchestration + storage adapters
+├── frontend/                    # Nuxt3 UI
+├── agents/
+│   ├── patent_analysis/         # Patent analysis pipeline
+│   │   ├── main.py
+│   │   └── src/
+│   │       ├── knowledge.py
+│   │       ├── vision.py
+│   │       ├── checker.py
+│   │       ├── generator.py
+│   │       ├── search.py
+│   │       └── renderer.py
+│   ├── office_action_reply/     # Office action reply LangGraph workflow
+│   │   ├── main.py
+│   │   └── src/
+│   │       ├── state.py
+│   │       ├── edges.py
+│   │       └── nodes/
+│   └── common/                  # Shared modules: parsers/search_clients/retrieval/rendering/utils
+├── config.py                    # Global settings and path conventions
+├── .env.example                 # Environment variable template
+├── pyproject.toml               # Python deps (uv)
+└── tests/                       # Current test coverage (retrieval service)
 ```
 
-## Patent Analysis System - Codebase Overview
+## Setup & Run
 
-This is a **Python-based Patent Analysis System** that processes patent documents through a structured pipeline to extract information, analyze content, and generate comprehensive reports. The system combines natural language processing, computer vision, and retrieval-augmented generation (RAG) to automate patent analysis workflows.
+### Python Dependencies
 
-## Key Architecture
-
-### System Pipeline
-The `PatentPipeline` class in `main.py` orchestrates the end-to-end workflow:
-1. **Download Patent**: Using Zhihuiya API
-2. **Parse PDF**: Convert PDF to Markdown using Mineru (local or API)
-3. **Transform to Structured Data**: Use LLM to parse Markdown into structured patent JSON
-4. **Extract Knowledge**: Identify and extract technical entities/parts from content
-5. **Visual Processing**: OCR on patent images and match parts to text descriptions
-6. **Formal Defect Check**: Verify consistency between text descriptions and figure labels
-7. **Content Generation**: Generate report sections using LLM
-8. **Search Strategy Generation**: LLM-based search strategy and query generation
-9. **Render Report**: Convert Markdown to HTML to PDF using Playwright
-
-### Directory Structure
-```
-d:\Codes\patent\
-├── config.py               # Configuration management (paths, API keys, settings)
-├── pyproject.toml          # Project dependencies and metadata
-├── uv.lock                 # Dependency lock file (uv package manager)
-├── .env                    # Environment variables (API keys, configurations)
-├── .env.example            # Example environment file with placeholders
-├── assets/                 # Static assets (fonts: simhei.ttf)
-├── output/                 # Generated outputs (patent-specific directories)
-├── frontend/               # Frontend application files
-├── backend/                # Backend API service
-│   ├── __init__.py         # Package initialization
-│   ├── main.py             # FastAPI application entry point
-│   ├── models.py           # Pydantic data models
-│   ├── auth.py             # Authentication and authorization
-│   ├── usage.py            # Usage quota management
-│   ├── utils.py            # Utility functions
-│   └── routes/             # API route handlers
-│       ├── __init__.py     # Routes aggregation
-│       ├── auth.py         # Authentication routes
-│       ├── tasks.py        # Task management routes
-│       ├── usage.py        # Usage query routes
-│       └── health.py       # Health check route
-└── agents/                 # AI agents for patent analysis
-    ├── patent_analysis/    # Patent analysis agent
-    │   ├── main.py         # Entry point and pipeline orchestrator
-    │   └── src/            # Main source code
-    │       ├── parser.py           # PDF parsing (Mineru API or local)
-    │       ├── transformer.py      # Markdown to structured patent data (LLM-based)
-    │       ├── knowledge.py        # Entity/parts extraction from patent content
-    │       ├── vision.py           # Image processing and OCR (PaddleOCR)
-    │       ├── checker.py          # Formal defect checks (part-text consistency)
-    │       ├── generator.py        # Report content generation (LLM-based)
-    │       ├── renderer.py         # Report rendering (HTML -> PDF via Playwright)
-    │       ├── search_clients/     # Patent search APIs (Zhihuiya/PatSnap)
-    │       └── utils/              # Utility modules (LLM, cache, crypto, reranker)
-    └── office_action_reply/ # Office action reply assistant agent
-        ├── main.py         # Entry point and LangGraph workflow
-        └── src/            # Main source code
-            ├── nodes/              # LangGraph node implementations
-            │   ├── document_processing.py  # File parsing and content extraction
-            │   ├── patent_retrieval.py     # Patent download and parsing
-            │   ├── data_validation.py      # Data validation and integrity checking
-            │   └── __init__.py
-            ├── edges.py            # LangGraph edge condition judgments
-            ├── state.py            # Workflow state management
-            └── utils.py            # Utility functions
-```
-
-## Development Commands
-
-### Dependency Management
-The project uses **uv** (Python package manager):
 ```bash
-uv sync                    # Install dependencies
-uv pip install <package>   # Install a specific package
-uv pip freeze              # List installed packages
+uv sync
 ```
 
-### Running the Pipeline
+### Run Backend API
 
-#### Patent Analysis Agent
 ```bash
-# Process a single patent
+uv run uvicorn backend.main:app --host 0.0.0.0 --port 7860 --reload
+```
+
+### Run Patent Analysis Agent (CLI)
+
+```bash
+# Single patent
 uv run python -m agents.patent_analysis.main --pn CN116745575A
 
-# Process multiple patents (comma-separated)
-uv run python -m agents.patent_analysis.main --pn CN116745575A,CN123456789
+# Multiple patents (comma-separated)
+uv run python -m agents.patent_analysis.main --pn CN116745575A,CN123456789A
 
-# Process patents from a file (one per line)
+# Batch from file (one PN per line)
 uv run python -m agents.patent_analysis.main --file patents.txt
-
-# Run with multiple workers (parallel processing)
-uv run python -m agents.patent_analysis.main --pn CN116745575A --workers 3
 ```
 
-#### Office Action Reply Agent
+### Run Office Action Reply Agent (CLI)
+
 ```bash
-# Process office action reply
 uv run python -m agents.office_action_reply.main \
   --office-action "审查意见通知书.pdf" \
   --response "意见陈述书.docx" \
   --claims "权利要求书.pdf" \
   --comparison-docs "对比文件1.pdf,对比文件2.pdf"
-
-# Specify output directory
-uv run python -m agents.office_action_reply.main \
-  --office-action "审查意见通知书.pdf" \
-  --response "意见陈述书.docx" \
-  --claims "权利要求书.pdf" \
-  --comparison-docs "对比文件1.pdf,对比文件2.pdf" \
-  --output "output/office_action_reply"
 ```
 
-### Configuration
-- **Environment Variables**: Copy `.env.example` to `.env` and fill in API keys
-- **Settings**: Modify `config.py` for path configurations, LLM model settings, and API endpoints
+Notes:
+- `office_action_reply` CLI currently auto-generates `output/<task_id>/` and does not expose a `--output` argument.
+- Backend task execution entry is in `backend/routes/tasks.py`.
 
-## Technology Stack
+## API Endpoints (Current)
 
-### Core Dependencies
-- **LangGraph**: Stateful workflow orchestration
-- **OpenAI/DeepSeek API**: LLM processing for text generation and reasoning
-- **Mineru**: PDF parsing and conversion to Markdown
-- **PaddleOCR**: Optical character recognition on patent images
-- **Playwright**: Browser automation for HTML to PDF rendering
-- **Zhihuiya API**: Patent document search and download
-- **Pydantic**: Data validation and structured data modeling
+- `POST /api/auth/guest`
+- `GET /api/health`
+- `GET /api/usage`
+- `GET /api/changelog`
+- `GET /api/tasks`
+- `POST /api/tasks`
+- `GET /api/tasks/{task_id}`
+- `DELETE /api/tasks/{task_id}`
+- `DELETE /api/tasks`
+- `GET /api/tasks/{task_id}/progress` (SSE)
+- `GET /api/tasks/{task_id}/download`
 
-### Output Structure
-Each processed patent creates a directory in `output/` with:
-- `raw.pdf` - Original patent document
-- `patent.json` - Structured patent data
-- `parts.json` - Extracted technical parts/entities
-- `image_parts.json` - Image-to-part mappings
-- `check.json` - Formal defect check results
-- `report.json` - Generated report content
-- `{pn}.md` and `{pn}.pdf` - Final report in Markdown and PDF formats
+## Logging Convention
 
-## Key Modules
+Logging is centralized in:
+- `backend/logging_setup.py`
+- `backend/log_context.py`
 
-### 1. Search Clients (`agents/patent_analysis/src/search_clients/`)
-- Factory pattern for different patent search APIs
-- Zhihuiya API implementation for downloading patents
-- Extensible to support other search providers (PatSnap, etc.)
+Current output format includes:
+- UTC+8 timestamp
+- level
+- `task_id`
+- task type label
+- `pn`
+- stage
+- message
 
-### 2. Search Strategy Generation (`agents/patent_analysis/src/search.py`)
-- LLM-based search strategy and query generation
-- Patent content analysis for effective search queries
-- Search query optimization and refinement
+Agent log message normalization is enforced for `agents.*` modules:
+- Unified message style: `[agent.component] message`
+- Existing ad-hoc leading prefixes are normalized at logging patch stage
 
-### 3. Visual Processing (`agents/patent_analysis/src/vision.py`)
-- PaddleOCR for text extraction from patent figures
-- Image annotation with part labels
-- Matching OCR text to extracted technical parts
+When adding new logs in agents:
+- Prefer concise action-oriented Chinese messages
+- Put changing values in message body (`key=value` or explicit text)
+- Keep stage binding (`bind_task_logger(..., stage=...)`) for task context
 
-### 4. Report Generation (`agents/patent_analysis/src/generator.py`, `agents/patent_analysis/src/renderer.py`)
-- LLM-based content generation for report sections
-- Markdown to HTML to PDF rendering with Playwright
-- Custom CSS styling for professional report formatting
+## Core Components
+
+### Patent Analysis Pipeline
+
+`agents/patent_analysis/main.py` (`PatentPipeline.run`) executes:
+1. download
+2. parse
+3. transform
+4. extract
+5. vision
+6. check
+7. generate
+8. search
+9. render
+
+Artifacts are resolved via `settings.get_project_paths(...)` in `config.py`.
+
+### Office Action Reply Workflow
+
+`agents/office_action_reply/main.py` (`create_workflow`) builds LangGraph nodes:
+- document processing
+- patent retrieval
+- data preparation
+- amendment tracking / support basis check / strategy
+- dispute extraction
+- verification branches (evidence/common-knowledge/top-up)
+- join + report generation + final render
+
+### Shared Subsystems
+
+- Parsers: `agents/common/parsers/`
+- Search clients (Zhihuiya): `agents/common/search_clients/`
+- Retrieval service (Qwen embeddings + rerank + Milvus session mode): `agents/common/retrieval/`
+- Report rendering: `agents/common/rendering/`
+
+## Configuration Notes
+
+Main settings are in `config.py`; keys come from `.env`.
+Key groups in `.env.example`:
+- app storage paths (`APP_*`)
+- task storage backend (`TASK_STORAGE_BACKEND`, D1)
+- LLM/VLM/OCR/Mineru/Zhihuiya
+- retrieval (`QWEN_*`, `RETRIEVAL_*`)
+- optional R2 object storage (`R2_*`)
+- auth/quota (`AUTH_*`, `MAX_DAILY_*`)
+
+## Testing
+
+Current tests focus on retrieval logic:
+
+```bash
+uv run pytest tests/test_retrieval_service.py
+```
+
+## Output Artifacts
+
+Task outputs are under `output/<workspace_id>/` (or configured `APP_OUTPUT_DIR`), typically including:
+- `raw.pdf`
+- `patent.json`
+- `parts.json`
+- `image_parts.json`
+- `check.json`
+- `report.json`
+- `search_strategy.json`
+- final `{pn}.md` and `{pn}.pdf`

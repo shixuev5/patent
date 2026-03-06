@@ -29,7 +29,7 @@ class FormalExaminer:
         """
         执行检查并返回结果字典
         """
-        logger.info("Running Formal Defect Checks...")
+        logger.info("开始执行形式缺陷检查")
         results = {}
         results["consistency"] = self._check_consistency()
         return results
