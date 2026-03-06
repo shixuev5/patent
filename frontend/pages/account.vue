@@ -23,23 +23,46 @@
           </div>
         </div>
 
-        <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1">
-          <button
-            type="button"
-            class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
-            @click="shiftMonth(-1)"
-          >
-            上月
-          </button>
-          <span class="min-w-20 text-center text-xs font-semibold text-slate-700">{{ monthDisplayLabel }}</span>
-          <button
-            type="button"
-            class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!canMoveNextMonth"
-            @click="shiftMonth(1)"
-          >
-            下月
-          </button>
+        <div class="flex max-w-xl flex-col items-end gap-2">
+          <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1">
+            <button
+              type="button"
+              class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+              @click="shiftMonth(-1)"
+            >
+              上月
+            </button>
+            <span class="min-w-20 text-center text-xs font-semibold text-slate-700">{{ monthDisplayLabel }}</span>
+            <button
+              type="button"
+              class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!canMoveNextMonth"
+              @click="shiftMonth(1)"
+            >
+              下月
+            </button>
+          </div>
+
+          <div class="flex w-full flex-wrap items-center justify-end gap-2 text-xs">
+            <span class="text-slate-500">本月目标</span>
+            <input
+              v-model="monthTargetInput"
+              type="number"
+              min="0"
+              :disabled="!isCurrentMonthSelection || savingTarget"
+              class="target-input"
+            />
+            <button
+              type="button"
+              class="target-save-btn"
+              :disabled="!isCurrentMonthSelection || targetInputInvalid || savingTarget"
+              @click="saveMonthTarget"
+            >
+              {{ savingTarget ? '保存中...' : '保存目标' }}
+            </button>
+          </div>
+          <p class="m-0 text-right text-xs text-slate-500">{{ targetHintText }}</p>
+          <p v-if="targetErrorMessage" class="m-0 text-right text-xs text-rose-600">{{ targetErrorMessage }}</p>
         </div>
       </div>
     </section>
@@ -75,7 +98,7 @@
           <article class="metric-card" :class="deltaToneClass">
             <p class="metric-label">当前进度</p>
             <p class="metric-value">{{ actualProgressLabel }}</p>
-            <p class="metric-desc">{{ monthTotalCreated }} / {{ projectedMonthTarget }} 个（预测）</p>
+            <p class="metric-desc">{{ monthTotalCreated }} / {{ monthTarget }} 个（目标）</p>
           </article>
 
           <article class="metric-card">
@@ -86,10 +109,10 @@
         </div>
 
         <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 class="text-base font-semibold text-slate-900">{{ dashboardTitle }}</h2>
-              <p class="text-xs text-slate-500">横轴第 1-4 周，纵轴累计任务数（含占比）</p>
+              <p class="text-xs text-slate-500">横轴为自然日（仅显示第1-4周标签），纵轴为累计任务数</p>
             </div>
             <div class="flex items-center gap-2">
               <p
@@ -98,15 +121,22 @@
               >
                 更新中...
               </p>
-              <p class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
-                累计 {{ monthTotalCreated }} 个
-              </p>
             </div>
           </div>
 
-          <div class="mt-4 grid gap-4 lg:grid-cols-[1.45fr_0.55fr]">
-            <div class="chart-wrap">
-              <svg :viewBox="`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`" class="h-64 w-full">
+          <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-start">
+            <div class="space-y-2">
+              <div class="rounded-xl border border-slate-200 bg-cyan-50/70 px-3 py-2">
+                <p class="m-0 text-sm text-slate-700">{{ smartSummary }}</p>
+              </div>
+
+              <div class="chart-wrap" @mouseleave="clearHoveredDay">
+              <svg
+                :key="chartRenderKey"
+                :viewBox="`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`"
+                preserveAspectRatio="xMidYMid meet"
+                class="h-[22rem] w-full"
+              >
                 <g>
                   <line
                     v-for="tick in yTicks"
@@ -117,6 +147,17 @@
                     :y2="tick.y"
                     stroke="#e2e8f0"
                     stroke-dasharray="2 3"
+                  />
+
+                  <line
+                    v-for="line in weekSeparators"
+                    :key="`week-sep-${line.label}`"
+                    :x1="line.x"
+                    :x2="line.x"
+                    :y1="PADDING.top"
+                    :y2="CHART_HEIGHT - PADDING.bottom"
+                    stroke="#cbd5e1"
+                    stroke-dasharray="4 4"
                   />
 
                   <text
@@ -131,60 +172,92 @@
                     {{ tick.value }}
                   </text>
 
-                  <path v-if="actualAreaPath" :d="actualAreaPath" fill="rgba(8, 145, 178, 0.18)" />
-                  <path v-if="actualLinePath" :d="actualLinePath" fill="none" stroke="#0891b2" stroke-width="2.5" />
-                  <path
-                    v-if="expectedLinePath"
-                    :d="expectedLinePath"
-                    fill="none"
-                    stroke="#f59e0b"
-                    stroke-width="2"
-                    stroke-dasharray="6 4"
+                  <path v-if="actualAreaPath" :d="actualAreaPath" class="chart-area" />
+                  <path v-if="actualLinePath" :d="actualLinePath" class="chart-line" />
+                  <path v-if="expectedLinePath" :d="expectedLinePath" class="chart-expected-line" />
+
+                  <line
+                    v-if="hoveredPoint"
+                    :x1="hoveredPoint.x"
+                    :x2="hoveredPoint.x"
+                    :y1="PADDING.top"
+                    :y2="CHART_HEIGHT - PADDING.bottom"
+                    stroke="#0891b2"
+                    stroke-width="1.2"
+                    stroke-dasharray="3 3"
                   />
 
                   <circle
                     v-for="point in actualPoints"
-                    :key="`point-${point.x}`"
+                    :key="`point-${point.day}`"
                     :cx="point.x"
                     :cy="point.y"
-                    r="4"
+                    r="3.5"
                     fill="#ffffff"
                     stroke="#0891b2"
                     stroke-width="2"
+                    class="chart-point"
                   />
 
+                  <circle
+                    v-for="point in actualPoints"
+                    :key="`hit-${point.day}`"
+                    :cx="point.x"
+                    :cy="point.y"
+                    r="8"
+                    fill="transparent"
+                    class="day-hit"
+                    @mouseenter="setHoveredDay(point.day)"
+                  />
+
+                  <circle
+                    v-if="hoveredPoint"
+                    :cx="hoveredPoint.x"
+                    :cy="hoveredPoint.y"
+                    r="5"
+                    fill="#0891b2"
+                    opacity="0.16"
+                  />
+
+                  <g v-if="hoveredPoint" :transform="`translate(${hoveredTooltipX}, ${PADDING.top + 6})`">
+                    <rect width="128" height="46" rx="8" fill="#0f172a" opacity="0.88" />
+                    <text x="8" y="17" font-size="10" fill="#dbeafe">{{ hoveredPoint.date }}</text>
+                    <text x="8" y="31" font-size="10" fill="#e2e8f0">{{ hoveredWeekLabel }}</text>
+                    <text x="8" y="43" font-size="11" fill="#f8fafc">累计 {{ hoveredPoint.value }} 个</text>
+                  </g>
+
                   <text
-                    v-for="(point, index) in actualPoints"
-                    :key="`x-label-${index}`"
-                    :x="point.x"
+                    v-for="label in weekLabels"
+                    :key="`x-label-${label.label}`"
+                    :x="label.x"
                     :y="CHART_HEIGHT - 10"
                     text-anchor="middle"
                     font-size="10"
                     fill="#64748b"
                   >
-                    {{ xLabels[index] }}
+                    {{ label.label }}
                   </text>
                 </g>
               </svg>
+              </div>
             </div>
 
-            <div class="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <div class="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                <p class="text-xs text-slate-500">友好提示</p>
-                <p class="mt-1 text-sm text-slate-700">{{ smartSummary }}</p>
-              </div>
-
+            <div class="space-y-1.5 rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
               <div
                 v-for="item in weeklyBreakdown"
                 :key="item.week"
-                class="rounded-xl border border-slate-200 bg-white px-3 py-2"
+                class="week-card"
+                :class="{ 'week-card-pending': !item.reached }"
               >
                 <div class="flex items-center justify-between text-xs text-slate-500">
                   <span>{{ item.week }}</span>
                   <span>{{ formatPercent(item.percent) }}</span>
                 </div>
                 <p class="mt-1 text-sm font-semibold text-slate-900">{{ item.totalCreated }} 个</p>
-                <p class="text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 研判 {{ item.replyCreated }}</p>
+                <div class="mt-1 h-1.5 rounded-full bg-slate-200">
+                  <div class="h-1.5 rounded-full bg-cyan-500 transition-all duration-500" :style="{ width: `${item.progressBarWidth}%` }" />
+                </div>
+                <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 研判 {{ item.replyCreated }}</p>
               </div>
             </div>
           </div>
@@ -224,8 +297,8 @@ import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type { AccountDashboard, AccountProfile, WeeklyActivityPoint } from '~/types/account'
 
-const CHART_WIDTH = 560
-const CHART_HEIGHT = 260
+const CHART_WIDTH = 760
+const CHART_HEIGHT = 320
 const PADDING = {
   top: 14,
   right: 14,
@@ -241,8 +314,12 @@ const now = new Date()
 const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const loading = ref(false)
 const refreshing = ref(false)
+const savingTarget = ref(false)
 const pageReady = ref(false)
 const errorMessage = ref('')
+const targetErrorMessage = ref('')
+const monthTargetInput = ref('0')
+const hoveredDay = ref<number | null>(null)
 const profile = ref<AccountProfile | null>(null)
 const dashboard = ref<AccountDashboard | null>(null)
 
@@ -272,14 +349,21 @@ const parsedYearMonth = computed(() => {
 
 const monthDisplayLabel = computed(() => `${parsedYearMonth.value.year}年${parsedYearMonth.value.month}月`)
 const canMoveNextMonth = computed(() => selectedMonth.value < currentMonthKey)
+const isCurrentMonthSelection = computed(() => selectedMonth.value === currentMonthKey)
 
-const weeklySeries = computed<WeeklyActivityPoint[]>(() => dashboard.value?.weeklySeries ?? [])
-const monthTotalCreated = computed(() => weeklySeries.value.reduce((sum, item) => sum + item.totalCreated, 0))
-
-const projectedMonthTarget = computed(() => {
-  const baseline = Math.round((dashboard.value?.workWeek.totalCount ?? 0) * 4)
-  return Math.max(monthTotalCreated.value, baseline)
+const monthDays = computed(() => new Date(parsedYearMonth.value.year, parsedYearMonth.value.month, 0).getDate())
+const visibleDayCount = computed(() => {
+  if (isCurrentMonthSelection.value) return Math.min(monthDays.value, now.getDate())
+  return monthDays.value
 })
+
+const dailySeries = computed(() => dashboard.value?.dailySeries ?? [])
+const visibleDailySeries = computed(() => dailySeries.value.slice(0, visibleDayCount.value))
+const weeklySeries = computed<WeeklyActivityPoint[]>(() => dashboard.value?.weeklySeries ?? [])
+
+const monthTotalCreated = computed(() => dailySeries.value.reduce((sum, item) => sum + item.totalCreated, 0))
+const monthTarget = computed(() => Math.max(0, Number(dashboard.value?.monthTarget ?? 0)))
+const monthTargetSource = computed(() => dashboard.value?.monthTargetSource ?? 'empty')
 
 const elapsedRatio = computed(() => {
   if (!dashboard.value) return 0
@@ -292,66 +376,75 @@ const elapsedRatio = computed(() => {
   if (targetYear < currentYear || (targetYear === currentYear && targetMonth < currentMonth)) return 1
   if (targetYear > currentYear || (targetYear === currentYear && targetMonth > currentMonth)) return 0
 
-  const monthDays = new Date(targetYear, targetMonth, 0).getDate()
-  return Math.min(1, Math.max(0, now.getDate() / monthDays))
+  return Math.min(1, Math.max(0, now.getDate() / monthDays.value))
 })
 
 const actualProgressPercent = computed(() => {
-  if (!projectedMonthTarget.value) return 0
-  return (monthTotalCreated.value / projectedMonthTarget.value) * 100
+  if (!monthTarget.value) return 0
+  return (monthTotalCreated.value / monthTarget.value) * 100
 })
 
-const expectedProgressPercent = computed(() => elapsedRatio.value * 100)
+const expectedProgressPercent = computed(() => {
+  if (!monthTarget.value) return 0
+  return elapsedRatio.value * 100
+})
+
 const progressDeltaPercent = computed(() => actualProgressPercent.value - expectedProgressPercent.value)
-
-const xLabels = computed(() => {
-  if (weeklySeries.value.length > 0) return weeklySeries.value.map((item) => item.week)
-  return ['第1周', '第2周', '第3周', '第4周']
-})
-
-const expectedWeeklyValues = computed(() => {
-  const weeks = xLabels.value.length
-  if (weeks <= 0 || projectedMonthTarget.value <= 0) return Array.from({ length: weeks }).fill(0)
-  return Array.from({ length: weeks }, (_item, index) => (projectedMonthTarget.value * (index + 1)) / weeks)
-})
-
-const cumulativeActualValues = computed(() => {
-  const values = weeklySeries.value.length > 0
-    ? weeklySeries.value.map((item) => item.totalCreated)
-    : Array.from({ length: xLabels.value.length }).fill(0)
-  let running = 0
-  return values.map((value) => {
-    running += value
-    return running
-  })
-})
-
-const chartMaxY = computed(() => {
-  return Math.max(4, ...cumulativeActualValues.value, ...expectedWeeklyValues.value.map((item) => Math.ceil(item)))
-})
 
 const plotWidth = computed(() => CHART_WIDTH - PADDING.left - PADDING.right)
 const plotHeight = computed(() => CHART_HEIGHT - PADDING.top - PADDING.bottom)
 
+const xByDay = (day: number): number => {
+  if (monthDays.value <= 1) return PADDING.left + plotWidth.value / 2
+  return PADDING.left + ((day - 1) * plotWidth.value) / (monthDays.value - 1)
+}
+
+const actualCumulativeValues = computed(() => {
+  let running = 0
+  return visibleDailySeries.value.map((item) => {
+    running += item.totalCreated
+    return running
+  })
+})
+
+const expectedCumulativeValues = computed(() => {
+  if (monthTarget.value <= 0) return Array.from({ length: visibleDayCount.value }).fill(0)
+  return Array.from({ length: visibleDayCount.value }, (_item, index) => {
+    const day = index + 1
+    return (monthTarget.value * day) / Math.max(1, monthDays.value)
+  })
+})
+
+const chartMaxY = computed(() => {
+  return Math.max(
+    4,
+    monthTarget.value,
+    ...actualCumulativeValues.value,
+    ...expectedCumulativeValues.value.map((item) => Math.ceil(item)),
+  )
+})
+
 const actualPoints = computed(() => {
   const maxY = chartMaxY.value || 1
-  return cumulativeActualValues.value.map((value, index) => {
-    const x = xLabels.value.length === 1
-      ? PADDING.left + plotWidth.value / 2
-      : PADDING.left + (plotWidth.value * index) / (xLabels.value.length - 1)
+  return actualCumulativeValues.value.map((value, index) => {
+    const day = index + 1
     const y = PADDING.top + ((maxY - value) / maxY) * plotHeight.value
-    return { x, y, value }
+    return {
+      day,
+      x: xByDay(day),
+      y,
+      value,
+      date: visibleDailySeries.value[index]?.date || '',
+    }
   })
 })
 
 const expectedPoints = computed(() => {
   const maxY = chartMaxY.value || 1
-  return expectedWeeklyValues.value.map((value, index) => {
-    const x = xLabels.value.length === 1
-      ? PADDING.left + plotWidth.value / 2
-      : PADDING.left + (plotWidth.value * index) / (xLabels.value.length - 1)
+  return expectedCumulativeValues.value.map((value, index) => {
+    const day = index + 1
     const y = PADDING.top + ((maxY - value) / maxY) * plotHeight.value
-    return { x, y }
+    return { day, x: xByDay(day), y }
   })
 })
 
@@ -368,14 +461,14 @@ const actualAreaPath = computed(() => {
   const first = actualPoints.value[0]
   const last = actualPoints.value[actualPoints.value.length - 1]
   const linePart = actualPoints.value
-    .map((point, index) => `${index === 0 ? 'L' : 'L'} ${point.x} ${point.y}`)
+    .map((point) => `L ${point.x} ${point.y}`)
     .join(' ')
 
   return `M ${first.x} ${baseY} ${linePart} L ${last.x} ${baseY} Z`
 })
 
 const expectedLinePath = computed(() => {
-  if (expectedPoints.value.length === 0) return ''
+  if (expectedPoints.value.length === 0 || monthTarget.value <= 0) return ''
   return expectedPoints.value
     .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
     .join(' ')
@@ -391,18 +484,104 @@ const yTicks = computed(() => {
   })
 })
 
+const weekRanges = computed(() => {
+  return [
+    { label: '第1周', start: 1, end: Math.min(7, monthDays.value) },
+    { label: '第2周', start: 8, end: Math.min(14, monthDays.value) },
+    { label: '第3周', start: 15, end: Math.min(21, monthDays.value) },
+    { label: '第4周', start: 22, end: monthDays.value },
+  ]
+})
+
+const weekSeparators = computed(() => {
+  return weekRanges.value
+    .slice(1)
+    .filter((item) => item.start <= monthDays.value)
+    .map((item) => ({
+      label: item.label,
+      x: xByDay(item.start),
+    }))
+})
+
+const weekLabels = computed(() => {
+  return weekRanges.value.map((item) => {
+    const middle = item.start > item.end ? item.end : (item.start + item.end) / 2
+    return {
+      label: item.label,
+      x: xByDay(Math.max(1, middle)),
+    }
+  })
+})
+
+const weekDayCounts = computed(() => {
+  return weekRanges.value.map((item) => {
+    if (item.start > monthDays.value || item.end < item.start) return 0
+    return item.end - item.start + 1
+  })
+})
+
+const weeklyTargets = computed(() => {
+  if (monthTarget.value <= 0) return [0, 0, 0, 0]
+
+  const totalDays = Math.max(1, monthDays.value)
+  const rawTargets = weekDayCounts.value.map((days) => (monthTarget.value * days) / totalDays)
+  const floorTargets = rawTargets.map((value) => Math.floor(value))
+  let remainder = monthTarget.value - floorTargets.reduce((sum, item) => sum + item, 0)
+
+  const fractions = rawTargets
+    .map((value, index) => ({
+      index,
+      frac: value - Math.floor(value),
+    }))
+    .sort((a, b) => b.frac - a.frac)
+
+  for (let i = 0; i < fractions.length && remainder > 0; i += 1) {
+    floorTargets[fractions[i].index] += 1
+    remainder -= 1
+  }
+
+  return floorTargets
+})
+
+const currentWeekIndex = computed(() => {
+  const selectedYear = parsedYearMonth.value.year
+  const selectedMonthNum = parsedYearMonth.value.month
+  const currentYear = now.getFullYear()
+  const currentMonthNum = now.getMonth() + 1
+
+  if (selectedYear < currentYear || (selectedYear === currentYear && selectedMonthNum < currentMonthNum)) {
+    return 3
+  }
+  if (selectedYear > currentYear || (selectedYear === currentYear && selectedMonthNum > currentMonthNum)) {
+    return -1
+  }
+  return Math.min(3, Math.floor((now.getDate() - 1) / 7))
+})
+
 const weeklyBreakdown = computed(() => {
-  const projected = Math.max(1, projectedMonthTarget.value)
-  const weeklyTarget = Math.max(0, Math.round(projected / Math.max(1, xLabels.value.length)))
-  return (dashboard.value?.weeklySeries ?? []).map((item) => ({
-    ...item,
-    percent: (item.totalCreated / projected) * 100,
-    targetCount: weeklyTarget,
+  const defaultWeeks = Array.from({ length: 4 }, (_item, index) => ({
+    week: `第${index + 1}周`,
+    analysisCreated: 0,
+    replyCreated: 0,
+    totalCreated: 0,
   }))
+
+  return defaultWeeks.map((fallback, index) => {
+    const item = weeklySeries.value[index] || fallback
+    const targetCount = weeklyTargets.value[index] ?? 0
+    const percent = targetCount > 0 ? (item.totalCreated / targetCount) * 100 : 0
+    return {
+      ...item,
+      targetCount,
+      percent,
+      progressBarWidth: Math.max(0, Math.min(100, percent)),
+      reached: index <= currentWeekIndex.value,
+    }
+  })
 })
 
 const maxDailyValue = computed(() => {
-  const values = (dashboard.value?.dailySeries ?? []).map((item) => item.totalCreated)
+  const values = dailySeries.value.map((item) => item.totalCreated)
   return Math.max(1, ...values)
 })
 
@@ -430,31 +609,82 @@ const dashboardTitle = computed(() => {
   return `${dashboard.value.year} 年 ${dashboard.value.month} 月创建趋势`
 })
 
+const targetHintText = computed(() => {
+  if (!isCurrentMonthSelection.value) return '当前查看历史月份，目标仅可在当月修改。'
+  if (monthTargetSource.value === 'carried') return '本月目标已自动沿用最近一次设置值，需要的话可直接改。'
+  if (monthTargetSource.value === 'empty') return '还没有任何目标，先定一个小目标会更容易跟进节奏。'
+  return '已设置本月目标，后续进度和周卡片会按这个值实时更新。'
+})
+
 const actualProgressLabel = computed(() => formatPercent(actualProgressPercent.value))
 const expectedProgressLabel = computed(() => formatPercent(expectedProgressPercent.value))
+
 const progressDeltaLabel = computed(() => {
   const sign = progressDeltaPercent.value >= 0 ? '+' : ''
   return `${sign}${formatPercent(progressDeltaPercent.value)}`
 })
 
 const deltaToneClass = computed(() => {
+  if (monthTarget.value <= 0) return ''
   if (progressDeltaPercent.value >= 8) return 'metric-card-good'
   if (progressDeltaPercent.value <= -8) return 'metric-card-warn'
   return ''
 })
 
 const smartSummary = computed(() => {
-  const base = dashboard.value?.summaryText || '当前暂无可用统计数据。'
+  if (monthTarget.value <= 0) {
+    return '这个月还没立下目标，先定一个你觉得“刚好有挑战”的数字，我们再一起盯节奏。'
+  }
+  const expectedCount = Math.round((monthTarget.value * elapsedRatio.value) || 0)
+  const deltaCount = monthTotalCreated.value - expectedCount
+  const absDeltaCount = Math.abs(deltaCount)
+  const deltaPrefix = deltaCount >= 0 ? '领先' : '落后'
   if (progressDeltaPercent.value >= 8) {
-    return `${base} 当前节奏快于预期，建议优先处理高价值任务。`
+    return `你这个月推进得很稳，当前已比节奏${deltaPrefix} ${absDeltaCount} 个，继续保持这个手感就很好。`
   }
   if (progressDeltaPercent.value <= -8) {
-    return `${base} 当前节奏低于预期，可在本周补齐关键任务。`
+    return `最近节奏稍慢一点，当前比计划${deltaPrefix} ${absDeltaCount} 个；这周抓 1-2 个关键任务就能追上来。`
   }
-  return `${base} 当前与预期基本一致，可保持当前节奏。`
+  if (monthTargetSource.value === 'carried') {
+    return '本月沿用了之前的目标，目前进度基本贴着计划线，继续按现在的节奏推进就可以。'
+  }
+  return '当前进度和目标几乎同步，整体状态很平稳，照这个节奏走就行。'
 })
 
+const targetInputInvalid = computed(() => {
+  const raw = monthTargetInput.value.trim()
+  if (!raw) return true
+  const value = Number(raw)
+  return !Number.isInteger(value) || value < 0
+})
+
+const hoveredPoint = computed(() => {
+  if (hoveredDay.value == null) return null
+  return actualPoints.value.find((item) => item.day === hoveredDay.value) || null
+})
+
+const hoveredTooltipX = computed(() => {
+  if (!hoveredPoint.value) return PADDING.left
+  const tooltipWidth = 128
+  const minX = PADDING.left + 4
+  const maxX = CHART_WIDTH - PADDING.right - tooltipWidth - 4
+  return Math.max(minX, Math.min(maxX, hoveredPoint.value.x - tooltipWidth / 2))
+})
+
+const hoveredWeekLabel = computed(() => {
+  if (!hoveredDay.value) return ''
+  const week = Math.min(4, Math.floor((hoveredDay.value - 1) / 7) + 1)
+  return `第${week}周`
+})
+
+const chartRenderKey = computed(() => `${selectedMonth.value}-${visibleDayCount.value}-${monthTotalCreated.value}-${monthTarget.value}`)
+
 const formatPercent = (value: number): string => `${Math.round(value)}%`
+
+const dailyBarHeight = (value: number): number => {
+  const ratio = value / maxDailyValue.value
+  return Math.max(6, Math.round(ratio * 100))
+}
 
 const shiftMonth = (delta: number) => {
   const { year, month } = parsedYearMonth.value
@@ -464,9 +694,12 @@ const shiftMonth = (delta: number) => {
   selectedMonth.value = key
 }
 
-const dailyBarHeight = (value: number): number => {
-  const ratio = value / maxDailyValue.value
-  return Math.max(6, Math.round(ratio * 100))
+const setHoveredDay = (day: number) => {
+  hoveredDay.value = day
+}
+
+const clearHoveredDay = () => {
+  hoveredDay.value = null
 }
 
 const getAuthToken = async (): Promise<string> => {
@@ -504,6 +737,45 @@ const fetchDashboard = async (token: string) => {
   })
   if (!response.ok) throw new Error(await toApiError(response))
   dashboard.value = await response.json()
+  monthTargetInput.value = String(Math.max(0, Number(dashboard.value.monthTarget || 0)))
+}
+
+const saveMonthTarget = async () => {
+  targetErrorMessage.value = ''
+  if (!isCurrentMonthSelection.value) {
+    targetErrorMessage.value = '仅支持设置当前月目标。'
+    return
+  }
+
+  const nextTarget = Number(monthTargetInput.value)
+  if (!Number.isInteger(nextTarget) || nextTarget < 0) {
+    targetErrorMessage.value = '目标必须是大于等于 0 的整数。'
+    return
+  }
+
+  savingTarget.value = true
+  try {
+    const token = await getAuthToken()
+    const { year, month } = parsedYearMonth.value
+    const response = await fetch(`${config.public.apiBaseUrl}/api/account/month-target`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        year,
+        month,
+        targetCount: nextTarget,
+      }),
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    await fetchDashboard(token)
+  } catch (error) {
+    targetErrorMessage.value = error instanceof Error ? error.message : '保存目标失败。'
+  } finally {
+    savingTarget.value = false
+  }
 }
 
 const loadData = async (loadProfile: boolean) => {
@@ -526,6 +798,8 @@ const loadData = async (loadProfile: boolean) => {
 }
 
 watch(selectedMonth, async () => {
+  hoveredDay.value = null
+  targetErrorMessage.value = ''
   if (!pageReady.value) return
   await loadData(false)
 })
@@ -582,12 +856,92 @@ onMounted(async () => {
   color: #475569;
 }
 
+.target-input {
+  width: 6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.55rem;
+  background: #ffffff;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  color: #0f172a;
+}
+
+.target-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.target-save-btn {
+  border-radius: 0.55rem;
+  border: 1px solid #0891b2;
+  background: #06b6d4;
+  padding: 0.24rem 0.65rem;
+  font-size: 0.75rem;
+  color: #ecfeff;
+  transition: all 0.18s ease;
+}
+
+.target-save-btn:hover:not(:disabled) {
+  background: #0891b2;
+}
+
+.target-save-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .chart-wrap {
   overflow: hidden;
   border-radius: 1rem;
   border: 1px solid #e2e8f0;
   background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
   padding: 0.4rem;
+}
+
+.chart-area {
+  fill: rgba(8, 145, 178, 0.12);
+  animation: fade-in 400ms ease-out;
+}
+
+.chart-line {
+  fill: none;
+  stroke: #0891b2;
+  stroke-width: 2.5;
+  stroke-dasharray: 1200;
+  stroke-dashoffset: 1200;
+  animation: draw-line 800ms ease-out forwards;
+}
+
+.chart-expected-line {
+  fill: none;
+  stroke: #f59e0b;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  opacity: 0;
+  animation: fade-in 550ms ease-out 120ms forwards;
+}
+
+.chart-point {
+  opacity: 0;
+  animation: fade-in 450ms ease-out 220ms forwards;
+}
+
+.day-hit {
+  cursor: pointer;
+}
+
+.week-card {
+  border-radius: 0.8rem;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 0.45rem 0.55rem;
+  transition: all 0.2s ease;
+}
+
+.week-card-pending {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  opacity: 0.5;
 }
 
 .daily-strip {
@@ -619,5 +973,22 @@ onMounted(async () => {
   text-align: center;
   font-size: 0.65rem;
   color: #64748b;
+}
+
+@keyframes draw-line {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>

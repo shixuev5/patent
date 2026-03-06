@@ -53,6 +53,16 @@ class User:
 
 
 @dataclass
+class AccountMonthTarget:
+    owner_id: str
+    year: int
+    month: int
+    target_count: int
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
 class Task:
     id: str
     owner_id: Optional[str] = None
