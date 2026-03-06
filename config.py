@@ -79,6 +79,11 @@ class Settings:
     RETRIEVAL_MILVUS_URI = os.getenv("RETRIEVAL_MILVUS_URI", str(DATA_DIR / "retrieval_milvus.db"))
     RETRIEVAL_SESSION_TTL_MINUTES = int(os.getenv("RETRIEVAL_SESSION_TTL_MINUTES", "60"))
 
+    # --- Authing ---
+    AUTHING_APP_ID = os.getenv("AUTHING_APP_ID", "").strip()
+    AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
+    AUTHING_DOMAIN = os.getenv("AUTHING_DOMAIN", "").strip()
+
     def get_project_paths(self, workspace_id: str, artifact_name: str = ""):
         """
         根据工作区标识生成标准化路径。

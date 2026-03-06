@@ -177,6 +177,8 @@ npm run deploy
 
 - `POST /api/auth/guest`
   - 为前端创建匿名会话令牌。
+- `POST /api/auth/authing`
+  - 前端提交 Authing `id_token`，后端完成验签并签发业务会话令牌。
 - 受保护接口：
   - `POST /api/tasks`
   - `GET /api/tasks/{task_id}`
@@ -194,6 +196,9 @@ npm run deploy
 新增环境变量：
 - `AUTH_SECRET`（生产环境必填）
 - `AUTH_TOKEN_TTL_DAYS`（默认：`30`）
+- `AUTHING_APP_ID`（启用 Authing 时必填）
+- `AUTHING_APP_SECRET`（当 token 使用 `HS256` 验签时必填）
+- `AUTHING_DOMAIN`（用于推导 issuer 和 JWKS 地址）
 - `MAX_DAILY_PATENT_ANALYSIS`（默认：`3`）
 - `MAX_DAILY_OFFICE_ACTION_REPLY`（默认：`3`）
 - `APP_TZ_OFFSET_HOURS`（默认：`8`）

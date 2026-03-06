@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from loguru import logger
 
-from .models import Task, TaskStatus, TaskType
+from .models import Task, TaskStatus, TaskType, User
 
 
 class D1TaskStorage:
@@ -29,6 +29,19 @@ class D1TaskStorage:
             ("completed_at", "completed_at TEXT"),
             ("deleted_at", "deleted_at TEXT"),
             ("metadata", "metadata TEXT"),
+        ],
+        "users": [
+            ("owner_id", "owner_id TEXT PRIMARY KEY"),
+            ("authing_sub", "authing_sub TEXT NOT NULL UNIQUE"),
+            ("name", "name TEXT"),
+            ("nickname", "nickname TEXT"),
+            ("email", "email TEXT"),
+            ("phone", "phone TEXT"),
+            ("picture", "picture TEXT"),
+            ("raw_profile", "raw_profile TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+            ("last_login_at", "last_login_at TEXT NOT NULL"),
         ],
     }
 
@@ -56,11 +69,27 @@ class D1TaskStorage:
         first_completed_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS users (
+        owner_id TEXT PRIMARY KEY,
+        authing_sub TEXT NOT NULL UNIQUE,
+        name TEXT,
+        nickname TEXT,
+        email TEXT,
+        phone TEXT,
+        picture TEXT,
+        raw_profile TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_login_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
     CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
+    CREATE INDEX IF NOT EXISTS idx_users_authing_sub ON users(authing_sub);
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     """
 
     DROP_LEGACY_SQL = """
@@ -140,10 +169,11 @@ class D1TaskStorage:
             sql = statement.strip()
             if sql:
                 self._request(sql)
-        existing_columns = self._get_existing_columns("tasks")
-        for column_name, ddl in self.REQUIRED_COLUMNS["tasks"]:
-            if column_name not in existing_columns:
-                self._request(f"ALTER TABLE tasks ADD COLUMN {ddl}")
+        for table_name, required_columns in self.REQUIRED_COLUMNS.items():
+            existing_columns = self._get_existing_columns(table_name)
+            for column_name, ddl in required_columns:
+                if column_name not in existing_columns:
+                    self._request(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
         self._request(
             "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
             [TaskType.PATENT_ANALYSIS.value],
@@ -215,6 +245,21 @@ class D1TaskStorage:
             completed_at=datetime.fromisoformat(row["completed_at"]) if row.get("completed_at") else None,
             deleted_at=datetime.fromisoformat(row["deleted_at"]) if row.get("deleted_at") else None,
             metadata=self._parse_metadata(row.get("metadata")),
+        )
+
+    def _row_to_user(self, row: Dict[str, Any]) -> User:
+        return User(
+            owner_id=row["owner_id"],
+            authing_sub=row["authing_sub"],
+            name=row.get("name"),
+            nickname=row.get("nickname"),
+            email=row.get("email"),
+            phone=row.get("phone"),
+            picture=row.get("picture"),
+            raw_profile=self._parse_metadata(row.get("raw_profile")),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            last_login_at=datetime.fromisoformat(row["last_login_at"]),
         )
 
     def create_task(self, task: Task) -> Task:
@@ -436,3 +481,46 @@ class D1TaskStorage:
             self._request("VACUUM")
         except Exception as exc:
             logger.warning(f"D1 VACUUM skipped: {exc}")
+
+    def upsert_authing_user(self, user: User) -> User:
+        now_iso = datetime.now().isoformat()
+        created_at_iso = user.created_at.isoformat() if user.created_at else now_iso
+        raw_profile = json.dumps(user.raw_profile, ensure_ascii=False) if user.raw_profile else None
+
+        self._request(
+            """
+            INSERT INTO users (
+                owner_id, authing_sub, name, nickname, email, phone, picture,
+                raw_profile, created_at, updated_at, last_login_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_id) DO UPDATE SET
+                authing_sub = excluded.authing_sub,
+                name = excluded.name,
+                nickname = excluded.nickname,
+                email = excluded.email,
+                phone = excluded.phone,
+                picture = excluded.picture,
+                raw_profile = excluded.raw_profile,
+                updated_at = excluded.updated_at,
+                last_login_at = excluded.last_login_at
+            """,
+            [
+                user.owner_id,
+                user.authing_sub,
+                user.name,
+                user.nickname,
+                user.email,
+                user.phone,
+                user.picture,
+                raw_profile,
+                created_at_iso,
+                now_iso,
+                now_iso,
+            ],
+        )
+        row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [user.owner_id])
+        return self._row_to_user(row) if row else user
+
+    def get_user_by_owner_id(self, owner_id: str) -> Optional[User]:
+        row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
+        return self._row_to_user(row) if row else None

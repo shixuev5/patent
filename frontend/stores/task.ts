@@ -1,10 +1,13 @@
 import { defineStore } from 'pinia'
+import { useAuthStore } from '~/stores/auth'
 import type { CreateTaskInput, Task, TaskProgress, TaskType } from '~/types/task'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
 const STORAGE_KEY = 'patent_tasks'
 const AUTH_TOKEN_KEY = 'patent_auth_token'
 const AUTH_USER_ID_KEY = 'patent_auth_user_id'
+const AUTH_MODE_KEY = 'patent_auth_mode'
+type AuthMode = 'guest' | 'authing'
 
 const normalizeTaskType = (taskType?: string): TaskType => {
   return taskType === 'office_action_reply' ? 'office_action_reply' : 'patent_analysis'
@@ -29,6 +32,7 @@ export const useTaskStore = defineStore('tasks', {
     loading: false,
     authToken: '' as string,
     userId: '' as string,
+    authMode: 'guest' as AuthMode,
     progressStreams: {} as Record<string, EventSource>,
     progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
@@ -192,21 +196,31 @@ export const useTaskStore = defineStore('tasks', {
       if (!process.client) return
       this.authToken = localStorage.getItem(AUTH_TOKEN_KEY) || ''
       this.userId = localStorage.getItem(AUTH_USER_ID_KEY) || ''
+      const mode = localStorage.getItem(AUTH_MODE_KEY)
+      this.authMode = mode === 'authing' ? 'authing' : 'guest'
     },
 
-    saveAuthToStorage(token: string, userId: string) {
+    clearAuthFromStorage() {
+      this.authToken = ''
+      this.userId = ''
+      this.authMode = 'guest'
+      if (!process.client) return
+      localStorage.removeItem(AUTH_TOKEN_KEY)
+      localStorage.removeItem(AUTH_USER_ID_KEY)
+      localStorage.removeItem(AUTH_MODE_KEY)
+    },
+
+    saveAuthToStorage(token: string, userId: string, mode: AuthMode) {
       this.authToken = token
       this.userId = userId
+      this.authMode = mode
       if (!process.client) return
       localStorage.setItem(AUTH_TOKEN_KEY, token)
       localStorage.setItem(AUTH_USER_ID_KEY, userId)
+      localStorage.setItem(AUTH_MODE_KEY, mode)
     },
 
-    async ensureAuth(): Promise<boolean> {
-      if (this.authToken) return true
-      this.loadAuthFromStorage()
-      if (this.authToken) return true
-
+    async createGuestAuth(): Promise<boolean> {
       const config = useRuntimeConfig()
       try {
         const response = await fetch(`${config.public.apiBaseUrl}/api/auth/guest`, {
@@ -215,12 +229,62 @@ export const useTaskStore = defineStore('tasks', {
         if (!response.ok) return false
         const data = await response.json()
         if (!data?.token || !data?.userId) return false
-        this.saveAuthToStorage(data.token, data.userId)
+        this.saveAuthToStorage(data.token, data.userId, 'guest')
         return true
       } catch (error) {
         console.error('创建匿名身份失败：', error)
         return false
       }
+    },
+
+    async exchangeAuthingAuth(idToken: string): Promise<boolean> {
+      const config = useRuntimeConfig()
+      try {
+        const response = await fetch(`${config.public.apiBaseUrl}/api/auth/authing`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ idToken }),
+        })
+        if (!response.ok) {
+          const errorText = await this.parseApiError(response)
+          console.error('Authing token 交换失败：', errorText)
+          return false
+        }
+        const data = await response.json()
+        if (!data?.token || !data?.userId) return false
+        this.saveAuthToStorage(data.token, data.userId, 'authing')
+        return true
+      } catch (error) {
+        console.error('Authing token 交换异常：', error)
+        return false
+      }
+    },
+
+    async ensureAuth(): Promise<boolean> {
+      this.loadAuthFromStorage()
+      const config = useRuntimeConfig()
+      const hasAuthingEnabled = String(config.public.authingAppId || '').trim().length > 0
+
+      if (hasAuthingEnabled) {
+        const authStore = useAuthStore()
+        await authStore.ensureInitialized()
+
+        const idToken = authStore.idToken
+        const isAuthingLoggedIn = authStore.isLoggedIn && !!idToken
+
+        if (isAuthingLoggedIn) {
+          if (this.authToken && this.authMode === 'authing') return true
+          this.clearAuthFromStorage()
+          return await this.exchangeAuthingAuth(idToken)
+        }
+      }
+
+      if (this.authToken && this.authMode === 'guest') return true
+
+      this.clearAuthFromStorage()
+      return await this.createGuestAuth()
     },
 
     async parseApiError(response: Response): Promise<string> {
