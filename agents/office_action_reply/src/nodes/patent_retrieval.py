@@ -81,7 +81,7 @@ class PatentRetrievalNode:
             markdown_content = f.read()
 
         logger.info(f"开始提取专利结构化数据")
-        structured_data = extract_structured_data(markdown_content)
+        structured_data = extract_structured_data(markdown_content, method="hybrid")
         logger.success(f"专利结构化数据提取成功")
 
         return structured_data

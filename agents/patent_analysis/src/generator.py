@@ -53,7 +53,7 @@ class ContentGenerator:
         Flow: [Domain/Problem] -> [Solution/Title] -> [Features] -> [Verification] -> [Visuals]
         """
         logger.info(
-            f"开始生成专利分析报告: {self.biblio.get('application_number', 'Unknown')}"
+            f"开始生成专利分析报告: {self.biblio.get('application_number', '未知')}"
         )
 
         try:
@@ -685,7 +685,7 @@ class ContentGenerator:
     def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """
         Step 3: 图解生成。
-        遍历 drawings，为每一张图生成：AI解说 + 结构化部件表。
+        按图号聚合 drawings：同图号多图只生成一份解说文本。
         """
         results = []
 
@@ -699,32 +699,53 @@ class ContentGenerator:
             all_parts_summary.append(f"{pid}: {name}")
         global_parts_str = "\n".join(all_parts_summary)
 
+        grouped_drawings: Dict[str, List[Dict[str, Any]]] = {}
         for drawing in self.drawings:
-            file_path = drawing.get("file_path")
-            label = drawing.get("figure_label", "")  # 如 "图1"
-            caption = drawing.get("caption", "")  # 如 "系统流程图"
+            if not isinstance(drawing, dict):
+                continue
+            label = str(drawing.get("figure_label", "")).strip()
+            if not label:
+                continue
+            grouped_drawings.setdefault(label, []).append(drawing)
 
-            # 处理图片路径
-            image_abs_path = None
-            if file_path:
-                # 提取文件名 (忽略原始的 images/ 前缀)
+        for label, grouped_items in grouped_drawings.items():
+            caption = ""
+            file_paths: List[str] = []
+            seen_paths = set()
+
+            for item in grouped_items:
+                item_caption = str(item.get("caption", "")).strip()
+                if item_caption and not caption:
+                    caption = item_caption
+
+                path = str(item.get("file_path", "")).strip()
+                if not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                file_paths.append(path)
+
+            # 处理图片路径（同图号可对应多图）
+            image_abs_paths: List[str] = []
+            display_image_paths: List[str] = []
+            for file_path in file_paths:
                 filename = os.path.basename(file_path)
-                # 拼接标注图片目录的绝对路径
-                target_path = self.annotated_dir / filename
+                if not filename:
+                    continue
 
+                display_image_paths.append(file_path.replace("images", "annotated_images"))
+                target_path = self.annotated_dir / filename
                 if target_path.exists():
-                    image_abs_path = str(target_path)
+                    image_abs_paths.append(str(target_path))
                 else:
                     logger.warning(
-                        f"Annotated image not found: {target_path}, skipping vision analysis."
+                        f"未找到标注图文件，跳过该图片: {target_path}"
                     )
 
-            # 匹配图片 OCR 识别部件
+            # 匹配图片 OCR 识别部件（合并同图号下所有图片的部件）
             part_ids = []
-            if file_path:
-                # 提取文件名进行匹配 (忽略路径差异)
+            for file_path in file_paths:
                 filename = os.path.basename(file_path)
-                part_ids = self.image_parts.get(filename, [])
+                part_ids.extend(self.image_parts.get(filename, []))
 
             # 构建当前图片的局部部件上下文 (用于识别图里有什么)
             local_parts_context_str = ""
@@ -826,13 +847,13 @@ class ContentGenerator:
                 global_parts_str,
                 related_text,
                 global_context,
-                image_abs_path,
+                image_abs_paths,
             )
 
             # 4. 存入结果
             results.append(
                 {
-                    "image_path": file_path.replace("images", "annotated_images"),
+                    "image_paths": display_image_paths,
                     "image_title": f"{label} {caption}".strip(),
                     "image_explanation": image_explanation,
                     "parts_info": parts_table_data,  # 结构化部件数据（可能为空列表）
@@ -849,7 +870,7 @@ class ContentGenerator:
         global_parts: str,
         text_context: str,
         global_context: Dict,
-        image_path: str,
+        image_paths: List[str],
     ) -> str:
         """
         生成单张图片的“看图说话”
@@ -935,16 +956,38 @@ class ContentGenerator:
         """
 
         try:
-            logger.info(
-                f"正在进行视觉思考分析: {label} ({os.path.basename(image_path)})"
-            )
+            if not image_paths:
+                raise ValueError("image_paths is empty")
 
-            content = self.llm_service.analyze_image_with_thinking(
-                image_path=image_path,
+            basenames = ", ".join(os.path.basename(path) for path in image_paths)
+            logger.info(f"正在进行视觉思考分析: {label} ({basenames})")
+
+            if len(image_paths) == 1:
+                content = self.llm_service.analyze_image_with_thinking(
+                    image_path=image_paths[0],
+                    system_prompt=system_prompt,
+                    user_prompt=user_content,
+                )
+                return content.strip()
+
+            response = self.llm_service.analyze_images_json_with_thinking(
+                image_paths=image_paths,
                 system_prompt=system_prompt,
-                user_prompt=user_content,
+                user_prompt=(
+                    user_content
+                    + "\n\n请将多图合并解说后，严格输出 JSON："
+                    + '{"image_explanation":"..."}'
+                ),
+                model=Settings.VLM_MODEL,
+                temperature=0.2,
             )
-            return content.strip()
+            content = str(
+                response.get("image_explanation") or response.get("explanation") or ""
+            ).strip()
+            if content:
+                return content
+            raise ValueError("empty image_explanation from multi-image response")
         except Exception as e:
             logger.warning(f"图片解说生成失败 {label}: {e}")
-            return f"图{label}展示了{caption}的示意图。{local_parts.replace('- ', '')[:50]}..."
+            final_label = label if str(label).startswith("图") else f"图{label}"
+            return f"{final_label}展示了{caption}的示意图。{local_parts.replace('- ', '')[:50]}..."
