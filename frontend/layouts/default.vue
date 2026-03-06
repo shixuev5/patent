@@ -13,12 +13,19 @@
         <nav class="hidden items-center gap-1 md:flex">
           <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">首页</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">AI 任务</NuxtLink>
+          <NuxtLink to="/account" :class="navClass(route.path.startsWith('/account'))">个人空间</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
         </nav>
 
         <div class="flex items-center gap-2">
           <NuxtLink to="/tasks" class="rounded-full bg-cyan-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700">
             进入 AI 任务
+          </NuxtLink>
+          <NuxtLink
+            to="/account"
+            class="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            个人空间
           </NuxtLink>
           <button
             v-if="hasAuthingEnabled && authStore.isLoggedIn"

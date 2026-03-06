@@ -3,7 +3,7 @@ API 数据模型定义
 """
 from dataclasses import dataclass
 from threading import Event
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -41,6 +41,46 @@ class AuthingAuthResponse(BaseModel):
     expiresAt: str
     authType: str = "authing"
     user: UserProfileResponse
+
+
+class AccountProfileResponse(BaseModel):
+    ownerId: str
+    authType: str = "authing"
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    picture: Optional[str] = None
+
+
+class WeeklyActivityPoint(BaseModel):
+    week: str
+    analysisCreated: int
+    replyCreated: int
+    totalCreated: int
+
+
+class TaskWindowCounts(BaseModel):
+    analysisCount: int
+    replyCount: int
+    totalCount: int
+
+
+class DailyActivityPoint(BaseModel):
+    date: str
+    analysisCreated: int
+    replyCreated: int
+    totalCreated: int
+
+
+class AccountDashboardResponse(BaseModel):
+    year: int
+    month: int
+    workWeek: TaskWindowCounts
+    workMonth: TaskWindowCounts
+    summaryText: str
+    weeklySeries: List[WeeklyActivityPoint]
+    dailySeries: List[DailyActivityPoint]
 
 
 class UsageResponse(BaseModel):

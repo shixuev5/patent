@@ -21,7 +21,7 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'static',
     prerender: {
-      routes: ['/', '/tasks', '/changelog', '/auth/callback'],
+      routes: ['/', '/tasks', '/account', '/changelog', '/auth/callback'],
     },
   },
   
