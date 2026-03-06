@@ -17,8 +17,8 @@
     <section class="rounded-3xl border border-slate-200 bg-white/92 p-4 shadow-sm shadow-slate-200 sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">AI Task Console</p>
-          <h1 class="mt-1 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">AI 任务台</h1>
+          <p class="text-xs font-semibold tracking-[0.08em] text-slate-500">AI Task Console</p>
+          <h1 class="mt-1 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">{{ modeTitle }}</h1>
           <p class="mt-2 text-xs leading-5 text-slate-600 sm:text-sm">
             {{ modeDescription }}
           </p>
@@ -38,11 +38,12 @@
         </button>
         <button
           type="button"
-          class="rounded-xl px-4 py-2 text-sm font-semibold transition"
+          class="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold transition"
           :class="mode === 'office_action_reply' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
           @click="mode = 'office_action_reply'"
         >
           AI 研判
+          <span class="ml-1.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium leading-none text-slate-500">Beta</span>
         </button>
       </div>
 
@@ -212,6 +213,11 @@ const modeDescription = computed(() => {
     return '统一创建 AI 分析任务，自动完成专利解析、结构化提取、附图识别、形式缺陷检查与检索策略生成，并输出可下载分析报告。'
   }
   return '统一创建 AI 研判任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的审查意见答复研判报告。'
+})
+
+const modeTitle = computed(() => {
+  if (mode.value === 'patent_analysis') return 'AI 分析'
+  return 'AI 研判（Beta）'
 })
 
 const isSupportedDoc = (file: File): boolean => {
