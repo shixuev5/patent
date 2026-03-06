@@ -16,7 +16,7 @@ class RuleBasedExtractor:
         Returns:
             结构化的专利数据字典
         """
-        logger.info("[RuleBasedExtractor] Starting rule-based parsing...")
+        logger.info("规则抽取器开始解析专利文本")
 
         try:
             # 统一换行符，避免不同操作系统的回车换行干扰正则匹配
@@ -29,11 +29,11 @@ class RuleBasedExtractor:
                 "drawings": RuleBasedExtractor._parse_drawings(md_content),
             }
 
-            logger.success("[RuleBasedExtractor] Parsing completed successfully")
+            logger.success("规则抽取器解析完成")
             return result
 
         except Exception as e:
-            logger.exception(f"[RuleBasedExtractor] Parsing failed: {e}")
+            logger.exception(f"规则抽取器解析失败: {e}")
             return {}
 
     @staticmethod
@@ -83,43 +83,132 @@ class RuleBasedExtractor:
     @staticmethod
     def _parse_drawings(md_content: str) -> list:
         """解析 drawings (附图资源) 部分"""
-        drawings =[]
-        figure_captions = {}
-        
-        # 1. 从附图说明部分精确提取图注信息
+        drawings = []
+        figure_captions = RuleBasedExtractor._extract_figure_captions(md_content)
+
+        # 仅提取“# 具体实施方式”到文末的附图区域，避免误纳入摘要附图。
+        drawings_zone = RuleBasedExtractor._extract_drawings_zone(md_content)
+        if not drawings_zone:
+            return drawings
+
+        # 使用逐行状态机，保证“一个图片只能绑定一个图号”。
+        lines = drawings_zone.replace("\r\n", "\n").split("\n")
+        pending_images: List[str] = []
+
+        def _flush(labels: List[str]) -> None:
+            nonlocal drawings, pending_images
+            if not labels or not pending_images:
+                return
+
+            # 单个图号：允许同图号对应多张图片
+            if len(labels) == 1:
+                fig_num = labels[0]
+                caption = figure_captions.get(fig_num, "")
+                for file_path in pending_images:
+                    drawings.append({
+                        "file_path": file_path,
+                        "figure_label": f"图{fig_num}",
+                        "caption": caption,
+                    })
+                pending_images = []
+                return
+
+            # 多个图号连在一起：每个图号只绑定一张图片，绝不一图多号
+            image_count = len(pending_images)
+            label_count = len(labels)
+
+            if image_count <= label_count:
+                selected_images = pending_images
+                selected_labels = labels[-image_count:]
+            else:
+                leading_images = pending_images[: image_count - label_count]
+                selected_images = pending_images[image_count - label_count :]
+                selected_labels = labels
+
+                # 多出来的前置图片归入第一个图号（表示同图号多图，不做图组合并）
+                first_fig_num = labels[0]
+                first_caption = figure_captions.get(first_fig_num, "")
+                for file_path in leading_images:
+                    drawings.append({
+                        "file_path": file_path,
+                        "figure_label": f"图{first_fig_num}",
+                        "caption": first_caption,
+                    })
+
+            for file_path, fig_num in zip(selected_images, selected_labels):
+                caption = figure_captions.get(fig_num, "")
+                drawings.append({
+                    "file_path": file_path,
+                    "figure_label": f"图{fig_num}",
+                    "caption": caption,
+                })
+
+            pending_images = []
+
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+
+            image_match = re.search(r"!\[.*?\]\((.*?)\)", line)
+            if image_match:
+                file_path = image_match.group(1).strip()
+                pending_images.append(file_path)
+                i += 1
+                continue
+
+            label_match = re.match(r"^图\s*(\d+)\s*$", re.sub(r"\[\d{4}\]\s*", "", line))
+            if label_match:
+                labels: List[str] = []
+                while i < len(lines):
+                    current = re.sub(r"\[\d{4}\]\s*", "", lines[i]).strip()
+                    current_match = re.match(r"^图\s*(\d+)\s*$", current)
+                    if not current_match:
+                        break
+                    labels.append(current_match.group(1))
+                    i += 1
+
+                _flush(labels)
+                continue
+
+            i += 1
+
+        # 末尾如果有悬空图片，无法可靠绑定图号，丢弃。
+        return drawings
+
+    @staticmethod
+    def _extract_drawings_zone(md_content: str) -> str:
+        """
+        返回从“# 具体实施方式”标题后到文末的文本。
+        若未找到该标题，则返回空字符串。
+        """
+        match = re.search(r"#+\s*具体实施方式\s*([\s\S]*)$", md_content, re.DOTALL)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _extract_figure_captions(md_content: str) -> Dict[str, str]:
+        """从附图说明提取 图号 -> 图题。"""
+        figure_captions: Dict[str, str] = {}
         brief_desc_pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
         brief_desc_match = re.search(brief_desc_pattern, md_content, re.DOTALL)
-        if brief_desc_match:
-            brief_desc_text = brief_desc_match.group(1)
-            for line in brief_desc_text.split('\n'):
-                line = re.sub(r"\[\d{4}\]\s*", "", line).strip()
-                if not line:
-                    continue
-                # 兼容多种格式: "图1是为..." / "图2中(a)为..." / "图3为..." / "图4："
-                match = re.search(r"^图\s*(\d+)(?:[^，,。；;\n]*?[为是：:])?\s*(.*)", line)
-                if match:
-                    fig_num = match.group(1)
-                    caption = match.group(2).strip("；;。 ")
-                    
-                    # 规则 3：图表标题只取第一次匹配行的文本（防止把后面的附图标记等追加进来）
-                    if fig_num not in figure_captions:
-                        figure_captions[fig_num] = caption
-                        
-        # 2. 匹配 Markdown 图片格式 ![](images/xxx.jpg) 后跟 图 X
-        image_pattern = r"!\[.*?\]\((.*?)\)\s*(?:<br>|\n)*\s*图\s*(\d+)"
-        image_matches = re.finditer(image_pattern, md_content)
-        
-        for match in image_matches:
-            file_path = match.group(1).strip()
-            fig_num = match.group(2)
-            caption = figure_captions.get(fig_num, "")
-            drawings.append({
-                "file_path": file_path,
-                "figure_label": f"图{fig_num}",
-                "caption": caption
-            })
+        if not brief_desc_match:
+            return figure_captions
 
-        return drawings
+        brief_desc_text = brief_desc_match.group(1)
+        for raw_line in brief_desc_text.split("\n"):
+            line = re.sub(r"\[\d{4}\]\s*", "", raw_line).strip()
+            if not line:
+                continue
+
+            match = re.search(r"^图\s*(\d+)(?:[^，,。；;\n]*?[为是：:])\s*(.*)", line)
+            if not match:
+                continue
+
+            fig_num = match.group(1)
+            caption = match.group(2).strip("；;。 ")
+            if fig_num not in figure_captions:
+                figure_captions[fig_num] = caption
+
+        return figure_captions
 
     # ================= 著录项目字段提取 =================
 
@@ -408,31 +497,30 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_brief_description(md_content: str) -> str:
-        """
-        规则 2：提取 # 附图说明 章节从后到最后一个图名标题行的内容，如果为空返回 None
-        """
+        """仅提取“数字(+字母)-名称 / 数字(+字母):名称”类附图标记说明。"""
         pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            content = match.group(1).strip()
-            # 去除段落编号
-            content = re.sub(r"\[\d{4}\]\s*", "", content)
-            
-            lines =[line.strip() for line in content.split('\n') if line.strip()]
-            last_title_idx = -1
-            
-            # 从后往前找最后一个图名标题行
-            for i in range(len(lines) - 1, -1, -1):
-                # 排除带有 "中："（标号说明）的行，其余以 "图X" 开头的视为图名标题行
-                if re.match(r"^图\s*\d+(?!.*中[：:]).*$", lines[i]):
-                    last_title_idx = i
-                    break
-                    
-            if last_title_idx != -1 and last_title_idx < len(lines) - 1:
-                part_list_content = "\n".join(lines[last_title_idx + 1:]).strip()
-                if part_list_content:
-                    return part_list_content
-                    
+        if not match:
+            return None
+
+        content = re.sub(r"\[\d{4}\]\s*", "", match.group(1)).strip()
+        if not content:
+            return None
+
+        # 匹配示例：1-单色仪、10A-连接件、101:处理器
+        marker_pattern = re.compile(
+            r"(\d+[A-Za-z]?)\s*[-：:]\s*([^、，,。；;\n]+)"
+        )
+        items: List[str] = []
+        for item in marker_pattern.finditer(content):
+            marker = item.group(1).strip()
+            name = item.group(2).strip()
+            if marker and name:
+                items.append(f"{marker}-{name}")
+
+        if items:
+            return "、".join(items)
+
         return None
 
     @staticmethod

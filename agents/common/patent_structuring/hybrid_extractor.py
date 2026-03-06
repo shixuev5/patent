@@ -25,7 +25,7 @@ class HybridExtractor:
         Returns:
             结构化的专利数据字典
         """
-        logger.info("[HybridExtractor] Starting hybrid extraction (rule-based first)...")
+        logger.info("混合抽取开始：优先规则抽取")
 
         # 首先使用规则抽取器进行抽取
         rule_result = RuleBasedExtractor.extract(md_content)
@@ -34,14 +34,15 @@ class HybridExtractor:
         missing_fields = self._check_missing_fields(rule_result)
 
         if missing_fields:
-            logger.warning(f"[HybridExtractor] Missing fields detected: {missing_fields}")
-            logger.info("[HybridExtractor] Using LLM for complete extraction...")
+            if missing_fields:
+                logger.warning(f"规则抽取存在关键字段缺失: {missing_fields}")
+            logger.info("开始执行 LLM 全量结构化抽取")
             # 直接使用LLM进行完整抽取
             llm_result = self.llm_extractor.extract(md_content)
-            logger.success("[HybridExtractor] Extraction completed with LLM")
+            logger.success("LLM 结构化抽取完成")
             return llm_result
         else:
-            logger.success("[HybridExtractor] All fields extracted successfully with rules only")
+            logger.success("规则抽取通过，直接返回规则结果")
             return rule_result
 
     def _check_missing_fields(self, patent_data: dict) -> list:

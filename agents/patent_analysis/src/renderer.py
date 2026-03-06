@@ -43,7 +43,7 @@ class ReportRenderer:
         """
         主入口：组装分析报告和检索策略，生成 MD 和 PDF
         """
-        logger.info("Starting rendering process...")
+        logger.info("开始渲染报告内容")
 
         parts = []
 
@@ -69,9 +69,9 @@ class ReportRenderer:
         try:
             md_path.parent.mkdir(parents=True, exist_ok=True)
             md_path.write_text(full_md_content, encoding="utf-8")
-            logger.success(f"Markdown report generated: {md_path}")
+            logger.success(f"Markdown 报告生成完成: {md_path}")
         except Exception as e:
-            logger.error(f"Failed to write markdown: {e}")
+            logger.error(f"写入 Markdown 失败: {e}")
             raise
 
         # 4. 导出 .pdf 文件
@@ -336,15 +336,18 @@ class ReportRenderer:
             lines.append("暂无图片分析。\n")
 
         for fig in figures:
-            img_path = fig.get("image_path")
+            img_paths = fig.get("image_paths") or []
             img_title = fig.get("image_title", "图片")
             explanation = fig.get("image_explanation", "")
             parts = fig.get("parts_info", [])
 
-            if img_path:
+            if img_paths:
+                image_html = "\n".join(
+                    [f'    <img src="{path}" alt="{img_title}">' for path in img_paths if path]
+                )
                 figure_html = f"""
 <figure>
-    <img src="{img_path}" alt="{img_title}">
+{image_html}
     <figcaption>{img_title}</figcaption>
 </figure>
 """
@@ -532,7 +535,7 @@ class ReportRenderer:
         """
         使用 Playwright 将 Markdown (转HTML后) 打印为 PDF
         """
-        logger.info("Starting PDF generation...")
+        logger.info("开始生成 PDF")
         render_markdown_to_pdf(
             md_text=md_text,
             output_path=output_path,

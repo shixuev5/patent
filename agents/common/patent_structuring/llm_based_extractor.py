@@ -27,7 +27,7 @@ class LLMBasedExtractor:
         Returns:
             结构化的专利数据字典
         """
-        logger.info("[LLMExtractor] Starting structured output parsing...")
+        logger.info("LLM 结构化抽取开始")
 
         cleaned_content = self.preprocess_patent_text(md_content)
 
@@ -48,16 +48,16 @@ class LLMBasedExtractor:
             result_dict = patent_obj.model_dump()
 
             logger.success(
-                f"[LLMExtractor] Successfully parsed patent: {patent_obj.bibliographic_data.application_number}"
+                f"LLM 结构化抽取成功: {patent_obj.bibliographic_data.application_number}"
             )
             return result_dict
 
         except Exception as e:
-            logger.error(f"[LLMExtractor] Parsing failed: {e}")
+            logger.error(f"LLM 结构化抽取失败: {e}")
             # 提供更详细的错误信息
-            logger.error(f"[LLMExtractor] Error type: {type(e).__name__}")
+            logger.error(f"错误类型: {type(e).__name__}")
             if 'json_data' in locals():
-                logger.error(f"[LLMExtractor] Invalid JSON data: {json.dumps(json_data, ensure_ascii=False, indent=2)}")
+                logger.error(f"无效 JSON 数据: {json.dumps(json_data, ensure_ascii=False, indent=2)}")
             raise e
 
     @staticmethod
@@ -85,7 +85,11 @@ class LLMBasedExtractor:
    - 如果原文中根本没有部件标号说明列表，该字段**必须返回 null**，绝不可用图解说明文字充数。
 4. **附图标题清洗 (Drawing Captions)**:
    - `drawings.caption` 必须去除开头的图号（如"图1"）及紧跟的谓语动词/连接词（如"为"、"是"、"示出"、"："）。例如原文"图1是装置结构图"，提取后必须为"装置结构图"。
-5. **公式与特殊符号 (LaTeX Rules)**:
+5. **附图抽取一致性规则 (Drawings Consistency)**:
+   - `drawings` 仅从“# 具体实施方式”章节后出现的附图区域提取，避免把摘要附图混入 `drawings`。
+   - 同一 `file_path` 绝不允许对应多个 `figure_label`（一张图只能一个图号）。
+   - 当附图图片数量与附图标题数量不一致时，允许同一 `figure_label` 出现多条记录（不同 `file_path`），用于表达同图号多图。
+6. **公式与特殊符号 (LaTeX Rules)**:
    - 完整保留所有的 LaTeX 公式（`$$...$$` 或 `$...$`）。
    - **JSON转义铁律**: 原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\` (例如 `$120 \\mathrm{{mm}}$`)。
 

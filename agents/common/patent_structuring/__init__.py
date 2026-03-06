@@ -3,9 +3,6 @@
 提供基于 LLM、基于规则和混合模式的专利文档结构化提取功能
 """
 
-from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
-from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
-from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
 import re
 from typing import List, Dict
 
@@ -22,10 +19,13 @@ def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
         结构化的专利数据字典
     """
     if method == "llm":
+        from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
         return LLMBasedExtractor().extract(md_content)
     elif method == "rule":
+        from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
         return RuleBasedExtractor.extract(md_content)
     elif method == "hybrid":
+        from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
         return HybridExtractor().extract(md_content)
     else:
         raise ValueError(f"Unknown extraction method: {method}")
@@ -41,4 +41,5 @@ def extract_structured_claims(md_content: str) -> List[Dict[str, str]]:
     if not start_match:
         return []
     claims_section = content[start_match.start():]
+    from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
     return RuleBasedExtractor.extract_structured_claims(claims_section)
