@@ -10,7 +10,7 @@
           </div>
 
           <h1 class="font-display text-[2rem] font-semibold leading-tight text-slate-900 sm:text-[2.25rem]">
-            审查员 AI 助手
+            AI 专利审查助手
             <span class="block text-cyan-700">围绕审查员协同四个核心能力</span>
           </h1>
 
