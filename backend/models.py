@@ -53,6 +53,15 @@ class AccountProfileResponse(BaseModel):
     picture: Optional[str] = None
 
 
+class AccountProfileUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    picture: Optional[str] = None
+
+
+class AccountAvatarUploadResponse(BaseModel):
+    url: str
+
+
 class WeeklyActivityPoint(BaseModel):
     week: str
     analysisCreated: int

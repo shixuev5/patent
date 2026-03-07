@@ -45,9 +45,16 @@
               v-if="isMobileMenuOpen"
               class="absolute right-0 top-[calc(100%+0.5rem)] z-40 w-36 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg shadow-slate-200/80"
             >
+              <p
+                v-if="hasAuthingEnabled && authStore.isLoggedIn"
+                class="rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-700"
+              >
+                欢迎，{{ displayUserName }}
+              </p>
               <NuxtLink
                 to="/account"
                 class="block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                :class="hasAuthingEnabled && authStore.isLoggedIn ? 'mt-1 border-t border-slate-100 pt-2.5' : ''"
                 @click="closeMobileMenu"
               >
                 个人空间
@@ -72,15 +79,20 @@
           </div>
         </div>
 
-        <div class="hidden items-center justify-end md:flex">
+        <div class="hidden items-center justify-end gap-2 md:flex">
+          <span
+            v-if="hasAuthingEnabled && authStore.isLoggedIn"
+            class="text-xs font-medium text-slate-600"
+          >
+            欢迎，{{ displayUserName }}
+          </span>
           <button
             v-if="hasAuthingEnabled && authStore.isLoggedIn"
             type="button"
             class="shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             @click="onLogout"
           >
-            <span>{{ displayUserName }} · </span>
-            <span>退出</span>
+            退出
           </button>
           <button
             v-else-if="hasAuthingEnabled"
@@ -140,7 +152,7 @@ const isServiceHealthy = computed(() => {
 
 const serviceStatusText = computed(() => (isServiceHealthy.value ? '正常' : '异常'))
 const versionText = computed(() => serviceVersion.value || '--')
-const displayUserName = computed(() => authStore.user?.nickname || authStore.user?.name || authStore.user?.email || '已登录用户')
+const displayUserName = computed(() => authStore.user?.name || authStore.user?.nickname || authStore.user?.email || '已登录用户')
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 
 const navClass = (active: boolean) => {

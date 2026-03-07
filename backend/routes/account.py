@@ -1,27 +1,139 @@
 """
 个人空间相关路由
 """
+import io
+import mimetypes
+import re
+import uuid
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
+from loguru import logger
 
 from backend.auth import _get_current_user
 from backend.models import (
+    AccountAvatarUploadResponse,
     AccountDashboardResponse,
     AccountMonthTargetResponse,
     AccountMonthTargetUpsertRequest,
     AccountProfileResponse,
+    AccountProfileUpdateRequest,
     CurrentUser,
     DailyActivityPoint,
     TaskWindowCounts,
     WeeklyActivityPoint,
 )
+from backend.utils import _build_r2_storage
 from backend.storage import TaskType, get_pipeline_manager
+from config import settings
 
 
 router = APIRouter()
 task_manager = get_pipeline_manager()
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+AVATAR_LOCAL_DIR = settings.UPLOAD_DIR / "avatars"
+SAFE_AVATAR_FILE_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+AVATAR_READ_PREFIX = "/api/account/profile/avatar/"
+AVATAR_REF_R2_PREFIX = "r2/"
+AVATAR_REF_LOCAL_PREFIX = "local/"
+
+
+def _sanitize_profile_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "undefined"}:
+        return None
+    return text
+
+
+def _normalize_profile_name(value) -> str | None:
+    text = _sanitize_profile_text(value)
+    if text is None:
+        return None
+    if len(text) > 32:
+        raise HTTPException(status_code=400, detail="显示名称不能超过 32 个字符。")
+    return text
+
+
+def _normalize_profile_picture(value) -> str | None:
+    text = _sanitize_profile_text(value)
+    if text is None:
+        return None
+    if len(text) > 1024:
+        raise HTTPException(status_code=400, detail="头像地址长度不能超过 1024。")
+
+    path = urlparse(text).path or ""
+    if not path.startswith(AVATAR_READ_PREFIX):
+        raise HTTPException(status_code=400, detail="头像地址无效，请通过头像上传接口获取。")
+    ref = path[len(AVATAR_READ_PREFIX):].strip()
+    if not ref or (
+        not ref.startswith(AVATAR_REF_R2_PREFIX)
+        and not ref.startswith(AVATAR_REF_LOCAL_PREFIX)
+    ):
+        raise HTTPException(status_code=400, detail="头像地址无效，请通过头像上传接口获取。")
+    return text
+
+
+def _ensure_auth_user_or_404(owner_id: str):
+    user = task_manager.storage.get_user_by_owner_id(owner_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="未找到认证账号档案。")
+    return user
+
+
+def _build_avatar_filename(owner_id: str, suffix: str) -> str:
+    owner_token = re.sub(r"[^a-zA-Z0-9_-]+", "-", owner_id).strip("-") or "user"
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    rand = uuid.uuid4().hex[:10]
+    return f"{owner_token}_{ts}_{rand}{suffix}"
+
+
+def _extract_avatar_ref(picture_url: str | None) -> Tuple[str, str] | None:
+    text = _sanitize_profile_text(picture_url)
+    if not text:
+        return None
+    path = urlparse(text).path or ""
+    if not path.startswith(AVATAR_READ_PREFIX):
+        return None
+    ref = path[len(AVATAR_READ_PREFIX):].strip()
+    if ref.startswith(AVATAR_REF_R2_PREFIX):
+        key = ref[len(AVATAR_REF_R2_PREFIX):].strip()
+        if key:
+            return ("r2", key)
+    if ref.startswith(AVATAR_REF_LOCAL_PREFIX):
+        name = ref[len(AVATAR_REF_LOCAL_PREFIX):].strip()
+        if name:
+            return ("local", name)
+    return None
+
+
+def _cleanup_previous_avatar(picture_url: str | None):
+    ref = _extract_avatar_ref(picture_url)
+    if not ref:
+        return
+    storage_type, identifier = ref
+    try:
+        if storage_type == "r2":
+            r2_storage = _build_r2_storage()
+            if r2_storage.enabled:
+                r2_storage.delete_key(identifier)
+            return
+        if storage_type == "local":
+            safe_name = Path(identifier).name
+            if safe_name != identifier or not SAFE_AVATAR_FILE_PATTERN.match(safe_name):
+                return
+            local_path = AVATAR_LOCAL_DIR / safe_name
+            local_path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.warning(f"清理旧头像失败: {exc}")
 
 
 def _is_workday(day: date) -> bool:
@@ -120,11 +232,116 @@ async def get_account_profile(current_user: CurrentUser = Depends(_get_current_u
     return AccountProfileResponse(
         ownerId=user.owner_id,
         authType="authing",
-        name=user.name,
-        nickname=user.nickname,
-        email=user.email,
-        phone=user.phone,
-        picture=user.picture,
+        name=_sanitize_profile_text(user.name),
+        nickname=_sanitize_profile_text(user.nickname),
+        email=_sanitize_profile_text(user.email),
+        phone=_sanitize_profile_text(user.phone),
+        picture=_sanitize_profile_text(user.picture),
+    )
+
+
+@router.post("/api/account/profile/avatar", response_model=AccountAvatarUploadResponse)
+async def post_account_profile_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_auth_user_or_404(current_user.user_id)
+    r2_storage = _build_r2_storage()
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in AVATAR_ALLOWED_SUFFIXES:
+        raise HTTPException(status_code=400, detail="头像仅支持 PNG/JPG/JPEG/WEBP/GIF。")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传的头像文件为空。")
+    if len(content) > AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="头像大小不能超过 2MB。")
+
+    safe_name = Path(file.filename or f"avatar{suffix}").name
+    content_type = (file.content_type or "").strip() or (mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
+    if r2_storage.enabled:
+        avatar_key = r2_storage.build_avatar_key(current_user.user_id, safe_name)
+        ok = r2_storage.put_bytes(avatar_key, content, content_type=content_type)
+        if not ok:
+            raise HTTPException(status_code=502, detail="头像上传到对象存储失败，请稍后重试。")
+        avatar_ref = f"{AVATAR_REF_R2_PREFIX}{avatar_key}"
+        access_url = f"{str(request.base_url).rstrip('/')}{AVATAR_READ_PREFIX}{avatar_ref}"
+        return AccountAvatarUploadResponse(url=access_url)
+
+    AVATAR_LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    file_name = _build_avatar_filename(current_user.user_id, suffix)
+    (AVATAR_LOCAL_DIR / file_name).write_bytes(content)
+    avatar_ref = f"{AVATAR_REF_LOCAL_PREFIX}{file_name}"
+    access_url = f"{str(request.base_url).rstrip('/')}{AVATAR_READ_PREFIX}{avatar_ref}"
+    return AccountAvatarUploadResponse(url=access_url)
+
+
+@router.get("/api/account/profile/avatar/{avatar_ref:path}")
+async def get_account_profile_avatar(avatar_ref: str):
+    ref = str(avatar_ref or "").strip()
+    if not ref:
+        raise HTTPException(status_code=404, detail="头像不存在。")
+
+    if ref.startswith(AVATAR_REF_R2_PREFIX):
+        key = ref[len(AVATAR_REF_R2_PREFIX):].strip()
+        if not key:
+            raise HTTPException(status_code=404, detail="头像不存在。")
+        r2_storage = _build_r2_storage()
+        if not r2_storage.enabled:
+            raise HTTPException(status_code=404, detail="头像不存在。")
+        payload = r2_storage.get_bytes(key)
+        if not payload:
+            raise HTTPException(status_code=404, detail="头像不存在。")
+
+        media_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        headers = {"Cache-Control": "public, max-age=86400"}
+        return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
+
+    if not ref.startswith(AVATAR_REF_LOCAL_PREFIX):
+        raise HTTPException(status_code=404, detail="头像不存在。")
+    file_name = ref[len(AVATAR_REF_LOCAL_PREFIX):].strip()
+
+    safe_name = Path(file_name).name
+    if safe_name != file_name or not SAFE_AVATAR_FILE_PATTERN.match(safe_name):
+        raise HTTPException(status_code=404, detail="头像不存在。")
+
+    path = AVATAR_LOCAL_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="头像不存在。")
+
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path=str(path), media_type=media_type)
+
+
+@router.put("/api/account/profile", response_model=AccountProfileResponse)
+async def put_account_profile(
+    payload: AccountProfileUpdateRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    existing = _ensure_auth_user_or_404(current_user.user_id)
+    previous_picture = _sanitize_profile_text(existing.picture)
+    normalized_name = _normalize_profile_name(payload.name)
+    normalized_picture = _normalize_profile_picture(payload.picture)
+    saved = task_manager.storage.update_user_profile(
+        current_user.user_id,
+        name=normalized_name,
+        picture=normalized_picture,
+    )
+    if not saved:
+        raise HTTPException(status_code=404, detail="未找到可更新的认证账号档案。")
+    current_picture = _sanitize_profile_text(saved.picture)
+    if previous_picture and previous_picture != current_picture:
+        _cleanup_previous_avatar(previous_picture)
+    return AccountProfileResponse(
+        ownerId=saved.owner_id,
+        authType="authing",
+        name=_sanitize_profile_text(saved.name),
+        nickname=_sanitize_profile_text(saved.nickname),
+        email=_sanitize_profile_text(saved.email),
+        phone=_sanitize_profile_text(saved.phone),
+        picture=_sanitize_profile_text(saved.picture),
     )
 
 

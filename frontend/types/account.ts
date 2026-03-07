@@ -8,6 +8,15 @@ export interface AccountProfile {
   picture?: string
 }
 
+export interface AccountProfileUpdateRequest {
+  name: string | null
+  picture: string | null
+}
+
+export interface AccountAvatarUploadResponse {
+  url: string
+}
+
 export interface WeeklyActivityPoint {
   week: string
   analysisCreated: number

@@ -79,6 +79,12 @@ class R2Storage:
         date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
         return f"{self.config.key_prefix}/uploads/{date_prefix}/{tid}-{fname}"
 
+    def build_avatar_key(self, owner_id: str, filename: str) -> str:
+        user_id = self._clean_token(owner_id, fallback="user")
+        fname = self._clean_token(filename or "avatar.bin", fallback="avatar.bin")
+        date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
+        return f"{self.config.key_prefix}/avatars/{date_prefix}/{user_id}-{fname}"
+
     def get_bytes(self, key: str) -> Optional[bytes]:
         if not self.enabled or not self.client:
             return None
@@ -116,4 +122,15 @@ class R2Storage:
             return True
         except (ClientError, BotoCoreError) as exc:
             logger.warning(f"[R2] 写入失败，key={key}，错误：{exc}")
+            return False
+
+    def delete_key(self, key: str) -> bool:
+        if not self.enabled or not self.client:
+            return False
+        try:
+            self.client.delete_object(Bucket=self.config.bucket, Key=key)
+            logger.info(f"[R2] 文件已删除，key={key}")
+            return True
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning(f"[R2] 删除失败，key={key}，错误：{exc}")
             return False

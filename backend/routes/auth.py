@@ -20,6 +20,17 @@ router = APIRouter()
 task_manager = get_pipeline_manager()
 
 
+def _sanitize_profile_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "undefined"}:
+        return None
+    return text
+
+
 @router.post("/api/auth/guest", response_model=GuestAuthResponse)
 async def create_guest_auth(request: Request):
     """创建访客身份认证"""
@@ -44,11 +55,11 @@ async def exchange_authing_token(payload: AuthingTokenExchangeRequest):
     user_record = User(
         owner_id=owner_id,
         authing_sub=sub,
-        name=str(claims.get("name", "")).strip() or None,
-        nickname=str(claims.get("nickname", "")).strip() or None,
-        email=str(claims.get("email", "")).strip() or None,
-        phone=str(claims.get("phone_number", "")).strip() or None,
-        picture=str(claims.get("picture", "")).strip() or None,
+        name=_sanitize_profile_text(claims.get("name")),
+        nickname=_sanitize_profile_text(claims.get("nickname")),
+        email=_sanitize_profile_text(claims.get("email")),
+        phone=_sanitize_profile_text(claims.get("phone_number")),
+        picture=_sanitize_profile_text(claims.get("picture")),
         raw_profile=claims,
     )
     saved_user = task_manager.storage.upsert_authing_user(user_record)
