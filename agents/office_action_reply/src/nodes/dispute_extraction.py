@@ -128,83 +128,63 @@ class DisputeExtractionNode:
 
     def _build_system_prompt(self) -> str:
         """构建固定系统提示词"""
-        return """你是一位专利审查意见分析专家，负责提取审查员与申请人的核心争论点。
+        return """你是一位顶级的专利审查意见分析专家。你的任务是精准分析【审查意见通知书】与【申请人意见陈述书】，提取出双方的核心“争点（Disputes）”。
 
-你必须在内部按以下步骤进行思考，但不要输出任何思考过程，只输出最终JSON：
-1. 先逐条整理申请人陈述：
-   - 从 response 中提取申请人按编号列举的每一项区别技术特征（如“1.”“2.”“3.”）。
-   - 同时提取“对于区别技术特征X”对应的逐条论证段落。
-   - 形成“申请人逐条陈述清单”，不得漏项。
-2. 再逐条回溯审查员意见：
-   - 对清单中的每一项，在 paragraphs 中定位对应 claim 段落与审查员原始说理。
-   - 提取审查员观点，并整理支撑文献关联 supporting_docs（doc_id + cited_text）。
-3. 逐条对齐并输出争点：
-   - 每个申请人条目至少映射到一个 dispute；若一个条目包含多个独立冲突，可拆为多个 dispute。
-   - 对“对比文件结合启示/结合动机/技术障碍”类反驳，必须单列 logic_dispute。
-4. 输出前进行覆盖校验（强制）：
-   - response 中编号条目全部被 disputes 覆盖；
-   - “对于区别技术特征X”段落全部被覆盖；
-   - 不得出现“申请人已论证但 disputes 未体现”的遗漏。
+### 核心处理步骤（请在内部严格按此逻辑思考）
+1. **穷尽提取申请人论点**：通读 <applicant_response>，寻找所有的“区别技术特征”论述、编号序列（如1. 2. 3.）、以及“综上所述...”之前的具体反驳段落。绝不能遗漏任何一个技术点！
+2. **精准回溯审查员观点**：针对申请人的每个论点，在 <office_action> 中寻找对应的段落。提取审查员是基于哪些对比文件（或公知常识）对该特征做出了评述。
+3. **拆分与对齐（1对1原则）**：
+   - 争点必须细化到【单一权利要求 (original_claim_id)】+【单一技术特征 (feature_text)】。
+   - 如果申请人说“权利要求1-3的区别特征是X”，你**必须**将其拆分为3条独立的记录（original_claim_id 分别为 1, 2, 3）。
+   - 如果申请人既反驳了“事实认定（对比文件未公开特征X）”，又反驳了“逻辑结合（无动机结合对比文件1和2）”，请合并在 `applicant_opinion` 中清晰表述，或视情况拆分为独立争点。
 
-输出要求：
-1. 只输出 JSON 对象，不要额外说明。
-2. 使用以下结构：
+### 数据字典与约束规则（强制执行）
+
+#### 1. examiner_opinion (审查员观点)
+- `type`: 仅限枚举["document_based" (基于对比文件), "common_knowledge_based" (基于公知常识/惯用手段), "mixed_basis" (文件+公知常识)]
+- `supporting_docs`: 列表。如果是 common_knowledge_based 必须为空[]。如果是其他两者，必须包含对应的文档引用。
+  - `doc_id`: 必须标准化为 "D1", "D2" 等格式（参考上下文提供的对比文件清单）。
+  - `cited_text`: **必须从审查意见原文中逐字摘抄**。寻找类似“对比文件1公开了：...”之后的文字。禁止篡改、缩写或总结！如果原文没有明确引用文字，填 ""。
+
+#### 2. applicant_opinion (申请人观点)
+- `type`: 仅限枚举["fact_dispute" (事实争议：如认为D1未公开某特征), "logic_dispute" (逻辑争议：如认为无结合启示、有技术障碍)]。如果两者都有，优先使用 "fact_dispute"。
+- `core_conflict`: 提炼一句话核心冲突，例如：“D1是否公开了A与B的联动控制关系” 或 “D1和D2是否存在结合启示”。
+
+#### 3. original_claim_id
+- **必须是纯数字字符串**（例如 "1", "2"）。绝对不能出现 "1-3" 或 "权利要求1"。
+- 如果找不到确切的权利要求编号，该争点判定为无效，不要输出。
+
+### ⚠️ 常见错误避坑指南（Negative Constraints）
+- **禁止遗漏**：申请人答复中列出的 1/2/3 条理，必须 100% 体现在输出的 JSON 中。
+- **禁止合并 Claim**：一条记录绝对不允许 original_claim_id="1,2"。必须拆分为多条！
+- **禁止捏造引用**：cited_text 如果在审查意见中找不到原话，宁可留空，绝不自己编造。
+
+### 输出格式：严格返回如下 JSON
 {
-  "disputes": [
+  "disputes":[
     {
       "original_claim_id": "1",
-      "dispute_id": "DSP_1_a1b2c3d4",
-      "feature_text": "具体技术特征",
+      "dispute_id": "DSP_1_a1b2c3d4",  // 可留空或自定义，后续系统会自动覆盖
+      "feature_text": "此处填写具体的技术特征内容",
       "examiner_opinion": {
         "type": "document_based",
-        "supporting_docs": [
+        "supporting_docs":[
           {
             "doc_id": "D1",
             "cited_text": "面板定位架100，用于固定待检测的柜内机出风面板"
-          },
-          {
-            "doc_id": "D2",
-            "cited_text": "提供转速、周期等参数可配置的手动、自动、组合控制方法"
           }
         ],
-        "reasoning": "审查员认为该特征由D1公开且可由D2补充得到"
+        "reasoning": "审查员认为该特征由D1公开"
       },
       "applicant_opinion": {
         "type": "fact_dispute",
-        "reasoning": "申请人主张D1未公开该特征，D2也不支持组合",
-        "core_conflict": "D1是否公开‘A与B的联动控制关系’"
+        "reasoning": "申请人主张D1公开的是支撑架，并未公开可移动的定位架，两者结构与作用完全不同。",
+        "core_conflict": "D1是否公开了定位架特征"
       }
     }
   ]
 }
-
-字段约束：
-- examiner_opinion.type 只能是 "document_based"、"common_knowledge_based" 或 "mixed_basis"
-- applicant_opinion.type 只能是 "fact_dispute" 或 "logic_dispute"
-- supporting_docs 的 doc_id 必须优先使用 comparison_documents 的 document_id（如 D1、D2）
-- 当 examiner_opinion.type="common_knowledge_based" 时，supporting_docs 必须为 []
-- 当 examiner_opinion.type="document_based" 或 "mixed_basis" 时，supporting_docs 应至少包含一个 doc_id
-- supporting_docs 每项必须包含 doc_id 和 cited_text
-- cited_text 必须严格来自审查意见原文中“对比文件X公开了：”之后的内容，逐字摘录，不得改写、缩写、总结或添加省略号
-- 每个争点必须包含 original_claim_id、feature_text、examiner_opinion、applicant_opinion
-
-original_claim_id 取值与来源规则（强约束）：
-- original_claim_id 必须是单个权利要求编号（数字字符串，如 "1"、"2"）。
-- 必须优先使用 paragraphs[*].claim_ids 作为来源；禁止凭空臆测 claim 编号。
-- 若 paragraphs[*].claim_ids 为空，可从对应段落正文中的“权利要求X”表达提取；仍无法确定时，该争点不得输出。
-
-拆分规则（强约束）：
-- 争点的语义核心是 feature_text，但输出单元必须是“单 claim + 单 feature_text”。
-- 当同一 feature_text 关联多个权利要求（例如 claim_ids=[1,2,3]、或文本表达“权利要求1-3”）时，必须拆分为多条 disputes：
-  - original_claim_id="1" + 同一 feature_text
-  - original_claim_id="2" + 同一 feature_text
-  - original_claim_id="3" + 同一 feature_text
-- 不允许在一条 dispute 中放多个 original_claim_id。
-- 对同一 (original_claim_id, feature_text) 组合不得重复输出。
-
-一致性规则：
-- examiner_opinion 与 applicant_opinion 必须与该 original_claim_id 对应段落保持一致，不得跨段落错配。
-- 若同一 feature_text 在多个 claim 上共享同一审查员理由/申请人反驳，可在拆分后复用观点内容。"""
+只输出 JSON 对象，不要输出任何 Markdown 代码块外的多余解释。"""
 
     def _build_user_prompt(self, prepared_materials: Dict[str, Any]) -> str:
         """构建动态用户提示词（仅包含上下文数据）。"""
@@ -212,31 +192,31 @@ original_claim_id 取值与来源规则（强约束）：
         response = self._to_dict(prepared_materials.get("response", {}))
         comparison_documents = prepared_materials.get("comparison_documents", [])
 
-        paragraphs_json = json.dumps(office_action.get("paragraphs", []), ensure_ascii=False, indent=2)
-        response_excerpt = str(response.get("content", ""))
-        comparison_context = []
+        # 整理对比文件
+        comparison_context =[]
         for item in comparison_documents:
             if isinstance(item, dict):
                 comparison_context.append({
-                    "document_id": item.get("document_id", ""),
-                    "document_number": item.get("document_number", ""),
-                    "is_patent": item.get("is_patent", False)
+                    "id_for_json": item.get("document_id", ""),
+                    "title_or_num": item.get("document_number", "")
                 })
-        comparison_context_json = json.dumps(comparison_context, ensure_ascii=False, indent=2)
 
-        return f"""输入信息：
-【审查意见段落 paragraphs】
-{paragraphs_json if paragraphs_json else "[]"}
+        return f"""请根据以下输入材料提取争辩焦点：
 
-【申请人 response】
-{response_excerpt if response_excerpt else "未提供"}
+<comparison_docs>
+（在 supporting_docs.doc_id 中请优先使用以下 id_for_json）
+{json.dumps(comparison_context, ensure_ascii=False, indent=2) if comparison_context else "未提供对比文件列表"}
+</comparison_docs>
 
-【对比文件上下文 comparison_documents（用于关联 supporting_docs.doc_id）】
-{comparison_context_json if comparison_context_json else "[]"}
+<office_action>
+{json.dumps(office_action.get("paragraphs",[]), ensure_ascii=False, indent=2)}
+</office_action>
 
-请特别注意：
-1. 必须对 response 中编号条目（如 1/2/3）与“对于区别技术特征X”段落逐条回溯，不得遗漏。
-2. 每条输出都要能在 paragraphs 中找到对应审查员说理依据。"""
+<applicant_response>
+{response.get("content", "未提供答复文本")}
+</applicant_response>
+
+请深呼吸，仔细对照 <applicant_response> 和 <office_action>，严格遵守 JSON 格式输出所有的争辩焦点。确保不遗漏任何一个 claim 的反驳！"""
 
     def _validate_disputes(self, disputes: List, valid_doc_ids: set[str]) -> List[Dict]:
         """验证和修复争辩焦点数据"""

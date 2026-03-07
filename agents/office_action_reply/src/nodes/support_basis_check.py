@@ -122,42 +122,50 @@ class SupportBasisCheckNode:
         return normalized
 
     def _build_system_prompt(self) -> str:
-        return """你是专利法修改支持依据审查专家。你的任务是判断 source_type=spec 的新增特征是否在原说明书具体实施方式中有直接、明确支持。
+        return """你是一位资深的专利审查专家。你的任务是根据《专利法》关于“修改超范围”的审查标准，判断申请人引入的“新增特征”是否在原说明书中有直接、明确的支持依据。
 
-判定规则：
-1. 只能以说明书 detailed_description 为依据。
-2. 允许语义一致，但必须达到“直接且明确可得”。
-3. 不能仅靠推理补足未记载内容。
-4. 任何关键新增特征无支持时，存在修改超范围风险。
+【核心判定标准】
+修改的内容必须是原说明书明确记载的内容，或者是所属技术领域的技术人员通过原说明书记载的内容**直接、毫无疑义地推导**出的内容。
 
-输出要求：
-- 只输出 JSON 对象，不得输出其他文本。
-- 输出结构：
+【具体审查规则】
+1. **严格限定范围**：只能以用户提供的【说明书 detailed_description】文本为依据，绝对禁止引入外部常识或主观推理来补足未记载的技术特征。
+2. **支持的情形（support_found = true）**：
+   - 原文字义支持：说明书中有完全相同的文字。
+   - 同义替换：使用了本领域公知且毫无歧义的同义词。
+   - 直接推导：本领域技术人员阅读后必然得出的唯一结论。
+3. **超范围的情形（support_found = false，存在风险）**：
+   - **上位概括**：将原说明书中的具体概念（如“铜”）替换为上位概念（如“金属”），且原说明书未暗示其他可能。
+   - **特征剥离**：将具体实施例中相互紧密关联、配合工作的多个特征剥离，仅提取其中一个单独作为新增特征。
+   - **新的组合**：将原本分别记载在不同实施例中、毫无关联的特征生硬拼凑在一起。
+   - **数值范围拼凑**：提取原说明书中未明确结合过的数值端点形成新的范围。
+
+【输出要求】
+- 必须严格输出纯 JSON 对象，不要输出 Markdown 代码块标签（如 ```json），不要包含任何额外的解释文本。
+- 必须遵循以下 JSON Schema：
 {
-  "support_findings": [
+  "support_findings":[
     {
       "feature_id": "New_F1",
-      "feature_text": "...",
-      "support_found": true,
-      "support_basis": "原说明书第[0045]段 ...",
-      "risk": ""
+      "feature_text": "新增特征原文",
+      "reasoning": "简要分析过程：说明书对应段落是怎么描述的？是否属于同义替换或直接推导？是否存在特征剥离或上位概括等超范围情形？",
+      "support_found": true或false,
+      "support_basis": "如果支持，务必提取说明书中的【原句】或【段落号】作为直接证据；如果不支持，填空字符串",
+      "risk": "如果 support_found 为 false，固定填入 'Not Found (Risk of New Matter)'；如果为 true，填空字符串"
     }
   ],
-  "added_matter_risk": false,
-  "early_rejection_reason": ""
+  "added_matter_risk": true或false, 
+  "early_rejection_reason": "如果 added_matter_risk 为 true，请一句话概括为何存在超范围风险（例如：'特征X属于将实施例中的关联特征强行剥离，缺乏修改支持'）；如果为 false，填空字符串"
 }
 
-字段约束：
-- support_found 只能是 true/false。
-- 若 support_found=false，risk 应明确写 Not Found (Risk of New Matter)。
-- 若 added_matter_risk=true，必须给出 early_rejection_reason。"""
+【字段约束】
+- added_matter_risk：只要 support_findings 中有任何一个特征的 support_found 为 false，此项必须为 true。"""
 
     def _build_user_prompt(
         self,
         features: List[Dict[str, Any]],
         detailed_description: str,
     ) -> str:
-        simplified_features = [
+        simplified_features =[
             {
                 "feature_id": str(item.get("feature_id", "")).strip(),
                 "feature_text": str(item.get("feature_text", "")).strip(),
@@ -165,13 +173,15 @@ class SupportBasisCheckNode:
             }
             for item in features
         ]
-        return f"""请核查以下新增特征在详细实施方式中的支持依据：
+        return f"""请对以下新增特征逐一进行支持依据核查，并按要求输出 JSON 结果。
 
-【新增特征（仅 spec）】
+【待核查的新增特征（仅 spec）】
 {json.dumps(simplified_features, ensure_ascii=False, indent=2)}
 
+=========================
 【说明书 detailed_description】
-{detailed_description[:26000]}"""
+（注：请仔细检索以下文本寻找直接、明确的支持依据）
+{detailed_description}"""
 
     def _normalize_result(self, response: Dict[str, Any]) -> Dict[str, Any]:
         result = self._to_dict(response)
@@ -192,6 +202,7 @@ class SupportBasisCheckNode:
             support_found = support_found_raw
             support_basis = str(finding.get("support_basis", "")).strip()
             risk = str(finding.get("risk", "")).strip()
+            reasoning = str(finding.get("reasoning", "")).strip()
 
             if not feature_id or not feature_text:
                 raise ValueError("support_basis_check 输出非法 support_findings 项，缺少 feature_id 或 feature_text")
@@ -199,6 +210,7 @@ class SupportBasisCheckNode:
             findings.append({
                 "feature_id": feature_id,
                 "feature_text": feature_text,
+                "reasoning": reasoning,
                 "support_found": support_found,
                 "support_basis": support_basis,
                 "risk": risk,

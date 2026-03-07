@@ -140,6 +140,7 @@ class SupportFinding(BaseModel):
     """修改支持依据核查结果"""
     feature_id: str = Field(..., description="新增特征编号")
     feature_text: str = Field(..., description="新增特征文本")
+    reasoning: Optional[str] = Field(default="", description="大模型的判断推理过程")
     support_found: bool = Field(False, description="是否找到原始支持依据")
     support_basis: str = Field("", description="支持依据描述")
     risk: str = Field("", description="风险说明")
