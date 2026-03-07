@@ -12,7 +12,6 @@ from config import settings
 from backend.log_context import bind_task_logger
 
 # 引入各个处理模块
-from agents.common.retrieval import drop_retrieval_session
 from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
@@ -22,7 +21,6 @@ from agents.patent_analysis.src.checker import FormalExaminer
 from agents.patent_analysis.src.generator import ContentGenerator
 from agents.patent_analysis.src.search import SearchStrategyGenerator
 from agents.patent_analysis.src.renderer import ReportRenderer
-from agents.patent_analysis.src.context_selector import ContextSelector
 
 
 class PipelineCancelled(RuntimeError):
@@ -51,7 +49,6 @@ class PatentPipeline:
 
         # raw.pdf 的目标路径
         self.raw_pdf_path = self.paths["raw_pdf"]
-        self.retrieval_session_id = ""
 
         # 初始化任务管理器
         if self.task_id:
@@ -119,22 +116,6 @@ class PatentPipeline:
     def _stage_log(self, stage: str):
         return self.log.bind(stage=stage)
 
-    def _build_retrieval_session_id(self) -> str:
-        workspace = self._safe_artifact_name(self.workspace_id) or "task"
-        artifact = self._safe_artifact_name(self.pn) or "patent"
-        return f"patent_analysis_{workspace}_{artifact}"
-
-    def _cleanup_retrieval_session(self):
-        session_id = str(self.retrieval_session_id or "").strip()
-        if not session_id:
-            return
-        try:
-            drop_retrieval_session(session_id=session_id)
-            ContextSelector.clear_session_seeded(session_id=session_id)
-            self._stage_log("pipeline").info(f"已清理检索会话: {session_id}")
-        except Exception as ex:
-            self._stage_log("pipeline").warning(f"检索会话清理失败 session_id={session_id}: {ex}")
-
     def _update_step_status(self, step_name: str, status: str):
         """更新任务步骤状态"""
         if self.task_id and self.task_manager:
@@ -200,7 +181,6 @@ class PatentPipeline:
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
             self._refresh_output_artifact_paths(patent_data)
-            self.retrieval_session_id = self._build_retrieval_session_id()
             self._update_step_status("transform", "completed")
             self._check_cancelled()
 
@@ -212,7 +192,7 @@ class PatentPipeline:
                 parts_db = json.loads(self.paths["parts_json"].read_text(encoding="utf-8"))
             else:
                 self._stage_log("extract").info("步骤 3/9：提取知识要素")
-                extractor = KnowledgeExtractor(retrieval_session_id=self.retrieval_session_id)
+                extractor = KnowledgeExtractor()
                 parts_db = extractor.extract_entities(patent_data)
                 self.paths["parts_json"].write_text(
                     json.dumps(parts_db, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -274,7 +254,6 @@ class PatentPipeline:
                     image_parts=image_parts,
                     annotated_dir=self.paths["annotated_dir"],
                     cache_file=cache_file,
-                    retrieval_session_id=self.retrieval_session_id,
                 )
                 report_json = generator.generate_report_json()
                 self.paths["report_json"].write_text(
@@ -331,8 +310,6 @@ class PatentPipeline:
         except Exception as e:
             self._stage_log("pipeline").exception(f"流程执行失败: {str(e)}")
             return {"status": "failed", "pn": self.pn, "error": str(e)}
-        finally:
-            self._cleanup_retrieval_session()
 
     def _step_download(self):
         """处理文件下载与归档（支持上传文件或下载专利）"""

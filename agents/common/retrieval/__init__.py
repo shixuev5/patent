@@ -1,6 +1,5 @@
 """Retrieval toolkit with chunking, vector search, and rerank routing."""
 
 from .service import retrieve_segments, drop_retrieval_session, RetrievalService
-from .query_rewrite import QueryRewriteService
 
-__all__ = ["retrieve_segments", "drop_retrieval_session", "RetrievalService", "QueryRewriteService"]
+__all__ = ["retrieve_segments", "drop_retrieval_session", "RetrievalService"]

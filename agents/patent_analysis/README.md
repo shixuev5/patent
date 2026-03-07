@@ -14,7 +14,7 @@
 2. 自动结构化专利内容（著录项、权利要求、说明书、附图）。
 3. 抽取部件知识库并做附图 OCR 识别与标注。
 4. 做附图标记一致性形式检查。
-5. 生成“技术分析报告 + 检索策略建议书”，并在高 Token 阶段执行检索裁剪上下文（RAG）。
+5. 生成“技术分析报告 + 检索策略建议书”。
 6. 渲染 Markdown 和 PDF 最终报告。
 
 ---
@@ -56,15 +56,11 @@
 - 输入：`raw.md`
 - 调用 `extract_structured_data(..., method="hybrid")`
 - 输出：`patent.json`
-- 同步生成 `retrieval_session_id`，用于后续 `extract` 与 `generate` 阶段共享检索会话
 
 ## 4.4 extract
 
 - 调用 `KnowledgeExtractor.extract_entities()`
 - 从摘要、附图说明、具体实施方式抽取带附图标号的部件及功能
-- 使用 `ContextSelector` 做“查询语义改写 + 检索裁剪”：
-  - 有 `retrieval_session_id` 时使用 `session` 模式（多次检索复用向量索引）
-  - 无 `retrieval_session_id` 时自动降级为 `ephemeral` 模式
 - 输出：`parts.json`
 
 ## 4.5 vision
@@ -99,20 +95,11 @@
 - 关键生成链路：
   1. 领域与技术问题分析
   2. 标题/摘要/技术方案综合
-  3. 背景知识百科生成（检索裁剪）
+  3. 背景知识百科生成
   4. 技术特征抽取
-  5. 技术效果验证（含 TCS 打分，检索裁剪）
-  6. 图解说明生成（局部部件上下文 + 检索裁剪）
+  5. 技术效果验证（含 TCS 打分）
+  6. 图解说明生成
 - 输出：`report.json`
-
-`ContentGenerator` 的步骤缓存键：
-
-- `domain_problem`
-- `solution_package`
-- `background_knowledge`
-- `claim_feature_extraction`
-- `tcs_evidence_verification`
-- `figure_explanations`
 
 ## 4.8 search
 
@@ -141,7 +128,6 @@
 
 1. `raw.md`、`patent.json`、`parts.json`、`image_parts.json`、`report.json`、`search_strategy.json` 若已存在，优先读取而非重算。
 2. `ContentGenerator` 与 `SearchStrategyGenerator` 内部还使用 `StepCache` 保存中间步骤结果（例如 `report_intermediate.json`、`search_strategy_intermediate.json`）。
-3. `patent_analysis` 在流程内复用同一个 `retrieval_session_id`，结束时在 `finally` 调用 `drop_retrieval_session(session_id)` 主动清理会话索引。
 
 效果：同一 PN 重跑时显著减少 LLM/OCR 计算成本。
 
@@ -249,31 +235,3 @@ python -m agents.patent_analysis.main --file /path/to/pn_list.txt
 - 专利结构化提取
 - 检索客户端
 - 报告渲染工具
-
----
-
-## 12. 上下文优化实现说明
-
-新增模块：`agents/patent_analysis/src/context_selector.py`
-
-1. `QueryRewriteService`（公共模块）
-- 对原始查询做通用语义改写，输出 `query + alt_queries`
-- 不依赖固定术语表，适配不同专利文本风格
-- 改写失败自动回退原查询
-- 位置：`agents/common/retrieval/query_rewrite.py`
-
-2. `ContextSelector`
-- 检索输入统一来自：`abstract`、`summary_of_invention`、`brief_description_of_drawings`、`detailed_description`、`claims`
-- 支持 `policy=always/auto/fact`：
-  - `always`：始终启用 RAG
-  - `auto`：按长度阈值启用（默认 `<=1800` 字符不检索；`>6000` 启用查询改写多查询）
-  - `fact`：事实认定场景，强制启用 RAG 与查询改写
-- 执行多查询召回、结果去重、section 多样化选择、按字符预算裁剪
-- 无有效命中时回退调用方提供的 `fallback_text`
-
-当前已接入的 4 个高消耗环节：
-
-- `KnowledgeExtractor._construct_context`
-- `ContentGenerator._generate_background_knowledge`
-- `ContentGenerator._verify_evidence`
-- `ContentGenerator._generate_figures_analysis`
