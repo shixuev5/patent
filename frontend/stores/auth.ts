@@ -207,7 +207,7 @@ export const useAuthStore = defineStore('auth', {
         // 判断当前用户是否已经有密码
         const hasPassword = (this.user as any)?.hasPassword ?? false
 
-        const targetScene = hasPassword ? 'resetPassword' : 'firstLoginPassword'
+        const targetScene = hasPassword ? 'forgetPassword' : 'firstLoginPassword'
 
         const guard = createStandaloneGuard({
           mode: 'modal',
