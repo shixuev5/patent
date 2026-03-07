@@ -70,15 +70,6 @@ class Settings:
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")  
     OCR_BASE_URL = os.getenv("OCR_BASE_URL", "https://j9dd7babo5tcocz9.aistudio-app.com/ocr")
 
-    # --- Retrieval (Qwen + Vector Store) ---
-    QWEN_API_KEY = os.getenv("QWEN_API_KEY", os.getenv("DASHSCOPE_API_KEY", ""))
-    QWEN_EMBEDDING_MODEL = os.getenv("QWEN_EMBEDDING_MODEL", "qwen3-vl-embedding")
-    QWEN_TEXT_RERANK_MODEL = os.getenv("QWEN_TEXT_RERANK_MODEL", "qwen3-reranker")
-    QWEN_VL_RERANK_MODEL = os.getenv("QWEN_VL_RERANK_MODEL", "qwen3-vl-reranker")
-    RETRIEVAL_ALLOW_FAKE_MODEL = os.getenv("RETRIEVAL_ALLOW_FAKE_MODEL", "true").strip().lower() == "true"
-    RETRIEVAL_MILVUS_URI = os.getenv("RETRIEVAL_MILVUS_URI", str(DATA_DIR / "retrieval_milvus.db"))
-    RETRIEVAL_SESSION_TTL_MINUTES = int(os.getenv("RETRIEVAL_SESSION_TTL_MINUTES", "60"))
-
     # --- Authing ---
     AUTHING_APP_ID = os.getenv("AUTHING_APP_ID", "").strip()
     AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
