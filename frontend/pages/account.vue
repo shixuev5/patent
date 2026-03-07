@@ -1132,11 +1132,11 @@ onMounted(async () => {
   border-radius: 9999px;
   border: 1px solid #e2e8f0;
   background: #ffffff;
-  padding: 0.2rem 0.28rem;
+  padding: 0.14rem 0.22rem;
 }
 
 .month-switcher-btn {
-  min-height: 2rem;
+  min-height: 1.8rem;
   border-radius: 9999px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
@@ -1157,7 +1157,7 @@ onMounted(async () => {
 
 .month-switcher-label {
   text-align: center;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: #334155;
 }
@@ -1181,12 +1181,12 @@ onMounted(async () => {
 
 .target-input {
   width: 100%;
-  min-height: 2.5rem;
+  min-height: 2.1rem;
   border: 1px solid #cbd5e1;
   border-radius: 0.55rem;
   background: #ffffff;
   padding: 0.25rem 0.65rem;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   color: #0f172a;
 }
 
@@ -1197,12 +1197,12 @@ onMounted(async () => {
 
 .target-save-btn {
   width: 100%;
-  min-height: 2.5rem;
+  min-height: 2.1rem;
   border-radius: 0.55rem;
   border: 1px solid #0891b2;
   background: #06b6d4;
   padding: 0.24rem 0.65rem;
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #ecfeff;
   transition: all 0.18s ease;
@@ -1242,8 +1242,19 @@ onMounted(async () => {
 
   .month-switcher {
     width: auto;
-    min-width: 18rem;
-    grid-template-columns: 4.2rem minmax(6rem, 1fr) 4.2rem;
+    min-width: 14.6rem;
+    grid-template-columns: 3.5rem minmax(6rem, 1fr) 3.5rem;
+    gap: 0.25rem;
+    padding: 0.12rem 0.18rem;
+  }
+
+  .month-switcher-btn {
+    min-height: 1.62rem;
+    font-size: 0.7rem;
+  }
+
+  .month-switcher-label {
+    font-size: 0.78rem;
   }
 
   .target-panel {
@@ -1262,18 +1273,20 @@ onMounted(async () => {
 
   .target-actions {
     width: auto;
-    grid-template-columns: 6rem auto;
-    gap: 0.45rem;
+    grid-template-columns: 5.2rem auto;
+    gap: 0.35rem;
   }
 
   .target-input,
   .target-save-btn {
-    min-height: 2rem;
-    font-size: 0.72rem;
+    min-height: 1.68rem;
+    font-size: 0.68rem;
+    padding-top: 0.12rem;
+    padding-bottom: 0.12rem;
   }
 
   .target-save-btn {
-    min-width: 5.8rem;
+    min-width: 4.75rem;
     white-space: nowrap;
   }
 
