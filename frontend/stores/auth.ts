@@ -1,11 +1,17 @@
 import { defineStore } from 'pinia'
 import { Guard, useGuard } from '@authing/guard-vue3'
 import type { User } from '@authing/guard-vue3'
+import type { GuardOptions } from '@authing/guard-vue3'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
 const TASK_AUTH_TOKEN_KEY = 'patent_auth_token'
 const TASK_AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const TASK_AUTH_MODE_KEY = 'patent_auth_mode'
+
+interface StandaloneGuardOptions {
+  mode?: GuardOptions['mode']
+  defaultScene?: GuardOptions['defaultScene']
+}
 
 const toAuthingUser = (userInfo: User): AuthingUser => ({
   sub: userInfo.sub,
@@ -20,7 +26,7 @@ const toAuthingUser = (userInfo: User): AuthingUser => ({
   token: (userInfo as any)?.token,
 })
 
-const createStandaloneGuard = (): Guard | null => {
+const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | null => {
   if (!process.client) return null
 
   try {
@@ -34,6 +40,8 @@ const createStandaloneGuard = (): Guard | null => {
       appId,
       ...(host ? { host } : {}),
       ...(redirectUri ? { redirectUri } : {}),
+      ...(options.mode ? { mode: options.mode } : {}),
+      ...(options.defaultScene ? { defaultScene: options.defaultScene } : {}),
     })
   } catch (_error) {
     return null
@@ -179,6 +187,40 @@ export const useAuthStore = defineStore('auth', {
       }
       await this.checkAuth()
       this._clearBackendSessionCache()
+    },
+
+    async openPasswordReset() {
+      if (!process.client) return
+      const config = useRuntimeConfig()
+      if (!String(config.public.authingAppId || '').trim()) return
+
+      try {
+        const guard = createStandaloneGuard({
+          mode: 'modal',
+        })
+        if (!guard || typeof guard.render !== 'function') {
+          throw new Error('Authing Guard 未初始化，无法打开密码重置页面。')
+        }
+        await guard.render()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        if (typeof guard.changeView === 'function') {
+          await guard.changeView('resetPassword')
+          const currentModule = String(guard.getCurrentView?.().currentModule || '')
+          if (!currentModule || currentModule === 'login') {
+            await guard.changeView('forgetPassword')
+          }
+        }
+      } catch (error) {
+        console.error('Authing openPasswordReset failed:', error)
+        try {
+          const fallbackGuard = getGuardClient()
+          if (fallbackGuard && typeof fallbackGuard.startWithRedirect === 'function') {
+            await fallbackGuard.startWithRedirect()
+          }
+        } catch (fallbackError) {
+          console.error('Authing openPasswordReset fallback failed:', fallbackError)
+        }
+      }
     },
   },
 })

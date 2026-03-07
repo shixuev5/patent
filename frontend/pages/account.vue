@@ -68,7 +68,21 @@
                 </svg>
               </button>
             </div>
-            <p class="mt-1 text-xs text-slate-600">{{ displayAuthType }}</p>
+            <div class="profile-meta-row">
+              <p class="text-xs text-slate-600">{{ displayAuthType }}</p>
+              <button
+                v-if="hasAuthingEnabled && authStore.isLoggedIn"
+                type="button"
+                class="account-link-btn"
+                @click="openPasswordReset"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <rect x="5" y="11" width="14" height="9" rx="2" />
+                  <path d="M8 11V8a4 4 0 1 1 8 0v3" stroke-linecap="round" />
+                </svg>
+                <span>设置/修改密码</span>
+              </button>
+            </div>
             <p v-if="profileSaveErrorMessage" class="profile-inline-error">{{ profileSaveErrorMessage }}</p>
           </div>
         </div>
@@ -657,6 +671,8 @@ const displayName = computed(() => {
     profile.value?.nickname,
     authStore.user?.name,
     authStore.user?.nickname,
+    profile.value?.phone,
+    authStore.user?.phone,
     profile.value?.email,
     authStore.user?.email,
   ]
@@ -669,6 +685,10 @@ const displayAuthType = computed(() => {
   if (profile.value?.authType === 'authing' || authStore.isLoggedIn) return '认证账号'
   return '匿名访客'
 })
+
+const openPasswordReset = async () => {
+  await authStore.openPasswordReset()
+}
 
 const dashboardTitle = computed(() => {
   if (!dashboard.value) return '月度创建趋势'
@@ -1405,6 +1425,43 @@ onMounted(async () => {
 .name-edit-trigger:disabled {
   cursor: not-allowed;
   opacity: 0.4;
+}
+
+.profile-meta-row {
+  margin-top: 0.35rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.profile-meta-row p {
+  margin: 0;
+}
+
+.account-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1;
+  color: #64748b;
+  transition: color 0.18s ease;
+}
+
+.account-link-btn svg {
+  height: 0.78rem;
+  width: 0.78rem;
+}
+
+.account-link-btn:hover {
+  color: #0284c7;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .profile-inline-error {
