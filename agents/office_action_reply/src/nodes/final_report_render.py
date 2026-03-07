@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Dict
 from loguru import logger
 
-from agents.common.retrieval import drop_retrieval_session
 from agents.common.rendering.report_render import (
     write_markdown,
     render_markdown_to_pdf,
@@ -49,8 +48,6 @@ class FinalReportRenderNode:
                 "error_type": "final_report_render_error",
             }]
             updates["status"] = "failed"
-        finally:
-            self._cleanup_retrieval_session(state)
 
         return updates
 
@@ -80,13 +77,3 @@ class FinalReportRenderNode:
             "markdown_path": str(markdown_path),
             "pdf_path": str(pdf_path),
         }
-
-    def _cleanup_retrieval_session(self, state) -> None:
-        session_id = str(item_get(state, "retrieval_session_id", "")).strip()
-        if not session_id:
-            return
-        try:
-            drop_retrieval_session(session_id=session_id)
-            logger.info(f"已清理检索会话: {session_id}")
-        except Exception as ex:
-            logger.warning(f"检索会话清理失败 session_id={session_id}: {ex}")

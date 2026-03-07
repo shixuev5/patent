@@ -237,7 +237,6 @@ class WorkflowState(BaseModel):
     # 输出路径
     output_dir: str = Field("", description="输出目录")
     task_id: str = Field("", description="任务ID")
-    retrieval_session_id: str = Field("", description="检索会话ID，用于跨节点复用向量索引")
 
 
 class WorkflowConfig(BaseModel):

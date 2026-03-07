@@ -6,13 +6,10 @@
 import json
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
-
 from loguru import logger
-
-from agents.common.retrieval import retrieve_segments
 from agents.common.utils.llm import get_llm_service
-from agents.office_action_reply.src.state import EvidenceAssessment
 from agents.office_action_reply.src.utils import get_node_cache
+from agents.office_action_reply.src.state import EvidenceAssessment
 
 
 class EvidenceVerificationNode:
@@ -27,18 +24,12 @@ class EvidenceVerificationNode:
         updates = {}
 
         try:
-            retrieval_session_id = (
-                str(self._state_get(state, "retrieval_session_id", "")).strip()
-                or str(self._state_get(state, "task_id", "")).strip()
-            )
-
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence_v4",
+                "verify_evidence_v3",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
-                retrieval_session_id,
             )
 
             if not assessments:
@@ -49,8 +40,6 @@ class EvidenceVerificationNode:
                 item if isinstance(item, EvidenceAssessment) else EvidenceAssessment(**item)
                 for item in assessments
             ]
-            if retrieval_session_id:
-                updates["retrieval_session_id"] = retrieval_session_id
             logger.info(f"完成 {len(assessments)} 个争议项的事实核查")
 
         except Exception as e:
@@ -63,7 +52,7 @@ class EvidenceVerificationNode:
 
         return updates
 
-    def _verify_evidence(self, disputes, prepared_materials, retrieval_session_id: str):
+    def _verify_evidence(self, disputes, prepared_materials):
         document_disputes = self._get_document_based_disputes(disputes)
         if not document_disputes:
             return []
@@ -71,31 +60,21 @@ class EvidenceVerificationNode:
         prepared = self._to_dict(prepared_materials)
         claims = self._extract_claims(prepared)
         comparison_doc_map = self._build_comparison_doc_map(prepared)
-        retrieval_inputs = self._build_retrieval_inputs(comparison_doc_map)
         grouped_disputes = self._group_disputes_by_docs(document_disputes)
 
         assessments = []
-        session_seeded = False
-
         for doc_group, group_items in grouped_disputes.items():
-            missing_doc_ids = self._get_missing_doc_ids(doc_group, comparison_doc_map)
-            for dispute in group_items:
-                upsert_inputs = retrieval_inputs if (retrieval_session_id and not session_seeded) else []
+            docs_context, missing_doc_ids = self._build_docs_context(doc_group, comparison_doc_map)
+            prefix_messages = self._build_prefix_messages(docs_context)
 
+            for dispute in group_items:
                 assessment = self._verify_single_dispute(
                     dispute=dispute,
                     claims=claims,
                     doc_group=doc_group,
                     missing_doc_ids=missing_doc_ids,
-                    retrieval_session_id=retrieval_session_id,
-                    retrieval_inputs=upsert_inputs,
+                    prefix_messages=prefix_messages,
                 )
-                if upsert_inputs:
-                    session_ready = bool(
-                        self._to_dict(assessment.get("trace", {}).get("retrieval", {}).get("session_retrieval", {}))
-                        .get("session_ready", False)
-                    )
-                    session_seeded = session_ready
                 assessments.append(assessment)
 
         return assessments
@@ -127,21 +106,6 @@ class EvidenceVerificationNode:
                 comparison_doc_map[doc_id] = doc
         return comparison_doc_map
 
-    def _build_retrieval_inputs(self, comparison_doc_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-        inputs: List[Dict[str, Any]] = []
-        for doc_id, doc in comparison_doc_map.items():
-            content = self._extract_doc_content(doc)
-            if not content:
-                continue
-            source_type = "patent" if bool(doc.get("is_patent", False)) else "non_patent"
-            inputs.append({
-                "doc_id": doc_id,
-                "source_type": source_type,
-                "title": str(doc.get("document_number", "")).strip(),
-                "markdown": content,
-            })
-        return inputs
-
     def _group_disputes_by_docs(self, disputes: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], List[Dict[str, Any]]]:
         grouped: Dict[Tuple[str, ...], List[Dict[str, Any]]] = defaultdict(list)
         for dispute in disputes:
@@ -157,21 +121,32 @@ class EvidenceVerificationNode:
             grouped[tuple(normalized_ids)].append(dispute)
         return grouped
 
-    def _get_missing_doc_ids(
+    def _build_docs_context(
         self,
         doc_group: Tuple[str, ...],
         comparison_doc_map: Dict[str, Dict[str, Any]],
-    ) -> List[str]:
+    ) -> Tuple[List[Dict[str, str]], List[str]]:
+        docs_context: List[Dict[str, str]] = []
         missing_doc_ids: List[str] = []
+
         for doc_id in doc_group:
             doc = comparison_doc_map.get(doc_id)
             if not doc:
                 missing_doc_ids.append(doc_id)
                 continue
+
             content = self._extract_doc_content(doc)
             if not content:
                 missing_doc_ids.append(doc_id)
-        return missing_doc_ids
+                continue
+
+            docs_context.append({
+                "doc_id": doc_id,
+                "document_number": str(doc.get("document_number", "")),
+                "content": content[:16000],
+            })
+
+        return docs_context, missing_doc_ids
 
     def _extract_doc_content(self, doc: Dict[str, Any]) -> str:
         is_patent = bool(doc.get("is_patent", False))
@@ -190,28 +165,25 @@ class EvidenceVerificationNode:
 
         return ""
 
-    def _build_prefix_messages(self, retrieved_hits: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    def _build_prefix_messages(self, docs_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self._build_system_prompt()},
         ]
 
-        if not retrieved_hits:
+        if not docs_context:
             messages.append({
                 "role": "user",
-                "content": "当前争议项未检索到可用对比文件证据片段。请在输出中给出 INCONCLUSIVE。",
+                "content": "当前争议项未提供任何可用对比文件全文内容。请在输出中给出 INCONCLUSIVE。"
             })
             return messages
 
-        for hit in retrieved_hits:
-            location = str(hit.get("location", "")).strip()
+        for doc in docs_context:
             messages.append({
                 "role": "user",
                 "content": (
-                    f"证据片段：{hit['doc_id']}\n"
-                    f"标题: {hit.get('title', '')}\n"
-                    f"位置: {location}\n"
-                    f"片段: {hit.get('excerpt', '')}"
-                ),
+                    f"对比文件上下文：{doc['doc_id']} ({doc['document_number']})\n"
+                    f"全文片段如下：\n{doc['content']}"
+                )
             })
 
         return messages
@@ -267,37 +239,12 @@ examiner_rejection_reason 口吻与内容约束（强制）：
         claims: List[Dict[str, Any]],
         doc_group: Tuple[str, ...],
         missing_doc_ids: List[str],
-        retrieval_session_id: str,
-        retrieval_inputs: List[Dict[str, Any]],
+        prefix_messages: List[Dict[str, str]],
     ) -> Dict[str, Any]:
         claim_text = self._get_claim_text(dispute, claims)
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
 
-        query_text = self._build_retrieval_query(dispute, claim_text, examiner_opinion, applicant_opinion)
-        retrieval_filters: Dict[str, Any] = {"sources": ["patent", "non_patent"]}
-        if doc_group:
-            retrieval_filters["doc_ids"] = list(doc_group)
-
-        retrieved_hits: List[Dict[str, Any]] = []
-        session_ready = False
-        if retrieval_session_id and query_text:
-            try:
-                raw_hits = retrieve_segments(
-                    query_text=query_text,
-                    inputs=retrieval_inputs,
-                    mode="session",
-                    session_id=retrieval_session_id,
-                    top_n=24,
-                    top_k=8,
-                    filters=retrieval_filters,
-                )
-                retrieved_hits = self._normalize_retrieval_hits(raw_hits)
-                session_ready = True
-            except Exception as ex:
-                logger.warning(f"事实核查检索失败，将回退到无证据片段模式: {ex}")
-
-        prefix_messages = self._build_prefix_messages(retrieved_hits)
         dispute_prompt = f"""请核查以下争议项：
 original_claim_id: {dispute.get("original_claim_id", "")}
 claim_text: {claim_text}
@@ -306,7 +253,6 @@ examiner_opinion: {json.dumps(examiner_opinion, ensure_ascii=False)}
 applicant_opinion: {json.dumps(applicant_opinion, ensure_ascii=False)}
 supporting_docs_doc_ids: {json.dumps(list(doc_group), ensure_ascii=False)}
 missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
-retrieval_query: {query_text}
 """
         messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]
 
@@ -319,13 +265,6 @@ retrieval_query: {query_text}
 
         original_claim_id = str(dispute.get("original_claim_id", "")).strip()
         feature_text = str(dispute.get("feature_text", "")).strip()
-        used_doc_ids = []
-        for hit in retrieved_hits:
-            doc_id = str(hit.get("doc_id", "")).strip()
-            if doc_id and doc_id not in used_doc_ids:
-                used_doc_ids.append(doc_id)
-        if not used_doc_ids:
-            used_doc_ids = list(doc_group)
 
         return {
             "dispute_id": str(dispute.get("dispute_id", f"{original_claim_id}_{feature_text[:30]}")),
@@ -337,72 +276,10 @@ retrieval_query: {query_text}
             "assessment": parsed["assessment"],
             "evidence": parsed["evidence"],
             "trace": {
-                "used_doc_ids": used_doc_ids,
+                "used_doc_ids": list(doc_group),
                 "missing_doc_ids": list(missing_doc_ids),
-                "retrieval": {
-                    "session_retrieval": {
-                        "queries": [query_text] if query_text else [],
-                        "filters": retrieval_filters,
-                        "result_count": len(retrieved_hits),
-                        "session_ready": session_ready,
-                        "results": self._build_retrieval_trace_results(retrieved_hits),
-                    }
-                },
             },
         }
-
-    def _build_retrieval_query(
-        self,
-        dispute: Dict[str, Any],
-        claim_text: str,
-        examiner_opinion: Dict[str, Any],
-        applicant_opinion: Dict[str, Any],
-    ) -> str:
-        parts = [
-            str(dispute.get("feature_text", "")).strip(),
-            claim_text[:200],
-            str(examiner_opinion.get("reasoning", "")).strip()[:200],
-            str(applicant_opinion.get("core_conflict", "")).strip()[:120],
-        ]
-        return " ".join(part for part in parts if part).strip()
-
-    def _normalize_retrieval_hits(self, raw_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        hits: List[Dict[str, Any]] = []
-        for item in raw_hits or []:
-            hit = self._to_dict(item)
-            doc_id = str(hit.get("doc_id", "")).strip()
-            if not doc_id:
-                continue
-            heading_path = str(hit.get("heading_path", "")).strip()
-            para_id = str(hit.get("para_id", "")).strip()
-            page = hit.get("page")
-            location_parts = [heading_path, para_id]
-            if page is not None:
-                location_parts.append(f"page={page}")
-            location = " / ".join(part for part in location_parts if part)
-
-            hits.append({
-                "doc_id": doc_id,
-                "excerpt": str(hit.get("excerpt", "")).strip()[:650],
-                "title": str(hit.get("title", "")).strip(),
-                "source_type": str(hit.get("source_type", "")).strip(),
-                "location": location,
-                "score": float(hit.get("score", 0.0) or 0.0),
-            })
-        return hits
-
-    def _build_retrieval_trace_results(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for hit in hits:
-            results.append({
-                "doc_id": hit.get("doc_id"),
-                "source_type": hit.get("source_type", ""),
-                "title": hit.get("title", ""),
-                "url": None,
-                "published": None,
-                "similarity_score": hit.get("score"),
-            })
-        return results
 
     def _normalize_llm_output(self, response: Dict[str, Any], allowed_doc_ids: set[str]) -> Dict[str, Any]:
         output = self._to_dict(response)

@@ -107,7 +107,6 @@ flowchart TD
 7. `dispute_extraction`
    - 从 `office_action.paragraphs` 和 `response.content` 抽取争辩焦点 `disputes`。
    - 对字段合法性、`supporting_docs`、`dispute_id` 做校正与兜底。
-   - 当前保持“全量上下文抽取”策略，不接入 RAG 检索裁剪。
 
 ## 5.2 验证与报告阶段
 
@@ -176,17 +175,14 @@ flowchart TD
 1. 从 `prepared_materials` 提取：
    - 原权利要求文本
    - 对比文件内容映射（`document_id -> content`）
-2. 使用 `common/retrieval` 的 `session` 模式建立任务级向量会话（`session_id=task_id`），并在争议间复用索引。
-3. 对每个争议构建检索查询（`feature_text + claim_text + examiner_reasoning + applicant_core_conflict`），并使用 `doc_ids=supporting_docs.doc_id` 过滤召回片段。
-4. 将召回片段（而非整篇全文）注入 LLM，输出：
+2. 按 `supporting_docs.doc_id` 组合对争议分组，复用同一组文档上下文。
+3. 对每个争议调用 LLM，输出：
    - `assessment.verdict`：`APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE`
    - `assessment.reasoning`
    - `assessment.confidence`
    - `assessment.examiner_rejection_reason`（仅当 verdict=APPLICANT_CORRECT 时强制非空）
    - `evidence[]`
-5. 结果写入统一结构 `evidence_assessments[]`，并携带：
-   - `trace.used_doc_ids / missing_doc_ids`
-   - `trace.retrieval.session_retrieval`（queries/filters/result_count/results）
+4. 结果写入统一结构 `evidence_assessments[]`，并携带 `trace.used_doc_ids/missing_doc_ids`。
 
 ### 严格约束
 
@@ -213,15 +209,12 @@ flowchart TD
    - 专利：智慧芽语义检索
    - 网页：Tavily
    - 聚合后去重并编号为 `EXT1...`
-3. 对聚合证据执行 `common/retrieval` 的 `ephemeral` 二次重排（单次内存索引，用完即弃），仅保留高相关证据片段注入 LLM。
-4. 节点内置 query-hash 缓存：同轮同查询条件不重复调用外部检索与二次重排。
-5. 若外部证据为空：
+3. 若外部证据为空：
    - 退化为模型知识低置信判断（允许 `doc_id=MODEL`）
-6. 调用 LLM 输出统一 `assessment + evidence`。
-7. 输出 `trace`：
+4. 调用 LLM 输出统一 `assessment + evidence`。
+5. 输出 `trace`：
    - `used_doc_ids`
    - `retrieval`（按引擎记录 `queries/filters/result_count/results`）
-   - `retrieval.ephemeral_rerank`（二次重排摘要）
 
 ### 严格约束
 
@@ -267,7 +260,6 @@ flowchart TD
 ## 8. 并行分支如何合并
 
 `WorkflowState` 中多个列表字段使用 `Annotated[..., operator.add]` 声明（如 `disputes`, `evidence_assessments`, `errors`）。
-同时引入标量字段 `retrieval_session_id` 作为任务级检索会话标识。
 
 这意味着：
 
@@ -318,10 +310,6 @@ python -m agents.office_action_reply.main \
 - `OPENALEX_API_KEY` / `OPENALEX_BASE_URL`：学术证据检索
 - `TAVILY_API_KEYS` / `TAVILY_BASE_URL`：网页证据检索（支持多 key 轮换，单 key 也使用该变量，超限自动切换）
 - `ZHIHUIYA_*`：专利下载账号参数
-- `QWEN_API_KEY`：检索 embedding/rerank 模型调用凭据（`common/retrieval`）
-- `RETRIEVAL_MILVUS_URI`：session 检索存储位置（Milvus Lite）
-- `RETRIEVAL_SESSION_TTL_MINUTES`：session 数据 TTL（默认 60 分钟）
-- `RETRIEVAL_ALLOW_FAKE_MODEL`：检索模型降级开关（无 key 时是否允许哈希向量兜底）
 
 ---
 
@@ -329,7 +317,4 @@ python -m agents.office_action_reply.main \
 
 1. 关键前置节点失败（例如 `data_preparation`）会使 `state.status=failed`，并路由到 `handle_error`。
 2. 三个验证节点异常时，通常只写入 `errors`，最终由 `verification_join` 统一判定失败。
-3. `evidence_verification` 失败时会回退为“无检索片段”模式，仍可输出 `INCONCLUSIVE` 兜底。
-4. `common_knowledge_verification` 的二次重排失败时，会回退到原始外部证据列表。
-5. 任务结束（成功/失败）都会尝试清理 `retrieval_session_id` 对应的 session 索引，避免跨任务污染。
-6. 所有节点均支持缓存命中，避免重复调用外部 API 与 LLM。
+3. 所有节点均支持缓存命中，避免重复调用外部 API 与 LLM。
