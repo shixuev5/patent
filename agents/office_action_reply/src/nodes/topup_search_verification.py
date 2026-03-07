@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Set, Tuple
 
 from loguru import logger
 
-from agents.common.retrieval import retrieve_segments
 from agents.common.utils.llm import get_llm_service
 from agents.office_action_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.office_action_reply.src.retrieval_utils import (
@@ -112,29 +111,11 @@ class TopupSearchVerificationNode:
         external_evidence = self._to_external_evidence_items(external_candidates)
 
         evidence_context = local_evidence + external_evidence
-        evidence_query = self._build_evidence_query(task, claim_text, feature_text)
-        selected_evidence, rerank_trace = self._rerank_evidence_context(evidence_query, evidence_context)
-        if not selected_evidence and evidence_context:
-            selected_evidence = evidence_context[:6]
-
-        selected_local = [
-            item for item in selected_evidence
-            if str(item.get("source_type", "")).strip() == "comparison_document"
-        ]
-        selected_external = [
-            item for item in selected_evidence
-            if str(item.get("source_type", "")).strip() != "comparison_document"
-        ]
-
-        allowed_doc_ids: Set[str] = {
-            str(item.get("doc_id", "")).strip()
-            for item in selected_evidence
-            if item.get("doc_id")
-        }
+        allowed_doc_ids: Set[str] = {str(item.get("doc_id", "")).strip() for item in evidence_context if item.get("doc_id")}
         allowed_doc_ids.add("MODEL")
         evidence_map = {
             str(item.get("doc_id", "")).strip(): item
-            for item in selected_evidence
+            for item in evidence_context
             if item.get("doc_id")
         }
 
@@ -147,8 +128,8 @@ class TopupSearchVerificationNode:
                     claim_id=claim_id,
                     claim_text=claim_text,
                     feature_text=feature_text,
-                    local_evidence=selected_local,
-                    external_evidence=selected_external,
+                    local_evidence=local_evidence,
+                    external_evidence=external_evidence,
                     external_queries=external_queries,
                 ),
             },
@@ -181,26 +162,10 @@ class TopupSearchVerificationNode:
             "trace": {
                 "used_doc_ids": parsed["used_doc_ids"],
                 "missing_doc_ids": [],
-                "retrieval": self._merge_topup_retrieval_trace(
-                    external_queries=external_queries,
-                    retrieval_engines=retrieval_engines,
-                    retrieval_meta=retrieval_meta,
-                    rerank_trace=rerank_trace,
-                ),
+                "retrieval": build_trace_retrieval(external_queries, retrieval_engines, retrieval_meta),
             },
         }
         return dispute, assessment
-
-    def _merge_topup_retrieval_trace(
-        self,
-        external_queries: Dict[str, List[str]],
-        retrieval_engines: List[str],
-        retrieval_meta: Dict[str, Any],
-        rerank_trace: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        trace = build_trace_retrieval(external_queries, retrieval_engines, retrieval_meta)
-        trace["ephemeral_rerank"] = rerank_trace
-        return trace
 
     def _build_system_prompt(self) -> str:
         return """你是专利补充检索审查专家。你需要基于给定证据判断：新增特征是否已被公开或是否足以支持维持驳回。
@@ -327,108 +292,6 @@ feature_text: {feature_text}
             scenario="补充检索核查",
             per_engine_limit=2,
         )
-
-    def _build_evidence_query(self, task: Dict[str, Any], claim_text: str, feature_text: str) -> str:
-        parts = [
-            str(feature_text or "").strip(),
-            str(claim_text or "").strip()[:200],
-            str(task.get("source_type", "")).strip(),
-            " ".join(str(item).strip() for item in (task.get("source_claim_ids", []) or []) if str(item).strip()),
-            " ".join(str(item).strip() for item in (task.get("target_claim_ids", []) or []) if str(item).strip()),
-        ]
-        return " ".join(part for part in parts if part).strip()
-
-    def _rerank_evidence_context(
-        self,
-        query_text: str,
-        evidence_context: List[Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        if not evidence_context or not query_text:
-            return [], {
-                "queries": [query_text] if query_text else [],
-                "filters": {},
-                "result_count": 0,
-                "results": [],
-            }
-
-        retrieval_inputs: List[Dict[str, Any]] = []
-        evidence_map: Dict[str, Dict[str, Any]] = {}
-        for item in evidence_context:
-            evidence = self._to_dict(item)
-            doc_id = str(evidence.get("doc_id", "")).strip()
-            if not doc_id:
-                continue
-            source_type = str(evidence.get("source_type", "")).strip()
-            retrieval_source_type = "non_patent" if source_type == "comparison_document" else (source_type or "web")
-            content = str(evidence.get("quote", "")).strip() or str(evidence.get("analysis", "")).strip()
-            retrieval_inputs.append({
-                "doc_id": doc_id,
-                "source_type": retrieval_source_type,
-                "title": str(evidence.get("source_title", "")).strip(),
-                "url": str(evidence.get("source_url", "")).strip(),
-                "published_date": "",
-                "content": content,
-            })
-            evidence_map[doc_id] = evidence
-
-        if not retrieval_inputs:
-            return [], {
-                "queries": [query_text],
-                "filters": {},
-                "result_count": 0,
-                "results": [],
-            }
-
-        try:
-            hits = retrieve_segments(
-                query_text=query_text,
-                inputs=retrieval_inputs,
-                mode="ephemeral",
-                top_n=min(max(12, len(retrieval_inputs) * 3), 36),
-                top_k=min(max(4, len(retrieval_inputs)), 8),
-                filters={},
-            )
-        except Exception as ex:
-            logger.warning(f"TOPUP 证据二次重排失败，回退原始证据: {ex}")
-            hits = []
-
-        selected: List[Dict[str, Any]] = []
-        seen_doc_ids: Set[str] = set()
-        trace_results: List[Dict[str, Any]] = []
-
-        for item in hits:
-            hit = self._to_dict(item)
-            doc_id = str(hit.get("doc_id", "")).strip()
-            if not doc_id or doc_id in seen_doc_ids:
-                continue
-            source = self._to_dict(evidence_map.get(doc_id, {}))
-            if not source:
-                continue
-            selected.append({
-                "doc_id": doc_id,
-                "quote": str(hit.get("excerpt", "")).strip() or str(source.get("quote", "")).strip(),
-                "location": str(source.get("location", "")).strip(),
-                "analysis": str(source.get("analysis", "")).strip(),
-                "source_url": str(source.get("source_url", "")).strip() or None,
-                "source_title": str(source.get("source_title", "")).strip() or None,
-                "source_type": str(source.get("source_type", "")).strip() or None,
-            })
-            trace_results.append({
-                "doc_id": doc_id,
-                "source_type": str(hit.get("source_type", "")).strip(),
-                "title": str(hit.get("title", "")).strip(),
-                "url": str(hit.get("url", "")).strip() or None,
-                "published": str(hit.get("published_date", "")).strip() or None,
-                "similarity_score": float(hit.get("score", 0.0) or 0.0),
-            })
-            seen_doc_ids.add(doc_id)
-
-        return selected, {
-            "queries": [query_text],
-            "filters": {},
-            "result_count": len(selected),
-            "results": trace_results,
-        }
 
     def _normalize_llm_output(
         self,

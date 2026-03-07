@@ -5,11 +5,11 @@
 
 import json
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Tuple
 
 from loguru import logger
 
-from agents.common.retrieval import QueryRewriteService, retrieve_segments
+from agents.common.retrieval import retrieve_segments
 from agents.common.utils.llm import get_llm_service
 from agents.office_action_reply.src.state import EvidenceAssessment
 from agents.office_action_reply.src.utils import get_node_cache
@@ -21,7 +21,6 @@ class EvidenceVerificationNode:
     def __init__(self, config=None):
         self.config = config
         self.llm_service = get_llm_service()
-        self.query_rewriter = QueryRewriteService(llm_service=self.llm_service)
 
     def __call__(self, state):
         logger.info("开始证据核查")
@@ -72,33 +71,16 @@ class EvidenceVerificationNode:
         prepared = self._to_dict(prepared_materials)
         claims = self._extract_claims(prepared)
         comparison_doc_map = self._build_comparison_doc_map(prepared)
+        retrieval_inputs = self._build_retrieval_inputs(comparison_doc_map)
         grouped_disputes = self._group_disputes_by_docs(document_disputes)
 
         assessments = []
-        seeded_doc_ids: Set[str] = set()
+        session_seeded = False
 
         for doc_group, group_items in grouped_disputes.items():
-            group_doc_ids = [
-                str(doc_id).strip()
-                for doc_id in doc_group
-                if str(doc_id).strip() and str(doc_id).strip() in comparison_doc_map
-            ]
-            group_inputs = self._build_retrieval_inputs(
-                comparison_doc_map=comparison_doc_map,
-                allowed_doc_ids=set(group_doc_ids),
-            )
             missing_doc_ids = self._get_missing_doc_ids(doc_group, comparison_doc_map)
             for dispute in group_items:
-                pending_doc_ids: List[str] = []
-                upsert_inputs: List[Dict[str, Any]] = []
-                if retrieval_session_id and group_doc_ids:
-                    pending_doc_ids = [doc_id for doc_id in group_doc_ids if doc_id not in seeded_doc_ids]
-                    if pending_doc_ids:
-                        upsert_inputs = [
-                            item
-                            for item in group_inputs
-                            if str(item.get("doc_id", "")).strip() in pending_doc_ids
-                        ]
+                upsert_inputs = retrieval_inputs if (retrieval_session_id and not session_seeded) else []
 
                 assessment = self._verify_single_dispute(
                     dispute=dispute,
@@ -108,13 +90,12 @@ class EvidenceVerificationNode:
                     retrieval_session_id=retrieval_session_id,
                     retrieval_inputs=upsert_inputs,
                 )
-                if pending_doc_ids and upsert_inputs:
+                if upsert_inputs:
                     session_ready = bool(
                         self._to_dict(assessment.get("trace", {}).get("retrieval", {}).get("session_retrieval", {}))
                         .get("session_ready", False)
                     )
-                    if session_ready:
-                        seeded_doc_ids.update(pending_doc_ids)
+                    session_seeded = session_ready
                 assessments.append(assessment)
 
         return assessments
@@ -146,16 +127,9 @@ class EvidenceVerificationNode:
                 comparison_doc_map[doc_id] = doc
         return comparison_doc_map
 
-    def _build_retrieval_inputs(
-        self,
-        comparison_doc_map: Dict[str, Dict[str, Any]],
-        allowed_doc_ids: Optional[Set[str]] = None,
-    ) -> List[Dict[str, Any]]:
+    def _build_retrieval_inputs(self, comparison_doc_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         inputs: List[Dict[str, Any]] = []
-        allowed = {str(item).strip() for item in (allowed_doc_ids or set()) if str(item).strip()}
         for doc_id, doc in comparison_doc_map.items():
-            if allowed and doc_id not in allowed:
-                continue
             content = self._extract_doc_content(doc)
             if not content:
                 continue
@@ -205,7 +179,8 @@ class EvidenceVerificationNode:
 
         if is_patent:
             data_dict = self._to_dict(data)
-            return self._build_patent_retrieval_markdown(data_dict)
+            description = self._to_dict(data_dict.get("description", {}))
+            return str(description.get("detailed_description", "")).strip()
 
         if isinstance(data, str):
             return data.strip()
@@ -214,36 +189,6 @@ class EvidenceVerificationNode:
             return json.dumps(data, ensure_ascii=False)
 
         return ""
-
-    def _build_patent_retrieval_markdown(self, patent_data: Dict[str, Any]) -> str:
-        biblio = self._to_dict(patent_data.get("bibliographic_data", {}))
-        description = self._to_dict(patent_data.get("description", {}))
-        claims_raw = patent_data.get("claims", [])
-        claims = claims_raw if isinstance(claims_raw, list) else []
-
-        sections: List[str] = []
-
-        def add_section(title: str, content: Any) -> None:
-            text = str(content or "").strip()
-            if text:
-                sections.append(f"# {title}\n\n{text}")
-
-        add_section("abstract", biblio.get("abstract", ""))
-        add_section("summary_of_invention", description.get("summary_of_invention", ""))
-        add_section("brief_description_of_drawings", description.get("brief_description_of_drawings", ""))
-        add_section("detailed_description", description.get("detailed_description", ""))
-
-        claim_blocks: List[str] = []
-        for idx, claim in enumerate(claims, start=1):
-            claim_dict = self._to_dict(claim)
-            claim_id = str(claim_dict.get("claim_id", "")).strip() or str(idx)
-            claim_text = str(claim_dict.get("claim_text", "")).strip()
-            if claim_text:
-                claim_blocks.append(f"## claim_{claim_id}\n{claim_text}")
-        if claim_blocks:
-            sections.append("# claims\n\n" + "\n\n".join(claim_blocks))
-
-        return "\n\n".join(sections).strip()
 
     def _build_prefix_messages(self, retrieved_hits: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = [
@@ -335,9 +280,8 @@ examiner_rejection_reason 口吻与内容约束（强制）：
             retrieval_filters["doc_ids"] = list(doc_group)
 
         retrieved_hits: List[Dict[str, Any]] = []
-        retrieval_queries: List[str] = [query_text] if query_text else []
         session_ready = False
-        if retrieval_session_id and query_text and doc_group:
+        if retrieval_session_id and query_text:
             try:
                 raw_hits = retrieve_segments(
                     query_text=query_text,
@@ -350,30 +294,6 @@ examiner_rejection_reason 口吻与内容约束（强制）：
                 )
                 retrieved_hits = self._normalize_retrieval_hits(raw_hits)
                 session_ready = True
-
-                # 低召回兜底：仅在命中较少时触发查询改写，避免全量常开带来的额外成本
-                if len(retrieved_hits) < 2:
-                    rewrite_result = self.query_rewriter.rewrite(
-                        task_intent="专利事实核查：在指定对比文献中检索可支持/反驳争议特征的证据片段",
-                        raw_query=query_text,
-                    )
-                    alt_queries = self._build_rewrite_queries(query_text, rewrite_result)
-                    for alt_query in alt_queries:
-                        retrieval_queries.append(alt_query)
-                        try:
-                            extra_hits_raw = retrieve_segments(
-                                query_text=alt_query,
-                                inputs=[],
-                                mode="session",
-                                session_id=retrieval_session_id,
-                                top_n=24,
-                                top_k=8,
-                                filters=retrieval_filters,
-                            )
-                            extra_hits = self._normalize_retrieval_hits(extra_hits_raw)
-                            retrieved_hits = self._merge_retrieval_hits(retrieved_hits, extra_hits, limit=8)
-                        except Exception as sub_ex:
-                            logger.warning(f"事实核查改写查询检索失败 query={alt_query[:80]} err={sub_ex}")
             except Exception as ex:
                 logger.warning(f"事实核查检索失败，将回退到无证据片段模式: {ex}")
 
@@ -421,7 +341,7 @@ retrieval_query: {query_text}
                 "missing_doc_ids": list(missing_doc_ids),
                 "retrieval": {
                     "session_retrieval": {
-                        "queries": retrieval_queries,
+                        "queries": [query_text] if query_text else [],
                         "filters": retrieval_filters,
                         "result_count": len(retrieved_hits),
                         "session_ready": session_ready,
@@ -462,7 +382,6 @@ retrieval_query: {query_text}
             location = " / ".join(part for part in location_parts if part)
 
             hits.append({
-                "chunk_id": str(hit.get("chunk_id", "")).strip(),
                 "doc_id": doc_id,
                 "excerpt": str(hit.get("excerpt", "")).strip()[:650],
                 "title": str(hit.get("title", "")).strip(),
@@ -471,40 +390,6 @@ retrieval_query: {query_text}
                 "score": float(hit.get("score", 0.0) or 0.0),
             })
         return hits
-
-    def _build_rewrite_queries(self, raw_query: str, rewrite_result: Dict[str, Any]) -> List[str]:
-        output: List[str] = []
-        raw = " ".join(str(raw_query or "").split()).strip()
-        for value in [rewrite_result.get("query", "")] + list(rewrite_result.get("alt_queries", []) or []):
-            text = " ".join(str(value or "").split()).strip()
-            if not text or text == raw or text in output:
-                continue
-            output.append(text[:360])
-            if len(output) >= 2:
-                break
-        return output
-
-    def _merge_retrieval_hits(
-        self,
-        base_hits: List[Dict[str, Any]],
-        extra_hits: List[Dict[str, Any]],
-        limit: int = 8,
-    ) -> List[Dict[str, Any]]:
-        merged: Dict[str, Dict[str, Any]] = {}
-        for hit in (base_hits or []) + (extra_hits or []):
-            chunk_id = str(hit.get("chunk_id", "")).strip()
-            if chunk_id:
-                key = chunk_id
-            else:
-                key = f"{hit.get('doc_id', '')}::{hit.get('location', '')}::{hit.get('excerpt', '')[:120]}"
-
-            current = merged.get(key)
-            if current is None or float(hit.get("score", 0.0)) > float(current.get("score", 0.0)):
-                merged[key] = hit
-
-        output = list(merged.values())
-        output.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
-        return output[: max(1, int(limit or 8))]
 
     def _build_retrieval_trace_results(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
