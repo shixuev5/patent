@@ -18,7 +18,7 @@
         </nav>
 
         <div class="ml-auto flex items-center gap-1.5 md:hidden">
-          <NuxtLink to="/tasks" class="shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
+          <NuxtLink to="/tasks" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
             AI任务
           </NuxtLink>
           <div class="relative md:hidden">
@@ -236,5 +236,13 @@ onBeforeUnmount(() => {
 
 .font-display {
   font-family: 'Orbitron', 'Noto Sans SC', sans-serif;
+}
+
+.mobile-task-btn,
+.mobile-task-btn:link,
+.mobile-task-btn:visited,
+.mobile-task-btn:hover,
+.mobile-task-btn:active {
+  color: white !important;
 }
 </style>

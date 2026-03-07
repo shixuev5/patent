@@ -13,18 +13,22 @@ interface StandaloneGuardOptions {
   defaultScene?: GuardOptions['defaultScene']
 }
 
-const toAuthingUser = (userInfo: User): AuthingUser => ({
-  sub: userInfo.sub,
-  name: userInfo.name,
-  nickname: userInfo.nickname,
-  email: userInfo.email,
-  phone: userInfo.phone,
-  picture: userInfo.picture,
-  email_verified: userInfo.email_verified,
-  phone_verified: userInfo.phone_verified,
-  updated_at: userInfo.updated_at,
-  token: (userInfo as any)?.token,
-})
+const toAuthingUser = (userInfo: User | any): AuthingUser => {
+  const info = userInfo as any
+  return {
+    sub: info.sub || info.id,
+    name: info.name,
+    nickname: info.nickname,
+    email: info.email,
+    phone: info.phone,
+    picture: info.picture || info.photo,
+    email_verified: info.email_verified ?? info.emailVerified,
+    phone_verified: info.phone_verified ?? info.phoneVerified,
+    updated_at: info.updated_at ?? info.updatedAt,
+    token: info.token,
+    hasPassword: !!info.password
+  } as unknown as AuthingUser
+}
 
 const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | null => {
   if (!process.client) return null
@@ -195,21 +199,19 @@ export const useAuthStore = defineStore('auth', {
       if (!String(config.public.authingAppId || '').trim()) return
 
       try {
+        // 判断当前用户是否已经有密码
+        const hasPassword = (this.user as any)?.hasPassword ?? false
+
+        const targetScene = hasPassword ? 'resetPassword' : 'firstLoginPassword'
+
         const guard = createStandaloneGuard({
           mode: 'modal',
+          defaultScene: targetScene
         })
         if (!guard || typeof guard.render !== 'function') {
           throw new Error('Authing Guard 未初始化，无法打开密码重置页面。')
         }
         await guard.render()
-        await new Promise((resolve) => setTimeout(resolve, 0))
-        if (typeof guard.changeView === 'function') {
-          await guard.changeView('resetPassword')
-          const currentModule = String(guard.getCurrentView?.().currentModule || '')
-          if (!currentModule || currentModule === 'login') {
-            await guard.changeView('forgetPassword')
-          }
-        }
       } catch (error) {
         console.error('Authing openPasswordReset failed:', error)
         try {
