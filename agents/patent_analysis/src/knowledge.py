@@ -2,54 +2,53 @@ from typing import Dict
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from config import Settings
-from agents.patent_analysis.src.context_selector import ContextSelector
 
 
 class KnowledgeExtractor:
-    def __init__(self, retrieval_session_id: str = ""):
+    def __init__(self):
         self.llm_service = get_llm_service()
-        self.retrieval_session_id = str(retrieval_session_id or "").strip()
 
-    def _construct_context(self, patent_data: Dict, max_chars: int = 5000) -> str:
+    def _construct_context(self, patent_data: Dict, max_chars: int = 20000) -> str:
         """
-        基于检索裁剪构建上下文，专注于提取部件名称及其功能/位置。
+        动态构建上下文，专注于提取部件名称及其功能/位置。
         """
-        biblio = patent_data.get("bibliographic_data", {}) if isinstance(patent_data, dict) else {}
-        description = patent_data.get("description", {}) if isinstance(patent_data, dict) else {}
+        parts = []
+        current_length = 0
 
-        raw_query = "\n".join(
-            [
-                "抽取附图标记对应的物理部件名称、功能、位置与连接关系",
-                str(description.get("brief_description_of_drawings", "")).strip(),
-                str(description.get("summary_of_invention", "")).strip()[:800],
-                str(biblio.get("abstract", "")).strip()[:400],
-            ]
-        ).strip()
+        # 1. 摘要 (核心功能概览，Token占用极小，优先级高)
+        abstract = patent_data.get("bibliographic_data", {}).get("abstract", "")
+        if abstract:
+            text = f"### 【摘要】(用于理解核心发明及其主要功能)\n{abstract}\n"
+            parts.append(text)
+            current_length += len(text)
 
-        fallback_text = "\n\n".join(
-            [
-                f"### 【摘要】\n{str(biblio.get('abstract', '')).strip()}",
-                f"### 【附图说明】\n{str(description.get('brief_description_of_drawings', '')).strip()}",
-                f"### 【具体实施方式】\n{str(description.get('detailed_description', '')).strip()[:max_chars]}",
-            ]
-        ).strip()
-
-        selector = ContextSelector(
-            patent_data=patent_data,
-            llm_service=self.llm_service,
-            retrieval_session_id=self.retrieval_session_id,
+        # 2. 附图说明 (ID-Name 字典，最关键，优先级高)
+        brief_desc = patent_data.get("description", {}).get(
+            "brief_description_of_drawings", ""
         )
-        result = selector.select_context(
-            task_intent="提取带附图标记的物理实体，并补充功能与关系描述",
-            raw_query=raw_query,
-            fallback_text=fallback_text,
-            max_chars=max_chars,
-            top_n=24,
-            top_k=8,
-            mode="session" if self.retrieval_session_id else "ephemeral",
-            policy="always",
+        if brief_desc:
+            text = (
+                f"### 【附图说明】(必须作为提取 编号-名称 的首要依据)\n{brief_desc}\n"
+            )
+            parts.append(text)
+            current_length += len(text)
+
+        # 3. 具体实施方式 (功能与连接关系描述来源)
+        detailed_desc = patent_data.get("description", {}).get(
+            "detailed_description", ""
         )
-        return result.context
+
+        remaining_chars = max_chars - current_length
+        if remaining_chars > 500 and detailed_desc:
+            if remaining_chars < len(detailed_desc):
+                # 截取剩余空间，但确保不截断得太离谱
+                truncated_detail = detailed_desc[:remaining_chars]
+                text = f"### 【具体实施方式】\n{truncated_detail}...\n(下文已截断)"
+            else:
+                text = f"### 【具体实施方式】\n{detailed_desc}\n"
+            parts.append(text)
+
+        return "\n".join(parts)
 
     def extract_entities(self, patent_data: Dict) -> Dict:
         """

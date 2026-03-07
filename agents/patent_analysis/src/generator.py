@@ -7,7 +7,6 @@ from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
 from config import Settings
-from agents.patent_analysis.src.context_selector import ContextSelector
 
 
 class ContentGenerator:
@@ -18,14 +17,11 @@ class ContentGenerator:
         image_parts: Dict,
         annotated_dir: Path,
         cache_file: Path = None,
-        retrieval_session_id: str = "",
     ):
         self.llm_service = get_llm_service()
-        self.patent_data = patent_data
         self.parts_db = parts_db
         self.image_parts = image_parts
         self.annotated_dir = annotated_dir
-        self.retrieval_session_id = str(retrieval_session_id or "").strip()
 
         # 初始化缓存管理器
         self.cache = StepCache(cache_file) if cache_file else None
@@ -35,11 +31,6 @@ class ContentGenerator:
         self.claims = patent_data.get("claims", [])
         self.description = patent_data.get("description", {})
         self.drawings = patent_data.get("drawings", [])
-        self.context_selector = ContextSelector(
-            patent_data=patent_data,
-            llm_service=self.llm_service,
-            retrieval_session_id=self.retrieval_session_id,
-        )
 
         # 提取关键文本块 (为了节省 Token 并提高准确度，提前做简单的清洗)
         # 1. 用于定义问题：看背景和目标
@@ -70,14 +61,14 @@ class ContentGenerator:
             # 输入：背景技术、技术效果
             # 输出：technical_field, technical_problem
             domain_problem_data = self.cache.run_step(
-                "domain_problem", self._analyze_domain_and_problem
+                "step1_domain_problem", self._analyze_domain_and_problem
             )
 
             # === Step 2: 解决方案封装 ===
             # 输入：Step 1的结果、独立权利要求、发明内容
             # 输出：ai_title, ai_abstract, technical_scheme
             solution_data = self.cache.run_step(
-                "solution_package", self._synthesize_solution_package, domain_problem_data
+                "step2_solution", self._synthesize_solution_package, domain_problem_data
             )
 
             # 合并核心逻辑数据 (Core Logic Context)
@@ -87,14 +78,14 @@ class ContentGenerator:
             # 输入：核心逻辑、详细描述的前半部分(通常包含定义)
             # 输出：background_knowledge (List[Dict])
             background_data = self.cache.run_step(
-                "background_knowledge", self._generate_background_knowledge, core_logic
+                "step2_5_background", self._generate_background_knowledge, core_logic
             )
 
             # === Step 3: 权利要求解构与特征定义 ===
             # 输入：核心逻辑、全部权利要求
             # 输出：claim_subject_matter、technical_features
             features_data = self.cache.run_step(
-                "claim_feature_extraction", self._extract_features, core_logic
+                "step3_features", self._extract_features, core_logic
             )
             feature_list = features_data.get("technical_features", [])
 
@@ -102,7 +93,7 @@ class ContentGenerator:
             # 输入：核心逻辑、技术特征、具体实施方式
             # 输出：technical_means, technical_effects
             verification_data = self.cache.run_step(
-                "tcs_evidence_verification", self._verify_evidence, core_logic, feature_list
+                "step4_verification", self._verify_evidence, core_logic, feature_list
             )
 
             # 图解生成 (遍历每一张图，生成解说和部件表)
@@ -112,7 +103,7 @@ class ContentGenerator:
                 "effects": verification_data.get("technical_effects", []),
             }
             figures_data = self.cache.run_step(
-                "figure_explanations", self._generate_figures_analysis, global_context
+                "step5_figures", self._generate_figures_analysis, global_context
             )
 
             # 组装最终 JSON
@@ -405,40 +396,24 @@ class ContentGenerator:
         }
         """
 
-        indep_claims_text = self._format_claims_to_text(only_independent=True)
-        fallback_context = "\n\n".join(
-            [
-                str(self.description.get("detailed_description", "") or "")[:5000],
-                indep_claims_text[:1200],
-            ]
-        ).strip()
-        raw_query = "\n".join(
-            [
-                str(core_logic.get("technical_field", "")).strip(),
-                str(core_logic.get("technical_scheme", "")).strip()[:600],
-                indep_claims_text[:1200],
-            ]
-        ).strip()
-        context_result = self.context_selector.select_context(
-            task_intent="提炼专利中的关键技术概念并解释其定义、类比和在本案作用",
-            raw_query=raw_query,
-            fallback_text=fallback_context,
-            max_chars=2600,
-            top_n=24,
-            top_k=6,
-            mode="session" if self.retrieval_session_id else "ephemeral",
-            policy="auto",
-        )
+        # 准备上下文：不仅需要核心逻辑，还需要一些具体的描述文本来挖掘术语
+        # 截取 description 的前 5000 字符，通常包含背景和术语定义
+        context_text = self.description.get("detailed_description", "")[:5000]
+        if not context_text:
+            context_text = self.description.get("summary_of_invention", "")
 
         user_content = f"""
         【技术领域】: {core_logic.get('technical_field')}
         【核心方案】: {core_logic.get('technical_scheme')}
         
-        【检索裁剪上下文】:
-        {context_result.context}
+        【待扫描的专利文本片段】:
+        {context_text}
+        
+        【权利要求片段 (寻找核心名词)】:
+        {self._format_claims_to_text(only_independent=True)}
         """
 
-        response = self.llm_service.chat_completion_json(
+        return self.llm_service.chat_completion_json(
             model=Settings.LLM_MODEL_REASONING, # 建议使用推理能力强的模型以生成好的类比
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -446,9 +421,6 @@ class ContentGenerator:
             ],
             temperature=0.3, # 稍微增加一点创造性，以便生成生动的类比
         )
-        if isinstance(response, dict):
-            response["_context_trace"] = context_result.trace
-        return response
 
     def _extract_features(self, core_logic: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -676,26 +648,6 @@ class ContentGenerator:
         }
         """
 
-        fallback_context = str(self.text_details or "")[:12000]
-        raw_query = "\n".join(
-            [
-                str(core_logic.get("technical_problem", "")).strip(),
-                str(core_logic.get("technical_scheme", "")).strip()[:800],
-                feature_menu_str[:1500],
-                str(self.text_effect or "").strip()[:600],
-            ]
-        ).strip()
-        context_result = self.context_selector.select_context(
-            task_intent="验证技术机制与技术效果的因果链，并提取可支持TCS评分的证据片段",
-            raw_query=raw_query,
-            fallback_text=fallback_context,
-            max_chars=3200,
-            top_n=24,
-            top_k=6,
-            mode="session" if self.retrieval_session_id else "ephemeral",
-            policy="fact",
-        )
-
         user_content = f"""
         # 1. 核心逻辑锚点 (Anchor)
         【待解决的核心技术问题 (The Pain Point)】: {core_logic.get('technical_problem')}
@@ -710,7 +662,7 @@ class ContentGenerator:
 
         # 4. 事实数据库 (Embodiments & Experiments)
         *** 请在此区域挖掘一级证据 (数据/参数/具体行为) ***
-        {context_result.context}
+        {self.text_details[:12000]} 
         """
 
         response = self.llm_service.chat_completion_json(
@@ -721,8 +673,6 @@ class ContentGenerator:
             ],
             temperature=0.1,  # 保持低温度以确保精准引用特征名称
         )
-        if isinstance(response, Dict):
-            response["_context_trace"] = context_result.trace
 
         # 按照 tcs_score 字段进行降序排序 (reverse=True)
         if isinstance(response, Dict) and "technical_effects" in response:
@@ -741,6 +691,13 @@ class ContentGenerator:
 
         # 预处理：建立段落索引，方便查找图片引用的上下文
         paragraphs = self.text_details.split("\n")
+
+        # 构建全局部件索引字符串 (用于 Prompt 查阅)
+        all_parts_summary = []
+        for pid, info in self.parts_db.items():
+            name = info.get("name", "未知部件")
+            all_parts_summary.append(f"{pid}: {name}")
+        global_parts_str = "\n".join(all_parts_summary)
 
         grouped_drawings: Dict[str, List[Dict[str, Any]]] = {}
         for drawing in self.drawings:
@@ -882,43 +839,13 @@ class ContentGenerator:
             if not related_text.strip():
                 related_text = caption
 
-            related_parts_str = self._build_related_parts_context(
-                part_ids=part_ids,
-                related_text=related_text,
-                caption=caption,
-                limit=12,
-            )
-            figure_raw_query = "\n".join(
-                [
-                    str(label or "").strip(),
-                    str(caption or "").strip(),
-                    local_parts_context_str[:500],
-                    str(global_context.get("problem", "")).strip()[:300],
-                ]
-            ).strip()
-            figure_context_result = self.context_selector.select_context(
-                task_intent="解释附图中的结构关系或数据变化，并关联专利核心问题与效果",
-                raw_query=figure_raw_query,
-                fallback_text=related_text,
-                max_chars=800,
-                top_n=20,
-                top_k=3,
-                mode="session" if self.retrieval_session_id else "ephemeral",
-                policy="auto",
-            )
-            merged_related_text = self._merge_figure_context(
-                related_text=related_text,
-                retrieved_text=figure_context_result.context,
-                max_chars=1200,
-            )
-
             # 3. 生成图片解说
             image_explanation = self._generate_single_figure_caption(
                 label,
                 caption,
                 local_parts_context_str,
-                related_parts_str,
-                merged_related_text,
+                global_parts_str,
+                related_text,
                 global_context,
                 image_abs_paths,
             )
@@ -934,69 +861,6 @@ class ContentGenerator:
             )
 
         return results
-
-    def _build_related_parts_context(
-        self,
-        part_ids: List[Any],
-        related_text: str,
-        caption: str,
-        limit: int = 12,
-    ) -> str:
-        selected_ids: List[str] = []
-        for value in part_ids or []:
-            key = str(value).strip()
-            if not key or key in selected_ids:
-                continue
-            selected_ids.append(key)
-
-        context_text = f"{caption}\n{related_text}"
-        for pid, info in self.parts_db.items():
-            if len(selected_ids) >= limit:
-                break
-            pid_str = str(pid).strip()
-            if not pid_str or pid_str in selected_ids:
-                continue
-            name = str((info or {}).get("name", "")).strip()
-            if not name:
-                continue
-            if name in context_text:
-                selected_ids.append(pid_str)
-
-        if len(selected_ids) < limit:
-            for pid in sorted(self.parts_db.keys(), key=lambda x: str(x)):
-                if len(selected_ids) >= limit:
-                    break
-                pid_str = str(pid).strip()
-                if not pid_str or pid_str in selected_ids:
-                    continue
-                selected_ids.append(pid_str)
-
-        lines: List[str] = []
-        for pid in selected_ids[:limit]:
-            info = self.parts_db.get(str(pid)) or self.parts_db.get(pid) or {}
-            name = str(info.get("name", "未知部件")).strip()
-            func = str(info.get("function", "")).strip()
-            if func:
-                lines.append(f"{pid}: {name} - {func}")
-            else:
-                lines.append(f"{pid}: {name}")
-        return "\n".join(lines)
-
-    def _merge_figure_context(self, related_text: str, retrieved_text: str, max_chars: int = 1200) -> str:
-        related = str(related_text or "").strip()
-        retrieved = str(retrieved_text or "").strip()
-
-        if not related and not retrieved:
-            return ""
-        if not retrieved:
-            return related[:max_chars]
-        if not related:
-            return retrieved[:max_chars]
-
-        if retrieved in related:
-            return related[:max_chars]
-        merged = f"{related}\n\n[检索补充]\n{retrieved}"
-        return merged[:max_chars]
 
     def _generate_single_figure_caption(
         self,
