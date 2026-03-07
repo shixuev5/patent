@@ -738,7 +738,7 @@ const smartSummary = computed(() => {
 })
 
 const targetInputInvalid = computed(() => {
-  const raw = monthTargetInput.value.trim()
+  const raw = String(monthTargetInput.value ?? '').trim()
   if (!raw) return true
   const value = Number(raw)
   return !Number.isInteger(value) || value < 0
