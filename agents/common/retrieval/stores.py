@@ -186,14 +186,6 @@ def _matches_filters(chunk: RetrievalChunk, filters: Dict[str, Any]) -> bool:
         if chunk.source_type.lower() not in source_set:
             return False
 
-    doc_ids = filters.get("doc_ids") or []
-    if doc_ids:
-        doc_id_set = {str(item).strip() for item in doc_ids if str(item).strip()}
-        if doc_id_set:
-            chunk_doc_id = str(chunk.metadata.get("doc_id") or chunk.chunk_id.split("::")[0]).strip()
-            if chunk_doc_id not in doc_id_set:
-                return False
-
     before_date = str(filters.get("before_date") or "").strip()
     if before_date:
         published = str(chunk.metadata.get("published_date") or "").strip()
