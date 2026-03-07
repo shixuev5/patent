@@ -225,3 +225,4 @@ hits = retrieve_segments(
 说明：
 - 文本重排使用 `qwen3-reranker`；图文查询使用 `qwen3-vl-reranker`。
 - `mode=ephemeral` 适合一次性检索；`mode=session` 使用 Milvus Lite 做多轮复用（TTL 清理）。
+- 查询改写可使用 `agents.common.retrieval.QueryRewriteService`，用于生成 `query + alt_queries` 提升召回。
