@@ -1,4 +1,7 @@
-export default defineNuxtPlugin(async (nuxtApp) => {
+import { createGuard } from '@authing/guard-vue3'
+import '@authing/guard-vue3/dist/esm/guard.min.css'
+
+export default defineNuxtPlugin((nuxtApp) => {
   const config = useRuntimeConfig()
   const appId = String(config.public.authingAppId || '').trim()
 
@@ -8,9 +11,6 @@ export default defineNuxtPlugin(async (nuxtApp) => {
 
   const redirectUri = String(config.public.authingRedirectUri || '').trim()
   const host = String(config.public.authingDomain || '').trim()
-
-  const { createGuard } = await import('@authing/guard-vue3')
-  await import('@authing/guard-vue3/dist/esm/guard.min.css')
 
   const guard = createGuard({
     appId,

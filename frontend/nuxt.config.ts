@@ -64,33 +64,6 @@ export default defineNuxtConfig({
   experimental: {
     payloadExtraction: false,
   },
-
-  vite: {
-    build: {
-      // 1. 提升警告阈值（消除烦人的警告，因为 Authing 本身就很大）
-      chunkSizeWarningLimit: 3000,
-      
-      // 2. 开启代码分割 (Code Splitting)
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            // 将 Authing 相关的依赖单独拆分成一个 chunk
-            if (id.includes('node_modules/@authing')) {
-              return 'vendor-authing';
-            }
-            // 将 Vue / Nuxt 核心依赖拆分
-            if (id.includes('node_modules/vue') || id.includes('node_modules/@vue') || id.includes('node_modules/vue-router')) {
-              return 'vendor-vue-core';
-            }
-            // 将 Pinia 等状态管理拆分
-            if (id.includes('node_modules/pinia') || id.includes('node_modules/@pinia')) {
-              return 'vendor-pinia';
-            }
-          }
-        }
-      }
-    },
-  },
   
   // 构建配置
   build: {
