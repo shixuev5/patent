@@ -152,7 +152,15 @@ const isServiceHealthy = computed(() => {
 
 const serviceStatusText = computed(() => (isServiceHealthy.value ? '正常' : '异常'))
 const versionText = computed(() => serviceVersion.value || '--')
-const displayUserName = computed(() => authStore.user?.name || authStore.user?.nickname || authStore.user?.email || '已登录用户')
+const displayUserName = computed(() => {
+  const candidates = [
+    authStore.user?.name,
+    authStore.user?.nickname,
+    authStore.user?.phone,
+    authStore.user?.email,
+  ]
+  return candidates.find((item) => item && String(item).trim().length > 0) || '已登录用户'
+})
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 
 const navClass = (active: boolean) => {

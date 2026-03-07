@@ -19,7 +19,7 @@ onMounted(async () => {
   } catch (error) {
     console.error('Authing callback failed:', error)
   } finally {
-    await navigateTo('/tasks')
+    await navigateTo('/account')
   }
 })
 </script>
