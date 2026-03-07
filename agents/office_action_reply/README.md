@@ -177,17 +177,14 @@ flowchart TD
    - 原权利要求文本
    - 对比文件内容映射（`document_id -> content`）
 2. 使用 `common/retrieval` 的 `session` 模式建立任务级向量会话（`session_id=task_id`），并在争议间复用索引。
-3. 会话索引按 `supporting_docs` 分组增量构建（仅上载当前争议组涉及文档，避免全量重复建索引）。
-4. 对每个争议构建检索查询（`feature_text + claim_text + examiner_reasoning + applicant_core_conflict`），并使用 `doc_ids=supporting_docs.doc_id` 过滤召回片段。
-5. 专利对比文献的检索语料使用多字段拼装：`abstract + summary_of_invention + brief_description_of_drawings + detailed_description + claims`（不再仅依赖 `detailed_description`）。
-6. 当首轮召回命中不足（低召回）时，触发查询语义改写兜底检索并合并结果（默认不常开，避免额外成本）。
-7. 将召回片段（而非整篇全文）注入 LLM，输出：
+3. 对每个争议构建检索查询（`feature_text + claim_text + examiner_reasoning + applicant_core_conflict`），并使用 `doc_ids=supporting_docs.doc_id` 过滤召回片段。
+4. 将召回片段（而非整篇全文）注入 LLM，输出：
    - `assessment.verdict`：`APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE`
    - `assessment.reasoning`
    - `assessment.confidence`
    - `assessment.examiner_rejection_reason`（仅当 verdict=APPLICANT_CORRECT 时强制非空）
    - `evidence[]`
-8. 结果写入统一结构 `evidence_assessments[]`，并携带：
+5. 结果写入统一结构 `evidence_assessments[]`，并携带：
    - `trace.used_doc_ids / missing_doc_ids`
    - `trace.retrieval.session_retrieval`（queries/filters/result_count/results）
 
@@ -249,16 +246,14 @@ flowchart TD
 2. 两路证据准备：
    - 本地对比文件深扫（命中关键词生成 `D*` 证据片段）
    - 外部检索聚合（查询条件由 LLM 按 OpenAlex/智慧芽/Tavily 生成，结果编号 `EXT*`）
-3. 对“本地证据 + 外部证据”执行一次 `common/retrieval` 的 `ephemeral` 二次重排，注入裁剪后的高相关证据，降低上下文 token。
-4. 调用 LLM 同时产出：
+3. 调用 LLM 同时产出：
    - `examiner_opinion`
    - `applicant_opinion`
    - `assessment`
    - `evidence`
-5. 同时更新两个状态字段：
+4. 同时更新两个状态字段：
    - `disputes[]`（新增 TOPUP 争议）
    - `evidence_assessments[]`（新增 TOPUP 核查结果）
-6. 结果 trace 额外记录 `retrieval.ephemeral_rerank`，用于追踪二次重排输入/输出。
 
 ### 严格约束
 
