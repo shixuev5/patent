@@ -50,6 +50,10 @@ export default defineNuxtConfig({
         { rel: 'shortcut icon', href: '/favicon.svg' },
         { rel: 'preconnect', href: 'https://fonts.loli.net' },
         { rel: 'stylesheet', href: 'https://fonts.loli.net/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap' },
+        { rel: 'stylesheet', href: 'https://cdn.authing.co/packages/guard/latest/guard.min.css' },
+      ],
+      script: [
+        { src: 'https://cdn.authing.co/packages/guard/latest/guard.min.js' },
       ],
     },
   },
@@ -67,6 +71,6 @@ export default defineNuxtConfig({
   
   // 构建配置
   build: {
-    transpile: ['@heroicons/vue', '@authing/guard-vue3'],
+    transpile: ['@heroicons/vue'],
   },
 })

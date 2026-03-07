@@ -14,7 +14,6 @@
     "deploy": "nuxt generate && wrangler pages deploy .output/public --project-name=patent-analyzer-frontend"
   },
   "dependencies": {
-    "@authing/guard-vue3": "^5.3.9",
     "@heroicons/vue": "^2.1.1",
     "@pinia/nuxt": "^0.5.1",
     "autoprefixer": "^10.4.17",

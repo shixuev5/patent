@@ -1,7 +1,5 @@
 import { defineStore } from 'pinia'
-import { Guard, useGuard } from '@authing/guard-vue3'
-import type { User } from '@authing/guard-vue3'
-import type { GuardOptions } from '@authing/guard-vue3'
+import type { GuardClient, GuardConstructor } from '~/types/authing-guard-cdn'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
 const TASK_AUTH_TOKEN_KEY = 'patent_auth_token'
@@ -9,11 +7,11 @@ const TASK_AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const TASK_AUTH_MODE_KEY = 'patent_auth_mode'
 
 interface StandaloneGuardOptions {
-  mode?: GuardOptions['mode']
-  defaultScene?: GuardOptions['defaultScene']
+  mode?: string
+  defaultScene?: string
 }
 
-const toAuthingUser = (userInfo: User | any): AuthingUser => {
+const toAuthingUser = (userInfo: unknown): AuthingUser => {
   const info = userInfo as any
   return {
     sub: info.sub || info.id,
@@ -30,7 +28,13 @@ const toAuthingUser = (userInfo: User | any): AuthingUser => {
   } as unknown as AuthingUser
 }
 
-const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | null => {
+const getGuardConstructor = (): GuardConstructor | null => {
+  if (!process.client) return null
+  const guardFactory = (window as Window & { GuardFactory?: { Guard?: GuardConstructor } }).GuardFactory
+  return guardFactory && typeof guardFactory.Guard === 'function' ? guardFactory.Guard : null
+}
+
+const createStandaloneGuard = (options: StandaloneGuardOptions = {}): GuardClient | null => {
   if (!process.client) return null
 
   try {
@@ -40,6 +44,9 @@ const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | nu
 
     const host = String(config.public.authingDomain || '').trim()
     const redirectUri = String(config.public.authingRedirectUri || '').trim()
+    const Guard = getGuardConstructor()
+    if (!Guard) return null
+
     return new Guard({
       appId,
       ...(host ? { host } : {}),
@@ -52,23 +59,21 @@ const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | nu
   }
 }
 
-const getGuardClient = (): Guard | null => {
+const getGuardClient = (): GuardClient | null => {
   if (!process.client) return null
 
   try {
     const nuxtApp = useNuxtApp()
-    const guardFromApp = (nuxtApp.vueApp.config.globalProperties as any)?.$guard as Guard | undefined
+    const guardFromApp = nuxtApp.$guard
     if (guardFromApp) return guardFromApp
+
+    const legacyGuardFromApp = (nuxtApp.vueApp.config.globalProperties as any)?.$guard as GuardClient | undefined
+    if (legacyGuardFromApp) return legacyGuardFromApp
   } catch (_error) {
-    // ignore and try useGuard()
+    // ignore and fallback to standalone constructor
   }
 
-  try {
-    const guard = useGuard()
-    return guard || null
-  } catch (_error) {
-    return createStandaloneGuard()
-  }
+  return createStandaloneGuard()
 }
 
 export const useAuthStore = defineStore('auth', {
