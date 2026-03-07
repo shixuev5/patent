@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
-import type { User, Guard, GuardOptions } from '@authing/guard-vue3'
+import { Guard, useGuard } from '@authing/guard-vue3'
+import type { User } from '@authing/guard-vue3'
+import type { GuardOptions } from '@authing/guard-vue3'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
 const TASK_AUTH_TOKEN_KEY = 'patent_auth_token'
@@ -28,7 +30,7 @@ const toAuthingUser = (userInfo: User | any): AuthingUser => {
   } as unknown as AuthingUser
 }
 
-const createStandaloneGuard = async (options: StandaloneGuardOptions = {}): Promise<Guard | null> => {
+const createStandaloneGuard = (options: StandaloneGuardOptions = {}): Guard | null => {
   if (!process.client) return null
 
   try {
@@ -38,7 +40,6 @@ const createStandaloneGuard = async (options: StandaloneGuardOptions = {}): Prom
 
     const host = String(config.public.authingDomain || '').trim()
     const redirectUri = String(config.public.authingRedirectUri || '').trim()
-    const { Guard } = await import('@authing/guard-vue3')
     return new Guard({
       appId,
       ...(host ? { host } : {}),
@@ -51,7 +52,7 @@ const createStandaloneGuard = async (options: StandaloneGuardOptions = {}): Prom
   }
 }
 
-const getGuardClient = async (): Promise<Guard | null> => {
+const getGuardClient = (): Guard | null => {
   if (!process.client) return null
 
   try {
@@ -63,7 +64,6 @@ const getGuardClient = async (): Promise<Guard | null> => {
   }
 
   try {
-    const { useGuard } = await import('@authing/guard-vue3')
     const guard = useGuard()
     return guard || null
   } catch (_error) {
@@ -102,7 +102,7 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = await getGuardClient()
+        const guard = getGuardClient()
         if (!guard || typeof guard.trackSession !== 'function') {
           this.user = null
           this.isLoggedIn = false
@@ -136,7 +136,7 @@ export const useAuthStore = defineStore('auth', {
       if (!String(config.public.authingAppId || '').trim()) return
       this.loading = true
       try {
-        const guard = await getGuardClient()
+        const guard = getGuardClient()
         if (!guard || typeof guard.startWithRedirect !== 'function') {
           throw new Error('Authing Guard 未初始化。请刷新页面后重试。')
         }
@@ -159,7 +159,7 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = await getGuardClient()
+        const guard = getGuardClient()
         if (guard && typeof guard.logout === 'function') {
           await guard.logout()
         }
@@ -179,7 +179,7 @@ export const useAuthStore = defineStore('auth', {
       if (!String(config.public.authingAppId || '').trim()) return
       this.loading = true
       try {
-        const guard = await getGuardClient()
+        const guard = getGuardClient()
         if (!guard || typeof guard.handleRedirectCallback !== 'function') {
           throw new Error('Authing Guard 未初始化，无法处理回调。')
         }
@@ -204,7 +204,7 @@ export const useAuthStore = defineStore('auth', {
 
         const targetScene = hasPassword ? 'resetPassword' : 'firstLoginPassword'
 
-        const guard = await createStandaloneGuard({
+        const guard = createStandaloneGuard({
           mode: 'modal',
           defaultScene: targetScene
         })
@@ -215,7 +215,7 @@ export const useAuthStore = defineStore('auth', {
       } catch (error) {
         console.error('Authing openPasswordReset failed:', error)
         try {
-          const fallbackGuard = await getGuardClient()
+          const fallbackGuard = getGuardClient()
           if (fallbackGuard && typeof fallbackGuard.startWithRedirect === 'function') {
             await fallbackGuard.startWithRedirect()
           }
