@@ -554,6 +554,26 @@ class D1TaskStorage:
         row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
         return self._row_to_user(row) if row else None
 
+    def update_user_profile(
+        self,
+        owner_id: str,
+        name: Optional[str],
+        picture: Optional[str],
+    ) -> Optional[User]:
+        now_iso = datetime.now().isoformat()
+        result = self._request(
+            """
+            UPDATE users
+            SET name = ?, picture = ?, updated_at = ?
+            WHERE owner_id = ?
+            """,
+            [name, picture, now_iso, owner_id],
+        )
+        if self._changed_rows(result) <= 0:
+            return None
+        row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
+        return self._row_to_user(row) if row else None
+
     def upsert_account_month_target(
         self,
         owner_id: str,

@@ -12,6 +12,30 @@
   body {
     @apply text-gray-900 bg-white;
   }
+
+  .app-shell :where(a:any-link) {
+    color: inherit;
+  }
+
+  .app-shell a {
+    text-decoration: none;
+    transition: color 0.18s ease, opacity 0.16s ease, filter 0.16s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .app-shell a:hover {
+    text-decoration: none;
+  }
+
+  .app-shell a:active {
+    opacity: 0.9;
+    filter: saturate(0.9);
+  }
+
+  .app-shell a:focus-visible {
+    outline: 2px solid rgba(8, 145, 178, 0.4);
+    outline-offset: 2px;
+  }
 }
 
 @layer components {

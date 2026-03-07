@@ -2,40 +2,90 @@
   <div class="space-y-4">
     <section class="rounded-3xl border border-slate-200 bg-white/92 p-4 shadow-sm shadow-slate-200 sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex items-center gap-3">
-          <img
-            v-if="profile?.picture"
-            :src="profile.picture"
-            alt="avatar"
-            class="h-12 w-12 rounded-2xl border border-slate-200 object-cover"
-          />
-          <div
-            v-else
-            class="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-200 bg-cyan-50 text-sm font-semibold text-cyan-700"
+        <div class="flex min-w-0 items-start gap-4">
+          <button
+            type="button"
+            class="avatar-trigger"
+            :disabled="savingAvatar || editingDisplayName"
+            :aria-label="savingAvatar ? '头像上传中' : '更新头像'"
+            @click="triggerAvatarPicker"
           >
-            {{ avatarText }}
-          </div>
+            <img
+              v-if="profile?.picture"
+              :src="profile.picture"
+              alt="avatar"
+              class="avatar-image"
+            />
+            <div
+              v-else
+              class="avatar-fallback"
+            >
+              {{ avatarText }}
+            </div>
+            <span class="avatar-edit-badge" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9" stroke-linecap="round" />
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" stroke-linejoin="round" />
+              </svg>
+            </span>
+          </button>
+          <input
+            ref="profileAvatarFileInput"
+            type="file"
+            accept="image/*"
+            class="sr-only"
+            @change="onProfileAvatarChange"
+          />
 
-          <div>
+          <div class="min-w-0 pt-1">
             <p class="text-xs font-semibold tracking-[0.08em] text-slate-500">Personal Space</p>
-            <h1 class="mt-1 text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">{{ displayName }}</h1>
+            <div class="name-display-wrap">
+              <h1
+                v-if="!editingDisplayName"
+                class="profile-name-heading text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl"
+              >
+                {{ displayName }}
+              </h1>
+              <h1
+                v-else
+                ref="displayNameEditorRef"
+                class="profile-name-heading profile-name-heading-editing text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl"
+                contenteditable="plaintext-only"
+                spellcheck="false"
+                @blur="onDisplayNameBlur"
+                @keydown="onDisplayNameEditorKeydown"
+              />
+              <button
+                type="button"
+                class="name-edit-trigger"
+                :disabled="savingDisplayName || savingAvatar || editingDisplayName"
+                aria-label="编辑名称"
+                @click="startDisplayNameEdit"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 20h9" stroke-linecap="round" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
             <p class="mt-1 text-xs text-slate-600">{{ displayAuthType }}</p>
+            <p v-if="profileSaveErrorMessage" class="profile-inline-error">{{ profileSaveErrorMessage }}</p>
           </div>
         </div>
 
-        <div class="flex w-full flex-col items-end gap-2 sm:ml-auto sm:max-w-xl">
-          <div class="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1">
+        <div class="account-controls w-full sm:ml-auto sm:max-w-xl">
+          <div class="month-switcher">
             <button
               type="button"
-              class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+              class="month-switcher-btn"
               @click="shiftMonth(-1)"
             >
               上月
             </button>
-            <span class="min-w-20 text-center text-xs font-semibold text-slate-700">{{ monthDisplayLabel }}</span>
+            <span class="month-switcher-label">{{ monthDisplayLabel }}</span>
             <button
               type="button"
-              class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              class="month-switcher-btn"
               :disabled="!canMoveNextMonth"
               @click="shiftMonth(1)"
             >
@@ -43,26 +93,28 @@
             </button>
           </div>
 
-          <div class="flex w-full items-center justify-end gap-2 text-xs">
-            <span class="text-slate-500">本月目标</span>
-            <input
-              v-model="monthTargetInput"
-              type="number"
-              min="0"
-              :disabled="!isCurrentMonthSelection || savingTarget"
-              class="target-input"
-            />
-            <button
-              type="button"
-              class="target-save-btn"
-              :disabled="!isCurrentMonthSelection || targetInputInvalid || savingTarget"
-              @click="saveMonthTarget"
-            >
-              {{ savingTarget ? '保存中...' : '保存目标' }}
-            </button>
+          <div class="target-panel">
+            <p class="target-label">本月目标</p>
+            <div class="target-actions">
+              <input
+                v-model="monthTargetInput"
+                type="number"
+                min="0"
+                :disabled="!isCurrentMonthSelection || savingTarget"
+                class="target-input"
+              />
+              <button
+                type="button"
+                class="target-save-btn"
+                :disabled="!isCurrentMonthSelection || targetInputInvalid || savingTarget"
+                @click="saveMonthTarget"
+              >
+                {{ savingTarget ? '保存中...' : '保存目标' }}
+              </button>
+            </div>
           </div>
-          <p class="m-0 text-right text-xs text-slate-500">{{ targetHintText }}</p>
-          <p v-if="targetErrorMessage" class="m-0 text-right text-xs text-rose-600">{{ targetErrorMessage }}</p>
+          <p class="target-hint">{{ targetHintText }}</p>
+          <p v-if="targetErrorMessage" class="target-error">{{ targetErrorMessage }}</p>
         </div>
       </div>
     </section>
@@ -292,10 +344,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
-import type { AccountDashboard, AccountProfile, WeeklyActivityPoint } from '~/types/account'
+import type {
+  AccountAvatarUploadResponse,
+  AccountDashboard,
+  AccountProfile,
+  AccountProfileUpdateRequest,
+  WeeklyActivityPoint,
+} from '~/types/account'
 
 const CHART_WIDTH = 760
 const CHART_HEIGHT = 320
@@ -315,13 +373,21 @@ const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).pad
 const loading = ref(false)
 const refreshing = ref(false)
 const savingTarget = ref(false)
+const savingDisplayName = ref(false)
+const savingAvatar = ref(false)
 const pageReady = ref(false)
 const errorMessage = ref('')
 const targetErrorMessage = ref('')
+const profileSaveErrorMessage = ref('')
 const monthTargetInput = ref('0')
 const hoveredDay = ref<number | null>(null)
 const profile = ref<AccountProfile | null>(null)
 const dashboard = ref<AccountDashboard | null>(null)
+const editingDisplayName = ref(false)
+const profileAvatarFileInput = ref<HTMLInputElement>()
+const displayNameEditorRef = ref<HTMLElement>()
+const displayNameDraft = ref('')
+const discardDisplayNameOnBlur = ref(false)
 
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -587,10 +653,10 @@ const maxDailyValue = computed(() => {
 
 const displayName = computed(() => {
   const candidates = [
-    profile.value?.nickname,
     profile.value?.name,
-    authStore.user?.nickname,
+    profile.value?.nickname,
     authStore.user?.name,
+    authStore.user?.nickname,
     profile.value?.email,
     authStore.user?.email,
   ]
@@ -600,7 +666,7 @@ const displayName = computed(() => {
 const avatarText = computed(() => String(displayName.value).trim().slice(0, 1).toUpperCase() || 'U')
 
 const displayAuthType = computed(() => {
-  if (profile.value?.authType === 'authing' || authStore.isLoggedIn) return 'Authing 账号'
+  if (profile.value?.authType === 'authing' || authStore.isLoggedIn) return '认证账号'
   return '匿名访客'
 })
 
@@ -718,6 +784,162 @@ const toApiError = async (response: Response): Promise<string> => {
   }
 }
 
+const clearAvatarFileInput = () => {
+  if (profileAvatarFileInput.value) profileAvatarFileInput.value.value = ''
+}
+
+const isSupportedAvatarFile = (file: File): boolean => {
+  const name = file.name.toLowerCase()
+  const type = String(file.type || '').toLowerCase()
+  const hasValidSuffix = ['.png', '.jpg', '.jpeg', '.webp', '.gif'].some((suffix) => name.endsWith(suffix))
+  const hasValidType = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type)
+  return hasValidSuffix || hasValidType
+}
+
+const resetDisplayNameDraft = () => {
+  displayNameDraft.value = String(profile.value?.name || displayName.value || '').trim()
+}
+
+const syncDisplayNameEditor = () => {
+  if (!displayNameEditorRef.value) return
+  displayNameEditorRef.value.textContent = displayNameDraft.value || ' '
+}
+
+const focusDisplayNameEditor = () => {
+  const editor = displayNameEditorRef.value
+  if (!editor) return
+  editor.focus()
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  range.selectNodeContents(editor)
+  range.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+const putProfile = async (token: string, payload: AccountProfileUpdateRequest): Promise<AccountProfile> => {
+  const response = await fetch(`${config.public.apiBaseUrl}/api/account/profile`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error(await toApiError(response))
+  const nextProfile = await response.json() as AccountProfile
+  profile.value = nextProfile
+  syncAuthUserProfile(nextProfile)
+  return nextProfile
+}
+
+const triggerAvatarPicker = () => {
+  if (savingAvatar.value || savingDisplayName.value) return
+  profileSaveErrorMessage.value = ''
+  profileAvatarFileInput.value?.click()
+}
+
+const onProfileAvatarChange = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const selected = target.files?.[0]
+  if (!selected) {
+    return
+  }
+  if (!isSupportedAvatarFile(selected)) {
+    profileSaveErrorMessage.value = '头像仅支持 PNG/JPG/JPEG/WEBP/GIF。'
+    target.value = ''
+    return
+  }
+  if (selected.size > 2 * 1024 * 1024) {
+    profileSaveErrorMessage.value = '头像大小不能超过 2MB。'
+    target.value = ''
+    return
+  }
+  if (!profile.value) {
+    target.value = ''
+    profileSaveErrorMessage.value = '资料尚未加载完成，请稍后重试。'
+    return
+  }
+
+  savingAvatar.value = true
+  profileSaveErrorMessage.value = ''
+  try {
+    const token = await getAuthToken()
+    const formData = new FormData()
+    formData.append('file', selected)
+    const uploadResponse = await fetch(`${config.public.apiBaseUrl}/api/account/profile/avatar`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    })
+    if (!uploadResponse.ok) throw new Error(await toApiError(uploadResponse))
+    const uploaded = await uploadResponse.json() as AccountAvatarUploadResponse
+    await putProfile(token, {
+      name: String(profile.value?.name || '').trim() || null,
+      picture: uploaded.url,
+    })
+    resetDisplayNameDraft()
+    taskStore.showGlobalNotice('success', '头像已更新。')
+  } catch (error) {
+    profileSaveErrorMessage.value = error instanceof Error ? error.message : '更新头像失败。'
+  } finally {
+    savingAvatar.value = false
+    clearAvatarFileInput()
+  }
+}
+
+const startDisplayNameEdit = () => {
+  if (savingDisplayName.value || savingAvatar.value || editingDisplayName.value) return
+  profileSaveErrorMessage.value = ''
+  resetDisplayNameDraft()
+  editingDisplayName.value = true
+  nextTick(() => {
+    syncDisplayNameEditor()
+    focusDisplayNameEditor()
+  })
+}
+
+const onDisplayNameEditorKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    ;(event.target as HTMLElement).blur()
+    return
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    discardDisplayNameOnBlur.value = true
+    ;(event.target as HTMLElement).blur()
+  }
+}
+
+const parseEditorDisplayName = (): string => {
+  const raw = displayNameEditorRef.value?.textContent || ''
+  return raw.replace(/\s+/g, ' ').trim()
+}
+
+const onDisplayNameBlur = async () => {
+  if (!editingDisplayName.value) return
+  if (discardDisplayNameOnBlur.value) {
+    discardDisplayNameOnBlur.value = false
+    editingDisplayName.value = false
+    resetDisplayNameDraft()
+    return
+  }
+  await saveDisplayName(parseEditorDisplayName())
+}
+
+const syncAuthUserProfile = (nextProfile: AccountProfile) => {
+  if (!authStore.user) return
+  authStore.user = {
+    ...authStore.user,
+    name: nextProfile.name,
+    picture: nextProfile.picture,
+  }
+}
+
 const fetchProfile = async (token: string) => {
   const response = await fetch(`${config.public.apiBaseUrl}/api/account/profile`, {
     headers: {
@@ -726,6 +948,7 @@ const fetchProfile = async (token: string) => {
   })
   if (!response.ok) throw new Error(await toApiError(response))
   profile.value = await response.json()
+  if (!editingDisplayName.value) resetDisplayNameDraft()
 }
 
 const fetchDashboard = async (token: string) => {
@@ -775,6 +998,43 @@ const saveMonthTarget = async () => {
     targetErrorMessage.value = error instanceof Error ? error.message : '保存目标失败。'
   } finally {
     savingTarget.value = false
+  }
+}
+
+const saveDisplayName = async (nextName: string) => {
+  profileSaveErrorMessage.value = ''
+  if (!profile.value) {
+    profileSaveErrorMessage.value = '资料尚未加载完成，请稍后重试。'
+    editingDisplayName.value = false
+    return
+  }
+  if (nextName.length > 32) {
+    profileSaveErrorMessage.value = '显示名称不能超过 32 个字符。'
+    editingDisplayName.value = false
+    resetDisplayNameDraft()
+    return
+  }
+  const currentName = String(profile.value?.name || '').trim()
+  if (nextName === currentName) {
+    editingDisplayName.value = false
+    resetDisplayNameDraft()
+    return
+  }
+
+  savingDisplayName.value = true
+  try {
+    const token = await getAuthToken()
+    await putProfile(token, {
+      name: nextName || null,
+      picture: profile.value?.picture || null,
+    })
+    resetDisplayNameDraft()
+    taskStore.showGlobalNotice('success', '资料已更新。')
+  } catch (error) {
+    profileSaveErrorMessage.value = error instanceof Error ? error.message : '更新资料失败。'
+  } finally {
+    savingDisplayName.value = false
+    editingDisplayName.value = false
   }
 }
 
@@ -856,13 +1116,77 @@ onMounted(async () => {
   color: #475569;
 }
 
+.account-controls {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.62rem;
+}
+
+.month-switcher {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 4.5rem 1fr 4.5rem;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 0.2rem 0.28rem;
+}
+
+.month-switcher-btn {
+  min-height: 2rem;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #475569;
+  transition: all 0.18s ease;
+}
+
+.month-switcher-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.month-switcher-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.month-switcher-label {
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.target-panel {
+  width: 100%;
+}
+
+.target-label {
+  margin: 0 0 0.42rem 0;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.target-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 0.45rem;
+}
+
 .target-input {
-  width: 6rem;
+  width: 100%;
+  min-height: 2.5rem;
   border: 1px solid #cbd5e1;
   border-radius: 0.55rem;
   background: #ffffff;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.75rem;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.86rem;
   color: #0f172a;
 }
 
@@ -872,11 +1196,14 @@ onMounted(async () => {
 }
 
 .target-save-btn {
+  width: 100%;
+  min-height: 2.5rem;
   border-radius: 0.55rem;
   border: 1px solid #0891b2;
   background: #06b6d4;
   padding: 0.24rem 0.65rem;
-  font-size: 0.75rem;
+  font-size: 0.86rem;
+  font-weight: 600;
   color: #ecfeff;
   transition: all 0.18s ease;
 }
@@ -888,6 +1215,190 @@ onMounted(async () => {
 .target-save-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.target-hint,
+.target-error {
+  margin: 0;
+  text-align: left;
+  font-size: 0.75rem;
+}
+
+.target-hint {
+  color: #64748b;
+}
+
+.target-error {
+  color: #e11d48;
+}
+
+@media (min-width: 640px) {
+  .account-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+  }
+
+  .month-switcher {
+    width: auto;
+    min-width: 18rem;
+    grid-template-columns: 4.2rem minmax(6rem, 1fr) 4.2rem;
+  }
+
+  .target-panel {
+    width: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .target-label {
+    margin: 0;
+    text-align: right;
+    white-space: nowrap;
+    font-size: 0.72rem;
+  }
+
+  .target-actions {
+    width: auto;
+    grid-template-columns: 6rem auto;
+    gap: 0.45rem;
+  }
+
+  .target-input,
+  .target-save-btn {
+    min-height: 2rem;
+    font-size: 0.72rem;
+  }
+
+  .target-save-btn {
+    min-width: 5.8rem;
+    white-space: nowrap;
+  }
+
+  .target-hint,
+  .target-error {
+    text-align: right;
+  }
+}
+
+.avatar-trigger {
+  position: relative;
+  display: inline-flex;
+  height: 6.25rem;
+  width: 6.25rem;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.avatar-trigger:hover:not(:disabled) {
+  border-color: #67e8f9;
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.28);
+}
+
+.avatar-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.avatar-image,
+.avatar-fallback {
+  height: 100%;
+  width: 100%;
+}
+
+.avatar-image {
+  object-fit: cover;
+}
+
+.avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  font-size: 2rem;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.avatar-edit-badge {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  display: inline-flex;
+  height: 1.45rem;
+  width: 1.45rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid #0891b2;
+  background: #06b6d4;
+  color: #ecfeff;
+  box-shadow: 0 2px 8px rgba(8, 145, 178, 0.3);
+}
+
+.avatar-edit-badge svg {
+  height: 0.78rem;
+  width: 0.78rem;
+}
+
+.name-display-wrap {
+  margin-top: 0.3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.profile-name-heading {
+  margin: 0;
+  min-height: 2.5rem;
+  line-height: 1.15;
+}
+
+.profile-name-heading-editing {
+  min-width: 8rem;
+  outline: none;
+  border-bottom: 1px dashed #94a3b8;
+}
+
+.name-edit-trigger {
+  display: inline-flex;
+  height: 1.05rem;
+  width: 1.05rem;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #94a3b8;
+  transition: all 0.18s ease;
+}
+
+.name-edit-trigger svg {
+  height: 0.9rem;
+  width: 0.9rem;
+}
+
+.name-edit-trigger:hover:not(:disabled) {
+  color: #64748b;
+}
+
+.name-edit-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.profile-inline-error {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  color: #e11d48;
 }
 
 .chart-wrap {

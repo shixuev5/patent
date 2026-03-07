@@ -533,6 +533,31 @@ class SQLiteTaskStorage:
             ).fetchone()
         return self._row_to_user(row) if row else None
 
+    def update_user_profile(
+        self,
+        owner_id: str,
+        name: Optional[str],
+        picture: Optional[str],
+    ) -> Optional[User]:
+        now_iso = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET name = ?, picture = ?, updated_at = ?
+                WHERE owner_id = ?
+                """,
+                (name, picture, now_iso, owner_id),
+            )
+            conn.commit()
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM users WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+        return self._row_to_user(row) if row else None
+
     def upsert_account_month_target(
         self,
         owner_id: str,
