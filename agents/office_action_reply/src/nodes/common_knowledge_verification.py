@@ -3,12 +3,14 @@
 基于外部检索（优先）与模型知识（次级）对逻辑争议进行核查
 """
 
+import hashlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
+from agents.common.retrieval import retrieve_segments
 from agents.common.utils.llm import get_llm_service
 from agents.office_action_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.office_action_reply.src.retrieval_utils import (
@@ -35,7 +37,7 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v4",
+                "verify_common_knowledge_v5",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -74,16 +76,42 @@ class CommonKnowledgeVerificationNode:
         claims = self._extract_claims(prepared)
         priority_date = self._extract_priority_date(prepared)
 
+        search_cache: Dict[str, Tuple[List[Dict[str, Any]], List[str], Dict[str, Any]]] = {}
+        rerank_cache: Dict[str, Tuple[List[Dict[str, Any]], Dict[str, Any]]] = {}
+
         assessments: List[Dict[str, Any]] = []
         for dispute in common_knowledge_disputes:
             claim_text = self._get_claim_text(dispute, claims)
             queries_by_engine = self._build_engine_queries(dispute, claim_text, priority_date)
-            external_evidence, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
-                queries=queries_by_engine,
-                priority_date=priority_date,
-                limit=8,
-            )
-            if not external_evidence:
+            query_text = self._build_dispute_query(dispute, claim_text)
+
+            search_key = self._stable_hash({
+                "queries_by_engine": queries_by_engine,
+                "priority_date": priority_date or "",
+            })
+            if search_key in search_cache:
+                external_evidence, retrieval_engines, retrieval_meta = search_cache[search_key]
+            else:
+                external_evidence, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
+                    queries=queries_by_engine,
+                    priority_date=priority_date,
+                    limit=8,
+                )
+                search_cache[search_key] = (external_evidence, retrieval_engines, retrieval_meta)
+
+            rerank_key = self._stable_hash({
+                "query_text": query_text,
+                "doc_ids": [str(item.get("doc_id", "")).strip() for item in external_evidence],
+            })
+            if rerank_key in rerank_cache:
+                selected_evidence, rerank_trace = rerank_cache[rerank_key]
+            else:
+                selected_evidence, rerank_trace = self._rerank_external_evidence(query_text, external_evidence)
+                rerank_cache[rerank_key] = (selected_evidence, rerank_trace)
+
+            if not selected_evidence and external_evidence:
+                selected_evidence = external_evidence[:3]
+            if not selected_evidence:
                 logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
 
             assessment = self._verify_single_dispute(
@@ -91,9 +119,10 @@ class CommonKnowledgeVerificationNode:
                 claim_text=claim_text,
                 queries_by_engine=queries_by_engine,
                 priority_date=priority_date,
-                external_evidence=external_evidence,
+                external_evidence=selected_evidence,
                 retrieval_engines=retrieval_engines,
                 retrieval_meta=retrieval_meta,
+                rerank_trace=rerank_trace,
             )
             assessments.append(assessment)
 
@@ -206,6 +235,107 @@ class CommonKnowledgeVerificationNode:
             per_engine_limit=2,
         )
 
+    def _build_dispute_query(self, dispute: Dict[str, Any], claim_text: str) -> str:
+        examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
+        applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
+        parts = [
+            str(dispute.get("feature_text", "")).strip(),
+            claim_text[:180],
+            str(examiner_opinion.get("reasoning", "")).strip()[:180],
+            str(applicant_opinion.get("core_conflict", "")).strip()[:140],
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    def _rerank_external_evidence(
+        self,
+        query_text: str,
+        external_evidence: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        if not external_evidence or not query_text:
+            return [], {
+                "queries": [query_text] if query_text else [],
+                "filters": {},
+                "result_count": 0,
+                "results": [],
+            }
+
+        retrieval_inputs: List[Dict[str, Any]] = []
+        evidence_map: Dict[str, Dict[str, Any]] = {}
+        for item in external_evidence:
+            doc = self._to_dict(item)
+            doc_id = str(doc.get("doc_id", "")).strip()
+            if not doc_id:
+                continue
+            source_type = str(doc.get("source_type", "")).strip() or "web"
+            retrieval_inputs.append({
+                "doc_id": doc_id,
+                "source_type": source_type,
+                "title": str(doc.get("title", "")).strip(),
+                "url": str(doc.get("url", "")).strip(),
+                "published_date": str(doc.get("published", "")).strip(),
+                "content": str(doc.get("snippet", "")).strip(),
+            })
+            evidence_map[doc_id] = doc
+
+        if not retrieval_inputs:
+            return [], {
+                "queries": [query_text],
+                "filters": {},
+                "result_count": 0,
+                "results": [],
+            }
+
+        try:
+            hits = retrieve_segments(
+                query_text=query_text,
+                inputs=retrieval_inputs,
+                mode="ephemeral",
+                top_n=min(max(12, len(retrieval_inputs) * 3), 36),
+                top_k=min(max(3, len(retrieval_inputs)), 6),
+                filters={},
+            )
+        except Exception as ex:
+            logger.warning(f"公知常识证据二次重排失败，回退原始证据: {ex}")
+            hits = []
+
+        selected: List[Dict[str, Any]] = []
+        seen_doc_ids: Set[str] = set()
+        trace_results: List[Dict[str, Any]] = []
+
+        for hit_item in hits:
+            hit = self._to_dict(hit_item)
+            doc_id = str(hit.get("doc_id", "")).strip()
+            if not doc_id or doc_id in seen_doc_ids:
+                continue
+            source_doc = self._to_dict(evidence_map.get(doc_id, {}))
+            if not source_doc:
+                continue
+
+            selected.append({
+                "doc_id": doc_id,
+                "title": str(source_doc.get("title", "")).strip(),
+                "url": str(source_doc.get("url", "")).strip(),
+                "published": str(source_doc.get("published", "")).strip(),
+                "source_type": str(source_doc.get("source_type", "")).strip(),
+                "snippet": str(hit.get("excerpt", "") or source_doc.get("snippet", "")).strip()[:700],
+            })
+            trace_results.append({
+                "doc_id": doc_id,
+                "source_type": str(hit.get("source_type", "")).strip(),
+                "title": str(hit.get("title", "")).strip(),
+                "url": str(hit.get("url", "")).strip() or None,
+                "published": str(hit.get("published_date", "")).strip() or None,
+                "similarity_score": float(hit.get("score", 0.0) or 0.0),
+            })
+            seen_doc_ids.add(doc_id)
+
+        return selected, {
+            "queries": [query_text],
+            "filters": {},
+            "result_count": len(selected),
+            "results": trace_results,
+        }
+
     def _build_system_prompt(self) -> str:
         return """你是专利公知常识核查专家。你要判断“申请人的逻辑反驳是否成立”。
 
@@ -303,6 +433,7 @@ examiner_rejection_reason 口吻与内容约束（强制）：
         external_evidence: List[Dict[str, Any]],
         retrieval_engines: List[str],
         retrieval_meta: Dict[str, Any],
+        rerank_trace: Dict[str, Any],
     ) -> Dict[str, Any]:
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
@@ -349,6 +480,9 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             if doc_id and doc_id not in used_doc_ids:
                 used_doc_ids.append(doc_id)
 
+        retrieval_trace = build_trace_retrieval(queries_by_engine, retrieval_engines, retrieval_meta)
+        retrieval_trace["ephemeral_rerank"] = rerank_trace
+
         return {
             "dispute_id": str(dispute.get("dispute_id", f"DSP_{original_claim_id}_{feature_text[:8]}")),
             "original_claim_id": original_claim_id,
@@ -361,7 +495,7 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             "trace": {
                 "used_doc_ids": used_doc_ids,
                 "missing_doc_ids": [],
-                "retrieval": build_trace_retrieval(queries_by_engine, retrieval_engines, retrieval_meta),
+                "retrieval": retrieval_trace,
             },
         }
 
@@ -426,6 +560,10 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             },
             "evidence": evidence_items,
         }
+
+    def _stable_hash(self, payload: Dict[str, Any]) -> str:
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
 
     def _state_get(self, state: Any, key: str, default=None):
         if isinstance(state, dict):
