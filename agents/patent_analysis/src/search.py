@@ -6,6 +6,16 @@ from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
 from config import settings
 
+VALID_ELEMENT_ROLES = {"Subject", "KeyFeature", "Functional"}
+VALID_ELEMENT_TYPES = {
+    "Product_Structure",
+    "Method_Process",
+    "Algorithm_Logic",
+    "Material_Composition",
+    "Parameter_Condition",
+}
+ELEMENT_TYPE_LOWER_MAP = {item.lower(): item for item in VALID_ELEMENT_TYPES}
+
 
 class SearchStrategyGenerator:
     def __init__(self, patent_data: Dict, report_data: Dict, cache_file: Path = None):
@@ -31,7 +41,7 @@ class SearchStrategyGenerator:
             matrix_context = self._build_matrix_context()
             return self._build_search_matrix(matrix_context)
 
-        search_matrix = self.cache.run_step("step1_matrix", _execute_phase1)
+        search_matrix = self.cache.run_step("step1_matrix_v2", _execute_phase1)
         if not search_matrix:
             logger.warning("Search Matrix 为空，策略生成将受限。")
             search_matrix = []
@@ -75,11 +85,14 @@ class SearchStrategyGenerator:
                     feature_max_scores[feat_name] = score
 
         # 3. 构建分块内容列表
+        block_a_preamble = [] # 前序/背景特征 (无视分数，用于圈定环境)
         block_b_content = []  # Score 5 (Vital)
         block_c_content = []  # Score 4 (Enabler) & 3 (Improver)
 
-        # --- 基于 TCS 评分的精确逻辑 ---
+        # --- 基于 TCS 评分的精确逻辑（与独权前序特征提取合并为单循环） ---
         for feat_name, info in feature_details.items():
+            claim_source = str(info.get("claim_source", "")).strip().lower()
+            is_distinguishing = bool(info.get("is_distinguishing", False))
             score = feature_max_scores.get(feat_name, 0)
             desc = info.get("description", "无描述").replace("\n", " ").strip()
             raw_rationale = info.get("rationale", "").replace("\n", " ").strip()
@@ -88,6 +101,10 @@ class SearchStrategyGenerator:
                 if len(raw_rationale) > 150
                 else raw_rationale
             )
+
+            # Block A: 独权前序特征（仅由 claim_source + is_distinguishing 判定）
+            if claim_source == "independent" and (not is_distinguishing):
+                block_a_preamble.append(f"- 【{feat_name}】: {desc}")
 
             # 格式: [名称] - [描述] (TCS Score: X)
             if score >= 3:
@@ -115,12 +132,15 @@ class SearchStrategyGenerator:
         [发明名称] {biblio.get('invention_title')}
         [IPC参考] {', '.join(self.base_ipcs[:5])}
 
-        === 1. Block A: 技术领域 (Subject & Field) ===
+        === 1. Block A: 技术领域与前序公知环境 (Subject & Field) ===
         [检索主语 (核心产品/方法)]
         {report.get("claim_subject_matter", "未定义")}
         
         [所属领域 (用于锁定 IPC/CPC 大类)]
         {report.get("technical_field", "未定义")}
+        
+        [独权前序特征 (Preamble from Independent Claims)]
+        {chr(10).join(block_a_preamble) if block_a_preamble else "（未识别到独权前序特征）"}
 
         === 2. Block B: 核心创新点 (Key Features - Vital) ===
         *** TCS Score 5分特征 (必须作为核心检索词) ***
@@ -146,60 +166,65 @@ class SearchStrategyGenerator:
         )
 
         system_prompt = """
-        你是一位拥有 20 年经验的专利检索专家。请基于提供的**经过 TCS (技术贡献评分) 预处理**的技术交底信息，拆解技术方案并构建**检索要素表（Search Matrix）**。
+        你是一位拥有 20 年实战经验的全球顶级专利检索专家（精通 CNIPA, EPO, USPTO 审查与检索逻辑）。
+        你的任务是基于提供的【经过 TCS (技术贡献评分) 预处理的技术交底信息】，剥离冗余噪音，精准构建用于布尔逻辑检索的**《检索要素矩阵 (Search Matrix)》**。
 
-        ### 核心任务：ABC 映射 (基于输入上下文的评分)
-        输入信息已经将特征按 TCS 分数进行了分组，请严格遵循以下映射逻辑提取 4-6 个检索要素：
+        ### 核心提取策略：ABC 模块映射 (Total: 4-6 个要素)
+        请严格根据上下文中各特征的 TCS 评分，提取并构建以下三个层级的检索要素：
 
-        1.  **Block A - 技术领域 (Subject)**: (1 个) 
-            - **来源**: 直接提取上下文中的 **[保护主题]**。
-            - **作用**: 检索式的主语（基础产品）。
-            
-        2.  **Block B - 核心创新点 (Key Features)**: (2-3 个, **最高优先级**) 
-            - **来源**: 必须且只能来自上下文的 **[Block B: 核心创新点 (Score 5)]** 区域。
-            - **指令**: 忽略所有 TCS Score < 5 的特征，除非 Block B 为空。
-            - **定义**: 这是区别于现有技术的根本特征。如果 Block B 为空，请从 Block C 中提拔得分最高的特征。
-            
-        3.  **Block C - 功能/效果/修饰 (Functional)**: (1-2 个) 
-            - **来源**: 优先从 **[Block C (Score 3-4)]** 中提取。
-            - **指令**: 选择那些能解释 Block B "为什么能起作用" 的关键参数或效果（如“db02小波”、“Shannon熵”）。
+        1. **Block A - 技术领域/保护主题 (Subject)**: 【必须且仅有 1 个】
+           - **来源**：上下文的 [检索主语] 或 [所属领域]。
+           - **标准**：这是检索的基本盘，用于划定应用场景（如“无人机”、“心脏起搏器”）。严禁提取“一种系统”或“方法”这种无意义的泛词。
 
-        ### 扩展原则 (Expansion Rules)：
-        对于每个提取的要素，必须进行全方位的“检索语言翻译”：
-        
-        1.  **中文扩展 (CN)**:
-            - 语域转换 (关键): 必须同时覆盖 **口语/俗称** (如“手机”、“猫眼”) 和 **专利法律/学术术语** (如“移动终端”、“光电窥孔”、“图像采集装置”)。
-            - 缩略语与全称: 包含常见的中文简称及混合写法 (如“无人机” <-> “UAV” <-> “无人驾驶飞行器”)。
-            - 结构-功能互换: 
-                - 若是结构词，扩展其功能描述 (如“弹簧” -> “弹性件”、“偏置部件”)。
-                - 若是功能词，扩展其常见实现载体 (如“显示” -> “屏幕”、“面板”、“显示器”)。
-            - 适度上位化: 仅扩展至**本领域通用**的上位概念，禁止无限泛化 (如“锂电池”可扩展为“二次电池”，但不可扩展为“能源设备”)。
-        2.  **英文扩展 (EN)**:
-            - 使用 **Patentese (专利法律英语)**。如 `plurality`, `configured to`, `assembly`, `means` 等专业表达。
-            - 强制使用截词符: 如 `sensor+` (涵盖 sensors, sensory), `configur+`。
-            - 词性变化: 动词/名词形式必须同时包含 (e.g., `mix+` for mixing, mixer, mixture)。
-            - 美式/英式拼写: 如 `colo?r`, `alumini?um` (若支持正则) 或列出两种拼写。
-        3.  **分类号 (IPC/CPC)**:
-            - 维度区分:
-                - 对于 **Block A (技术领域)**: 提供 **应用类** 分类号 (如: 车辆 B60)。
-                - 对于 **Block B/C (功能部件)**: 提供 **功能类** 分类号 (如: 电池 H01M, 数据处理 G06F)。
-            - 精度控制:
-                - 默认级别：**大组 (Main Group)** (如 `H01M 10/00`)。
-                - 仅当且仅当上下文中有明确的具体技术术语（如“锂离子”）时，才精确到 **小组 (Subgroup)** (如 `H01M 10/0525`)。
-            - 格式: 严格使用标准格式，包含斜杠和空格 (如 `G06F 17/30`, `H04W 72/04`)。
+        2. **Block B - 核心创新点 (KeyFeature)**: 【2-3 个，绝对最高优先级】
+           - **来源**：必须从上下文的 [Block B (Score 5)] 中提取。
+           - **标准**：这是破坏新颖性的致命特征！提炼出最核心的物理实体、关键算法或独创步骤。
+           - **容错**：如果 Block B 为空，请从[Block C (Score 3-4)] 中提拔得分最高的特征作为 KeyFeature。
 
-        ### 输出格式 (JSON List Only)
-        必须严格输出标准的 JSON 列表，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
-        [
+        3. **Block C - 功能/修饰/效果 (Functional)**: 【1-2 个】
+           - **来源**：从[Block C (Score 3-4)] 或 [关键技术效果] 中提取。
+           - **标准**：用于应对海量结果时的“降噪限定”或下位概念（如特定材料“聚氨酯”、特定参数“阈值”或核心效果“降噪”）。
+
+        ### 属性定义与语境切换 (element_type)
+        每个提取的要素必须被精准归入以下 5 类之一，这直接决定了你后续同义词扩展的方向：
+        - `Product_Structure` (实体结构)：诱发结构件、装置、部件及其俗称的扩展（如 device, member, assembly）。
+        - `Method_Process` (方法/动作)：诱发动名词、工艺步骤、制造过程的扩展（如 heating, controlling, etching）。
+        - `Algorithm_Logic` (算法/逻辑)：诱发学术名词、标准协议、行业缩写扩展（如 CNN, FFT, 激活函数），绝对避免与硬件实体混淆。
+        - `Material_Composition` (材料/组分)：诱发化学式、合金名、聚合物名、商品名扩展（如 PU, 聚四氟乙烯, 合金）。
+        - `Parameter_Condition` (参数/限定)：诱发物理量、比值、阈值、范围词的扩展（如 ratio, threshold, 介电常数）。
+
+        ### 检索词扩展铁律 (Expansion Rules) - 【极其重要】
+        你输出的 `keywords_zh` 和 `keywords_en` 将直接送入搜索引擎，必须遵守以下铁律：
+        1. **中文扩展 (CN)**：
+           - 必须包含：学术法定词 + 行业俗称 + 上下位概念（例如：`["移动终端", "智能手机", "手机", "移动设备"]`）。
+           - 结构功能互换：如果是弹簧，必须扩展 `["弹簧", "弹性件", "偏置件", "复位件"]`。
+        2. **英文扩展 (EN)**：
+           - 采用 Patentese 法律英语（如 `plurality of`, `configured to`, `means for`）。
+           - **强制使用截词符**（用 `*` 或 `+` 或 `?`），例如 `sensor*`, `configur+`, `encrypt?`。
+           - 词根多形态覆盖：动名词/名词变体（例如 `mix*` 涵盖 mixing, mixer, mixture）。
+        3. **【防灾性负向约束】**：
+           - **严禁**在数组的单一字符串内包含布尔逻辑词（禁止输出 `"手机 OR 终端"`，必须输出 `["手机", "终端"]`）。
+           - **严禁**输出毫无独立检索意义的短语（禁止输出 `"该方法包括"`, `"通过...连接"`）。
+           - **严禁**将一长串句子作为关键词，关键词必须是“词”或“词组”。
+
+        ### 分类号分配原则 (ipc_cpc_ref)
+        - Block A 优先分配【应用类 IPC】（如车辆 B60）。Block B/C 优先分配【功能类 IPC】（如数据处理 G06F）。
+        - **格式严控**：必须符合国际标准 `[部类][大类][小类][大组]/[小组]`（如 `H04W 72/04`，必须有大写字母且中间必须有且仅有一个空格）。
+        - 精度要求：只输出具有强相关性的 1-3 个分类号，如果拿不准小组，保留到大组级别（如 `H04W 72/00`）。
+
+        ### 输出格式要求
+        - 必须且只能输出一个 **JSON 数组 (List)**。
+        - 绝对不要使用 Markdown 代码块（如 ```json），不要包含任何前言、后语或解释性文字。
+
+        # 标准输出 Schema 示例：[
           {
-            "concept_key": "核心概念词 (如: 柔性屏幕)",
-            "role": "KeyFeature",           // 必须准确对应: Subject, KeyFeature (对应 Block B), Functional (对应 Block C)
-            "feature_type": "Apparatus",    // 选项: Apparatus (侧重名词), Method (侧重动词)
-            "zh_expand": ["柔性屏幕", "柔性显示器", "可折叠屏", "柔性面板", "AMOLED"], 
-            "en_expand": ["flex+ screen", "flex+ display", "foldable panel", "bendable display"],
-            "ipc_cpc_ref": ["G09F 9/30"]
-          },
-          ...
+            "element_name": "迷宫式密封环",
+            "element_role": "KeyFeature",
+            "element_type": "Product_Structure",
+            "keywords_zh":["迷宫式密封", "曲折流道", "迂回通道", "密封环", "防漏件"],
+            "keywords_en": ["labyrinth*", "tortuous path*", "seal* ring*", "leak* prevent*"],
+            "ipc_cpc_ref":["F16J 15/44", "F16J 15/447"]
+          }
         ]
         """
 
@@ -209,10 +234,60 @@ class SearchStrategyGenerator:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context},
             ],
+            temperature=0.2
         )
 
-        # 确保返回的是列表
-        return response if isinstance(response, list) else []
+        raw_matrix = response if isinstance(response, list) else []
+        return self._normalize_search_matrix(raw_matrix)
+
+    def _normalize_search_matrix(self, raw_matrix: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+
+        for item in raw_matrix:
+            if not isinstance(item, dict):
+                continue
+
+            element_name = str(item.get("element_name") or "").strip()
+            if not element_name:
+                continue
+
+            raw_role = str(item.get("element_role") or "").strip()
+            element_role = raw_role if raw_role in VALID_ELEMENT_ROLES else "Functional"
+
+            raw_type = str(item.get("element_type") or "").strip()
+            if raw_type in VALID_ELEMENT_TYPES:
+                element_type = raw_type
+            else:
+                element_type = ELEMENT_TYPE_LOWER_MAP.get(
+                    raw_type.lower(), "Product_Structure"
+                )
+
+            normalized.append(
+                {
+                    "element_name": element_name,
+                    "element_role": element_role,
+                    "element_type": element_type,
+                    "keywords_zh": self._normalize_keyword_list(item.get("keywords_zh") or []),
+                    "keywords_en": self._normalize_keyword_list(item.get("keywords_en") or []),
+                    "ipc_cpc_ref": self._normalize_keyword_list(item.get("ipc_cpc_ref") or []),
+                }
+            )
+
+        return normalized
+
+    def _normalize_keyword_list(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+
+        normalized: List[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text or text in normalized:
+                continue
+            normalized.append(text)
+        return normalized
 
     def _generate_semantic_query(self, raw_text: str) -> str:
         """

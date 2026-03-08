@@ -105,8 +105,21 @@
 
 - 调用 `SearchStrategyGenerator.generate_strategy()`
 - 生成两部分：
-  - `search_matrix`：检索要素表（概念、扩展词、IPC/CPC）
+  - `search_matrix`：检索要素表（Search Element、关键词扩展、IPC/CPC）
   - `semantic_strategy`：语义检索高密度 Query
+- `search_matrix` 字段（v2）：
+  - `element_name`：检索要素名称
+  - `element_role`：检索角色（`Subject` / `KeyFeature` / `Functional`）
+  - `element_type`：要素属性（仅限以下 5 类）
+    - `Product_Structure`：实体结构/装置件
+    - `Method_Process`：方法/动作/工艺步骤
+    - `Algorithm_Logic`：算法/数据处理逻辑
+    - `Material_Composition`：材料/化学组分
+    - `Parameter_Condition`：参数/数值/关系限定
+  - `keywords_zh`：中文关键词扩展（同义词/上下位概念/俗称）
+  - `keywords_en`：英文关键词扩展（Patentese/截词符）
+  - `ipc_cpc_ref`：关联分类号
+- 说明：`search_matrix` 仅支持以上新字段，不提供旧字段向后兼容。
 - 输出：`search_strategy.json`
 
 ## 4.9 render
@@ -116,6 +129,7 @@
   - 分析报告
   - 形式缺陷报告
   - 检索策略建议
+- 检索要素表中的 `element_type` 以小标签形式展示在 `Search Element` 名称下方，不单独占列。
 - 生成：
   - `output/<task_id>/<pn>.md`
   - `output/<task_id>/<pn>.pdf`

@@ -468,12 +468,12 @@ class ReportRenderer:
             critical_date = prio_date
             prio_display = f"{prio_date}"
             note_desc = (
-                f"鉴于本案主张了优先权，**现有技术的时间界限应前移至 {prio_date}**。"
+                f"本案主张了优先权，**检索截止界限前移至优先权日 {prio_date}**。"
             )
         else:
             critical_date = app_date
             prio_display = "无"
-            note_desc = f"本案未主张优先权，**现有技术的时间界限为 {app_date}**。"
+            note_desc = f"本案未主张优先权，**检索截止界限为申请日 {app_date}**。"
 
         lines.append("## 1. 检索基础信息")
         lines.append(f"- **发明名称**: {title}")
@@ -483,7 +483,7 @@ class ReportRenderer:
         # 动态提示块
         lines.append(f"> **📅 检索截止日: {critical_date}**")
         lines.append(
-            f"> *注：{note_desc} 所有在此日期之前公开的文献均构成现有技术，可用于评价新颖性与创造性。*\n"
+            f"> *注：{note_desc} 重点排查该日期前公开的“现有技术”，同时需警惕该日期前申请、该日期后公开的“抵触申请”（仅限评价新颖性）。*\n"
         )
 
         # 获取数据源
@@ -492,34 +492,52 @@ class ReportRenderer:
 
         # --- 2. 检索要素表 (包含分类号) ---
         lines.append("## 2. 检索要素表")
-        lines.append("基于技术方案拆解的核心概念、多语言扩展词表及关联分类号：\n")
+        lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
 
         if matrix:
             # 定义分块映射逻辑
             role_mapping = {
-                "Subject": "Block A<br>(检索主语)",
+                "Subject": "Block A<br>(应用/主题)",
                 "KeyFeature": "Block B<br>(核心特征)",
                 "Functional": "Block C<br>(功能/限定)"
             }
+            
+            # 英文类型映射为更友好的中文UI展示
+            type_mapping = {
+                "Product_Structure": "实体结构",
+                "Method_Process": "方法/工艺",
+                "Algorithm_Logic": "算法逻辑",
+                "Material_Composition": "材料/组分",
+                "Parameter_Condition": "参数/限定"
+            }
 
-            lines.append("| 检索分块 | 核心概念 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
+            lines.append("| 检索分块 | 检索要素 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
             lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
             for item in matrix:
-                concept = item.get("concept_key", "-").replace("|", "\|")
-                role_key = item.get("role", "Other")
+                concept = item.get("element_name", "-").replace("|", "\\|")
+                role_key = item.get("element_role", "Other")
 
                 block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
 
-                zh_list = item.get("zh_expand", [])
-                en_list = item.get("en_expand", [])
+                e_type_raw = item.get("element_type", "")
+                e_type_display = type_mapping.get(e_type_raw, e_type_raw)
+
+                # 在概念名下方添加小字体属性标签，不单独增加 element_type 列
+                if e_type_display:
+                    concept_display = f"**{concept}**<br><sub>*{e_type_display}*</sub>"
+                else:
+                    concept_display = f"**{concept}**"
+
+                zh_list = item.get("keywords_zh", [])
+                en_list = item.get("keywords_en", [])
                 ref_list = item.get("ipc_cpc_ref", [])
 
                 zh_str = ", ".join(zh_list) if zh_list else "-"
                 en_str = ", ".join(en_list) if en_list else "-"
                 class_str = "<br>".join(ref_list) if ref_list else "-"
 
-                lines.append(f"| **{block_display}** | **{concept}** | {zh_str} | {en_str} | {class_str} |")
+                lines.append(f"| **{block_display}** | {concept_display} | {zh_str} | {en_str} | {class_str} |")
             lines.append("\n")
         else:
             lines.append("> 未生成检索要素表。\n")
