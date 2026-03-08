@@ -160,12 +160,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import TaskPanel from '~/components/task/TaskPanel.vue'
+import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type { CreateTaskInput } from '~/types/task'
 
 const taskStore = useTaskStore()
+const authStore = useAuthStore()
 
 const mode = ref<'patent_analysis' | 'office_action_reply'>('patent_analysis')
 
@@ -361,6 +363,13 @@ const submitOfficeActionTask = async () => {
 onMounted(() => {
   taskStore.init()
 })
+
+watch(
+  () => [authStore.isLoggedIn, authStore.user?.sub],
+  () => {
+    taskStore.init()
+  },
+)
 </script>
 
 <style scoped>

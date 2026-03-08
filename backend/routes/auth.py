@@ -2,14 +2,16 @@
 认证路由
 """
 import hashlib
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 
 from backend.auth import _build_authing_owner_id, _issue_token, _verify_authing_id_token
 from backend.models import (
     AuthingAuthResponse,
     AuthingTokenExchangeRequest,
+    GuestAuthRequest,
     GuestAuthResponse,
     UserProfileResponse,
 )
@@ -31,12 +33,21 @@ def _sanitize_profile_text(value) -> str | None:
     return text
 
 
+def _normalize_guest_device_id(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return uuid.uuid4().hex
+    if len(text) > 128:
+        text = text[:128]
+    return text
+
+
 @router.post("/api/auth/guest", response_model=GuestAuthResponse)
-async def create_guest_auth(request: Request):
+async def create_guest_auth(payload: GuestAuthRequest | None = None):
     """创建访客身份认证"""
-    client_ip = request.client.host if request.client else "unknown"
-    ip_hash = hashlib.sha256(client_ip.encode('utf-8')).hexdigest()[:16]
-    user_id = f"ip_{ip_hash}"
+    device_id = _normalize_guest_device_id(payload.deviceId if payload else None)
+    device_hash = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:24]
+    user_id = f"guest_{device_hash}"
     token, exp = _issue_token(user_id)
     return GuestAuthResponse(
         token=token,

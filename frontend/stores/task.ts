@@ -3,11 +3,19 @@ import { useAuthStore } from '~/stores/auth'
 import type { CreateTaskInput, Task, TaskProgress, TaskType } from '~/types/task'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
-const STORAGE_KEY = 'patent_tasks'
+const STORAGE_KEY_PREFIX = 'patent_tasks::'
 const AUTH_TOKEN_KEY = 'patent_auth_token'
 const AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const AUTH_MODE_KEY = 'patent_auth_mode'
+const GUEST_DEVICE_ID_KEY = 'patent_guest_device_id'
+const TASK_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const MAX_COMPLETED_CACHE_COUNT = 20
 type AuthMode = 'guest' | 'authing'
+
+interface TaskCachePayload {
+  savedAt: number
+  tasks: Task[]
+}
 
 const normalizeTaskType = (taskType?: string): TaskType => {
   return taskType === 'office_action_reply' ? 'office_action_reply' : 'patent_analysis'
@@ -26,6 +34,33 @@ const withTokenQuery = (url: string, token: string): string => {
   return `${url}${separator}token=${encodeURIComponent(token)}`
 }
 
+const buildTaskStorageKey = (mode: AuthMode, userId: string): string => {
+  if (!userId) return ''
+  return `${STORAGE_KEY_PREFIX}${mode}:${userId}`
+}
+
+const toTaskFromServer = (serverTask: any): Task => ({
+  id: generateId(),
+  backendId: serverTask.id,
+  title: serverTask.title || serverTask.pn || '未命名任务',
+  taskType: normalizeTaskType(serverTask.taskType),
+  pn: serverTask.pn,
+  status: normalizeStatus(serverTask.status),
+  progress: typeof serverTask.progress === 'number' ? serverTask.progress : 0,
+  currentStep: serverTask.step || '等待处理',
+  error: serverTask.error,
+  createdAt: new Date(serverTask.created_at).getTime(),
+  updatedAt: Date.now(),
+  downloadUrl: serverTask.status === 'completed' ? `/api/tasks/${serverTask.id}/download` : undefined,
+})
+
+const createGuestDeviceId = (): string => {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID()
+  }
+  return `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
 export const useTaskStore = defineStore('tasks', {
   state: () => ({
     tasks: [] as Task[],
@@ -33,6 +68,7 @@ export const useTaskStore = defineStore('tasks', {
     authToken: '' as string,
     userId: '' as string,
     authMode: 'guest' as AuthMode,
+    taskStorageKey: '' as string,
     progressStreams: {} as Record<string, EventSource>,
     progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
@@ -71,6 +107,95 @@ export const useTaskStore = defineStore('tasks', {
   actions: {
     resolveTaskRef(task: Task): Task {
       return this.tasks.find((t) => t.id === task.id) || task
+    },
+
+    getCurrentTaskStorageKey(): string {
+      return buildTaskStorageKey(this.authMode, this.userId)
+    },
+
+    stopAllTracking() {
+      Object.keys(this.progressStreams).forEach((key) => this.stopProgressTracking(key))
+      Object.keys(this.progressPollers).forEach((key) => this.stopProgressPolling(key))
+    },
+
+    resetInMemoryTasks() {
+      this.stopAllTracking()
+      this.tasks = []
+      this.downloadingTaskIds.clear()
+    },
+
+    pruneTasksForCache(tasks: Task[]): Task[] {
+      const active = tasks.filter((task) => task.status === 'pending' || task.status === 'processing')
+      const completed = tasks
+        .filter((task) => task.status === 'completed')
+        .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
+        .slice(0, MAX_COMPLETED_CACHE_COUNT)
+
+      return [...active, ...completed].sort((a, b) => b.createdAt - a.createdAt)
+    },
+
+    loadTasksFromStorage() {
+      if (!process.client) return
+      const storageKey = this.getCurrentTaskStorageKey()
+      this.taskStorageKey = storageKey
+      this.tasks = []
+      if (!storageKey) return
+
+      const saved = localStorage.getItem(storageKey)
+      if (!saved) return
+
+      try {
+        const parsed = JSON.parse(saved) as Partial<TaskCachePayload>
+        const savedAt = Number(parsed?.savedAt || 0)
+        const now = Date.now()
+        if (!savedAt || now - savedAt > TASK_CACHE_TTL_MS) {
+          localStorage.removeItem(storageKey)
+          return
+        }
+
+        const parsedTasks = Array.isArray(parsed?.tasks) ? parsed.tasks : []
+        this.tasks = this.pruneTasksForCache(
+          parsedTasks.map((task: any) => ({
+            ...task,
+            taskType: normalizeTaskType(task.taskType),
+            status: normalizeStatus(task.status),
+          })),
+        )
+      } catch (error) {
+        console.error('解析本地任务缓存失败：', error)
+        localStorage.removeItem(storageKey)
+      }
+    },
+
+    applyAuthIdentity(token: string, userId: string, mode: AuthMode) {
+      const changed = this.userId !== userId || this.authMode !== mode
+      this.authToken = token
+      this.userId = userId
+      this.authMode = mode
+
+      if (process.client) {
+        localStorage.setItem(AUTH_TOKEN_KEY, token)
+        localStorage.setItem(AUTH_USER_ID_KEY, userId)
+        localStorage.setItem(AUTH_MODE_KEY, mode)
+      }
+
+      if (changed) {
+        this.resetInMemoryTasks()
+        this.loadTasksFromStorage()
+      }
+    },
+
+    async fetchServerTasks(): Promise<Task[] | null> {
+      const config = useRuntimeConfig()
+      const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
+        headers: {
+          Authorization: `Bearer ${this.authToken}`,
+        },
+      })
+      if (!response.ok) return null
+      const data = await response.json()
+      if (!Array.isArray(data?.tasks)) return []
+      return data.tasks.map((item: any) => toTaskFromServer(item))
     },
 
     applyServerTaskSnapshot(task: Task, serverTask: any) {
@@ -122,71 +247,21 @@ export const useTaskStore = defineStore('tasks', {
       if (!process.client) return
       this.loadAuthFromStorage()
 
-      const saved = localStorage.getItem(STORAGE_KEY)
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved)
-          this.tasks = Array.isArray(parsed)
-            ? parsed.map((task: any) => ({
-                ...task,
-                taskType: normalizeTaskType(task.taskType),
-              }))
-            : []
-        } catch (error) {
-          console.error('解析本地任务缓存失败：', error)
-        }
-      }
-
-      // 查询服务器任务队列状态
       const authed = await this.ensureAuth()
-      if (authed && this.authToken) {
-        try {
-          const config = useRuntimeConfig()
-          const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
-            headers: {
-              Authorization: `Bearer ${this.authToken}`,
-            },
-          })
+      if (!authed || !this.authToken) return
 
-          if (response.ok) {
-            const data = await response.json()
-            // 根据服务器返回的任务队列状态更新本地任务
-            if (data.tasks && Array.isArray(data.tasks)) {
-              // 遍历服务器返回的任务
-              data.tasks.forEach((serverTask: any) => {
-                // 查找本地是否已存在该任务
-                const localTaskIndex = this.tasks.findIndex(t => t.backendId === serverTask.id)
-                if (localTaskIndex !== -1) {
-                  // 更新本地任务状态
-                  const localTask = this.tasks[localTaskIndex]
-                  this.applyServerTaskSnapshot(localTask, serverTask)
-                } else {
-                  // 添加新任务到本地
-                  const newTask: Task = {
-                    id: generateId(),
-                    backendId: serverTask.id,
-                    title: serverTask.title || serverTask.pn || '未命名任务',
-                    taskType: normalizeTaskType(serverTask.taskType),
-                    pn: serverTask.pn,
-                    status: normalizeStatus(serverTask.status),
-                    progress: typeof serverTask.progress === 'number' ? serverTask.progress : 0,
-                    currentStep: serverTask.step || '等待处理',
-                    error: serverTask.error,
-                    createdAt: new Date(serverTask.created_at).getTime(),
-                    updatedAt: Date.now(),
-                    downloadUrl: serverTask.status === 'completed' ? `/api/tasks/${serverTask.id}/download` : undefined,
-                  }
-                  this.tasks.unshift(newTask)
-                }
-              })
+      this.loadTasksFromStorage()
 
-              this.saveToStorage()
-              console.log('任务队列已同步：', data.tasks.length, '个任务')
-            }
-          }
-        } catch (error) {
-          console.error('查询任务队列状态失败：', error)
+      try {
+        const serverTasks = await this.fetchServerTasks()
+        if (serverTasks) {
+          // 以后端结果为准，避免跨账号残留本地任务。
+          this.tasks = serverTasks
+          this.saveToStorage()
+          console.log('任务队列已同步：', serverTasks.length, '个任务')
         }
+      } catch (error) {
+        console.error('查询任务队列状态失败：', error)
       }
 
       this.restoreProcessingTasks()
@@ -198,12 +273,15 @@ export const useTaskStore = defineStore('tasks', {
       this.userId = localStorage.getItem(AUTH_USER_ID_KEY) || ''
       const mode = localStorage.getItem(AUTH_MODE_KEY)
       this.authMode = mode === 'authing' ? 'authing' : 'guest'
+      this.taskStorageKey = this.getCurrentTaskStorageKey()
     },
 
     clearAuthFromStorage() {
+      this.resetInMemoryTasks()
       this.authToken = ''
       this.userId = ''
       this.authMode = 'guest'
+      this.taskStorageKey = ''
       if (!process.client) return
       localStorage.removeItem(AUTH_TOKEN_KEY)
       localStorage.removeItem(AUTH_USER_ID_KEY)
@@ -211,20 +289,28 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     saveAuthToStorage(token: string, userId: string, mode: AuthMode) {
-      this.authToken = token
-      this.userId = userId
-      this.authMode = mode
-      if (!process.client) return
-      localStorage.setItem(AUTH_TOKEN_KEY, token)
-      localStorage.setItem(AUTH_USER_ID_KEY, userId)
-      localStorage.setItem(AUTH_MODE_KEY, mode)
+      this.applyAuthIdentity(token, userId, mode)
+    },
+
+    ensureGuestDeviceId(): string {
+      if (!process.client) return createGuestDeviceId()
+      const existing = (localStorage.getItem(GUEST_DEVICE_ID_KEY) || '').trim()
+      if (existing) return existing
+      const created = createGuestDeviceId()
+      localStorage.setItem(GUEST_DEVICE_ID_KEY, created)
+      return created
     },
 
     async createGuestAuth(): Promise<boolean> {
       const config = useRuntimeConfig()
+      const deviceId = this.ensureGuestDeviceId()
       try {
         const response = await fetch(`${config.public.apiBaseUrl}/api/auth/guest`, {
           method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ deviceId }),
         })
         if (!response.ok) return false
         const data = await response.json()
@@ -273,15 +359,24 @@ export const useTaskStore = defineStore('tasks', {
 
         const idToken = authStore.idToken
         const isAuthingLoggedIn = authStore.isLoggedIn && !!idToken
+        const authingSub = authStore.user?.sub ? String(authStore.user.sub) : ''
+        const expectedAuthingUserId = authingSub ? `authing:${authingSub}` : ''
 
         if (isAuthingLoggedIn) {
-          if (this.authToken && this.authMode === 'authing') return true
+          if (
+            this.authToken
+            && this.authMode === 'authing'
+            && this.userId
+            && this.userId === expectedAuthingUserId
+          ) {
+            return true
+          }
           this.clearAuthFromStorage()
           return await this.exchangeAuthingAuth(idToken)
         }
       }
 
-      if (this.authToken && this.authMode === 'guest') return true
+      if (this.authToken && this.authMode === 'guest' && this.userId) return true
 
       this.clearAuthFromStorage()
       return await this.createGuestAuth()
@@ -556,10 +651,12 @@ export const useTaskStore = defineStore('tasks', {
           },
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
-        Object.keys(this.progressStreams).forEach((key) => this.stopProgressTracking(key))
-        Object.keys(this.progressPollers).forEach((key) => this.stopProgressPolling(key))
+        this.stopAllTracking()
         this.tasks = []
-        if (process.client) localStorage.removeItem(STORAGE_KEY)
+        if (process.client) {
+          const storageKey = this.getCurrentTaskStorageKey()
+          if (storageKey) localStorage.removeItem(storageKey)
+        }
       } catch (error) {
         console.error('清空任务失败：', error)
       }
@@ -633,7 +730,15 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     saveToStorage() {
-      if (process.client) localStorage.setItem(STORAGE_KEY, JSON.stringify(this.tasks))
+      if (!process.client) return
+      const storageKey = this.getCurrentTaskStorageKey()
+      if (!storageKey) return
+      this.taskStorageKey = storageKey
+      const payload: TaskCachePayload = {
+        savedAt: Date.now(),
+        tasks: this.pruneTasksForCache(this.tasks),
+      }
+      localStorage.setItem(storageKey, JSON.stringify(payload))
     },
 
     restoreProcessingTasks() {

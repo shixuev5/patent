@@ -21,6 +21,10 @@ class GuestAuthResponse(BaseModel):
     authType: str = "guest"
 
 
+class GuestAuthRequest(BaseModel):
+    deviceId: Optional[str] = None
+
+
 class UserProfileResponse(BaseModel):
     ownerId: str
     authingSub: str
