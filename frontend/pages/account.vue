@@ -386,7 +386,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type {
@@ -410,6 +410,8 @@ const PADDING = {
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
 const taskStore = useTaskStore()
+const usageNowTs = ref(Date.now())
+let usageCountdownTimer: ReturnType<typeof setInterval> | null = null
 
 const now = new Date()
 const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
@@ -492,8 +494,8 @@ const usageProgressCenterLabel = computed(() => {
 })
 const usageInfoLine = computed(() => {
   if (!usageHasLimit.value) return '分析 1 点 / 研判 1.5 点 · 每日上限未配置'
-  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 1.5 点 · 今日已用完 · 重置 ${usageResetLabel.value}`
-  return `分析 1 点 / 研判 1.5 点 · 剩余 ${usageRemainingLabel.value} · 重置 ${usageResetLabel.value}`
+  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 1.5 点 · 今日已用完 · 距重置 ${usageResetLabel.value}`
+  return `分析 1 点 / 研判 1.5 点 · 剩余 ${usageRemainingLabel.value} · 距重置 ${usageResetLabel.value}`
 })
 const usageInfoToneClass = computed(() => {
   if (!usageHasLimit.value || (dailyUsage.value?.remainingPoints || 0) <= 0) return 'text-amber-500'
@@ -506,18 +508,24 @@ const showUsageLoginPrompt = computed(() => {
     && hasAuthingEnabled.value
     && !authStore.isLoggedIn
 })
+const formatRemainingTime = (ms: number): string => {
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
+  const days = Math.floor(totalMinutes / (24 * 60))
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60)
+  const minutes = totalMinutes % 60
+
+  if (days > 0) return hours > 0 ? `${days}天${hours}小时` : `${days}天`
+  if (hours > 0) return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`
+  return `${minutes}分钟`
+}
 const usageResetLabel = computed(() => {
   if (!dailyUsage.value?.resetAt) return '--'
   try {
     const resetDate = new Date(dailyUsage.value.resetAt)
     if (Number.isNaN(resetDate.getTime())) return '--'
-    return resetDate.toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
+    const remainingMs = resetDate.getTime() - usageNowTs.value
+    if (remainingMs <= 0) return '即将重置'
+    return formatRemainingTime(remainingMs)
   } catch (_error) {
     return '--'
   }
@@ -1190,8 +1198,18 @@ onMounted(async () => {
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
   }
+  usageCountdownTimer = setInterval(() => {
+    usageNowTs.value = Date.now()
+  }, 30_000)
   pageReady.value = true
   await loadData(true)
+})
+
+onUnmounted(() => {
+  if (usageCountdownTimer) {
+    clearInterval(usageCountdownTimer)
+    usageCountdownTimer = null
+  }
 })
 </script>
 
