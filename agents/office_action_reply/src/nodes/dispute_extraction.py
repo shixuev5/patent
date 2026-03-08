@@ -51,7 +51,7 @@ class DisputeExtractionNode:
 
             # 使用缓存运行争辩焦点提取
             valid_disputes = cache.run_step(
-                "extract_disputes_v4",
+                "extract_disputes_v5",
                 self._extract_and_validate_disputes,
                 prepared_materials
             )
@@ -133,9 +133,9 @@ class DisputeExtractionNode:
 ### 核心处理步骤（请在内部严格按此逻辑思考）
 1. **穷尽提取申请人论点**：通读 <applicant_response>，寻找所有的“区别技术特征”论述、编号序列（如1. 2. 3.）、以及“综上所述...”之前的具体反驳段落。绝不能遗漏任何一个技术点！
 2. **精准回溯审查员观点**：针对申请人的每个论点，在 <office_action> 中寻找对应的段落。提取审查员是基于哪些对比文件（或公知常识）对该特征做出了评述。
-3. **拆分与对齐（1对1原则）**：
-   - 争点必须细化到【单一权利要求 (original_claim_id)】+【单一技术特征 (feature_text)】。
-   - 如果申请人说“权利要求1-3的区别特征是X”，你**必须**将其拆分为3条独立的记录（original_claim_id 分别为 1, 2, 3）。
+3. **聚合与对齐（争点中心 1:n 原则）**：
+   - 争点必须细化到【单一技术特征 (feature_text)】。
+   - 每条争点可以关联多个权利要求，用 `claim_ids` 表示（例如 `["1","2","3"]`）。
    - 如果申请人既反驳了“事实认定（对比文件未公开特征X）”，又反驳了“逻辑结合（无动机结合对比文件1和2）”，请合并在 `applicant_opinion` 中清晰表述，或视情况拆分为独立争点。
 
 ### 数据字典与约束规则（强制执行）
@@ -150,21 +150,22 @@ class DisputeExtractionNode:
 - `type`: 仅限枚举["fact_dispute" (事实争议：如认为D1未公开某特征), "logic_dispute" (逻辑争议：如认为无结合启示、有技术障碍)]。如果两者都有，优先使用 "fact_dispute"。
 - `core_conflict`: 提炼一句话核心冲突，例如：“D1是否公开了A与B的联动控制关系” 或 “D1和D2是否存在结合启示”。
 
-#### 3. original_claim_id
-- **必须是纯数字字符串**（例如 "1", "2"）。绝对不能出现 "1-3" 或 "权利要求1"。
+#### 3. claim_ids
+- **必须是纯数字字符串数组**（例如 `["1", "2"]`）。
+- 每个元素不能出现 "1-3"、"权利要求1" 这类文本。
 - 如果找不到确切的权利要求编号，该争点判定为无效，不要输出。
 
 ### ⚠️ 常见错误避坑指南（Negative Constraints）
 - **禁止遗漏**：申请人答复中列出的 1/2/3 条理，必须 100% 体现在输出的 JSON 中。
-- **禁止合并 Claim**：一条记录绝对不允许 original_claim_id="1,2"。必须拆分为多条！
+- **禁止 claim_ids 非法格式**：不要输出 `"1,2"` 这种单字符串，必须输出数组 `["1","2"]`。
 - **禁止捏造引用**：cited_text 如果在审查意见中找不到原话，宁可留空，绝不自己编造。
 
 ### 输出格式：严格返回如下 JSON
 {
   "disputes":[
     {
-      "original_claim_id": "1",
-      "dispute_id": "DSP_1_a1b2c3d4",  // 可留空或自定义，后续系统会自动覆盖
+      "claim_ids": ["1", "2"],
+      "dispute_id": "DSP_1_2_a1b2c3d4",  // 可留空或自定义，后续系统会自动覆盖
       "feature_text": "此处填写具体的技术特征内容",
       "examiner_opinion": {
         "type": "document_based",
@@ -230,8 +231,13 @@ class DisputeExtractionNode:
                     continue
 
                 # 检查必需字段
-                if "original_claim_id" not in dispute or "feature_text" not in dispute:
+                if "claim_ids" not in dispute or "feature_text" not in dispute:
                     logger.warning(f"第{i+1}个争辩焦点缺少必需字段")
+                    continue
+
+                claim_ids = self._normalize_claim_ids(dispute.get("claim_ids"))
+                if not claim_ids:
+                    logger.warning(f"第{i+1}个争辩焦点 claim_ids 非法或为空")
                     continue
 
                 examiner_opinion = dispute.get("examiner_opinion", {})
@@ -302,10 +308,10 @@ class DisputeExtractionNode:
                 valid_disputes.append({
                     "dispute_id": self._build_dispute_id(
                         dispute.get("dispute_id", ""),
-                        str(dispute.get("original_claim_id", "")).strip(),
+                        claim_ids,
                         str(dispute.get("feature_text", "")).strip(),
                     ),
-                    "original_claim_id": str(dispute.get("original_claim_id", "")).strip(),
+                    "claim_ids": claim_ids,
                     "feature_text": str(dispute.get("feature_text", "")).strip(),
                     "examiner_opinion": {
                         "type": examiner_type,
@@ -334,15 +340,30 @@ class DisputeExtractionNode:
                 doc_ids.append(value)
         return doc_ids
 
-    def _build_dispute_id(self, raw_dispute_id: Any, original_claim_id: str, feature_text: str) -> str:
+    def _build_dispute_id(self, raw_dispute_id: Any, claim_ids: List[str], feature_text: str) -> str:
         """生成稳定的 dispute_id。"""
         provided = str(raw_dispute_id or "").strip()
         if provided:
             return provided
 
         digest = hashlib.md5(feature_text.encode("utf-8")).hexdigest()[:8]
-        claim_part = original_claim_id or "UNKNOWN"
+        claim_part = "_".join(claim_ids[:4]) if claim_ids else "UNKNOWN"
         return f"DSP_{claim_part}_{digest}"
+
+    def _normalize_claim_ids(self, value: Any) -> List[str]:
+        claim_ids: List[str] = []
+        candidates = value if isinstance(value, list) else [value]
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in re.split(r"[，,、\s]+", text):
+                piece = piece.strip()
+                if not piece or not piece.isdigit():
+                    continue
+                if piece not in claim_ids:
+                    claim_ids.append(piece)
+        return claim_ids
 
     def _state_get(self, state, key: str, default=None):
         """兼容 dict 与对象状态读取。"""

@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any, List
 from loguru import logger
@@ -31,7 +32,7 @@ class ReportGenerationNode:
             cache = get_node_cache(self.config, "report_generation")
 
             # 使用缓存运行报告生成
-            report = cache.run_step("generate_report_v3", self._generate_report, state)
+            report = cache.run_step("generate_report_v4", self._generate_report, state)
 
             # 保存到文件
             output_path = self._save_report(report, state)
@@ -77,13 +78,13 @@ class ReportGenerationNode:
         # 遍历所有争议点
         for dispute in item_get(state, "disputes", []):
             dispute_id = item_get(dispute, "dispute_id", "")
-            original_claim_id = item_get(dispute, "original_claim_id", "")
+            claim_ids = self._normalize_claim_ids(item_get(dispute, "claim_ids", []))
             feature_text = item_get(dispute, "feature_text", "")
 
             # 构建争议点报告
             dispute_report = {
                 "dispute_id": dispute_id,
-                "original_claim_id": original_claim_id,
+                "claim_ids": claim_ids,
                 "feature_text": feature_text,
                 "examiner_opinion": to_jsonable(item_get(dispute, "examiner_opinion", {})),
                 "applicant_opinion": to_jsonable(item_get(dispute, "applicant_opinion", {})),
@@ -167,7 +168,7 @@ class ReportGenerationNode:
 
             items.append({
                 "dispute_id": str(item_get(dispute, "dispute_id", "")).strip(),
-                "original_claim_id": str(item_get(dispute, "original_claim_id", "")).strip(),
+                "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
                 "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
                 "examiner_rejection_reason": rejection_reason,
             })
@@ -180,11 +181,12 @@ class ReportGenerationNode:
 
         clauses: List[str] = []
         for index, item in enumerate(items, start=1):
-            claim_id = item.get("original_claim_id", "") or "未标注权利要求"
+            claim_ids = self._normalize_claim_ids(item.get("claim_ids", []))
+            claim_label = "、".join(claim_ids) if claim_ids else "未标注权利要求"
             feature_text = item.get("feature_text", "") or "未提取争议特征"
             reason = item.get("examiner_rejection_reason", "").strip().rstrip("。；;")
             clauses.append(
-                f"关于第{index}项核查结论（权利要求{claim_id}，争议特征“{feature_text}”），{reason}"
+                f"关于第{index}项核查结论（权利要求{claim_label}，争议特征“{feature_text}”），{reason}"
             )
 
         return (
@@ -213,10 +215,25 @@ class ReportGenerationNode:
             if not dispute_id:
                 continue
             result[dispute_id] = {
-                "original_claim_id": item_get(item, "original_claim_id", ""),
+                "claim_ids": self._normalize_claim_ids(item_get(item, "claim_ids", [])),
                 "claim_text": item_get(item, "claim_text", ""),
                 "assessment": to_jsonable(item_get(item, "assessment", {})),
                 "evidence": to_jsonable(item_get(item, "evidence", [])),
                 "trace": to_jsonable(item_get(item, "trace", {})),
             }
         return result
+
+    def _normalize_claim_ids(self, value: Any) -> List[str]:
+        claim_ids: List[str] = []
+        candidates = value if isinstance(value, list) else [value]
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in re.split(r"[，,\s]+", text):
+                part = piece.strip()
+                if not part or not part.isdigit():
+                    continue
+                if part not in claim_ids:
+                    claim_ids.append(part)
+        return claim_ids

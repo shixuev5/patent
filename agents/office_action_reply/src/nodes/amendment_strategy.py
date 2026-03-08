@@ -27,7 +27,7 @@ class AmendmentStrategyNode:
         try:
             cache = get_node_cache(self.config, "amendment_strategy")
             result = cache.run_step(
-                "build_amendment_strategy_v1",
+                "build_amendment_strategy_v2",
                 self._build_strategy,
                 self._state_get(state, "has_claim_amendment", False),
                 self._state_get(state, "added_features", []),
@@ -79,19 +79,21 @@ class AmendmentStrategyNode:
             target_claim_ids = [str(item).strip() for item in feature.get("target_claim_ids", []) if str(item).strip()]
             source_claim_ids = [str(item).strip() for item in feature.get("source_claim_ids", []) if str(item).strip()]
 
-            claim_candidates = target_claim_ids or source_claim_ids or ["1"]
-            claim_id = claim_candidates[0]
+            claim_candidates = []
+            for item in (target_claim_ids or source_claim_ids or ["1"]):
+                if item and item not in claim_candidates:
+                    claim_candidates.append(item)
 
             task = {
                 "task_id": feature_id,
-                "original_claim_id": claim_id,
+                "claim_ids": claim_candidates,
                 "feature_text": feature_text,
                 "source_type": source_type,
                 "source_claim_ids": source_claim_ids,
                 "target_claim_ids": target_claim_ids,
             }
 
-            if source_type == "claim" and any(claim in oa_claim_ids_covered for claim in (source_claim_ids or [claim_id])):
+            if source_type == "claim" and any(claim in oa_claim_ids_covered for claim in (source_claim_ids or claim_candidates)):
                 reuse_oa_tasks.append(task)
             else:
                 topup_tasks.append(task)

@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from loguru import logger
@@ -26,7 +27,7 @@ class EvidenceVerificationNode:
         try:
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence_v3",
+                "verify_evidence_v4",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -247,7 +248,7 @@ class EvidenceVerificationNode:
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
 
         dispute_prompt = f"""请核查以下争议项：
-original_claim_id: {dispute.get("original_claim_id", "")}
+claim_ids: {json.dumps(self._normalize_claim_ids(dispute.get("claim_ids", [])), ensure_ascii=False)}
 claim_text: {claim_text}
 feature_text: {dispute.get("feature_text", "")}
 examiner_opinion: {json.dumps(examiner_opinion, ensure_ascii=False)}
@@ -264,12 +265,13 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
         )
         parsed = self._normalize_llm_output(response, set(doc_group))
 
-        original_claim_id = str(dispute.get("original_claim_id", "")).strip()
+        claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", []))
         feature_text = str(dispute.get("feature_text", "")).strip()
+        claim_key = "_".join(claim_ids[:4]) if claim_ids else "UNKNOWN"
 
         return {
-            "dispute_id": str(dispute.get("dispute_id", f"{original_claim_id}_{feature_text[:30]}")),
-            "original_claim_id": original_claim_id,
+            "dispute_id": str(dispute.get("dispute_id", f"{claim_key}_{feature_text[:30]}")),
+            "claim_ids": claim_ids,
             "claim_text": claim_text,
             "feature_text": feature_text,
             "examiner_opinion": examiner_opinion,
@@ -334,14 +336,32 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
         }
 
     def _get_claim_text(self, dispute: Dict[str, Any], claims: List[Dict[str, Any]]) -> str:
-        claim_id = str(dispute.get("original_claim_id", "")).strip()
-        try:
-            index = int(claim_id) - 1
+        texts: List[str] = []
+        for claim_id in self._normalize_claim_ids(dispute.get("claim_ids", [])):
+            try:
+                index = int(claim_id) - 1
+            except Exception:
+                continue
             if 0 <= index < len(claims):
-                return str(claims[index].get("claim_text", "")).strip()
-        except Exception:
-            pass
-        return ""
+                text = str(claims[index].get("claim_text", "")).strip()
+                if text:
+                    texts.append(f"权利要求{claim_id}: {text}")
+        return "\n".join(texts)
+
+    def _normalize_claim_ids(self, value: Any) -> List[str]:
+        claim_ids: List[str] = []
+        candidates = value if isinstance(value, list) else [value]
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in re.split(r"[，,\s]+", text):
+                part = piece.strip()
+                if not part or not part.isdigit():
+                    continue
+                if part not in claim_ids:
+                    claim_ids.append(part)
+        return claim_ids
 
     def _state_get(self, state: Any, key: str, default=None):
         if isinstance(state, dict):

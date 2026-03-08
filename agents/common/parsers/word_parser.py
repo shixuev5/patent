@@ -61,7 +61,12 @@ class OnlineWordParser(BaseParser):
         url_batch = f"{self.base_url}/file-urls/batch"
         payload = {"files": [{"name": file_name}], "model_version": "vlm"}
 
-        resp = requests.post(url_batch, headers=self.headers, json=payload)
+        resp = requests.post(
+            url_batch,
+            headers=self.headers,
+            json=payload,
+            timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,
+        )
         resp.raise_for_status()
         data = resp.json()
 
@@ -78,7 +83,7 @@ class OnlineWordParser(BaseParser):
 
         # B. Upload Content (PUT)
         with open(file_path, "rb") as f:
-            put_resp = requests.put(upload_url, data=f)
+            put_resp = requests.put(upload_url, data=f, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
 
             if put_resp.status_code != 200:
                 logger.error(f"OSS Upload Failed [{put_resp.status_code}]: {put_resp.text}")
@@ -93,7 +98,7 @@ class OnlineWordParser(BaseParser):
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            resp = requests.get(url, headers=self.headers)
+            resp = requests.get(url, headers=self.headers, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
             if resp.status_code != 200:
                 logger.warning(f"[OnlineWordParser] Poll status check failed: {resp.status_code}")
                 time.sleep(interval)
@@ -130,7 +135,12 @@ class OnlineWordParser(BaseParser):
 
         zip_path = output_dir / "result.zip"
 
-        with requests.get(download_url, stream=True, verify=False) as r:
+        with requests.get(
+            download_url,
+            stream=True,
+            verify=False,
+            timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,
+        ) as r:
             r.raise_for_status()
             with open(zip_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=8192):

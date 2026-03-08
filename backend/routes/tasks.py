@@ -287,11 +287,38 @@ async def run_office_action_reply_task(
 
             workflow = create_workflow(config)
             with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"):
-                result = workflow.invoke(initial_state)
-            return _to_dict(result)
+                last_state: Dict[str, Any] = _to_dict(initial_state)
+                last_progress = -1
+                last_step = ""
+                for state_value in workflow.stream(initial_state, stream_mode="values"):
+                    if cancel_event and cancel_event.is_set():
+                        raise RuntimeError("任务已取消")
+                    state_dict = _to_dict(state_value)
+                    if not state_dict:
+                        continue
+                    last_state = state_dict
+                    node_name = str(state_dict.get("current_node", "")).strip()
+                    if not node_name or node_name == "start":
+                        continue
+                    step_label = NODE_LABELS.get(node_name, "处理中")
+                    progress_raw = state_dict.get("progress")
+                    try:
+                        progress = int(float(progress_raw))
+                    except Exception:
+                        continue
+                    progress = max(0, min(95, progress))
+                    if progress <= 0:
+                        continue
+                    if progress != last_progress or step_label != last_step:
+                        task_manager.update_progress(task_id, progress, step_label)
+                        last_progress = progress
+                        last_step = step_label
+            return last_state
 
-        task_manager.update_progress(task_id, 20, "正在解析文档")
-        result = await loop.run_in_executor(None, run_workflow)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, run_workflow),
+            timeout=settings.OAR_WORKFLOW_TIMEOUT_SECONDS,
+        )
 
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
@@ -337,7 +364,15 @@ async def run_office_action_reply_task(
         task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
         raise
+    except asyncio.TimeoutError:
+        error_msg = f"审查意见答复任务超时（>{settings.OAR_WORKFLOW_TIMEOUT_SECONDS}秒）"
+        task_logger.error(error_msg)
+        task_manager.fail_task(task_id, error_msg)
     except Exception as exc:
+        if cancel_event and cancel_event.is_set():
+            task_logger.warning("任务已取消")
+            task_manager.cancel_task(task_id, "任务已取消")
+            return
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
 

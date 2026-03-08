@@ -2,6 +2,7 @@
 最终报告 Markdown 组装（纯函数，无外部依赖副作用）。
 """
 
+import re
 from typing import Any, Dict, List
 
 
@@ -150,7 +151,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("| 1 | - | 无争议点 | - | - | - |")
     else:
         for index, dispute in enumerate(disputes, start=1):
-            claim_id = _cell(_item_get(dispute, "original_claim_id", "") or "-")
+            claim_label = _cell(_format_claim_ids(_item_get(dispute, "claim_ids", [])) or "-")
             feature_text = _cell(_truncate(_item_get(dispute, "feature_text", ""), 56))
             examiner_type = _cell(
                 _examiner_type_label(
@@ -170,7 +171,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
                 )
             )
             lines.append(
-                f"| {index} | {claim_id} | {feature_text} | {examiner_type} | {examiner_reasoning} | {applicant_reasoning} |"
+                f"| {index} | {claim_label} | {feature_text} | {examiner_type} | {examiner_reasoning} | {applicant_reasoning} |"
             )
     lines.append("")
 
@@ -182,7 +183,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("| 1 | - | 无争议点 | - | - | - |")
     else:
         for index, dispute in enumerate(disputes, start=1):
-            claim_id = _cell(_item_get(dispute, "original_claim_id", "") or "-")
+            claim_label = _cell(_format_claim_ids(_item_get(dispute, "claim_ids", [])) or "-")
             feature_text = _cell(_truncate(_item_get(dispute, "feature_text", ""), 56))
             evidence_assessment = _item_get(dispute, "evidence_assessment", None)
             assessment = _item_get(evidence_assessment, "assessment", {}) if evidence_assessment else {}
@@ -198,7 +199,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
                 ai_basis = "-"
 
             lines.append(
-                f"| {index} | {claim_id} | {feature_text} | {_cell(ai_verdict)} | {ai_reason} | {ai_basis} |"
+                f"| {index} | {claim_label} | {feature_text} | {_cell(ai_verdict)} | {ai_reason} | {ai_basis} |"
             )
     lines.append("")
 
@@ -216,7 +217,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     else:
         for index, item in enumerate(second_notice_items, start=1):
             lines.append(
-                f"| {index} | {_cell(_item_get(item, 'original_claim_id', '') or '-')} | "
+                f"| {index} | {_cell(_format_claim_ids(_item_get(item, 'claim_ids', [])) or '-')} | "
                 f"{_cell(_truncate(_item_get(item, 'feature_text', '') or '-', 48))} | "
                 f"{_cell(_truncate(_item_get(item, 'examiner_rejection_reason', '') or '-', 120))} |"
             )
@@ -247,6 +248,22 @@ def _verdict_label(verdict: str) -> str:
         "INCONCLUSIVE": "结论不确定",
     }
     return mapping.get(str(verdict).strip(), "未核查")
+
+
+def _format_claim_ids(value: Any) -> str:
+    claim_ids: List[str] = []
+    candidates = value if isinstance(value, list) else [value]
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for piece in re.split(r"[，,\s]+", text):
+            part = piece.strip()
+            if not part or not part.isdigit():
+                continue
+            if part not in claim_ids:
+                claim_ids.append(part)
+    return ",".join(claim_ids)
 
 
 def _build_ai_basis_text(evidence_assessment: Any) -> str:

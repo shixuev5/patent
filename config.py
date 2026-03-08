@@ -44,6 +44,7 @@ class Settings:
     LLM_BASE_URL = os.getenv("LLM_BASE_URL")
     LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
     LLM_MODEL_REASONING = os.getenv("LLM_MODEL_REASONING", "deepseek-reasoner")
+    LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "90"))
 
     # --- 视觉模型配置 ---
     VLM_API_KEY = os.getenv("VLM_API_KEY")
@@ -65,6 +66,16 @@ class Settings:
     MINERU_API_KEY = os.getenv("MINERU_API_KEY", "")  
     MINERU_BASE_URL = os.getenv("MINERU_BASE_URL", "https://mineru.net/api/v4")
     MINERU_TEMP_FOLDER = "mineru_raw"
+    MINERU_REQUEST_TIMEOUT_SECONDS = int(os.getenv("MINERU_REQUEST_TIMEOUT_SECONDS", "60"))
+
+    # --- Office Action Reply 并行配置 ---
+    OAR_PARSE_MAX_CONCURRENCY = int(os.getenv("OAR_PARSE_MAX_CONCURRENCY", "5"))
+    OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY = int(os.getenv("OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY", "5"))
+    OAR_WORKFLOW_TIMEOUT_SECONDS = int(os.getenv("OAR_WORKFLOW_TIMEOUT_SECONDS", "1800"))
+
+    # --- 外部检索/下载超时 ---
+    RETRIEVAL_REQUEST_TIMEOUT_SECONDS = int(os.getenv("RETRIEVAL_REQUEST_TIMEOUT_SECONDS", "30"))
+    DOWNLOAD_REQUEST_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_REQUEST_TIMEOUT_SECONDS", "60"))
     
     # --- PaddleOCR ---
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")  

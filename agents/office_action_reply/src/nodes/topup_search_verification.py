@@ -41,7 +41,7 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v5",
+                "verify_topup_v6",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
@@ -79,15 +79,9 @@ class TopupSearchVerificationNode:
         disputes =[]
         assessments =[]
         for task in tasks:
-            # 任务级隔离：单个任务处理失败不影响其余任务
-            try:
-                dispute, assessment = self._evaluate_task(task, claims, comparison_docs, priority_date)
-                disputes.append(dispute)
-                assessments.append(assessment)
-            except Exception as e:
-                task_id = str(task.get("task_id", "Unknown"))
-                logger.error(f"处理补充检索任务 {task_id} 失败跳过: {e}")
-                continue
+            dispute, assessment = self._evaluate_task(task, claims, comparison_docs, priority_date)
+            disputes.append(dispute)
+            assessments.append(assessment)
 
         return {
             "disputes": disputes,
@@ -102,10 +96,10 @@ class TopupSearchVerificationNode:
         priority_date: str,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         task_id = str(task.get("task_id", "")).strip() or "New_FX"
-        claim_id = str(task.get("original_claim_id", "")).strip() or "1"
+        claim_ids = self._normalize_claim_ids(task.get("claim_ids", [])) or ["1"]
         feature_text = str(task.get("feature_text", "")).strip()
         dispute_id = f"TOPUP_{task_id}"
-        claim_text = self._get_claim_text(claim_id, claims)
+        claim_text = self._get_claim_text(claim_ids, claims)
 
         local_evidence = self._scan_comparison_docs(feature_text, comparison_docs)
         external_queries = self._build_engine_queries(task, claim_text, feature_text, priority_date)
@@ -131,7 +125,7 @@ class TopupSearchVerificationNode:
                 "role": "user",
                 "content": self._build_user_prompt(
                     task=task,
-                    claim_id=claim_id,
+                    claim_ids=claim_ids,
                     claim_text=claim_text,
                     feature_text=feature_text,
                     local_evidence=local_evidence,
@@ -151,14 +145,14 @@ class TopupSearchVerificationNode:
         applicant_opinion = parsed["applicant_opinion"]
         dispute = {
             "dispute_id": dispute_id,
-            "original_claim_id": claim_id,
+            "claim_ids": claim_ids,
             "feature_text": feature_text,
             "examiner_opinion": examiner_opinion,
             "applicant_opinion": applicant_opinion,
         }
         assessment = {
             "dispute_id": dispute_id,
-            "original_claim_id": claim_id,
+            "claim_ids": claim_ids,
             "claim_text": claim_text,
             "feature_text": feature_text,
             "examiner_opinion": examiner_opinion,
@@ -248,7 +242,7 @@ class TopupSearchVerificationNode:
     def _build_user_prompt(
         self,
         task: Dict[str, Any],
-        claim_id: str,
+        claim_ids: List[str],
         claim_text: str,
         feature_text: str,
         local_evidence: List[Dict[str, Any]],
@@ -262,7 +256,7 @@ class TopupSearchVerificationNode:
 {json.dumps(task, ensure_ascii=False, indent=2, default=str)}
 
 【权利要求】
-original_claim_id: {claim_id}
+claim_ids: {json.dumps(claim_ids, ensure_ascii=False)}
 claim_text: {claim_text}
 feature_text: {feature_text}
 
@@ -373,9 +367,13 @@ feature_text: {feature_text}
             confidence = 0.5
 
         reasoning = str(assessment.get("reasoning", "")).strip()
+        if "examiner_rejection_reason" not in assessment:
+            raise ValueError("topup_search_verification 输出缺少 assessment.examiner_rejection_reason")
         rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
         if verdict == "APPLICANT_CORRECT" and not rejection_reason:
-            rejection_reason = "经审查认为，该特征属于本领域常规技术手段，不足以赋予权利要求创造性。"
+            raise ValueError(
+                "topup_search_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空"
+            )
         if verdict != "APPLICANT_CORRECT":
             rejection_reason = ""
 
@@ -581,14 +579,18 @@ feature_text: {feature_text}
                 continue
         return ""
 
-    def _get_claim_text(self, claim_id: str, claims: List[Dict[str, Any]]) -> str:
-        try:
-            idx = int(claim_id) - 1
+    def _get_claim_text(self, claim_ids: List[str], claims: List[Dict[str, Any]]) -> str:
+        texts: List[str] = []
+        for claim_id in claim_ids:
+            try:
+                idx = int(claim_id) - 1
+            except Exception:
+                continue
             if 0 <= idx < len(claims):
-                return str(claims[idx].get("claim_text", "")).strip()
-        except Exception:
-            pass
-        return ""
+                text = str(claims[idx].get("claim_text", "")).strip()
+                if text:
+                    texts.append(f"权利要求{claim_id}: {text}")
+        return "\n".join(texts)
 
     def _state_get(self, state: Any, key: str, default=None):
         if isinstance(state, dict):
@@ -603,3 +605,18 @@ feature_text: {feature_text}
         if hasattr(item, "dict"):
             return item.dict()
         return {}
+
+    def _normalize_claim_ids(self, value: Any) -> List[str]:
+        claim_ids: List[str] = []
+        candidates = value if isinstance(value, list) else [value]
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in re.split(r"[，,\s]+", text):
+                part = piece.strip()
+                if not part or not part.isdigit():
+                    continue
+                if part not in claim_ids:
+                    claim_ids.append(part)
+        return claim_ids

@@ -36,7 +36,8 @@ class LLMService:
         temperature: float = 0.1,
         max_tokens: int = 65536,
         model: Optional[str] = None,
-        thinking: bool = True
+        thinking: bool = True,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         JSON 格式对话，自动解析返回的 JSON
@@ -59,7 +60,8 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"},
-                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}}
+                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
 
             content = response.choices[0].message.content

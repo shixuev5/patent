@@ -33,6 +33,8 @@ class ZhihuiyaClient(BaseSearchClient):
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-api-version": "2.0",
         }
+        self.request_timeout = settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS
+        self.download_timeout = settings.DOWNLOAD_REQUEST_TIMEOUT_SECONDS
         # 依然建议保留登录锁，防止 Token 过期时多个线程同时触发重新登录
         self._login_lock = threading.Lock()
 
@@ -49,7 +51,8 @@ class ZhihuiyaClient(BaseSearchClient):
             # 1. 获取公钥
             try:
                 pk_resp = self.session.get(
-                    "https://passport.zhihuiya.com/public/request_public_key"
+                    "https://passport.zhihuiya.com/public/request_public_key",
+                    timeout=self.request_timeout,
                 )
                 pk_resp.raise_for_status()
                 public_key = pk_resp.text
@@ -72,7 +75,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
             try:
                 login_resp = self.session.post(
-                    "https://passport.zhihuiya.com/doLogin", json=payload
+                    "https://passport.zhihuiya.com/doLogin", json=payload, timeout=self.request_timeout
                 )
                 login_resp.raise_for_status()
                 data = login_resp.json()
@@ -102,7 +105,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
             resp.raise_for_status()
             data = resp.json()
 
@@ -157,7 +160,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
             resp.raise_for_status()
             data = resp.json()
 
@@ -181,7 +184,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload)
+            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
             resp.raise_for_status()
             data = resp.json()
 
@@ -200,7 +203,7 @@ class ZhihuiyaClient(BaseSearchClient):
         url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/official-image"
 
         try:
-            resp = self.session.get(url, headers=self.headers)
+            resp = self.session.get(url, headers=self.headers, timeout=self.request_timeout)
             resp.raise_for_status()
             data = resp.json()
 
@@ -395,7 +398,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         try:
             resp1 = self.session.post(
-                step1_url, headers=self.headers, json=step1_payload
+                step1_url, headers=self.headers, json=step1_payload, timeout=self.request_timeout
             )
             resp1.raise_for_status()
             data1 = resp1.json()
@@ -465,13 +468,13 @@ class ZhihuiyaClient(BaseSearchClient):
 
         try:
             logger.info(f"[Zhihuiya] Generating semantic ID for similar patents of {pn}...")
-            resp = self.session.post(jump_url, headers=self.headers, json=jump_payload)
+            resp = self.session.post(jump_url, headers=self.headers, json=jump_payload, timeout=self.request_timeout)
 
             # Token 过期重试逻辑
             if resp.status_code == 401:
                 self.token = None
                 self._login()
-                resp = self.session.post(jump_url, headers=self.headers, json=jump_payload)
+                resp = self.session.post(jump_url, headers=self.headers, json=jump_payload, timeout=self.request_timeout)
 
             resp.raise_for_status()
             data = resp.json()
@@ -579,7 +582,7 @@ class ZhihuiyaClient(BaseSearchClient):
         """统一的 POST 请求处理与重试逻辑"""
         for attempt in range(2):
             try:
-                resp = self.session.post(url, headers=self.headers, json=payload)
+                resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
 
                 # Token 过期重试
                 if resp.status_code == 401 or (
@@ -648,7 +651,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         for attempt in range(2):
             try:
-                resp = self.session.post(url, headers=self.headers, json=payload)
+                resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
 
                 if resp.status_code == 401:
                     logger.warning("[Zhihuiya] Token expired during ID query, refreshing...")
@@ -691,7 +694,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         for attempt in range(2):
             try:
-                resp = self.session.get(url, headers=self.headers, params=params)
+                resp = self.session.get(url, headers=self.headers, params=params, timeout=self.request_timeout)
 
                 if resp.status_code == 401:
                     logger.warning("[Zhihuiya] Token expired during PDF URL query, refreshing...")
@@ -743,7 +746,7 @@ class ZhihuiyaClient(BaseSearchClient):
             # 确保目标文件夹存在
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-            with self.session.get(pdf_url, stream=True) as r:
+            with self.session.get(pdf_url, stream=True, timeout=self.download_timeout) as r:
                 r.raise_for_status()
                 with open(save_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):

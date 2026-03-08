@@ -5,6 +5,7 @@
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -12,6 +13,7 @@ import requests
 from loguru import logger
 
 from agents.common.search_clients.factory import SearchClientFactory
+from config import settings
 
 
 class ExternalEvidenceAggregator:
@@ -61,27 +63,35 @@ class ExternalEvidenceAggregator:
         engines: List[str] = []
 
         openalex_queries = queries_by_engine.get("openalex", [])
-        openalex_hits = self._search_openalex(openalex_queries, priority_date, per_query=4)
-        if openalex_hits:
-            candidates.extend(openalex_hits)
-            engines.append("openalex")
-
         zhihuiya_queries = queries_by_engine.get("zhihuiya", [])
-        zhihuiya_hits = self._search_zhihuiya(
-            zhihuiya_queries,
-            priority_date,
-            per_query=4,
-            min_similarity_score=self.zhihuiya_min_similarity_score,
-        )
-        if zhihuiya_hits:
-            candidates.extend(zhihuiya_hits)
-            engines.append("zhihuiya")
-
         tavily_queries = queries_by_engine.get("tavily", [])
-        tavily_hits = self._search_tavily(tavily_queries, priority_date, per_query=4)
-        if tavily_hits:
-            candidates.extend(tavily_hits)
-            engines.append("tavily")
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_map = {}
+            if openalex_queries:
+                future_map["openalex"] = executor.submit(self._search_openalex, openalex_queries, priority_date, 4)
+            if zhihuiya_queries:
+                future_map["zhihuiya"] = executor.submit(
+                    self._search_zhihuiya,
+                    zhihuiya_queries,
+                    priority_date,
+                    4,
+                    self.zhihuiya_min_similarity_score,
+                )
+            if tavily_queries:
+                future_map["tavily"] = executor.submit(self._search_tavily, tavily_queries, priority_date, 4)
+
+            for engine_name in ["openalex", "zhihuiya", "tavily"]:
+                future = future_map.get(engine_name)
+                if not future:
+                    continue
+                try:
+                    hits = future.result()
+                except Exception as ex:
+                    logger.warning(f"{engine_name} 检索执行失败: {ex}")
+                    hits = []
+                if hits:
+                    candidates.extend(hits)
+                    engines.append(engine_name)
 
         merged = self._interleave_by_source(self._dedupe_results(candidates))
         final_results = merged[:limit]
@@ -119,7 +129,11 @@ class ExternalEvidenceAggregator:
                 params["mailto"] = self.openalex_email
 
             try:
-                response = requests.get(self.openalex_base_url, params=params, timeout=25)
+                response = requests.get(
+                    self.openalex_base_url,
+                    params=params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
                 response.raise_for_status()
                 data = response.json()
             except Exception as ex:
@@ -272,7 +286,11 @@ class ExternalEvidenceAggregator:
                 "include_raw_content": False,
             }
             try:
-                response = requests.post(self.tavily_base_url, json=payload, timeout=25)
+                response = requests.post(
+                    self.tavily_base_url,
+                    json=payload,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
                 status_code = int(response.status_code)
                 response_text = str(response.text or "")
                 data = self._safe_json(response)

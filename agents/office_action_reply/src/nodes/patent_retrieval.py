@@ -3,6 +3,7 @@
 负责调用智慧芽API下载专利文件并解析为结构化数据
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from loguru import logger
 from agents.common.search_clients.factory import SearchClientFactory
@@ -10,6 +11,7 @@ from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
 from agents.office_action_reply.src.state import WorkflowState
 from agents.office_action_reply.src.utils import is_patent_document, get_node_cache
+from config import settings
 
 
 class PatentRetrievalNode:
@@ -19,7 +21,6 @@ class PatentRetrievalNode:
         """初始化专利检索节点"""
         self.config = config
         self.search_client = SearchClientFactory.get_client("zhihuiya")
-        self.pdf_parser = PDFParser()
 
     def download_patent(self, patent_number: str, output_dir: str) -> str:
         """
@@ -62,7 +63,7 @@ class PatentRetrievalNode:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"开始解析专利文档: {patent_path}")
-        markdown_path = str(self.pdf_parser.parse(Path(patent_path), output_dir))
+        markdown_path = str(PDFParser.parse(Path(patent_path), output_dir))
         logger.success(f"专利文档解析成功: {markdown_path}")
 
         return markdown_path
@@ -109,7 +110,7 @@ class PatentRetrievalNode:
 
             # 使用缓存运行专利检索
             search_results = cache.run_step(
-                "retrieve_patents",
+                "retrieve_patents_v2",
                 self._retrieve_patents,
                 state.office_action,
                 state.output_dir
@@ -144,19 +145,13 @@ class PatentRetrievalNode:
             专利检索结果列表，格式为：
             [{"<专利号/公开号>": structured_data}, ...]
         """
-        search_results = []
-        processed_patents = set()
+        patent_numbers: list[str] = []
+        search_results: list[dict] = []
 
         if office_action:
             application_number = (office_action.get("application_number") or "").strip()
             if application_number:
-                logger.info(f"处理原申请专利: {application_number}")
-                self._process_patent(
-                    document_number=application_number,
-                    output_dir=output_dir,
-                    search_results=search_results,
-                    processed_patents=processed_patents
-                )
+                patent_numbers.append(application_number)
 
             comparison_documents = office_action.get("comparison_documents", [])
             logger.info(f"找到 {len(comparison_documents)} 个对比文件")
@@ -171,25 +166,39 @@ class PatentRetrievalNode:
                 # 只处理专利文献（包含CN、US、WO等国家代码）
                 if is_patent:
                     logger.info(f"处理专利对比文件: {document_number}")
-                    self._process_patent(
-                        document_number=document_number,
-                        output_dir=output_dir,
-                        search_results=search_results,
-                        processed_patents=processed_patents
-                    )
+                    patent_numbers.append(document_number)
 
+        dedup_patents: list[str] = []
+        for patent_number in patent_numbers:
+            if patent_number and patent_number not in dedup_patents:
+                dedup_patents.append(patent_number)
+
+        if not dedup_patents:
+            return search_results
+
+        max_workers = max(1, min(settings.OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY, len(dedup_patents)))
+        results_by_number: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._retrieve_single_patent, patent_number, output_dir): patent_number
+                for patent_number in dedup_patents
+            }
+            for future in as_completed(futures):
+                patent_number = futures[future]
+                result = future.result()
+                if result:
+                    results_by_number[patent_number] = result
+
+        for patent_number in dedup_patents:
+            result = results_by_number.get(patent_number)
+            if result:
+                search_results.append(result)
         return search_results
 
-    def _process_patent(self, document_number, output_dir, search_results, processed_patents):
+    def _retrieve_single_patent(self, document_number: str, output_dir: str):
         """下载、解析并结构化单个专利。"""
         if not document_number:
-            return
-
-        if document_number in processed_patents:
-            logger.info(f"专利已处理，跳过重复: {document_number}")
-            return
-
-        processed_patents.add(document_number)
+            return None
 
         patent_dir = Path(output_dir) / f"patent_{document_number}"
         patent_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +208,6 @@ class PatentRetrievalNode:
 
         structured_data = self.extract_patent_structured_data(markdown_path)
 
-        search_results.append({
+        return {
             document_number: structured_data
-        })
+        }
