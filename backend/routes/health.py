@@ -7,7 +7,11 @@ from fastapi import APIRouter
 
 from config import VERSION
 from backend.auth import AUTH_TOKEN_TTL_DAYS
-from backend.usage import _daily_limit_for
+from backend.usage import (
+    TASK_POINT_COST_UNITS,
+    _daily_point_limit_for_auth_type,
+    _units_to_points,
+)
 from backend.utils import _build_r2_storage
 from backend.storage import TaskStatus, TaskType, get_pipeline_manager
 
@@ -35,8 +39,10 @@ async def health_check():
             "backend": task_manager.storage.__class__.__name__,
         },
         "auth": {
-            "daily_limit_patent_analysis": _daily_limit_for(TaskType.PATENT_ANALYSIS.value),
-            "daily_limit_office_action_reply": _daily_limit_for(TaskType.OFFICE_ACTION_REPLY.value),
+            "daily_points_guest": _daily_point_limit_for_auth_type("guest"),
+            "daily_points_authing": _daily_point_limit_for_auth_type("authing"),
+            "cost_patent_analysis_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]),
+            "cost_office_action_reply_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]),
             "token_ttl_days": AUTH_TOKEN_TTL_DAYS,
         },
     }

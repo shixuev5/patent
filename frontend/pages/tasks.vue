@@ -47,6 +47,45 @@
         </button>
       </div>
 
+      <div v-if="dailyUsage" class="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs font-semibold text-slate-700">今日积分进度</p>
+          <p class="text-xs font-medium text-slate-600">剩余 {{ pointRemainingLabel }} 点</p>
+        </div>
+        <p class="mt-1 text-sm font-semibold text-slate-900">已用 {{ pointUsedLabel }} / {{ pointLimitLabel }} 点</p>
+        <div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+          <div
+            class="h-full rounded-full bg-cyan-600 transition-all duration-300"
+            :style="{ width: `${pointUsagePercent}%` }"
+          />
+        </div>
+        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 研判 1.5 点</p>
+      </div>
+
+      <div
+        v-if="taskStore.pointLimitNotice.show"
+        class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-800"
+      >
+        <p>{{ taskStore.pointLimitNotice.text }}</p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            v-if="canShowLoginPrompt"
+            type="button"
+            class="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-700"
+            @click="openLogin"
+          >
+            登录/注册获取更多积分
+          </button>
+          <button
+            type="button"
+            class="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-100"
+            @click="taskStore.clearPointLimitNotice()"
+          >
+            我知道了
+          </button>
+        </div>
+      </div>
+
       <div v-if="mode === 'patent_analysis'" class="mt-4 space-y-4">
         <div>
           <label class="mb-2 block text-sm font-medium text-slate-700">专利公开号</label>
@@ -166,6 +205,7 @@ import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type { CreateTaskInput } from '~/types/task'
 
+const config = useRuntimeConfig()
 const taskStore = useTaskStore()
 const authStore = useAuthStore()
 
@@ -208,6 +248,24 @@ const canSubmitPatent = computed(() => {
 
 const canSubmitOfficeAction = computed(() => {
   return !!officeActionFile.value && !!responseFile.value
+})
+
+const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
+const dailyUsage = computed(() => taskStore.dailyUsage)
+const pointUsedLabel = computed(() => taskStore.formatPointValue(dailyUsage.value?.usedPoints || 0))
+const pointLimitLabel = computed(() => taskStore.formatPointValue(dailyUsage.value?.dailyPointLimit || 0))
+const pointRemainingLabel = computed(() => taskStore.formatPointValue(dailyUsage.value?.remainingPoints || 0))
+const pointUsagePercent = computed(() => {
+  const used = Number(dailyUsage.value?.usedPoints || 0)
+  const limit = Number(dailyUsage.value?.dailyPointLimit || 0)
+  if (limit <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((used / limit) * 100)))
+})
+const canShowLoginPrompt = computed(() => {
+  return taskStore.pointLimitNotice.show
+    && taskStore.pointLimitNotice.shouldPromptLogin
+    && hasAuthingEnabled.value
+    && !authStore.isLoggedIn
 })
 
 const modeDescription = computed(() => {
@@ -318,7 +376,8 @@ const submitPatentTask = async () => {
       if (patentFileInput.value) patentFileInput.value.value = ''
       taskStore.showGlobalNotice('success', result.message || 'AI 分析任务已创建，正在处理。')
     } else {
-      taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')
+      if (result.errorCode === 'DAILY_POINTS_EXCEEDED') taskStore.showGlobalNotice('info', result.error || '今日积分不足。')
+      else taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')
     }
   } finally {
     loading.value = false
@@ -353,21 +412,39 @@ const submitOfficeActionTask = async () => {
       if (comparisonInput.value) comparisonInput.value.value = ''
       taskStore.showGlobalNotice('success', result.message || 'AI 研判任务已创建，正在处理。')
     } else {
-      taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')
+      if (result.errorCode === 'DAILY_POINTS_EXCEEDED') taskStore.showGlobalNotice('info', result.error || '今日积分不足。')
+      else taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')
     }
   } finally {
     loading.value = false
   }
 }
 
-onMounted(() => {
-  taskStore.init()
+const openLogin = async () => {
+  await authStore.login()
+}
+
+const refreshUsageForCurrentMode = async () => {
+  await taskStore.fetchUsage(mode.value)
+}
+
+onMounted(async () => {
+  await taskStore.init()
+  await refreshUsageForCurrentMode()
 })
 
 watch(
+  () => mode.value,
+  async () => {
+    await refreshUsageForCurrentMode()
+  },
+)
+
+watch(
   () => [authStore.isLoggedIn, authStore.user?.sub],
-  () => {
-    taskStore.init()
+  async () => {
+    await taskStore.init()
+    await refreshUsageForCurrentMode()
   },
 )
 </script>

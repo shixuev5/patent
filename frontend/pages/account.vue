@@ -1,11 +1,12 @@
 <template>
   <div class="space-y-4">
     <section class="rounded-3xl border border-slate-200 bg-white/92 p-4 shadow-sm shadow-slate-200 sm:p-5">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex min-w-0 items-start gap-4">
+      <div class="account-top-row">
+        <div class="account-profile-col">
           <button
             type="button"
             class="avatar-trigger"
+            :class="{ 'is-uploading': savingAvatar }"
             :disabled="savingAvatar || editingDisplayName"
             :aria-label="savingAvatar ? '头像上传中' : '更新头像'"
             @click="triggerAvatarPicker"
@@ -22,11 +23,15 @@
             >
               {{ avatarText }}
             </div>
-            <span class="avatar-edit-badge" aria-hidden="true">
+            <span v-if="!savingAvatar" class="avatar-edit-badge" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 20h9" stroke-linecap="round" />
                 <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" stroke-linejoin="round" />
               </svg>
+            </span>
+            <span v-if="savingAvatar" class="avatar-uploading-mask" aria-hidden="true">
+              <span class="avatar-uploading-spinner" />
+              上传中
             </span>
           </button>
           <input
@@ -87,7 +92,7 @@
           </div>
         </div>
 
-        <div class="account-controls w-full sm:ml-auto sm:max-w-xl">
+        <div class="account-controls">
           <div class="month-switcher">
             <button
               type="button"
@@ -129,6 +134,33 @@
           </div>
           <p class="target-hint">{{ targetHintText }}</p>
           <p v-if="targetErrorMessage" class="target-error">{{ targetErrorMessage }}</p>
+        </div>
+      </div>
+
+      <div v-if="dailyUsage" class="account-usage-row">
+        <div class="usage-progress-panel">
+          <div class="usage-bar-wrap">
+            <div class="usage-bar-track">
+              <div
+                class="usage-bar-fill transition-all duration-300"
+                :class="usageHasLimit ? 'bg-cyan-600' : 'bg-slate-300'"
+                :style="{ width: `${usageProgressPercent}%` }"
+              />
+              <div class="usage-progress-label">
+                <span>{{ usageProgressCenterLabel }}</span>
+              </div>
+            </div>
+          </div>
+          <p class="mt-1 text-[11px] whitespace-nowrap overflow-hidden text-ellipsis" :class="usageInfoToneClass">{{ usageInfoLine }}</p>
+
+          <button
+            v-if="showUsageLoginPrompt"
+            type="button"
+            class="mt-2 rounded-xl bg-cyan-700 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-cyan-800"
+            @click="openUsageLogin"
+          >
+            登录/注册获取更多积分
+          </button>
         </div>
       </div>
     </section>
@@ -349,10 +381,6 @@
           </div>
         </article>
       </div>
-
-      <div v-if="loading" class="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-5 text-center text-sm text-slate-500">
-        数据加载中...
-      </div>
     </section>
   </div>
 </template>
@@ -368,6 +396,7 @@ import type {
   AccountProfileUpdateRequest,
   WeeklyActivityPoint,
 } from '~/types/account'
+import type { UsageResponse } from '~/types/usage'
 
 const CHART_WIDTH = 760
 const CHART_HEIGHT = 320
@@ -444,6 +473,55 @@ const weeklySeries = computed<WeeklyActivityPoint[]>(() => dashboard.value?.week
 const monthTotalCreated = computed(() => dailySeries.value.reduce((sum, item) => sum + item.totalCreated, 0))
 const monthTarget = computed(() => Math.max(0, Number(dashboard.value?.monthTarget ?? 0)))
 const monthTargetSource = computed(() => dashboard.value?.monthTargetSource ?? 'empty')
+const dailyUsage = computed(() => taskStore.dailyUsage)
+const usageHasLimit = computed(() => Number(dailyUsage.value?.dailyPointLimit || 0) > 0)
+const usageRemainingLabel = computed(() => usageHasLimit.value
+  ? `${taskStore.formatPointValue(dailyUsage.value?.remainingPoints || 0)} 点`
+  : '--')
+const usageProgressPercent = computed(() => {
+  const used = Number(dailyUsage.value?.usedPoints || 0)
+  const limit = Number(dailyUsage.value?.dailyPointLimit || 0)
+  if (limit <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((used / limit) * 100)))
+})
+const usageProgressCenterLabel = computed(() => {
+  const used = taskStore.formatPointValue(dailyUsage.value?.usedPoints || 0)
+  if (!usageHasLimit.value) return `${used} / --`
+  const limit = taskStore.formatPointValue(dailyUsage.value?.dailyPointLimit || 0)
+  return `${used} / ${limit}`
+})
+const usageInfoLine = computed(() => {
+  if (!usageHasLimit.value) return '分析 1 点 / 研判 1.5 点 · 每日上限未配置'
+  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 1.5 点 · 今日已用完 · 重置 ${usageResetLabel.value}`
+  return `分析 1 点 / 研判 1.5 点 · 剩余 ${usageRemainingLabel.value} · 重置 ${usageResetLabel.value}`
+})
+const usageInfoToneClass = computed(() => {
+  if (!usageHasLimit.value || (dailyUsage.value?.remainingPoints || 0) <= 0) return 'text-amber-500'
+  return 'text-slate-400'
+})
+const showUsageLoginPrompt = computed(() => {
+  return !!dailyUsage.value
+    && dailyUsage.value.authType === 'guest'
+    && dailyUsage.value.remainingPoints <= 0
+    && hasAuthingEnabled.value
+    && !authStore.isLoggedIn
+})
+const usageResetLabel = computed(() => {
+  if (!dailyUsage.value?.resetAt) return '--'
+  try {
+    const resetDate = new Date(dailyUsage.value.resetAt)
+    if (Number.isNaN(resetDate.getTime())) return '--'
+    return resetDate.toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  } catch (_error) {
+    return '--'
+  }
+})
 
 const elapsedRatio = computed(() => {
   if (!dashboard.value) return 0
@@ -688,6 +766,10 @@ const displayAuthType = computed(() => {
 
 const openPasswordReset = async () => {
   await authStore.openPasswordReset()
+}
+
+const openUsageLogin = async () => {
+  await authStore.login()
 }
 
 const dashboardTitle = computed(() => {
@@ -983,6 +1065,21 @@ const fetchDashboard = async (token: string) => {
   monthTargetInput.value = String(Math.max(0, Number(dashboard.value.monthTarget || 0)))
 }
 
+const fetchUsage = async (token: string) => {
+  try {
+    const response = await fetch(`${config.public.apiBaseUrl}/api/usage`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!response.ok) return
+    taskStore.dailyUsage = await response.json() as UsageResponse
+    if ((taskStore.dailyUsage?.remainingPoints || 0) > 0) taskStore.clearPointLimitNotice()
+  } catch (error) {
+    console.error('加载积分信息失败：', error)
+  }
+}
+
 const saveMonthTarget = async () => {
   targetErrorMessage.value = ''
   if (!isCurrentMonthSelection.value) {
@@ -1066,7 +1163,7 @@ const loadData = async (loadProfile: boolean) => {
 
   try {
     const token = await getAuthToken()
-    const jobs = [fetchDashboard(token)]
+    const jobs = [fetchDashboard(token), fetchUsage(token)]
     if (loadProfile || !profile.value) jobs.push(fetchProfile(token))
     await Promise.all(jobs)
   } catch (error) {
@@ -1134,6 +1231,19 @@ onMounted(async () => {
   margin-top: 0.2rem;
   font-size: 0.75rem;
   color: #475569;
+}
+
+.account-top-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.account-profile-col {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 1rem;
 }
 
 .account-controls {
@@ -1252,16 +1362,61 @@ onMounted(async () => {
   color: #e11d48;
 }
 
+.usage-progress-panel {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.usage-bar-wrap {
+  width: 100%;
+}
+
+.usage-bar-track {
+  position: relative;
+  height: 1rem;
+  overflow: visible;
+  border-radius: 9999px;
+  background: #e2e8f0;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 9999px;
+}
+
+.usage-progress-label {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.usage-progress-label span {
+  font-size: 0.62rem;
+  line-height: 1;
+  color: #334155;
+  font-weight: 600;
+}
+
+.account-usage-row {
+  margin-top: 0.95rem;
+}
+
 @media (min-width: 640px) {
   .account-controls {
     width: 100%;
     flex-direction: column;
-    align-items: flex-end;
     gap: 0.5rem;
   }
 
   .month-switcher {
-    width: auto;
+    width: 100%;
     min-width: 14.6rem;
     grid-template-columns: 3.5rem minmax(6rem, 1fr) 3.5rem;
     gap: 0.25rem;
@@ -1278,7 +1433,7 @@ onMounted(async () => {
   }
 
   .target-panel {
-    width: auto;
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 0.45rem;
@@ -1292,7 +1447,7 @@ onMounted(async () => {
   }
 
   .target-actions {
-    width: auto;
+    width: 100%;
     grid-template-columns: 5.2rem auto;
     gap: 0.35rem;
   }
@@ -1312,6 +1467,39 @@ onMounted(async () => {
 
   .target-hint,
   .target-error {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1024px) {
+  .account-top-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 38rem);
+    align-items: start;
+    gap: 1rem;
+  }
+
+  .account-controls {
+    align-items: flex-end;
+  }
+
+  .month-switcher {
+    align-self: flex-end;
+    width: auto;
+  }
+
+  .target-panel {
+    align-self: flex-end;
+    width: auto;
+  }
+
+  .target-actions {
+    width: auto;
+  }
+
+  .target-hint,
+  .target-error {
+    align-self: flex-end;
     text-align: right;
   }
 }
@@ -1333,6 +1521,11 @@ onMounted(async () => {
 .avatar-trigger:hover:not(:disabled) {
   border-color: #67e8f9;
   box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.28);
+}
+
+.avatar-trigger.is-uploading {
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.24);
 }
 
 .avatar-trigger:disabled {
@@ -1379,6 +1572,40 @@ onMounted(async () => {
 .avatar-edit-badge svg {
   height: 0.78rem;
   width: 0.78rem;
+}
+
+.avatar-uploading-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  background: rgba(15, 23, 42, 0.42);
+  color: #f8fafc;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.avatar-uploading-spinner {
+  height: 1.02rem;
+  width: 1.02rem;
+  border-radius: 9999px;
+  border: 2px solid rgba(236, 254, 255, 0.45);
+  border-top-color: #ecfeff;
+  animation: avatar-spin 0.85s linear infinite;
+}
+
+@keyframes avatar-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .name-display-wrap {

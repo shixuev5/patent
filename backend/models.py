@@ -111,11 +111,28 @@ class AccountMonthTargetUpsertRequest(BaseModel):
     targetCount: int
 
 
+class TaskPointCost(BaseModel):
+    patentAnalysis: float
+    officeActionReply: float
+
+
+class UsageCreatedToday(BaseModel):
+    analysisCount: int
+    replyCount: int
+    totalCount: int
+
+
 class UsageResponse(BaseModel):
     userId: str
-    dailyLimit: int
-    usedToday: int
-    remaining: int
+    authType: Literal["guest", "authing"]
+    dailyPointLimit: float
+    usedPoints: float
+    remainingPoints: float
+    costPerTask: TaskPointCost
+    createdToday: UsageCreatedToday
+    requestedTaskType: Optional[str] = None
+    requestedTaskPoints: Optional[float] = None
+    canCreateRequestedTask: Optional[bool] = None
     resetAt: str
 
 

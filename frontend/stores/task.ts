@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { useAuthStore } from '~/stores/auth'
 import type { CreateTaskInput, Task, TaskProgress, TaskType } from '~/types/task'
+import type { DailyPointsExceededDetail, UsageResponse } from '~/types/usage'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
 const STORAGE_KEY_PREFIX = 'patent_tasks::'
@@ -15,6 +16,25 @@ type AuthMode = 'guest' | 'authing'
 interface TaskCachePayload {
   savedAt: number
   tasks: Task[]
+}
+
+interface ApiErrorPayload {
+  message: string
+  detail: any
+}
+
+interface PointLimitNoticeState {
+  show: boolean
+  text: string
+  shouldPromptLogin: boolean
+}
+
+export interface TaskSubmitResult {
+  ok: boolean
+  message?: string
+  error?: string
+  errorCode?: string
+  shouldPromptLogin?: boolean
 }
 
 const normalizeTaskType = (taskType?: string): TaskType => {
@@ -73,6 +93,8 @@ export const useTaskStore = defineStore('tasks', {
     progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
     globalNotice: { type: 'info' as 'success' | 'error' | 'info', text: '' as string, show: false }, // 全局通知
+    dailyUsage: null as UsageResponse | null,
+    pointLimitNotice: { show: false, text: '', shouldPromptLogin: false } as PointLimitNoticeState,
   }),
 
   getters: {
@@ -122,6 +144,8 @@ export const useTaskStore = defineStore('tasks', {
       this.stopAllTracking()
       this.tasks = []
       this.downloadingTaskIds.clear()
+      this.dailyUsage = null
+      this.pointLimitNotice = { show: false, text: '', shouldPromptLogin: false }
     },
 
     pruneTasksForCache(tasks: Task[]): Task[] {
@@ -264,6 +288,7 @@ export const useTaskStore = defineStore('tasks', {
         console.error('查询任务队列状态失败：', error)
       }
 
+      await this.fetchUsage()
       this.restoreProcessingTasks()
     },
 
@@ -382,18 +407,153 @@ export const useTaskStore = defineStore('tasks', {
       return await this.createGuestAuth()
     },
 
-    async parseApiError(response: Response): Promise<string> {
-      try {
-        const payload = await response.json()
-        if (typeof payload?.detail === 'string') return payload.detail
-        if (typeof payload?.detail?.message === 'string') return payload.detail.message
-      } catch (_error) {
-        // 忽略解析失败，使用兜底文案
-      }
-      return `请求失败（HTTP ${response.status}）`
+    formatPointValue(value: number): string {
+      if (!Number.isFinite(value)) return '0'
+      return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '')
     },
 
-    async createTask(input: CreateTaskInput): Promise<{ ok: boolean; message?: string; error?: string }> {
+    buildPointLimitNoticeText(
+      authType: 'guest' | 'authing',
+      usedPoints: number,
+      dailyPointLimit: number,
+      remainingPoints: number,
+      requiredPoints: number,
+    ): string {
+      const used = this.formatPointValue(usedPoints)
+      const limit = this.formatPointValue(dailyPointLimit)
+      const remaining = this.formatPointValue(remainingPoints)
+      const required = this.formatPointValue(requiredPoints)
+      if (authType === 'guest') {
+        return `今日积分不足：已用 ${used}/${limit}，剩余 ${remaining}，当前任务需 ${required}。登录/注册可获得更多每日积分。`
+      }
+      return `今日积分不足：已用 ${used}/${limit}，剩余 ${remaining}，当前任务需 ${required}。请明日重置后再试。`
+    },
+
+    clearPointLimitNotice() {
+      this.pointLimitNotice = {
+        show: false,
+        text: '',
+        shouldPromptLogin: false,
+      }
+    },
+
+    applyUsagePointLimitNotice(usage: UsageResponse, taskType: TaskType) {
+      const requiredPoints = taskType === 'office_action_reply'
+        ? usage.costPerTask.officeActionReply
+        : usage.costPerTask.patentAnalysis
+      const shouldPromptLogin = usage.authType === 'guest'
+      this.pointLimitNotice = {
+        show: true,
+        text: this.buildPointLimitNoticeText(
+          usage.authType,
+          usage.usedPoints,
+          usage.dailyPointLimit,
+          usage.remainingPoints,
+          requiredPoints,
+        ),
+        shouldPromptLogin,
+      }
+    },
+
+    applyQuotaDetailPointLimitNotice(detail: DailyPointsExceededDetail) {
+      const baseUsage = this.dailyUsage
+      this.dailyUsage = {
+        userId: this.userId || baseUsage?.userId || '',
+        authType: detail.authType,
+        dailyPointLimit: detail.dailyPointLimit,
+        usedPoints: detail.usedPoints,
+        remainingPoints: detail.remainingPoints,
+        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, officeActionReply: 1.5 },
+        createdToday: baseUsage?.createdToday || { analysisCount: 0, replyCount: 0, totalCount: 0 },
+        requestedTaskType: detail.taskType,
+        requestedTaskPoints: detail.requiredPoints,
+        canCreateRequestedTask: false,
+        resetAt: detail.resetAt,
+      }
+      this.pointLimitNotice = {
+        show: true,
+        text: this.buildPointLimitNoticeText(
+          detail.authType,
+          detail.usedPoints,
+          detail.dailyPointLimit,
+          detail.remainingPoints,
+          detail.requiredPoints,
+        ),
+        shouldPromptLogin: !!detail.shouldPromptLogin,
+      }
+    },
+
+    async parseApiErrorPayload(response: Response): Promise<ApiErrorPayload> {
+      let payload: any = null
+      try {
+        payload = await response.json()
+      } catch (_error) {
+        payload = null
+      }
+
+      if (typeof payload?.detail === 'string') {
+        return {
+          message: payload.detail,
+          detail: payload.detail,
+        }
+      }
+      if (typeof payload?.detail?.message === 'string') {
+        return {
+          message: payload.detail.message,
+          detail: payload.detail,
+        }
+      }
+      return {
+        message: `请求失败（HTTP ${response.status}）`,
+        detail: payload?.detail,
+      }
+    },
+
+    async parseApiError(response: Response): Promise<string> {
+      const payload = await this.parseApiErrorPayload(response)
+      return payload.message
+    },
+
+    async fetchUsage(taskType?: TaskType): Promise<UsageResponse | null> {
+      const config = useRuntimeConfig()
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) return null
+      const query = taskType ? `?taskType=${encodeURIComponent(taskType)}` : ''
+
+      try {
+        const response = await fetch(`${config.public.apiBaseUrl}/api/usage${query}`, {
+          headers: {
+            Authorization: `Bearer ${this.authToken}`,
+          },
+        })
+        if (!response.ok) return null
+        const usage = await response.json() as UsageResponse
+        this.dailyUsage = usage
+
+        if (taskType && usage.canCreateRequestedTask === false) {
+          this.applyUsagePointLimitNotice(usage, taskType)
+        } else if (usage.remainingPoints > 0) {
+          this.clearPointLimitNotice()
+        }
+        return usage
+      } catch (error) {
+        console.error('获取积分额度失败：', error)
+        return null
+      }
+    },
+
+    async createTask(input: CreateTaskInput): Promise<TaskSubmitResult> {
+      const usage = await this.fetchUsage(input.taskType)
+      if (usage && usage.canCreateRequestedTask === false) {
+        this.applyUsagePointLimitNotice(usage, input.taskType)
+        return {
+          ok: false,
+          errorCode: 'DAILY_POINTS_EXCEEDED',
+          error: this.pointLimitNotice.text,
+          shouldPromptLogin: usage.authType === 'guest',
+        }
+      }
+
       const isPatent = input.taskType === 'patent_analysis'
       const task: Task = {
         id: generateId(),
@@ -412,10 +572,15 @@ export const useTaskStore = defineStore('tasks', {
       this.tasks.unshift(task)
       this.saveToStorage()
       const taskRef = this.resolveTaskRef(task)
-      return await this.submitTask(taskRef, input)
+      const result = await this.submitTask(taskRef, input)
+      if (!result.ok && result.errorCode === 'DAILY_POINTS_EXCEEDED' && !taskRef.backendId) {
+        this.tasks = this.tasks.filter((item) => item.id !== taskRef.id)
+        this.saveToStorage()
+      }
+      return result
     },
 
-    async submitTask(task: Task, input: CreateTaskInput): Promise<{ ok: boolean; message?: string; error?: string }> {
+    async submitTask(task: Task, input: CreateTaskInput): Promise<TaskSubmitResult> {
       const taskRef = this.resolveTaskRef(task)
       const config = useRuntimeConfig()
       const authed = await this.ensureAuth()
@@ -447,7 +612,24 @@ export const useTaskStore = defineStore('tasks', {
           },
           body: formData,
         })
-        if (!response.ok) throw new Error(await this.parseApiError(response))
+        if (!response.ok) {
+          const apiError = await this.parseApiErrorPayload(response)
+          const detail = apiError.detail as DailyPointsExceededDetail | undefined
+          if (response.status === 429 && detail?.code === 'DAILY_POINTS_EXCEEDED') {
+            this.applyQuotaDetailPointLimitNotice(detail)
+            taskRef.status = 'error'
+            taskRef.error = this.pointLimitNotice.text
+            taskRef.updatedAt = Date.now()
+            this.saveToStorage()
+            return {
+              ok: false,
+              errorCode: detail.code,
+              error: this.pointLimitNotice.text,
+              shouldPromptLogin: !!detail.shouldPromptLogin,
+            }
+          }
+          throw new Error(apiError.message)
+        }
 
         const data = await response.json()
         taskRef.backendId = data.taskId
@@ -457,6 +639,7 @@ export const useTaskStore = defineStore('tasks', {
         taskRef.currentStep = taskRef.status === 'completed' ? '已复用历史报告' : '处理中'
         taskRef.updatedAt = Date.now()
         this.saveToStorage()
+        await this.fetchUsage(input.taskType)
 
         if (taskRef.status === 'completed') {
           taskRef.progress = 100
