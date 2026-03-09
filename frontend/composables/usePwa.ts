@@ -15,9 +15,7 @@ export const usePwa = () => {
     return /iphone|ipad|ipod/i.test(ua)
   })
   const canShowIOSGuide = computed(() => isIOS.value && !isStandalone.value)
-  // Always show install entry when not in standalone mode.
-  // `beforeinstallprompt` may not fire until engagement criteria are met.
-  const showInstallEntry = computed(() => !isStandalone.value)
+  const showInstallEntry = computed(() => canInstall.value || canShowIOSGuide.value)
 
   const onNeedRefresh = ref(false)
   const onOfflineReady = ref(false)

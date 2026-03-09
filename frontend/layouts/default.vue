@@ -284,13 +284,13 @@ const onInstallApp = async () => {
       return
     }
     if (result === 'unsupported') {
-      installHint.value = '当前浏览器不支持快捷安装。建议使用最新版本的 Chrome / Edge / Safari。'
+      installHint.value = '当前会话暂不可触发安装。请稍后重试或使用浏览器菜单安装。'
       return
     }
     if (result === 'dismissed') {
       installHint.value = canShowIOSGuide.value
-        ? '已取消安装。iOS 可通过“分享 -> 添加到主屏幕”手动安装。'
-        : '已取消安装。你可以稍后再次点击安装图标。'
+        ? '安装未完成。iOS 可通过“分享 -> 添加到主屏幕”手动安装。'
+        : '安装未完成。你可以稍后再次点击安装应用。'
       return
     }
     installHint.value = ''

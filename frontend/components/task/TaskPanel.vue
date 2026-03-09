@@ -179,7 +179,7 @@ onMounted(() => {
   @apply flex flex-col items-center justify-center py-14 text-center;
 }
 .task-list {
-  @apply space-y-3 p-4 sm:p-5;
+  @apply space-y-3 px-4 pb-4 pt-2 sm:px-5 sm:pb-5 sm:pt-2.5;
 }
 .modal-overlay {
   @apply fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4;
@@ -277,7 +277,7 @@ onMounted(() => {
   }
 
   .task-list {
-    @apply p-4 space-y-3;
+    @apply space-y-3 px-4 pb-4 pt-2;
   }
 }
 </style>

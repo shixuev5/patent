@@ -187,7 +187,7 @@ const deleteTask = () => {
   @apply text-xs text-slate-500;
 }
 .task-error {
-  @apply flex items-start gap-1.5 rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700;
+  @apply mt-2 flex items-start gap-1.5 text-xs text-rose-700;
 }
 .task-actions {
   @apply flex flex-shrink-0 items-center gap-1.5;
