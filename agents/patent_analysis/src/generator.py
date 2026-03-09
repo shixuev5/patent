@@ -135,9 +135,7 @@ class ContentGenerator:
                 ),  # 技术问题
                 "technical_scheme": solution_data.get("technical_scheme"),  # 技术方案
                 "technical_means": verification_data.get("technical_means"),  # 技术手段
-
                 "background_knowledge": background_data.get("background_knowledge", []),
-
                 "technical_features": features_data.get(
                     "technical_features", []
                 ),  # 技术特征
@@ -344,8 +342,10 @@ class ContentGenerator:
             ],
             temperature=0.1,
         )
-    
-    def _generate_background_knowledge(self, core_logic: Dict[str, str]) -> Dict[str, List[Dict[str, str]]]:
+
+    def _generate_background_knowledge(
+        self, core_logic: Dict[str, str]
+    ) -> Dict[str, List[Dict[str, str]]]:
         """
         Step 2.5: 生成背景知识与术语解释。
         目标：识别文中晦涩的专有名词（Acronyms, Jargon），提供通俗解释。
@@ -414,12 +414,12 @@ class ContentGenerator:
         """
 
         return self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING, # 建议使用推理能力强的模型以生成好的类比
+            model=Settings.LLM_MODEL_REASONING,  # 建议使用推理能力强的模型以生成好的类比
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            temperature=0.3, # 稍微增加一点创造性，以便生成生动的类比
+            temperature=0.3,  # 稍微增加一点创造性，以便生成生动的类比
         )
 
     def _extract_features(self, core_logic: Dict[str, Any]) -> Dict[str, Any]:
@@ -513,7 +513,7 @@ class ContentGenerator:
             ],
             temperature=0.0,  # 保持零温度，追求最严谨的逻辑
         )
-        
+
         # 按照 tcs_score 字段进行降序排序 (reverse=True)
         if isinstance(response, Dict) and "technical_features" in response:
             features = response.get("technical_features", [])
@@ -521,12 +521,15 @@ class ContentGenerator:
             # 1. 区别特征 (is_distinguishing=True) 排最前
             # 2. 其次是前序特征 (claim_source="independent")
             # 3. 最后是从权特征
-            features.sort(key=lambda x: (
+            features.sort(
+                key=lambda x: (
                     x.get("is_distinguishing", False),
                     x.get("claim_source", "") == "independent",
-                ), reverse=True)
+                ),
+                reverse=True,
+            )
             response["technical_features"] = features
-        
+
         return response
 
     def _verify_evidence(
@@ -689,9 +692,6 @@ class ContentGenerator:
         """
         results = []
 
-        # 预处理：建立段落索引，方便查找图片引用的上下文
-        paragraphs = self.text_details.split("\n")
-
         # 构建全局部件索引字符串 (用于 Prompt 查阅)
         all_parts_summary = []
         for pid, info in self.parts_db.items():
@@ -732,14 +732,14 @@ class ContentGenerator:
                 if not filename:
                     continue
 
-                display_image_paths.append(file_path.replace("images", "annotated_images"))
+                display_image_paths.append(
+                    file_path.replace("images", "annotated_images")
+                )
                 target_path = self.annotated_dir / filename
                 if target_path.exists():
                     image_abs_paths.append(str(target_path))
                 else:
-                    logger.warning(
-                        f"未找到标注图文件，跳过该图片: {target_path}"
-                    )
+                    logger.warning(f"未找到标注图文件，跳过该图片: {target_path}")
 
             # 匹配图片 OCR 识别部件（合并同图号下所有图片的部件）
             part_ids = []
@@ -765,7 +765,12 @@ class ContentGenerator:
 
                 for pid in part_ids:
                     # 兼容 pid 是 int 或 str 的情况
-                    info = self.parts_db.get(str(pid)) or self.parts_db.get(int(pid))
+                    info = self.parts_db.get(str(pid))
+                    if info is None:
+                        try:
+                            info = self.parts_db.get(int(pid))
+                        except (TypeError, ValueError):
+                            info = None
                     if info:
                         name = info.get("name", "未知")
                         func = info.get("function", "未知功能")
@@ -779,73 +784,12 @@ class ContentGenerator:
             else:
                 local_parts_context_str = "（该图未识别到具体部件标号）"
 
-            # 获取说明书上下文 (核心优化：基于索引的滑动窗口法)
-            related_text = ""
-            clean_label = label.replace(" ", "")  # 去除空格，统一为 "图1"
-
-            if clean_label:
-                # re.escape 增强鲁棒性，防止特殊字符报错
-                # (?!\d) 断言后面不能紧跟数字，避免 "图1" 匹配到 "图10"
-                pattern = re.compile(rf"{re.escape(clean_label)}(?!\d)")
-                
-                matched_indices =[]
-                for idx, p in enumerate(paragraphs):
-                    # 匹配时忽略原文中的空格，容错 "图 1" 或 "图  1"
-                    if pattern.search(p.replace(" ", "")):
-                        matched_indices.append(idx)
-                
-                if matched_indices:
-                    # 定义上下文窗口大小（以物理换行段落为单位）
-                    # 专利习惯：上文通常是引出语或前提条件，下文是核心的具体实施细节/公式
-                    WINDOW_BEFORE = 1
-                    WINDOW_AFTER = 3
-                    
-                    target_indices = set()
-                    for idx in matched_indices:
-                        start_idx = max(0, idx - WINDOW_BEFORE)
-                        end_idx = min(len(paragraphs), idx + WINDOW_AFTER + 1)
-                        target_indices.update(range(start_idx, end_idx))
-                    
-                    # 按照数组原本的顺序进行排序，确保行文逻辑从上到下连贯
-                    sorted_indices = sorted(list(target_indices))
-                    
-                    context_blocks =[]
-                    current_block =[]
-                    last_idx = -2  # 初始化的虚拟索引
-                    
-                    # 遍历提取索引，合并连续段落，剥离无关段落
-                    for idx in sorted_indices:
-                        # 判断是否出现段落断层 (非连续索引)
-                        if last_idx != -2 and idx != last_idx + 1:
-                            if current_block:
-                                context_blocks.append("\n".join(current_block))
-                            current_block = []
-                        
-                        text_content = paragraphs[idx].strip()
-                        # 仅保留非空行，但索引断层计算不受空行内容影响
-                        if text_content:
-                            current_block.append(text_content)
-                            
-                        last_idx = idx
-                        
-                    # 把最后一个区块加进去
-                    if current_block:
-                        context_blocks.append("\n".join(current_block))
-                        
-                    # 用明显的分隔符拼接不连续的区块，提示大模型这里有跳转
-                    related_text = "\n\n[...省略其它段落...]\n\n".join(context_blocks)
-
-            # 兜底策略：如果全文找不到图号匹配，或 label 为空，则仅提供 caption 标题
-            if not related_text.strip():
-                related_text = caption
-
             # 3. 生成图片解说
             image_explanation = self._generate_single_figure_caption(
                 label,
                 caption,
                 local_parts_context_str,
                 global_parts_str,
-                related_text,
                 global_context,
                 image_abs_paths,
             )
@@ -868,7 +812,6 @@ class ContentGenerator:
         caption: str,
         local_parts: str,
         global_parts: str,
-        text_context: str,
         global_context: Dict,
         image_paths: List[str],
     ) -> str:
@@ -951,8 +894,6 @@ class ContentGenerator:
           这些视觉标记对应以下部件信息（未在图中明确指出的部件请勿强行描述）：
           {local_parts}
           **注意：机器识别可能存在漏检。如果图中有明显的核心结构（如画面中心的连接件、受力件）未在此列表中，请务必结合上方的【全局部件参考库】进行逻辑推断和补全。**
-        - **局部描述 (Context)**：
-          {text_context}
         """
 
         try:

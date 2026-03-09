@@ -70,7 +70,11 @@
 - OCR 引擎支持：
   - `OCR_ENGINE=local`（PaddleOCR）
   - `OCR_ENGINE=online`（在线 OCR API）
-  - 其他值（VLM OCR）
+  - 其他值自动回退 `local`
+- 对 `local/online` OCR 初筛结果执行 VLM 混合纠错（结合 `parts.json` 上下文）：
+  - 清洗错认/噪点
+  - 补全漏检标号
+  - 产出纠错后的标注图与 `image_parts.json`
 - 输出：
   - 标注图片目录：`annotated_images/`
   - 图-部件映射：`image_parts.json`
@@ -81,17 +85,9 @@
 - 检查说明书部件标号与附图识别标号的一致性：
   - 说明书有、附图无
   - 附图有、说明书无
-- 当存在疑点且配置 `VLM_MODEL_MINI` 时，自动触发图像复核模型二次复核（用于过滤 OCR 误报并确认真实缺陷）。
-- 二次复核仅使用官方附图范围（仅 `drawings`），不使用 `abstract_figure` 与其他非附图图片。
-- 二次复核按“附图集合”分组批量调用，减少请求次数并提升对话缓存命中率。
-- `check.json` 中会包含：
-  - `consistency`：面向用户的可执行缺陷结论（仅确认缺陷 + 需人工核实）
-  - `raw_issues`：规则层原始疑点（调试用）
-  - `secondary_review`：图像复核状态、摘要与问题级判断明细（全量）
-  - `user_actionable_issues`：需要用户处理的疑点列表（`defect_confirmed` / `uncertain`）
-- 复核结论字段：
-  - `user_verdict`: `defect_confirmed`（确认缺陷） / `false_alarm`（机器误报） / `uncertain`（需人工确认）
-- 若图像复核未配置，系统将全部疑点回退为 `uncertain`；若部分失败，仅异常部分回退为 `uncertain`；若全部失败，则全量回退为 `uncertain`，避免漏报真实缺陷。
+- 该阶段为纯规则检查，不再进行二次视觉复核。
+- `check.json` 仅包含：
+  - `consistency`：面向用户的最终一致性结论
 - 输出：`check.json`
 
 ## 4.7 generate
@@ -104,6 +100,7 @@
   4. 技术特征抽取
   5. 技术效果验证（含 TCS 打分）
   6. 图解说明生成
+- 图解说明阶段仅依赖图像视觉识别结果与全局部件库，不再依赖说明书段落滑窗上下文。
 - 输出：`report.json`
 
 ## 4.8 search
@@ -233,10 +230,10 @@ python -m agents.patent_analysis.main --file /path/to/pn_list.txt
 ## 10. 关键环境变量
 
 - `ZHIHUIYA_USERNAME` / `ZHIHUIYA_PASSWORD`：智慧芽下载
-- `OCR_ENGINE`：`local` / `online` / 其他（VLM）
+- `OCR_ENGINE`：`local` / `online`（其他值自动回退 `local`）
 - `OCR_BASE_URL` / `OCR_API_KEY`：在线 OCR 模式
+- `VISION_MAX_WORKERS`：在线 OCR 模式下的视觉处理并发数（可选，默认按 CPU 与图片数量自动计算）
 - `LLM_*`：报告与检索策略生成
-- `VLM_MODEL_MINI`：形式缺陷检查二次复核图像复核模型（复用 `VLM_API_KEY` / `VLM_BASE_URL`）
 - `APP_OUTPUT_DIR`：输出根目录
 
 ---

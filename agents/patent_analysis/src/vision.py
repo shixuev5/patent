@@ -9,9 +9,10 @@ import base64
 import requests
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from PIL import Image, ImageDraw, ImageFont
 from paddleocr import PaddleOCR
-from tqdm import tqdm
 from config import settings
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
@@ -30,8 +31,13 @@ class VisualProcessor:
         :param out_dir: 输出目录 (annotated_dir)
         """
 
-        # 支持模式: 'local', 'vlm', 'online' (对应提供的 AI Studio 接口)
+        # 支持模式: 'local', 'online'。其余值自动回退到 local。
         self.engine_type = os.getenv("OCR_ENGINE", "local").lower()
+        if self.engine_type not in {"local", "online"}:
+            logger.warning(
+                f"[视觉] 不支持的 OCR_ENGINE={self.engine_type!r}，已自动回退为 'local'。"
+            )
+            self.engine_type = "local"
 
         self.patent_data = patent_data
         self.parts_db = parts_db
@@ -39,7 +45,7 @@ class VisualProcessor:
         self.out_dir = out_dir
 
         if self.engine_type == "local":
-            logger.info("[Vision] Initializing local PaddleOCR engine...")
+            logger.info("[视觉] 正在初始化本地 PaddleOCR 引擎...")
             self.ocr_engine = PaddleOCR(
                 text_detection_model_name="PP-OCRv5_server_det",
                 text_recognition_model_name="PP-OCRv5_server_rec",
@@ -49,18 +55,16 @@ class VisualProcessor:
                 text_rec_score_thresh=0.7,  # 识别置信度
                 text_det_thresh=0.2,  # 文本检测像素阈值
                 text_det_box_thresh=0.3,  # 文本检测框阈值
-                text_det_unclip_ratio=1.7  # 文本检测扩张系数
+                text_det_unclip_ratio=1.5,  # 文本检测扩张系数
             )
+            self._ocr_engine_lock: Optional[Lock] = Lock()
 
         elif self.engine_type == "online":
-            logger.info("[Vision] Using AI Studio Online OCR API.")
+            logger.info("[视觉] 使用 AI Studio 在线 OCR 接口。")
             self.api_url = settings.OCR_BASE_URL
             self.api_token = settings.OCR_API_KEY
             self.ocr_engine = None
-
-        else:
-            self.ocr_engine = None
-            logger.info("[Vision] Using VLM (Vision Language Model) for OCR.")
+            self._ocr_engine_lock = None
 
     def process_patent_images(self) -> Dict[str, List[str]]:
         """
@@ -69,34 +73,87 @@ class VisualProcessor:
         """
         # 1. 从 JSON 中提取需要处理的目标文件名集合
         target_filenames = self._extract_target_filenames()
-        logger.info(f"[Vision] Found {len(target_filenames)} target images to analyze.")
+        logger.info(f"[视觉] 检测到 {len(target_filenames)} 张目标图片待分析。")
 
         # 2. 准备结果容器
         image_parts = {}
-        processed_files = set()
 
         # 3. 遍历原始目录下的所有图片
         if not self.raw_img_dir.exists():
-            logger.warning(f"[Vision] Raw image dir not found: {self.raw_img_dir}")
+            logger.warning(f"[视觉] 原始图片目录不存在：{self.raw_img_dir}")
             return {}
 
-        all_images = list(self.raw_img_dir.glob("*.*"))
+        all_images = sorted(self.raw_img_dir.glob("*.*"), key=lambda p: p.name)
+        if not all_images:
+            return {}
 
-        for img_path in tqdm(all_images, desc="Processing Images"):
-            filename = img_path.name
-            out_path = self.out_dir / filename
-
-            # 如果部件数据存在并且是目标图片 (摘要图或附图)
-            if self.parts_db and filename in target_filenames:
-                part_ids = self._process_single_image(img_path, out_path)
+        if self.engine_type == "local":
+            logger.info(f"[视觉] 本地模式按顺序处理图片，总数={len(all_images)}")
+            for img_path in all_images:
+                filename = img_path.name
+                try:
+                    processed_name, part_ids = self._process_image_task(
+                        img_path, target_filenames
+                    )
+                except Exception as e:
+                    logger.error(f"[视觉] 顺序任务异常 {filename}: {e}")
+                    continue
                 if part_ids:
-                    image_parts[filename] = part_ids
-                processed_files.add(filename)
-            else:
-                # 非目标图片，直接拷贝
-                shutil.copy2(img_path, out_path)
+                    image_parts[processed_name] = part_ids
+        else:
+            max_workers = self._resolve_max_workers(len(all_images))
+            logger.info(
+                f"[视觉] 在线模式并行处理图片，总数={len(all_images)}，并发={max_workers}"
+            )
+
+            with ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="vision"
+            ) as executor:
+                future_map = {
+                    executor.submit(
+                        self._process_image_task, img_path, target_filenames
+                    ): img_path.name
+                    for img_path in all_images
+                }
+
+                for future in as_completed(future_map):
+                    filename = future_map[future]
+                    try:
+                        processed_name, part_ids = future.result()
+                    except Exception as e:
+                        logger.error(f"[视觉] 并行任务异常 {filename}: {e}")
+                        continue
+
+                    if part_ids:
+                        image_parts[processed_name] = part_ids
 
         return image_parts
+
+    @staticmethod
+    def _resolve_max_workers(total_images: int) -> int:
+        raw = str(os.getenv("VISION_MAX_WORKERS", "")).strip()
+        if raw.isdigit():
+            configured = max(1, int(raw))
+        else:
+            configured = min(8, max(1, (os.cpu_count() or 1)))
+        return min(configured, max(1, total_images))
+
+    def _process_image_task(
+        self, img_path: Path, target_filenames: Set[str]
+    ) -> Tuple[str, List[str]]:
+        filename = img_path.name
+        out_path = self.out_dir / filename
+
+        # 目标图片：OCR + 混合纠错 + 标注
+        if self.parts_db and filename in target_filenames:
+            return filename, self._process_single_image(img_path, out_path)
+
+        # 非目标图片：直接拷贝
+        try:
+            shutil.copy2(img_path, out_path)
+        except Exception as e:
+            logger.error(f"[视觉] 复制非目标图片失败 {filename}: {e}")
+        return filename, []
 
     def _extract_target_filenames(self) -> Set[str]:
         """解析 JSON 数据，提取摘要图和附图的文件名"""
@@ -130,24 +187,29 @@ class VisualProcessor:
         return Path(path).name
 
     def _process_single_image(self, img_path: Path, out_path: Path) -> List[str]:
-        """对单张图片进行 OCR 并根据 parts_db 进行标注"""
+        """对单张图片进行 OCR + VLM 混合纠错并根据 parts_db 进行标注"""
         try:
-            # 根据引擎分发任务
+            # 1) 基础 OCR
             if self.engine_type == "local":
-                ocr_results = self._run_local_ocr(str(img_path))
-            elif self.engine_type == "online":
-                ocr_results = self._run_online_ocr(str(img_path))
+                raw_ocr = self._run_local_ocr(str(img_path))
             else:
-                ocr_results = self._run_vlm_ocr(str(img_path))
+                raw_ocr = self._run_online_ocr(str(img_path))
 
             # 修复粘连：拆分 "101 106" 这种结果
-            ocr_results = self._expand_merged_ocr_results(ocr_results)
+            raw_ocr = self._expand_merged_ocr_results(raw_ocr)
+
+            # 2) VLM 结合 parts_db 进行清洗/纠错/补全
+            corrected_results = self._run_hybrid_vlm_correction(str(img_path), raw_ocr)
 
             valid_labels = []
             found_pids = []
+            seen_pids = set()
 
-            for item in ocr_results:
-                text = item["text"]
+            for item in corrected_results:
+                text = str(item.get("text", ""))
+                box = item.get("box")
+                if not text or not isinstance(box, list) or len(box) != 4:
+                    continue
 
                 # 步骤 A: 正则清洗，只保留 数字 和 字母 (移除标点、括号等干扰)
                 # 例如: "(16a)" -> "16a", "10." -> "10", "11-A" -> "11A"
@@ -162,30 +224,21 @@ class VisualProcessor:
                     valid_labels.append(
                         {
                             "text": self.parts_db[match_key]["name"],
-                            "box": item["box"],
+                            "box": box,
                         }
                     )
-                    found_pids.append(match_key)
+                    if match_key not in seen_pids:
+                        found_pids.append(match_key)
+                        seen_pids.add(match_key)
 
                 # 情况 2: 库里没有，但是格式非常像一个部件编号 (用于形式审查报错)
                 # 只有当它"长得像编号"且之前没添加过时才记录
                 elif self._is_potential_part_id(match_key):
                     # 注意：这里不加入 valid_labels，因为没有中文名，画在图上没意义
                     # 但是要加入 found_pids，这样 FormalExaminer 就会发现它在 parts_db 里不存在
-                    found_pids.append(match_key)
-
-            # 有效标注占比校验：占比过低说明图中干扰文本过多，跳过该图标注
-            total_labels = len(ocr_results)
-            min_valid_ratio = 0.6
-            if total_labels > 0:
-                valid_ratio = len(valid_labels) / total_labels
-                if valid_ratio < min_valid_ratio:
-                    logger.warning(
-                        f"[Vision] Skip marking {img_path.name}: "
-                        f"valid_ratio={valid_ratio:.2%} ({len(valid_labels)}/{total_labels}) < {min_valid_ratio:.0%}"
-                    )
-                    shutil.copy2(img_path, out_path)
-                    return []
+                    if match_key not in seen_pids:
+                        found_pids.append(match_key)
+                        seen_pids.add(match_key)
 
             # 3. 绘图或复制
             # 如果有有效标注，或者至少识别出了一些东西（避免空图被覆盖），则进行标注
@@ -198,7 +251,7 @@ class VisualProcessor:
             return found_pids
 
         except Exception as e:
-            logger.error(f"[Vision] Failed to process {img_path.name}: {e}")
+            logger.error(f"[视觉] 处理图片失败 {img_path.name}: {e}")
             # 出错兜底：复制原图
             if img_path.exists():
                 shutil.copy2(img_path, out_path)
@@ -207,7 +260,7 @@ class VisualProcessor:
     def _is_potential_part_id(self, text: str) -> bool:
         """
         判断一个未定义的文本是否像是一个附图标记。
-        
+
         核心规则：
         1. 必须以数字开头。
         2. 开头数字不能是 '0' (排除 '0', '01', '05' 等 OCR 误识别)。
@@ -221,7 +274,7 @@ class VisualProcessor:
 
         # --- 规则 2: 开头数字不能是 0 (User Request) ---
         # 专利中不使用 '0' 或 '0x' 作为标记
-        if text.startswith('0'):
+        if text.startswith("0"):
             return False
 
         # --- 规则 3: 长度过滤 ---
@@ -231,13 +284,13 @@ class VisualProcessor:
 
         # --- 规则 4: 排除明显的单位或序数词 ---
         # text 已经是小写且去除了标点
-        
+
         # 常见物理单位 (排除 mm, cm, kg, hz 等)
-        if text.endswith(('mm', 'cm', 'km', 'kg', 'hz', 'kv', 'mg', 'ml')):
+        if text.endswith(("mm", "cm", "km", "kg", "hz", "kv", "mg", "ml")):
             return False
-            
+
         # 常见序数词缩写 (1st, 2nd, 3rd, 4th)
-        if text.endswith(('st', 'nd', 'rd', 'th')):
+        if text.endswith(("st", "nd", "rd", "th")):
             return False
 
         return True
@@ -360,6 +413,8 @@ class VisualProcessor:
 
                     # 找到该片段在原字符串中的起始位置
                     start_idx = text.find(part, current_char_idx)
+                    if start_idx == -1:
+                        continue  # 防止极端异常导致系统崩溃
                     end_idx = start_idx + len(part)
 
                     # 线性插值计算新坐标
@@ -386,7 +441,7 @@ class VisualProcessor:
         processed_img, scale = self._preprocess_for_ocr(img_path)
 
         if processed_img is None:
-            logger.warning(f"Failed to preprocess image: {img_path}")
+            logger.warning(f"[视觉] 图片预处理失败：{img_path}")
             return []
 
         # PaddleOCR 3.x text-det expects 3-channel input (H, W, C).
@@ -398,9 +453,14 @@ class VisualProcessor:
             ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_BGRA2BGR)
 
         try:
-            result = self.ocr_engine.predict(ocr_input)
+            # PaddleOCR 推理对象并非强线程安全，推理调用加锁，其他步骤保持并行。
+            if self._ocr_engine_lock is None:
+                result = self.ocr_engine.predict(ocr_input)
+            else:
+                with self._ocr_engine_lock:
+                    result = self.ocr_engine.predict(ocr_input)
         except Exception as e:
-            logger.error(f"PaddleOCR inference failed: {e}")
+            logger.error(f"[视觉] PaddleOCR 推理失败：{e}")
             return []
 
         if not result or not result[0]:
@@ -436,7 +496,7 @@ class VisualProcessor:
             # 2. 内存编码: Numpy -> JPG Bytes -> Base64 String
             success, encoded_img = cv2.imencode(".jpg", processed_img)
             if not success:
-                logger.error(f"[OnlineOCR] Failed to encode image: {img_path}")
+                logger.error(f"[在线OCR] 图片编码失败：{img_path}")
                 return []
 
             file_data = base64.b64encode(encoded_img.tobytes()).decode("ascii")
@@ -455,8 +515,8 @@ class VisualProcessor:
                 "useTextlineOrientation": False,
                 "textDetThresh": 0.2,
                 "textDetBoxThresh": 0.3,
-                "textDetUnclipRatio": 1.7,
-                "textRecScoreThresh": 0.7
+                "textDetUnclipRatio": 1.5,
+                "textRecScoreThresh": 0.7,
             }
 
             # 4. 发送请求
@@ -486,111 +546,146 @@ class VisualProcessor:
             return formatted
 
         except Exception as e:
-            logger.error(f"[OnlineOCR] Request failed for {Path(img_path).name}: {e}")
+            logger.error(f"[在线OCR] 请求失败 {Path(img_path).name}: {e}")
             return []
 
-    def _run_vlm_ocr(self, img_path: str) -> List[Dict]:
-        """使用视觉模型进行高精度专利附图标记识别"""
+    def _run_hybrid_vlm_correction(
+        self, img_path: str, raw_ocr: List[Dict]
+    ) -> List[Dict]:
+        """
+        利用 VLM 结合零部件库，对 OCR 结果进行清洗、纠错和漏检补全。
+        失败时回退到 raw_ocr。
+        """
         try:
             llm_service = get_llm_service()
 
-            # 读取图片尺寸用于坐标反归一化
+            # 读取图片尺寸用于坐标边界约束
             img = cv2.imread(img_path)
             if img is None:
-                logger.error(f"[VLM] Failed to read image: {img_path}")
-                return []
+                logger.error(f"[视觉] 读取图片失败：{img_path}")
+                return raw_ocr
             h, w = img.shape[:2]
 
+            parts_context = "\n".join(
+                [
+                    f"- {pid}: {info.get('name', '未知部件')}"
+                    for pid, info in self.parts_db.items()
+                ]
+            )
+            ocr_context = json.dumps(raw_ocr, ensure_ascii=False)
+
             system_prompt = """
-            你是一个资深的专利附图审查专家。你的唯一任务是提取专利技术图纸中的"附图标记"(Reference Numerals)。
-            
-            ### 核心定义
-            附图标记是用于标识图纸中零部件的数字或字母数字组合（如 "10", "205", "14a", "12B"）。
-            
-            ### 视觉识别策略
-            1. **跟随引线 (Critical)**：绝大多数附图标记都连接着一条细线（引线/指引线）指向零件。请务必追踪所有引线的末端。
-            2. **扫描孤立字符**：部分标记可能位于零件内部或圆圈/方框内，没有引线。
-            3. **区分尺寸标注**：忽略带有双向箭头、尺寸界线或表示长度/角度的数字（这些是尺寸，不是部件编号）。
-            
-            ### 输出规范
-            请输出一个纯 JSON 列表。
-            - **坐标系**：使用 [0, 1000] 的归一化坐标系（左上角为0,0，右下角为1000,1000）。
-            - **Box 格式**：[xmin, ymin, xmax, ymax]。
-            - **Box 要求**：
-                - **极度紧密 (Tight Fit)**：检测框必须紧贴字符边缘，**严禁**包含引线、箭头或周围空白。
-                - **分离重叠**：如果 "10" 和 "11" 靠得很近但含义独立，请分别输出两个框，不要合并。
-            - **Text 清洗**：
-                - 去除非字母数字字符（如括号 "()"、点 "."）。
-                - 统一转换为小写。
-            
-            ### JSON 格式示例
-            ```json
-            [
-              {"text": "10", "box": [100, 200, 150, 250]},
-              {"text": "15a", "box": [300, 400, 380, 420]}
-            ]
-            ```
+            你是专利视觉审查专家。请结合【说明书部件库】和【初筛OCR结果】，输出图片中真实存在的附图标记。
+
+            传统OCR常见错误：
+            1. 错认：如 10->1O、101->10l，或把噪点认成标号；
+            2. 漏认：低对比度标号未识别；
+            3. 截断：OCR 框未包全字符。
+
+            判定原则：
+            - 优先识别部件库中出现过的标号；
+            - 带引出线的数字通常是附图标记；
+            - 不要把图名（FIG.1）、正文、尺寸线、剖面线字母（A-A）当作标号。
+
+            输出要求：
+            - 只输出 JSON 数组，不要 Markdown；
+            - 格式必须是：
+              [{"text":"10","box":[xmin,ymin,xmax,ymax]}, ...]
+            - box 使用像素坐标（与输入图片同坐标系）。
             """
 
             user_prompt = f"""
-            请对这张图片进行详尽的扫描，找出所有的附图标记。
             图片分辨率：{w}x{h}
-            
-            请特别注意：
-            1. **不遗漏**：图中可能有几十个编号，请仔细检查每一个角落，特别是密集的区域。
-            2. **排除干扰**：不要识别图名（如 "FIG. 1"）、页码或底部的说明文字。
-            3. **准确性**：确保 bounding box 没有切断数字，也没有包含连接它的线条。
-            
-            请直接返回 JSON 数据，不要包含任何 Markdown 格式或解释性语言。
+
+            【说明书部件库 (Ground Truth)】：
+            {parts_context}
+
+            【初筛 OCR 结果 (含坐标，可能有误)】：
+            {ocr_context}
+
+            请审视图片后修正 OCR：
+            - 纠正错字、删除噪点框；
+            - 若部件库中的标号明显存在但 OCR 漏检，请补充并给出坐标框。
             """
 
             content = llm_service.analyze_image_with_thinking(
                 img_path, system_prompt, user_prompt
             )
 
-            content = content.replace("```json", "").replace("```", "").strip()
-
-            try:
-                data = json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"[VLM] JSON parse error: {e}. Raw content snippet: {content[:100]}..."
+            data = self._parse_vlm_json_array(content)
+            if not isinstance(data, list):
+                logger.warning(
+                    f"[视觉] 混合纠错解析失败，回退原始 OCR：{Path(img_path).name}"
                 )
-                return []
+                return raw_ocr
 
             formatted = []
             for item in data:
-                norm_box = item.get("box", [])
+                if not isinstance(item, dict):
+                    continue
 
-                if len(norm_box) == 4:
-                    x_coords = [norm_box[0], norm_box[2]]
-                    y_coords = [norm_box[1], norm_box[3]]
+                text = str(item.get("text", "")).strip()
+                box = item.get("box", [])
+                if not text or not isinstance(box, list) or len(box) != 4:
+                    continue
 
-                    x1 = int(min(x_coords) / 1000 * w)
-                    x2 = int(max(x_coords) / 1000 * w)
-                    y1 = int(min(y_coords) / 1000 * h)
-                    y2 = int(max(y_coords) / 1000 * h)
+                try:
+                    x1 = int(min(float(box[0]), float(box[2])))
+                    y1 = int(min(float(box[1]), float(box[3])))
+                    x2 = int(max(float(box[0]), float(box[2])))
+                    y2 = int(max(float(box[1]), float(box[3])))
+                except (TypeError, ValueError):
+                    continue
 
-                    # 边界安全检查
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(w, x2), min(h, y2)
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(w, x2), min(h, y2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
 
-                    # 过滤无效框
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-
-                    formatted.append(
-                        {"text": str(item.get("text", "")), "box": [x1, y1, x2, y2]}
-                    )
+                formatted.append({"text": text, "box": [x1, y1, x2, y2]})
 
             logger.info(
-                f"[VLM] Successfully extracted {len(formatted)} labels from {Path(img_path).name}"
+                f"[视觉] 混合纠错完成，识别到 {len(formatted)} 个标号：{Path(img_path).name}"
             )
+            if not formatted and raw_ocr:
+                logger.warning(
+                    f"[视觉] 混合纠错返回空结果，回退原始 OCR：{Path(img_path).name}"
+                )
+                return raw_ocr
             return formatted
 
         except Exception as e:
-            logger.error(f"[VLM] Error processing {Path(img_path).name}: {e}")
+            logger.warning(
+                f"[视觉] 混合纠错失败，已回退原始 OCR：{Path(img_path).name}，错误：{e}"
+            )
+            return raw_ocr
+
+    @staticmethod
+    def _parse_vlm_json_array(content: str) -> List[Dict]:
+        text = str(content or "").strip()
+        if not text:
             return []
+
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start != -1 and end != -1 and start < end:
+            candidate = cleaned[start : end + 1]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                return []
+
+        return []
 
     def _annotate_image(self, img_path: str, labels: list, output_path: str):
         """
@@ -602,7 +697,7 @@ class VisualProcessor:
             result_img = processor.place_labels(labels)
             cv2.imwrite(output_path, result_img)
         except Exception as e:
-            logger.error(f"Annotation failed for {img_path}: {e}")
+            logger.error(f"[视觉] 标注绘制失败：{img_path}，错误：{e}")
             # 失败时尝试直接拷贝原图
             shutil.copy2(img_path, output_path)
 

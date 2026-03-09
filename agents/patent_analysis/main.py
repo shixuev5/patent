@@ -1,11 +1,10 @@
 import json
 import argparse
 import time
-import re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
-from typing import Optional, Set
+from typing import Optional
 
 from loguru import logger
 from config import settings
@@ -61,30 +60,6 @@ class PatentPipeline:
 
     def _safe_artifact_name(self, value: str) -> str:
         return "".join([c for c in str(value or "") if c.isalnum() or c in ("-", "_")])
-
-    def _extract_image_filename(self, raw_value: str) -> str:
-        text = str(raw_value or "").strip()
-        if not text:
-            return ""
-
-        md_match = re.search(r"\(([^)]+)\)", text)
-        if md_match:
-            text = md_match.group(1).strip()
-
-        text = text.strip().strip('"').strip("'")
-        name = Path(text).name.strip().rstrip(")")
-        return name
-
-    def _collect_drawing_image_names(self, patent_data: dict) -> Set[str]:
-        names: Set[str] = set()
-        if not isinstance(patent_data, dict):
-            return names
-
-        for drawing in patent_data.get("drawings", []) or []:
-            file_path = self._extract_image_filename((drawing or {}).get("file_path", ""))
-            if file_path:
-                names.add(file_path)
-        return names
 
     def _resolve_pn_from_patent_data(self, patent_data: dict) -> str:
         # 规则：有输入 pn 则优先使用；无输入 pn 才从结构化数据读取 publication_number
@@ -220,12 +195,9 @@ class PatentPipeline:
             self._update_step_status("check", "processing")
             self._stage_log("check").info("步骤 5/9：执行形式缺陷检查")
             # 即使文件存在也重新跑检查，因为检查逻辑可能很快且需要最新状态
-            drawing_image_names = self._collect_drawing_image_names(patent_data)
             examiner = FormalExaminer(
                 parts_db=parts_db,
                 image_parts=image_parts,
-                drawings_dir=self.paths["raw_images_dir"],
-                drawing_image_names=drawing_image_names,
             )
             check_result = examiner.check()
             self.paths["check_json"].write_text(
