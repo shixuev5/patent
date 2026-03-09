@@ -24,11 +24,14 @@ from backend.utils import (
 )
 from backend.storage import TaskType, get_pipeline_manager
 
+from langgraph.checkpoint.memory import InMemorySaver
 
 router = APIRouter()
 task_manager = get_pipeline_manager()
 
 RUNNING_TASKS: Dict[str, Event] = {}
+PATENT_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
+OAR_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
 
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
@@ -51,6 +54,20 @@ NODE_LABELS = {
     "final_report_render": "正在渲染最终报告",
 }
 
+PATENT_NODE_LABELS = {
+    "download": "下载专利文档",
+    "parse": "解析 PDF 文件",
+    "transform": "专利结构化转换",
+    "extract": "知识提取",
+    "vision": "视觉处理",
+    "check": "形式缺陷检查",
+    "generate": "报告内容生成",
+    "check_generate_join": "汇总检查结果",
+    "search": "检索策略生成",
+    "render": "渲染报告",
+    "handle_error": "处理异常",
+}
+
 
 def _to_dict(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
@@ -60,6 +77,22 @@ def _to_dict(value: Any) -> Dict[str, Any]:
     if hasattr(value, "dict"):
         return value.dict()
     return {}
+
+
+def _get_patent_checkpointer(task_id: str) -> InMemorySaver:
+    checkpointer = PATENT_CHECKPOINTERS.get(task_id)
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
+        PATENT_CHECKPOINTERS[task_id] = checkpointer
+    return checkpointer
+
+
+def _get_oar_checkpointer(task_id: str) -> InMemorySaver:
+    checkpointer = OAR_CHECKPOINTERS.get(task_id)
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
+        OAR_CHECKPOINTERS[task_id] = checkpointer
+    return checkpointer
 
 
 def _normalize_task_type(raw: Optional[str]) -> str:
@@ -159,46 +192,106 @@ def _get_owned_task(task_id: str, owner_id: str):
     return task
 
 
-async def run_pipeline_task(
+async def run_patent_analysis_task(
     task_id: str,
     pn: Optional[str],
     upload_file_path: Optional[str] = None,
     cancel_event: Optional[Event] = None,
 ):
-    """后台执行专利分析流程，并在成功后按需写入对象存储缓存。"""
-    task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_pipeline_task")
+    """后台执行专利分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
+    task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_patent_analysis_task")
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
-        task_manager.update_progress(task_id, 1, "任务已开始")
+        task_manager.update_progress(task_id, 5, "正在准备材料")
 
         loop = asyncio.get_event_loop()
-        from agents.patent_analysis.main import PatentPipeline
+        def run_workflow() -> Dict[str, Any]:
+            from agents.patent_analysis.main import create_workflow, build_runtime_config
+            from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 
-        pipeline = PatentPipeline(pn, upload_file_path, cancel_event=cancel_event, task_id=task_id)
+            output_dir = settings.OUTPUT_DIR / task_id
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-        def run_pipeline():
-            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn):
-                return pipeline.run()
+            config = WorkflowConfig(
+                cache_dir=str(output_dir / ".cache"),
+                pdf_parser=os.getenv("PDF_PARSER", "local"),
+                cancel_event=cancel_event,
+                enable_checkpoint=True,
+                checkpoint_ns="patent_analysis",
+                checkpointer=_get_patent_checkpointer(task_id),
+            )
+            initial_state = WorkflowState(
+                pn=str(pn or "").strip(),
+                upload_file_path=upload_file_path,
+                output_dir=str(output_dir),
+                task_id=task_id,
+                current_node="start",
+                status="pending",
+                progress=0.0,
+            )
 
-        pipeline_future = loop.run_in_executor(None, run_pipeline)
-        result = await pipeline_future
+            workflow = create_workflow(config)
+            runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
+            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn or "-"):
+                last_state: Dict[str, Any] = _to_dict(initial_state)
+                last_progress = -1
+                last_step = ""
+                for state_value in workflow.stream(initial_state, config=runtime_config, stream_mode="values"):
+                    if cancel_event and cancel_event.is_set():
+                        raise RuntimeError("任务已取消")
+                    state_dict = _to_dict(state_value)
+                    if not state_dict:
+                        continue
+                    last_state = state_dict
+                    node_name = str(state_dict.get("current_node", "")).strip()
+                    if not node_name or node_name == "start":
+                        continue
+                    step_label = PATENT_NODE_LABELS.get(node_name, "处理中")
+                    progress_raw = state_dict.get("progress")
+                    try:
+                        progress = int(float(progress_raw))
+                    except Exception:
+                        continue
+                    progress = max(0, min(95, progress))
+                    if progress <= 0:
+                        continue
+                    if progress != last_progress or step_label != last_step:
+                        task_manager.update_progress(task_id, progress, step_label)
+                        last_progress = progress
+                        last_step = step_label
+            return last_state
+
+        result = await loop.run_in_executor(None, run_workflow)
 
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
             task_logger.warning("任务已取消")
             return
 
-        if result.get("status") == "cancelled":
-            task_manager.cancel_task(task_id, result.get("error") or "任务已取消")
+        status = str(result.get("status", "failed")).strip().lower()
+        if status == "cancelled":
+            task_manager.cancel_task(task_id, "任务已取消")
             task_logger.warning("任务已取消")
             return
 
-        if result.get("status") == "success":
-            output_pdf = result.get("output", "")
-            task_manager.update_progress(task_id, 95, "正在整理报告")
+        if status == "failed":
+            errors = result.get("errors") or []
+            first_error = ""
+            if isinstance(errors, list) and errors:
+                first_error = str(_to_dict(errors[0]).get("error_message", "")).strip()
+            error_msg = first_error or "专利分析任务执行失败"
+            task_manager.fail_task(task_id, error_msg)
+            task_logger.error(f"任务失败：{error_msg}")
+            return
 
-            pipeline_pn = str(result.get("pn", "")).strip()
+        if status == "completed":
+            task_manager.update_progress(task_id, 95, "正在整理报告")
+            output_pdf = str(result.get("final_output_pdf", "")).strip()
+            if not output_pdf:
+                output_pdf = str((settings.OUTPUT_DIR / task_id) / "final.pdf")
+
+            pipeline_pn = str(result.get("resolved_pn", "")).strip()
             final_pn = pipeline_pn or (pn or "") or task_id
             if final_pn and final_pn != (pn or ""):
                 task_manager.storage.update_task(task_id, pn=final_pn)
@@ -230,7 +323,7 @@ async def run_pipeline_task(
             task_manager.complete_task(task_id, output_files=output_files)
             task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
         else:
-            error_msg = result.get("error", "未知流程错误")
+            error_msg = f"未知流程状态: {status}"
             task_manager.fail_task(task_id, error_msg)
             task_logger.error(f"任务失败：{error_msg}")
 
@@ -239,8 +332,14 @@ async def run_pipeline_task(
         task_manager.cancel_task(task_id, "任务已取消")
         raise
     except Exception as exc:
+        if cancel_event and cancel_event.is_set():
+            task_logger.warning("任务已取消")
+            task_manager.cancel_task(task_id, "任务已取消")
+            return
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
+    finally:
+        PATENT_CHECKPOINTERS.pop(task_id, None)
 
 
 async def run_office_action_reply_task(
@@ -259,6 +358,7 @@ async def run_office_action_reply_task(
 
         def run_workflow() -> Dict[str, Any]:
             from agents.office_action_reply.main import create_workflow
+            from agents.office_action_reply.main import build_runtime_config
             from agents.office_action_reply.src.state import WorkflowConfig, WorkflowState, InputFile
 
             output_dir = settings.OUTPUT_DIR / task_id
@@ -267,6 +367,9 @@ async def run_office_action_reply_task(
             config = WorkflowConfig(
                 cache_dir=str(output_dir / ".cache"),
                 pdf_parser=os.getenv("PDF_PARSER", "local"),
+                enable_checkpoint=True,
+                checkpoint_ns="office_action_reply",
+                checkpointer=_get_oar_checkpointer(task_id),
             )
 
             initial_state = WorkflowState(
@@ -286,11 +389,12 @@ async def run_office_action_reply_task(
             )
 
             workflow = create_workflow(config)
+            runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
             with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"):
                 last_state: Dict[str, Any] = _to_dict(initial_state)
                 last_progress = -1
                 last_step = ""
-                for state_value in workflow.stream(initial_state, stream_mode="values"):
+                for state_value in workflow.stream(initial_state, config=runtime_config, stream_mode="values"):
                     if cancel_event and cancel_event.is_set():
                         raise RuntimeError("任务已取消")
                     state_dict = _to_dict(state_value)
@@ -375,6 +479,8 @@ async def run_office_action_reply_task(
             return
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
+    finally:
+        OAR_CHECKPOINTERS.pop(task_id, None)
 
 
 @router.get("/api/tasks")
@@ -439,7 +545,7 @@ async def create_task(
         cancel_event = Event()
         RUNNING_TASKS[task.id] = cancel_event
         pipeline_task = asyncio.create_task(
-            run_pipeline_task(
+            run_patent_analysis_task(
                 task.id,
                 pn,
                 upload_file_path,

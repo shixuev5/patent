@@ -19,21 +19,22 @@
 
 ---
 
-## 3. 执行流程（0~8）
+## 3. 执行流程（LangGraph）
 
-`PatentPipeline.run()` 中的固定顺序如下：
+`create_workflow()` 定义的主流程如下：
 
 1. `download` 下载专利文档
 2. `parse` 解析 PDF（生成 `raw.md` 与图像）
 3. `transform` 将 Markdown 转为结构化 `patent.json`
 4. `extract` 知识提取（部件库 `parts.json`）
 5. `vision` 视觉处理（OCR + 标注图 + `image_parts.json`）
-6. `check` 形式缺陷检查（`check.json`）
-7. `generate` 生成分析报告 JSON（`report.json`）
+6. 并行分支：`check` 与 `generate`
+7. `check_generate_join` 汇聚并行结果
 8. `search` 生成检索策略 JSON（`search_strategy.json`）
 9. `render` 渲染 Markdown/PDF（`<pn>.md`, `<pn>.pdf`）
 
-说明：代码中步骤命名为 0~8（共 9 步），任务系统中也用同名步骤追踪进度。
+说明：`check/generate` 为并行节点；任一节点失败会路由到 `handle_error` 后结束。
+默认执行路径已接入 LangGraph checkpoint（按 `task_id` 作为 `thread_id`）。
 
 ---
 
@@ -151,7 +152,11 @@
 本模块在多个阶段采用“文件存在即复用”策略：
 
 1. `raw.md`、`patent.json`、`parts.json`、`image_parts.json`、`report.json`、`search_strategy.json` 若已存在，优先读取而非重算。
-2. `ContentGenerator` 与 `SearchStrategyGenerator` 内部还使用 `StepCache` 保存中间步骤结果（例如 `report_intermediate.json`、`search_strategy_intermediate.json`）。
+2. `generate` 与 `search` 节点使用 `StepCache` 保存节点缓存，统一落盘到 `output/<task_id>/.cache/*.json`（例如 `generate_cache.json`、`search_cache.json`）。
+
+说明：
+- `report.json`、`search_strategy.json` 仍作为中间产物复用文件保留。
+- 旧版 `*_intermediate.json` 不再写入。
 
 效果：同一 PN 重跑时显著减少 LLM/OCR 计算成本。
 
@@ -207,8 +212,8 @@
 
 ## 8. 取消与异常处理
 
-1. 每个步骤之间执行 `_check_cancelled()`，若收到取消信号抛出 `PipelineCancelled` 并返回 `status=cancelled`。
-2. 任一阶段异常会记录日志并返回 `status=failed`，包含错误信息。
+1. 每个节点执行前检查取消信号，若收到取消则返回 `status=cancelled`。
+2. 任一节点异常会记录到 `errors`，并通过 `handle_error` 结束工作流，状态为 `failed`。
 3. 渲染后会检查 PDF 是否存在且非空，避免“假成功”。
 
 ---
@@ -221,16 +226,10 @@
 python -m agents.patent_analysis.main --pn CN116745575A
 ```
 
-## 9.2 多个专利号（逗号分隔）
+## 9.2 上传 PDF
 
 ```bash
-python -m agents.patent_analysis.main --pn CN116745575A,CN123456789A
-```
-
-## 9.3 从文本文件读取（每行一个 PN）
-
-```bash
-python -m agents.patent_analysis.main --file /path/to/pn_list.txt
+python -m agents.patent_analysis.main --upload-file /path/to/raw.pdf
 ```
 
 ---

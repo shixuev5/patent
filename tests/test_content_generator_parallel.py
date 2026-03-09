@@ -1,7 +1,7 @@
 from pathlib import Path
 from threading import Event
 
-from agents.patent_analysis.src.generator import ContentGenerator
+from agents.patent_analysis.src.engines.generator import ContentGenerator
 
 
 def test_background_and_features_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
@@ -9,7 +9,7 @@ def test_background_and_features_run_in_parallel(tmp_path: Path, monkeypatch) ->
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.generator.get_llm_service",
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 

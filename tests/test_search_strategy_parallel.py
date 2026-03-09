@@ -1,7 +1,7 @@
 from pathlib import Path
 from threading import Event
 
-from agents.patent_analysis.src.search import SearchStrategyGenerator
+from agents.patent_analysis.src.engines.search import SearchStrategyGenerator
 
 
 def test_matrix_and_semantic_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
@@ -9,7 +9,7 @@ def test_matrix_and_semantic_run_in_parallel(tmp_path: Path, monkeypatch) -> Non
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.search.get_llm_service", lambda: StubLLMService()
+        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
 
     generator = SearchStrategyGenerator(

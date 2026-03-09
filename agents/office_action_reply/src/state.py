@@ -246,3 +246,6 @@ class WorkflowConfig(BaseModel):
     timeout: int = Field(300, description="API调用超时时间(秒)")
     max_retries: int = Field(3, description="API调用最大重试次数")
     pdf_parser: str = Field("local", description="PDF解析器: local 或 online")
+    enable_checkpoint: bool = Field(False, description="是否启用 LangGraph checkpoint")
+    checkpoint_ns: str = Field("office_action_reply", description="checkpoint 命名空间")
+    checkpointer: Any = Field(default=None, description="自定义 checkpoint saver")

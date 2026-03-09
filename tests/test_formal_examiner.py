@@ -1,4 +1,4 @@
-from agents.patent_analysis.src.checker import FormalExaminer
+from agents.patent_analysis.src.engines.checker import FormalExaminer
 
 
 def test_formal_examiner_pass_when_no_issues() -> None:

@@ -8,6 +8,7 @@ import os
 import uuid
 from pathlib import Path
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import InMemorySaver
 from backend.log_context import bind_task_logger, task_log_context
 from backend.logging_setup import setup_logging_utc8
 from agents.office_action_reply.src.state import WorkflowState, InputFile, WorkflowConfig
@@ -50,19 +51,19 @@ def create_workflow(config: WorkflowConfig = None):
     retry_policy = RetryPolicy(max_attempts=config.max_retries)
 
     # 添加节点并配置重试
-    workflow.add_node("document_processing", DocumentProcessingNode(config), retry=retry_policy)
-    workflow.add_node("patent_retrieval", PatentRetrievalNode(config), retry=retry_policy)
-    workflow.add_node("data_preparation", DataPreparationNode(config), retry=retry_policy)
-    workflow.add_node("amendment_tracking", AmendmentTrackingNode(config), retry=retry_policy)
-    workflow.add_node("support_basis_check", SupportBasisCheckNode(config), retry=retry_policy)
-    workflow.add_node("amendment_strategy", AmendmentStrategyNode(config), retry=retry_policy)
-    workflow.add_node("dispute_extraction", DisputeExtractionNode(config), retry=retry_policy)
-    workflow.add_node("evidence_verification", EvidenceVerificationNode(config), retry=retry_policy)
-    workflow.add_node("common_knowledge_verification", CommonKnowledgeVerificationNode(config), retry=retry_policy)
-    workflow.add_node("topup_search_verification", TopupSearchVerificationNode(config), retry=retry_policy)
-    workflow.add_node("verification_join", VerificationJoinNode(config), retry=retry_policy)
-    workflow.add_node("report_generation", ReportGenerationNode(config), retry=retry_policy)
-    workflow.add_node("final_report_render", FinalReportRenderNode(config), retry=retry_policy)
+    workflow.add_node("document_processing", DocumentProcessingNode(config), retry_policy=retry_policy)
+    workflow.add_node("patent_retrieval", PatentRetrievalNode(config), retry_policy=retry_policy)
+    workflow.add_node("data_preparation", DataPreparationNode(config), retry_policy=retry_policy)
+    workflow.add_node("amendment_tracking", AmendmentTrackingNode(config), retry_policy=retry_policy)
+    workflow.add_node("support_basis_check", SupportBasisCheckNode(config), retry_policy=retry_policy)
+    workflow.add_node("amendment_strategy", AmendmentStrategyNode(config), retry_policy=retry_policy)
+    workflow.add_node("dispute_extraction", DisputeExtractionNode(config), retry_policy=retry_policy)
+    workflow.add_node("evidence_verification", EvidenceVerificationNode(config), retry_policy=retry_policy)
+    workflow.add_node("common_knowledge_verification", CommonKnowledgeVerificationNode(config), retry_policy=retry_policy)
+    workflow.add_node("topup_search_verification", TopupSearchVerificationNode(config), retry_policy=retry_policy)
+    workflow.add_node("verification_join", VerificationJoinNode(config), retry_policy=retry_policy)
+    workflow.add_node("report_generation", ReportGenerationNode(config), retry_policy=retry_policy)
+    workflow.add_node("final_report_render", FinalReportRenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
 
     # ---------------- 边定义重构 ----------------
@@ -170,7 +171,22 @@ def create_workflow(config: WorkflowConfig = None):
     # 错误处理节点直接结束
     workflow.add_edge("handle_error", END)
 
+    checkpointer = None
+    if config.enable_checkpoint:
+        checkpointer = config.checkpointer or InMemorySaver()
+
+    if checkpointer is not None:
+        return workflow.compile(checkpointer=checkpointer)
     return workflow.compile()
+
+
+def build_runtime_config(task_id: str, checkpoint_ns: str = "office_action_reply"):
+    return {
+        "configurable": {
+            "thread_id": str(task_id).strip() or "oar-task",
+            "checkpoint_ns": str(checkpoint_ns).strip() or "office_action_reply",
+        }
+    }
 
 
 def setup_logging(log_dir: str = None):
@@ -266,7 +282,9 @@ def main():
     # 初始化工作流配置
     config = WorkflowConfig(
         cache_dir=str(output_dir / ".cache"),
-        pdf_parser=os.getenv("PDF_PARSER", "local")
+        pdf_parser=os.getenv("PDF_PARSER", "local"),
+        enable_checkpoint=True,
+        checkpointer=InMemorySaver(),
     )
 
     # 初始化工作流状态
@@ -286,7 +304,10 @@ def main():
     task_logger.info("开始执行工作流")
     try:
         with task_log_context(task_id, "office_action_reply", pn="-"):
-            result = workflow.invoke(initial_state)
+            result = workflow.invoke(
+                initial_state,
+                config=build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns),
+            )
     except Exception as e:
         task_logger.error(f"工作流执行过程中出现未捕获的异常: {e}")
         task_logger.exception("异常堆栈信息")
