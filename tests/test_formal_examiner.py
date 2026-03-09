@@ -63,3 +63,13 @@ def test_formal_examiner_normalizes_part_ids() -> None:
 
     result = examiner.check()
     assert "检查通过" in result["consistency"]
+
+
+def test_formal_examiner_normalizes_mixed_symbol_ids() -> None:
+    examiner = FormalExaminer(
+        parts_db={"(11-A)": {"name": "导向件"}},
+        image_parts={"fig1.png": ["11a"]},
+    )
+
+    result = examiner.check()
+    assert "检查通过" in result["consistency"]

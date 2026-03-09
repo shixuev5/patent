@@ -211,19 +211,18 @@ class VisualProcessor:
                 if not text or not isinstance(box, list) or len(box) != 4:
                     continue
 
-                # 步骤 A: 正则清洗，只保留 数字 和 字母 (移除标点、括号等干扰)
-                # 例如: "(16a)" -> "16a", "10." -> "10", "11-A" -> "11A"
-                clean_text = re.sub(r"[^a-zA-Z0-9]", "", text)
-
-                # 步骤 B: 强制转小写（既然 parts_db key 不包含大写，这里统一转小写以兼容图纸上的大写标注）
-                # 例如: "11A" -> "11a"
-                match_key = clean_text.lower()
+                # 统一归一化：保留数字/字母并转小写
+                # 例如: "(16a)" -> "16a", "11-A" -> "11a"
+                match_key = self._normalize_pid(text)
+                if not match_key:
+                    continue
 
                 # 情况 1: 在零部件库中找到了 (用于生成标注图 + 记录存在性)
                 if match_key in self.parts_db:
+                    label_text = self.parts_db[match_key].get("name") or match_key
                     valid_labels.append(
                         {
-                            "text": self.parts_db[match_key]["name"],
+                            "text": label_text,
                             "box": box,
                         }
                     )
@@ -256,6 +255,14 @@ class VisualProcessor:
             if img_path.exists():
                 shutil.copy2(img_path, out_path)
             return []
+
+    @staticmethod
+    def _normalize_pid(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        clean_text = re.sub(r"[^a-zA-Z0-9]", "", raw)
+        return clean_text.lower()
 
     def _is_potential_part_id(self, text: str) -> bool:
         """
@@ -549,6 +556,39 @@ class VisualProcessor:
             logger.error(f"[在线OCR] 请求失败 {Path(img_path).name}: {e}")
             return []
 
+    def _build_parts_context(self, max_chars: int = 7000) -> str:
+        """
+        将 parts_db 压缩为用于 VLM 纠错的上下文，包含多维关系字段并做长度保护。
+        """
+        if not self.parts_db:
+            return "（无部件上下文）"
+
+        lines: List[str] = []
+        current_length = 0
+        for pid, info in self.parts_db.items():
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get("name", "未知部件") or "未知部件").strip()
+            function = str(info.get("function", "未提及") or "未提及").strip()
+            hierarchy = str(info.get("hierarchy", "未提及") or "未提及").strip()
+            spatial = str(
+                info.get("spatial_connections", "未提及") or "未提及"
+            ).strip()
+            motion = str(info.get("motion_state", "未提及") or "未提及").strip()
+            line = (
+                f"- 标号:{pid}; 名称:{name}; 功能:{function}; 层级:{hierarchy}; "
+                f"空间连接:{spatial}; 运动状态:{motion}"
+            )
+
+            next_length = current_length + len(line) + 1
+            if next_length > max_chars:
+                lines.append("- ... (parts_context 已截断)")
+                break
+            lines.append(line)
+            current_length = next_length
+
+        return "\n".join(lines) if lines else "（无部件上下文）"
+
     def _run_hybrid_vlm_correction(
         self, img_path: str, raw_ocr: List[Dict]
     ) -> List[Dict]:
@@ -566,12 +606,7 @@ class VisualProcessor:
                 return raw_ocr
             h, w = img.shape[:2]
 
-            parts_context = "\n".join(
-                [
-                    f"- {pid}: {info.get('name', '未知部件')}"
-                    for pid, info in self.parts_db.items()
-                ]
-            )
+            parts_context = self._build_parts_context(max_chars=7000)
             ocr_context = json.dumps(raw_ocr, ensure_ascii=False)
 
             system_prompt = """

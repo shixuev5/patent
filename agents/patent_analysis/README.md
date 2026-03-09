@@ -60,8 +60,16 @@
 ## 4.4 extract
 
 - 调用 `KnowledgeExtractor.extract_entities()`
-- 从摘要、附图说明、具体实施方式抽取带附图标号的部件及功能
+- 从摘要、附图说明、具体实施方式抽取带附图标号的部件多维知识图谱
 - 输出：`parts.json`
+- `parts.json` 结构（key 为归一化后部件标号，仅字母数字小写）：
+  - `name`: 部件名称
+  - `function`: 功能作用
+  - `hierarchy`: 层级归属（缺失时为 `null`）
+  - `spatial_connections`: 空间方位与连接关系
+  - `motion_state`: 运动/物理状态
+  - `attributes`: 材质/形状等显著属性
+- 说明：`parts.json` 已升级为新结构，本模块不再兼容旧版仅 `name/function` 的历史产物。
 
 ## 4.5 vision
 

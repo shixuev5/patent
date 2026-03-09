@@ -360,13 +360,14 @@ class ReportRenderer:
 
             if parts:
                 lines.append("\n**【可见部件清单】**\n")
-                lines.append("| 标号 | 名称 | 功能/作用 |")
-                lines.append("| :---: | :--- | :--- |")
+                lines.append("| 标号 | 名称 | 功能/作用 | 空间连接 |")
+                lines.append("| :---: | :--- | :--- | :--- |")
                 for p in parts:
                     pid = p.get("id", "-")
                     pname = p.get("name", "-")
                     pfunc = p.get("function", "-")
-                    lines.append(f"| {pid} | {pname} | {pfunc} |")
+                    pspatial = p.get("spatial_connections", "-")
+                    lines.append(f"| {pid} | {pname} | {pfunc} | {pspatial} |")
                 lines.append("\n")
 
             lines.append("\n---\n")  # 分隔线

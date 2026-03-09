@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Set, Tuple
 from loguru import logger
 
@@ -36,7 +37,10 @@ class FormalExaminer:
 
     @staticmethod
     def _norm_pid(value: Any) -> str:
-        return str(value or "").strip().lower()
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return re.sub(r"[^a-zA-Z0-9]", "", raw).lower()
 
     def check(self) -> Dict[str, Any]:
         """

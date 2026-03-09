@@ -692,13 +692,6 @@ class ContentGenerator:
         """
         results = []
 
-        # 构建全局部件索引字符串 (用于 Prompt 查阅)
-        all_parts_summary = []
-        for pid, info in self.parts_db.items():
-            name = info.get("name", "未知部件")
-            all_parts_summary.append(f"{pid}: {name}")
-        global_parts_str = "\n".join(all_parts_summary)
-
         grouped_drawings: Dict[str, List[Dict[str, Any]]] = {}
         for drawing in self.drawings:
             if not isinstance(drawing, dict):
@@ -749,47 +742,59 @@ class ContentGenerator:
 
             # 构建当前图片的局部部件上下文 (用于识别图里有什么)
             local_parts_context_str = ""
+            related_parts_context_str = ""
             parts_table_data = []  # 用于 JSON 输出的结构化数据
+            local_part_ids_for_context: List[str] = []
 
             if part_ids:
                 temp_desc_list = []
-
-                # 去重并升序排列
-                def natural_key(string_):
-                    return [
-                        int(s) if s.isdigit() else s
-                        for s in re.split(r"(\d+)", string_)
-                    ]
-
-                part_ids = sorted(set(part_ids), key=natural_key)
+                part_ids = sorted(set(part_ids), key=self._natural_part_id_key)
 
                 for pid in part_ids:
-                    # 兼容 pid 是 int 或 str 的情况
-                    info = self.parts_db.get(str(pid))
-                    if info is None:
-                        try:
-                            info = self.parts_db.get(int(pid))
-                        except (TypeError, ValueError):
-                            info = None
+                    pid_key = self._normalize_part_id(pid)
+                    if not pid_key:
+                        continue
+
+                    info = self.parts_db.get(pid_key)
                     if info:
-                        name = info.get("name", "未知")
-                        func = info.get("function", "未知功能")
+                        name = info.get("name") or "未知"
+                        func = info.get("function") or "未知功能"
+                        hierarchy = info.get("hierarchy")
+                        spatial = info.get("spatial_connections") or "未提及"
+                        motion = info.get("motion_state") or "未提及"
+                        attributes = info.get("attributes") or "未提及"
+                        local_part_ids_for_context.append(pid_key)
                         # 为 Prompt 准备的文本
-                        temp_desc_list.append(f"- 标号 {pid} ({name}): {func}")
+                        temp_desc_list.append(
+                            f"- 标号 {pid_key} ({name}): 功能={func}；层级={hierarchy or '未提及'}；"
+                            f"空间连接={spatial}；运动状态={motion}"
+                        )
                         # 为 JSON 准备的数据
                         parts_table_data.append(
-                            {"id": pid, "name": name, "function": func}
+                            {
+                                "id": pid_key,
+                                "name": name,
+                                "function": func,
+                                "hierarchy": hierarchy,
+                                "spatial_connections": spatial,
+                                "motion_state": motion,
+                                "attributes": attributes,
+                            }
                         )
                 local_parts_context_str = "\n".join(temp_desc_list)
             else:
                 local_parts_context_str = "（该图未识别到具体部件标号）"
+
+            related_parts_context_str = self._build_related_parts_context(
+                local_part_ids_for_context
+            )
 
             # 3. 生成图片解说
             image_explanation = self._generate_single_figure_caption(
                 label,
                 caption,
                 local_parts_context_str,
-                global_parts_str,
+                related_parts_context_str,
                 global_context,
                 image_abs_paths,
             )
@@ -806,12 +811,80 @@ class ContentGenerator:
 
         return results
 
+    @staticmethod
+    def _normalize_part_id(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return re.sub(r"[^a-zA-Z0-9]", "", raw).lower()
+
+    def _natural_part_id_key(self, value: Any) -> List[Any]:
+        normalized = self._normalize_part_id(value)
+        target = normalized or str(value or "")
+        return [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", target)]
+
+    def _build_related_parts_context(self, local_part_ids: List[str]) -> str:
+        if not local_part_ids:
+            return "（无可用的父子关联部件参考）"
+
+        normalized_local_ids = []
+        seen_local = set()
+        for pid in local_part_ids:
+            pid_key = self._normalize_part_id(pid)
+            if (
+                pid_key
+                and pid_key not in seen_local
+                and isinstance(self.parts_db.get(pid_key), dict)
+            ):
+                normalized_local_ids.append(pid_key)
+                seen_local.add(pid_key)
+
+        if not normalized_local_ids:
+            return "（无可用的父子关联部件参考）"
+
+        related_ids = set(normalized_local_ids)
+
+        # 直接父级
+        for pid in normalized_local_ids:
+            info = self.parts_db.get(pid, {})
+            if not isinstance(info, dict):
+                continue
+            parent_id = self._normalize_part_id(info.get("hierarchy"))
+            if parent_id and parent_id in self.parts_db:
+                related_ids.add(parent_id)
+
+        # 直接子级
+        for other_pid, other_info in self.parts_db.items():
+            if not isinstance(other_info, dict):
+                continue
+            other_key = self._normalize_part_id(other_pid)
+            parent_id = self._normalize_part_id(other_info.get("hierarchy"))
+            if other_key and parent_id in normalized_local_ids:
+                related_ids.add(other_key)
+
+        lines = []
+        for pid in sorted(related_ids, key=self._natural_part_id_key):
+            info = self.parts_db.get(pid, {})
+            if not isinstance(info, dict):
+                continue
+            name = info.get("name") or "未知部件"
+            func = info.get("function") or "未提及"
+            hierarchy = info.get("hierarchy") or "未提及"
+            spatial = info.get("spatial_connections") or "未提及"
+            motion = info.get("motion_state") or "未提及"
+            lines.append(
+                f"- 标号 {pid} ({name}): 功能={func}；层级={hierarchy}；"
+                f"空间连接={spatial}；运动状态={motion}"
+            )
+
+        return "\n".join(lines) if lines else "（无可用的父子关联部件参考）"
+
     def _generate_single_figure_caption(
         self,
         label: str,
         caption: str,
         local_parts: str,
-        global_parts: str,
+        related_parts_context: str,
         global_context: Dict,
         image_paths: List[str],
     ) -> str:
@@ -866,7 +939,7 @@ class ContentGenerator:
         - **引用标准**：
             提及**任何**部件时，必须严格遵循 `名称(标号)` 格式。
             - **情况A (明确标记)**：直接使用【视觉线索】中的信息。
-            - **情况B (逻辑补全)**：若核心部件在图中清晰可见但未被机器识别（无标号），或者在逻辑链中必不可少（即使未画出），**必须**查阅【全局部件参考库】并正确标注其标准标号。
+            - **情况B (逻辑补全)**：若核心部件在图中清晰可见但未被机器识别（无标号），可查阅【相关部件参考库】进行补全，但只允许引用该库中列出的标号，不得扩展到库外部件。
         - **语言风格**：
             - **通俗化**：用“起到...作用”代替“被配置为”。
             - **规范引用**：提及部件时必须使用 `名称(标号)` 格式，如 `传动轴(12)`。
@@ -883,9 +956,9 @@ class ContentGenerator:
         - **要解决的客观问题**：{global_context.get('problem')}
         - **预期达到的效果**：
         {effects_str}
-        - **全局部件参考库 (Global Reference)**：
-        如果在解释逻辑时需要提到**图中未标注、未画出或漏检**的关联部件，请在此表中查找其标准名称和标号。
-        {global_parts}
+        - **相关部件参考库（仅局部+直接父/子）**：
+        若视觉锚点存在漏检，只允许从以下列表补全标号：
+        {related_parts_context}
 
         # 2. 本图输入数据 (Specific Image Data)
         - **图号与标题**：{label} - {caption}
@@ -893,7 +966,7 @@ class ContentGenerator:
           图片经过了机器视觉标注，请将图中的**显眼文字（蓝色/红色文本）、数字标号或指示箭头**视为最高优先级的锚点。
           这些视觉标记对应以下部件信息（未在图中明确指出的部件请勿强行描述）：
           {local_parts}
-          **注意：机器识别可能存在漏检。如果图中有明显的核心结构（如画面中心的连接件、受力件）未在此列表中，请务必结合上方的【全局部件参考库】进行逻辑推断和补全。**
+          **注意：机器识别可能存在漏检。只有在图中存在明确视觉证据时，才可从上方【相关部件参考库】补全；若无证据，不要强行补编号。**
         """
 
         try:
