@@ -10,12 +10,14 @@ from agents.patent_analysis.src.nodes.check_generate_join_node import CheckGener
 from agents.patent_analysis.src.nodes.check_node import CheckNode
 from agents.patent_analysis.src.nodes.download_node import DownloadNode
 from agents.patent_analysis.src.nodes.extract_node import ExtractNode
-from agents.patent_analysis.src.nodes.generate_node import GenerateNode
+from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
+from agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
 from agents.patent_analysis.src.nodes.parse_node import ParseNode
 from agents.patent_analysis.src.nodes.render_node import RenderNode
 from agents.patent_analysis.src.nodes.search_node import SearchNode
 from agents.patent_analysis.src.nodes.transform_node import TransformNode
-from agents.patent_analysis.src.nodes.vision_node import VisionNode
+from agents.patent_analysis.src.nodes.vision_annotate_node import VisionAnnotateNode
+from agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
 from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths
 
@@ -33,26 +35,36 @@ def _build_state(tmp_path: Path) -> WorkflowState:
 
 def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
     check_started = Event()
-    generate_started = Event()
+    generate_core_started = Event()
 
     monkeypatch.setattr(DownloadNode, "run", lambda self, state: {})
     monkeypatch.setattr(ParseNode, "run", lambda self, state: {})
     monkeypatch.setattr(TransformNode, "run", lambda self, state: {"patent_data": {}})
     monkeypatch.setattr(ExtractNode, "run", lambda self, state: {"parts_db": {}})
-    monkeypatch.setattr(VisionNode, "run", lambda self, state: {"image_parts": {}})
+    monkeypatch.setattr(
+        VisionExtractNode,
+        "run",
+        lambda self, state: {"image_parts": {}, "image_labels": {}},
+    )
+    monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
 
     def _fake_check(self, state):
         check_started.set()
-        assert generate_started.wait(timeout=1.0)
+        assert generate_core_started.wait(timeout=1.0)
         return {"check_result": {"consistency": "ok"}}
 
-    def _fake_generate(self, state):
-        generate_started.set()
+    def _fake_generate_core(self, state):
+        generate_core_started.set()
         assert check_started.wait(timeout=1.0)
-        return {"report_json": {"ai_title": "ok"}}
+        return {"report_core_json": {"ai_title": "ok"}}
 
     monkeypatch.setattr(CheckNode, "run", _fake_check)
-    monkeypatch.setattr(GenerateNode, "run", _fake_generate)
+    monkeypatch.setattr(GenerateCoreNode, "run", _fake_generate_core)
+    monkeypatch.setattr(
+        GenerateFiguresNode,
+        "run",
+        lambda self, state: {"report_json": {"ai_title": "ok"}},
+    )
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
     monkeypatch.setattr(SearchNode, "run", lambda self, state: {"search_json": {"ok": True}})
     monkeypatch.setattr(
@@ -80,13 +92,27 @@ def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(ParseNode, "run", lambda self, state: {})
     monkeypatch.setattr(TransformNode, "run", lambda self, state: {"patent_data": {}})
     monkeypatch.setattr(ExtractNode, "run", lambda self, state: {"parts_db": {}})
-    monkeypatch.setattr(VisionNode, "run", lambda self, state: {"image_parts": {}})
+    monkeypatch.setattr(
+        VisionExtractNode,
+        "run",
+        lambda self, state: {"image_parts": {}, "image_labels": {}},
+    )
+    monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
 
     def _raise_check(self, state):
         raise RuntimeError("check failed")
 
     monkeypatch.setattr(CheckNode, "run", _raise_check)
-    monkeypatch.setattr(GenerateNode, "run", lambda self, state: {"report_json": {"ai_title": "ok"}})
+    monkeypatch.setattr(
+        GenerateCoreNode,
+        "run",
+        lambda self, state: {"report_core_json": {"ai_title": "ok"}},
+    )
+    monkeypatch.setattr(
+        GenerateFiguresNode,
+        "run",
+        lambda self, state: {"report_json": {"ai_title": "ok"}},
+    )
 
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
 
@@ -148,9 +174,23 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ParseNode, "run", lambda self, state: {})
     monkeypatch.setattr(TransformNode, "run", lambda self, state: {"patent_data": {}})
     monkeypatch.setattr(ExtractNode, "run", lambda self, state: {"parts_db": {}})
-    monkeypatch.setattr(VisionNode, "run", lambda self, state: {"image_parts": {}})
+    monkeypatch.setattr(
+        VisionExtractNode,
+        "run",
+        lambda self, state: {"image_parts": {}, "image_labels": {}},
+    )
+    monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
     monkeypatch.setattr(CheckNode, "run", lambda self, state: {"check_result": {"ok": True}})
-    monkeypatch.setattr(GenerateNode, "run", lambda self, state: {"report_json": {"ok": True}})
+    monkeypatch.setattr(
+        GenerateCoreNode,
+        "run",
+        lambda self, state: {"report_core_json": {"ok": True}},
+    )
+    monkeypatch.setattr(
+        GenerateFiguresNode,
+        "run",
+        lambda self, state: {"report_json": {"ok": True}},
+    )
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
     monkeypatch.setattr(SearchNode, "run", lambda self, state: {"search_json": {"ok": True}})
     monkeypatch.setattr(RenderNode, "run", lambda self, state: {"status": "completed"})
@@ -172,7 +212,7 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
     assert result_dict["status"] == "completed"
 
 
-def test_generate_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path: Path, monkeypatch) -> None:
+def test_generate_core_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path: Path, monkeypatch) -> None:
     state = WorkflowState(
         pn="CNTEST",
         task_id="task3",
@@ -192,16 +232,19 @@ def test_generate_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path: Path
         def __init__(self, patent_data, parts_db, image_parts, annotated_dir, cache_file=None):
             captured["cache_file"] = cache_file
 
-        def generate_report_json(self):
+        def generate_core_report_json(self):
             return {"ai_title": "ok"}
 
-    monkeypatch.setattr("agents.patent_analysis.src.nodes.generate_node.ContentGenerator", _FakeGenerator)
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.nodes.generate_core_node.ContentGenerator",
+        _FakeGenerator,
+    )
 
-    node = GenerateNode(WorkflowConfig(cache_dir=str(cache_dir)))
+    node = GenerateCoreNode(WorkflowConfig(cache_dir=str(cache_dir)))
     updates = node(state)
 
-    assert updates["report_json"] == {"ai_title": "ok"}
-    assert Path(str(captured["cache_file"])) == cache_dir / "generate_cache.json"
+    assert updates["report_core_json"] == {"ai_title": "ok"}
+    assert Path(str(captured["cache_file"])) == cache_dir / "generate_core_cache.json"
     assert not (Path(updates["paths"]["root"]) / "report_intermediate.json").exists()
 
 

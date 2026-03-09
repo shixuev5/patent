@@ -25,12 +25,14 @@ from agents.patent_analysis.src.nodes import (
     CheckNode,
     DownloadNode,
     ExtractNode,
-    GenerateNode,
+    GenerateCoreNode,
+    GenerateFiguresNode,
     ParseNode,
     RenderNode,
     SearchNode,
     TransformNode,
-    VisionNode,
+    VisionAnnotateNode,
+    VisionExtractNode,
 )
 from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 from agents.patent_analysis.src.workflow_utils import item_get
@@ -47,9 +49,11 @@ def create_workflow(config: WorkflowConfig | None = None):
     workflow.add_node("parse", ParseNode(config), retry_policy=retry_policy)
     workflow.add_node("transform", TransformNode(config), retry_policy=retry_policy)
     workflow.add_node("extract", ExtractNode(config), retry_policy=retry_policy)
-    workflow.add_node("vision", VisionNode(config), retry_policy=retry_policy)
+    workflow.add_node("vision_extract", VisionExtractNode(config), retry_policy=retry_policy)
+    workflow.add_node("vision_annotate", VisionAnnotateNode(config), retry_policy=retry_policy)
     workflow.add_node("check", CheckNode(config), retry_policy=retry_policy)
-    workflow.add_node("generate", GenerateNode(config), retry_policy=retry_policy)
+    workflow.add_node("generate_core", GenerateCoreNode(config), retry_policy=retry_policy)
+    workflow.add_node("generate_figures", GenerateFiguresNode(config), retry_policy=retry_policy)
     workflow.add_node("check_generate_join", CheckGenerateJoinNode(config), retry_policy=retry_policy)
     workflow.add_node("search", SearchNode(config), retry_policy=retry_policy)
     workflow.add_node("render", RenderNode(config), retry_policy=retry_policy)
@@ -66,11 +70,11 @@ def create_workflow(config: WorkflowConfig | None = None):
 
         return router
 
-    def route_from_vision(state: Any):
+    def route_from_vision_extract(state: Any):
         status = str(item_get(state, "status", "pending") or "pending").lower()
         if status in {"failed", "cancelled"}:
             return "failed"
-        return ["check", "generate"]
+        return ["check", "generate_core", "vision_annotate"]
 
     workflow.add_conditional_edges(
         "download",
@@ -89,21 +93,25 @@ def create_workflow(config: WorkflowConfig | None = None):
     )
     workflow.add_conditional_edges(
         "extract",
-        create_router("vision"),
-        {"failed": "handle_error", "vision": "vision"},
+        create_router("vision_extract"),
+        {"failed": "handle_error", "vision_extract": "vision_extract"},
     )
     workflow.add_conditional_edges(
-        "vision",
-        route_from_vision,
+        "vision_extract",
+        route_from_vision_extract,
         {
             "failed": "handle_error",
             "check": "check",
-            "generate": "generate",
+            "generate_core": "generate_core",
+            "vision_annotate": "vision_annotate",
         },
     )
 
+    workflow.add_edge("generate_core", "generate_figures")
+    workflow.add_edge("vision_annotate", "generate_figures")
+
     workflow.add_edge("check", "check_generate_join")
-    workflow.add_edge("generate", "check_generate_join")
+    workflow.add_edge("generate_figures", "check_generate_join")
 
     workflow.add_conditional_edges(
         "check_generate_join",

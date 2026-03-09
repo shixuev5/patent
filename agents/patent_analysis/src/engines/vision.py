@@ -8,7 +8,7 @@ import numpy as np
 import base64
 import requests
 from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
+from typing import Any, List, Dict, Set, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from PIL import Image, ImageDraw, ImageFont
@@ -22,7 +22,12 @@ class VisualProcessor:
     """视觉处理核心类，负责 OCR、标注和图片批处理"""
 
     def __init__(
-        self, patent_data: Dict, parts_db: Dict, raw_img_dir: Path, out_dir: Path
+        self,
+        patent_data: Dict,
+        parts_db: Dict,
+        raw_img_dir: Path,
+        out_dir: Path,
+        init_ocr: bool = True,
     ):
         """
         :param patent_data: 专利结构化数据 (JSON)
@@ -44,6 +49,15 @@ class VisualProcessor:
         self.raw_img_dir = raw_img_dir
         self.out_dir = out_dir
 
+        self.api_url = settings.OCR_BASE_URL
+        self.api_token = settings.OCR_API_KEY
+        self.ocr_engine = None
+        self._ocr_engine_lock: Optional[Lock] = None
+
+        if not init_ocr:
+            logger.info("[视觉] 仅初始化标注流程，跳过 OCR 引擎加载。")
+            return
+
         if self.engine_type == "local":
             logger.info("[视觉] 正在初始化本地 PaddleOCR 引擎...")
             self.ocr_engine = PaddleOCR(
@@ -61,73 +75,114 @@ class VisualProcessor:
 
         elif self.engine_type == "online":
             logger.info("[视觉] 使用 AI Studio 在线 OCR 接口。")
-            self.api_url = settings.OCR_BASE_URL
-            self.api_token = settings.OCR_API_KEY
             self.ocr_engine = None
             self._ocr_engine_lock = None
 
     def process_patent_images(self) -> Dict[str, List[str]]:
         """
-        处理专利图片的入口函数
-        :return: image_parts 字典 {图片绝对路径: [包含的组件ID列表]}
+        兼容入口：先做识别，再做标注。
         """
-        # 1. 从 JSON 中提取需要处理的目标文件名集合
+        image_parts, image_labels = self.extract_image_labels()
+        self.annotate_from_image_labels(image_labels)
+        return image_parts
+
+    def extract_image_labels(self) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict[str, Any]]]]:
+        """
+        提取图片中的部件标号与可视化标签，不写入标注图。
+        :return: (image_parts, image_labels)
+        """
         target_filenames = self._extract_target_filenames()
         logger.info(f"[视觉] 检测到 {len(target_filenames)} 张目标图片待分析。")
 
-        # 2. 准备结果容器
-        image_parts = {}
-
-        # 3. 遍历原始目录下的所有图片
         if not self.raw_img_dir.exists():
             logger.warning(f"[视觉] 原始图片目录不存在：{self.raw_img_dir}")
-            return {}
+            return {}, {}
 
         all_images = sorted(self.raw_img_dir.glob("*.*"), key=lambda p: p.name)
         if not all_images:
-            return {}
+            return {}, {}
+
+        image_parts: Dict[str, List[str]] = {}
+        image_labels: Dict[str, List[Dict[str, Any]]] = {}
 
         if self.engine_type == "local":
-            logger.info(f"[视觉] 本地模式按顺序处理图片，总数={len(all_images)}")
+            logger.info(f"[视觉] 本地模式按顺序识别图片，总数={len(all_images)}")
             for img_path in all_images:
                 filename = img_path.name
                 try:
-                    processed_name, part_ids = self._process_image_task(
+                    processed_name, part_ids, labels = self._extract_image_task(
                         img_path, target_filenames
                     )
                 except Exception as e:
-                    logger.error(f"[视觉] 顺序任务异常 {filename}: {e}")
+                    logger.error(f"[视觉] 顺序识别异常 {filename}: {e}")
                     continue
                 if part_ids:
                     image_parts[processed_name] = part_ids
-        else:
-            max_workers = self._resolve_max_workers(len(all_images))
-            logger.info(
-                f"[视觉] 在线模式并行处理图片，总数={len(all_images)}，并发={max_workers}"
-            )
+                if labels:
+                    image_labels[processed_name] = labels
+            return image_parts, image_labels
 
-            with ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix="vision"
-            ) as executor:
-                future_map = {
-                    executor.submit(
-                        self._process_image_task, img_path, target_filenames
-                    ): img_path.name
-                    for img_path in all_images
-                }
+        max_workers = self._resolve_max_workers(len(all_images))
+        logger.info(
+            f"[视觉] 在线模式并行识别图片，总数={len(all_images)}，并发={max_workers}"
+        )
 
-                for future in as_completed(future_map):
-                    filename = future_map[future]
-                    try:
-                        processed_name, part_ids = future.result()
-                    except Exception as e:
-                        logger.error(f"[视觉] 并行任务异常 {filename}: {e}")
-                        continue
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="vision"
+        ) as executor:
+            future_map = {
+                executor.submit(self._extract_image_task, img_path, target_filenames): img_path.name
+                for img_path in all_images
+            }
 
-                    if part_ids:
-                        image_parts[processed_name] = part_ids
+            for future in as_completed(future_map):
+                filename = future_map[future]
+                try:
+                    processed_name, part_ids, labels = future.result()
+                except Exception as e:
+                    logger.error(f"[视觉] 并行识别异常 {filename}: {e}")
+                    continue
+                if part_ids:
+                    image_parts[processed_name] = part_ids
+                if labels:
+                    image_labels[processed_name] = labels
 
-        return image_parts
+        return image_parts, image_labels
+
+    def annotate_from_image_labels(
+        self, image_labels: Dict[str, List[Dict[str, Any]]]
+    ) -> None:
+        """
+        根据已识别标签生成标注图；无标签的图片直接复制。
+        """
+        if not self.raw_img_dir.exists():
+            logger.warning(f"[视觉] 原始图片目录不存在：{self.raw_img_dir}")
+            return
+
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        all_images = sorted(self.raw_img_dir.glob("*.*"), key=lambda p: p.name)
+        for img_path in all_images:
+            filename = img_path.name
+            out_path = self.out_dir / filename
+            labels = image_labels.get(filename, []) if isinstance(image_labels, dict) else []
+            try:
+                if labels:
+                    self._annotate_image(str(img_path), labels, str(out_path))
+                else:
+                    shutil.copy2(img_path, out_path)
+            except Exception as e:
+                logger.error(f"[视觉] 标注阶段处理失败 {filename}: {e}")
+                if img_path.exists():
+                    shutil.copy2(img_path, out_path)
+
+    def _extract_image_task(
+        self, img_path: Path, target_filenames: Set[str]
+    ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
+        filename = img_path.name
+        if self.parts_db and filename in target_filenames:
+            extracted = self._extract_single_image(img_path)
+            return filename, extracted["found_pids"], extracted["labels"]
+        return filename, [], []
 
     @staticmethod
     def _resolve_max_workers(total_images: int) -> int:
@@ -137,23 +192,6 @@ class VisualProcessor:
         else:
             configured = min(8, max(1, (os.cpu_count() or 1)))
         return min(configured, max(1, total_images))
-
-    def _process_image_task(
-        self, img_path: Path, target_filenames: Set[str]
-    ) -> Tuple[str, List[str]]:
-        filename = img_path.name
-        out_path = self.out_dir / filename
-
-        # 目标图片：OCR + 混合纠错 + 标注
-        if self.parts_db and filename in target_filenames:
-            return filename, self._process_single_image(img_path, out_path)
-
-        # 非目标图片：直接拷贝
-        try:
-            shutil.copy2(img_path, out_path)
-        except Exception as e:
-            logger.error(f"[视觉] 复制非目标图片失败 {filename}: {e}")
-        return filename, []
 
     def _extract_target_filenames(self) -> Set[str]:
         """解析 JSON 数据，提取摘要图和附图的文件名"""
@@ -186,8 +224,8 @@ class VisualProcessor:
 
         return Path(path).name
 
-    def _process_single_image(self, img_path: Path, out_path: Path) -> List[str]:
-        """对单张图片进行 OCR + VLM 混合纠错并根据 parts_db 进行标注"""
+    def _extract_single_image(self, img_path: Path) -> Dict[str, Any]:
+        """对单张图片做 OCR + VLM 纠错并提取标签，不进行绘图。"""
         try:
             # 1) 基础 OCR
             if self.engine_type == "local":
@@ -239,22 +277,14 @@ class VisualProcessor:
                         found_pids.append(match_key)
                         seen_pids.add(match_key)
 
-            # 3. 绘图或复制
-            # 如果有有效标注，或者至少识别出了一些东西（避免空图被覆盖），则进行标注
-            if len(valid_labels) > 0:
-                self._annotate_image(str(img_path), valid_labels, str(out_path))
-            else:
-                # 无有效信息，复制原图
-                shutil.copy2(img_path, out_path)
-
-            return found_pids
+            return {
+                "found_pids": found_pids,
+                "labels": valid_labels,
+            }
 
         except Exception as e:
-            logger.error(f"[视觉] 处理图片失败 {img_path.name}: {e}")
-            # 出错兜底：复制原图
-            if img_path.exists():
-                shutil.copy2(img_path, out_path)
-            return []
+            logger.error(f"[视觉] 识别图片失败 {img_path.name}: {e}")
+            return {"found_pids": [], "labels": []}
 
     @staticmethod
     def _normalize_pid(value: str) -> str:

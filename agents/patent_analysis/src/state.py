@@ -53,7 +53,9 @@ class WorkflowState(BaseModel):
     patent_data: Optional[Dict[str, Any]] = Field(None, description="结构化专利数据")
     parts_db: Optional[Dict[str, Any]] = Field(None, description="知识部件库")
     image_parts: Optional[Dict[str, Any]] = Field(None, description="图像部件映射")
+    image_labels: Optional[Dict[str, Any]] = Field(None, description="图像标注中间结果")
     check_result: Optional[Dict[str, Any]] = Field(None, description="形式检查结果")
+    report_core_json: Optional[Dict[str, Any]] = Field(None, description="报告核心JSON")
     report_json: Optional[Dict[str, Any]] = Field(None, description="报告JSON")
     search_json: Optional[Dict[str, Any]] = Field(None, description="检索策略JSON")
 

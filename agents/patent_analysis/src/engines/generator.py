@@ -62,12 +62,47 @@ class ContentGenerator:
             return func(*args, **kwargs)
         return self.cache.run_step(key, func, *args, **kwargs)
 
-    def generate_report_json(self) -> Dict[str, Any]:
+    def _compose_core_report(
+        self,
+        domain_problem_data: Dict[str, Any],
+        solution_data: Dict[str, Any],
+        background_data: Dict[str, Any],
+        features_data: Dict[str, Any],
+        verification_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        main_fig = self.biblio.get("abstract_figure")
+        if not main_fig and self.drawings:
+            main_fig = self.drawings[0].get("file_path")
+
+        return {
+            "ai_title": solution_data.get("ai_title", self.biblio.get("invention_title")),
+            "ai_abstract": solution_data.get("ai_abstract", self.biblio.get("abstract", "")),
+            "abstract_figure": (
+                main_fig.replace("images", "annotated_images") if main_fig else None
+            ),
+            "technical_field": domain_problem_data.get("technical_field"),
+            "claim_subject_matter": features_data.get("claim_subject_matter", ""),
+            "technical_problem": domain_problem_data.get("technical_problem"),
+            "technical_scheme": solution_data.get("technical_scheme"),
+            "technical_means": verification_data.get("technical_means"),
+            "background_knowledge": background_data.get("background_knowledge", []),
+            "technical_features": features_data.get("technical_features", []),
+            "technical_effects": verification_data.get("technical_effects", []),
+        }
+
+    def _build_global_context(self, report_core_json: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "title": report_core_json.get("ai_title"),
+            "problem": report_core_json.get("technical_problem"),
+            "effects": report_core_json.get("technical_effects", []),
+        }
+
+    def generate_core_report_json(self) -> Dict[str, Any]:
         """
-        执行专利逻辑分析流水线。
+        生成不包含附图讲解的核心分析结果。
         """
         logger.info(
-            f"开始生成专利分析报告: {self.biblio.get('application_number', '未知')}"
+            f"开始生成专利分析核心报告: {self.biblio.get('application_number', '未知')}"
         )
 
         try:
@@ -84,7 +119,10 @@ class ContentGenerator:
 
             core_logic = {**domain_problem_data, **solution_data}
 
-            with ThreadPoolExecutor(max_workers=self.LOGIC_PARALLEL_WORKERS, thread_name_prefix="report") as executor:
+            with ThreadPoolExecutor(
+                max_workers=self.LOGIC_PARALLEL_WORKERS,
+                thread_name_prefix="report",
+            ) as executor:
                 future_background = executor.submit(
                     self._run_cached,
                     "background_knowledge",
@@ -101,7 +139,6 @@ class ContentGenerator:
                 features_data = future_features.result()
 
             feature_list = features_data.get("technical_features", [])
-
             verification_data = self._run_cached(
                 "verification",
                 self._verify_evidence,
@@ -109,47 +146,52 @@ class ContentGenerator:
                 feature_list,
             )
 
-            global_context = {
-                "title": solution_data.get("ai_title"),
-                "problem": domain_problem_data.get("technical_problem"),
-                "effects": verification_data.get("technical_effects", []),
-            }
-            figures_data = self._run_cached(
-                "figures_analysis",
-                self._generate_figures_analysis,
-                global_context,
+            final_report = self._compose_core_report(
+                domain_problem_data=domain_problem_data,
+                solution_data=solution_data,
+                background_data=background_data,
+                features_data=features_data,
+                verification_data=verification_data,
             )
 
-            main_fig = self.biblio.get("abstract_figure")
-            if not main_fig and self.drawings:
-                main_fig = self.drawings[0].get("file_path")
-
-            final_report = {
-                "ai_title": solution_data.get(
-                    "ai_title", self.biblio.get("invention_title")
-                ),
-                "ai_abstract": solution_data.get(
-                    "ai_abstract", self.biblio.get("abstract", "")
-                ),
-                "abstract_figure": (
-                    main_fig.replace("images", "annotated_images") if main_fig else None
-                ),
-                "technical_field": domain_problem_data.get("technical_field"),
-                "claim_subject_matter": features_data.get("claim_subject_matter", ""),
-                "technical_problem": domain_problem_data.get("technical_problem"),
-                "technical_scheme": solution_data.get("technical_scheme"),
-                "technical_means": verification_data.get("technical_means"),
-                "background_knowledge": background_data.get("background_knowledge", []),
-                "technical_features": features_data.get("technical_features", []),
-                "technical_effects": verification_data.get("technical_effects", []),
-                "figure_explanations": figures_data,
-            }
-
-            logger.success("专利分析 JSON 生成完成")
+            logger.success("专利分析核心 JSON 生成完成")
             return final_report
 
         except Exception as e:
-            logger.error(f"生成报告过程中发生错误: {str(e)}")
+            logger.error(f"生成核心报告过程中发生错误: {str(e)}")
+            return {"error": str(e), "status": "failed"}
+
+    def generate_figure_explanations(
+        self,
+        report_core_json: Optional[Dict[str, Any]] = None,
+        global_context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        仅生成附图讲解数据。
+        """
+        context = global_context or self._build_global_context(report_core_json or {})
+        return self._run_cached(
+            "figures_analysis",
+            self._generate_figures_analysis,
+            context,
+        )
+
+    def generate_report_json(self) -> Dict[str, Any]:
+        """
+        兼容入口：先生成核心报告，再补全附图讲解。
+        """
+        report_core_json = self.generate_core_report_json()
+        if report_core_json.get("status") == "failed":
+            return report_core_json
+
+        try:
+            figures_data = self.generate_figure_explanations(report_core_json)
+            final_report = dict(report_core_json)
+            final_report["figure_explanations"] = figures_data
+            logger.success("专利分析 JSON 生成完成")
+            return final_report
+        except Exception as e:
+            logger.error(f"生成附图讲解过程中发生错误: {str(e)}")
             return {"error": str(e), "status": "failed"}
 
     def _format_claims_to_text(self, only_independent: bool = False) -> str:
