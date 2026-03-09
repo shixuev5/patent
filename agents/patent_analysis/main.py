@@ -75,15 +75,10 @@ class PatentPipeline:
         name = Path(text).name.strip().rstrip(")")
         return name
 
-    def _collect_official_image_names(self, patent_data: dict) -> Set[str]:
+    def _collect_drawing_image_names(self, patent_data: dict) -> Set[str]:
         names: Set[str] = set()
         if not isinstance(patent_data, dict):
             return names
-
-        biblio = patent_data.get("bibliographic_data", {}) or {}
-        abs_fig = self._extract_image_filename(biblio.get("abstract_figure", ""))
-        if abs_fig:
-            names.add(abs_fig)
 
         for drawing in patent_data.get("drawings", []) or []:
             file_path = self._extract_image_filename((drawing or {}).get("file_path", ""))
@@ -225,12 +220,12 @@ class PatentPipeline:
             self._update_step_status("check", "processing")
             self._stage_log("check").info("步骤 5/9：执行形式缺陷检查")
             # 即使文件存在也重新跑检查，因为检查逻辑可能很快且需要最新状态
-            official_image_names = self._collect_official_image_names(patent_data)
+            drawing_image_names = self._collect_drawing_image_names(patent_data)
             examiner = FormalExaminer(
                 parts_db=parts_db,
                 image_parts=image_parts,
                 drawings_dir=self.paths["raw_images_dir"],
-                official_image_names=official_image_names,
+                drawing_image_names=drawing_image_names,
             )
             check_result = examiner.check()
             self.paths["check_json"].write_text(

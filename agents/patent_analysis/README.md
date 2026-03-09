@@ -81,12 +81,17 @@
 - 检查说明书部件标号与附图识别标号的一致性：
   - 说明书有、附图无
   - 附图有、说明书无
-- 当存在疑点且配置 `VLM_MODEL_MINI` 时，自动触发图像复核模型二次复核（用于识别 OCR 误报/漏报）。
-- 二次复核仅使用官方附图范围（`drawings` + `abstract_figure`），不使用其他非附图图片。
+- 当存在疑点且配置 `VLM_MODEL_MINI` 时，自动触发图像复核模型二次复核（用于过滤 OCR 误报并确认真实缺陷）。
+- 二次复核仅使用官方附图范围（仅 `drawings`），不使用 `abstract_figure` 与其他非附图图片。
 - 二次复核按“附图集合”分组批量调用，减少请求次数并提升对话缓存命中率。
 - `check.json` 中会包含：
-  - `consistency`：规则检查结论
-  - `secondary_review`：图像复核状态、摘要与问题级判断明细
+  - `consistency`：面向用户的可执行缺陷结论（仅确认缺陷 + 需人工核实）
+  - `raw_issues`：规则层原始疑点（调试用）
+  - `secondary_review`：图像复核状态、摘要与问题级判断明细（全量）
+  - `user_actionable_issues`：需要用户处理的疑点列表（`defect_confirmed` / `uncertain`）
+- 复核结论字段：
+  - `user_verdict`: `defect_confirmed`（确认缺陷） / `false_alarm`（机器误报） / `uncertain`（需人工确认）
+- 若图像复核未配置，系统将全部疑点回退为 `uncertain`；若部分失败，仅异常部分回退为 `uncertain`；若全部失败，则全量回退为 `uncertain`，避免漏报真实缺陷。
 - 输出：`check.json`
 
 ## 4.7 generate

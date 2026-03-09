@@ -377,74 +377,16 @@ class ReportRenderer:
         """
         渲染独立章节：形式缺陷检查报告
         """
-        def _safe_cell(value: Any) -> str:
-            text = str(value or "-").replace("\n", " ").replace("|", "\\|").strip()
-            return text or "-"
-
-        verdict_map = {
-            "real_issue": "真实问题",
-            "likely_ocr_error": "疑似OCR误识别",
-            "uncertain": "无法判断",
-        }
-        issue_type_map = {
-            "missing_in_images": "说明书有标号但附图未标记",
-            "undefined_in_text": "附图有标号但说明书未定义",
-        }
-
         lines = []
         lines.append("# 形式缺陷审查报告\n")
 
-        # 1. 附图标记一致性检查
+        # 仅展示最终可执行结论，不展示中间复核过程
         consistency_text = check_results.get("consistency")
+        lines.append("## 1. 最终结论")
         if consistency_text:
-            lines.append("## 1. 附图标记一致性检查")
             lines.append(f"{consistency_text}\n")
-
-        # 2. 图像复核模型结果
-        secondary_review = check_results.get("secondary_review") or {}
-        lines.append("## 2. 图像复核模型复核结果")
-
-        review_status = str(secondary_review.get("status", "skipped"))
-        review_summary = str(secondary_review.get("summary", "")).strip()
-        if review_summary:
-            lines.append(f"> {review_summary}\n")
-
-        if review_status == "skipped":
-            reason = str(secondary_review.get("reason", "unknown"))
-            reason_hint = {
-                "no_issues": "规则检查未发现疑点，跳过复核。",
-                "not_configured": "未配置图像复核模型，跳过复核。",
-            }.get(reason, "复核已跳过。")
-            lines.append(f"- 状态：已跳过（{reason_hint}）\n")
-        elif review_status == "error":
-            lines.append("- 状态：复核失败，以下为回退结果。\n")
-        elif review_status == "partial":
-            lines.append("- 状态：部分完成（部分疑点模型调用失败）。\n")
         else:
-            lines.append("- 状态：复核完成。\n")
-
-        items = secondary_review.get("items") or []
-        if items:
-            lines.append("| 疑点 | 模型判断 | 置信度 | 依据 | 关联附图 |")
-            lines.append("| :--- | :--- | :---: | :--- | :--- |")
-            for idx, item in enumerate(items, 1):
-                issue_type = issue_type_map.get(str(item.get("issue_type", "")), "未分类疑点")
-                verdict = verdict_map.get(str(item.get("model_verdict", "uncertain")), "无法判断")
-                confidence = str(item.get("confidence", "-")).lower()
-                confidence_zh = {"high": "高", "medium": "中", "low": "低"}.get(confidence, "低")
-                images = item.get("reviewed_images", [])
-                image_text = ", ".join(str(x) for x in images) if images else "-"
-                part_id = _safe_cell(item.get("part_id"))
-                part_name = _safe_cell(item.get("part_name"))
-                issue_summary = f"{issue_type}（标号 {part_id}，部件 {part_name}）"
-                lines.append(
-                    f"| {_safe_cell(issue_summary)} | "
-                    f"{_safe_cell(verdict)} | {_safe_cell(confidence_zh)} | {_safe_cell(item.get('reason'))} | "
-                    f"{_safe_cell(image_text)} |"
-                )
-            lines.append("")
-        else:
-            lines.append("暂无复核明细。\n")
+            lines.append("暂无检查结果。\n")
 
         return "\n".join(lines)
     
