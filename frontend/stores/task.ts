@@ -412,6 +412,49 @@ export const useTaskStore = defineStore('tasks', {
       return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '')
     },
 
+    roundPoint(value: number): number {
+      if (!Number.isFinite(value)) return 0
+      return Number(value.toFixed(3))
+    },
+
+    getTaskPointCost(usage: UsageResponse, taskType: TaskType): number {
+      const raw = taskType === 'office_action_reply'
+        ? usage.costPerTask.officeActionReply
+        : usage.costPerTask.patentAnalysis
+      return Number.isFinite(raw) ? Math.max(0, raw) : 0
+    },
+
+    applyOptimisticUsageAfterCreate(taskType: TaskType, usageBeforeSubmit: UsageResponse | null) {
+      const currentUsage = this.dailyUsage
+      if (!currentUsage) return
+
+      // Server usage may already be updated; avoid double counting.
+      if (
+        usageBeforeSubmit
+        && this.roundPoint(currentUsage.usedPoints) > this.roundPoint(usageBeforeSubmit.usedPoints)
+      ) {
+        return
+      }
+
+      const cost = this.getTaskPointCost(currentUsage, taskType)
+      if (cost <= 0) return
+
+      const nextUsed = this.roundPoint(currentUsage.usedPoints + cost)
+      const nextRemaining = this.roundPoint(Math.max(0, currentUsage.remainingPoints - cost))
+      const nextCreatedToday = {
+        analysisCount: currentUsage.createdToday.analysisCount + (taskType === 'patent_analysis' ? 1 : 0),
+        replyCount: currentUsage.createdToday.replyCount + (taskType === 'office_action_reply' ? 1 : 0),
+        totalCount: currentUsage.createdToday.totalCount + 1,
+      }
+
+      this.dailyUsage = {
+        ...currentUsage,
+        usedPoints: nextUsed,
+        remainingPoints: nextRemaining,
+        createdToday: nextCreatedToday,
+      }
+    },
+
     buildPointLimitNoticeText(
       authType: 'guest' | 'authing',
       usedPoints: number,
@@ -572,10 +615,24 @@ export const useTaskStore = defineStore('tasks', {
       this.tasks.unshift(task)
       this.saveToStorage()
       const taskRef = this.resolveTaskRef(task)
+      const usageBeforeSubmit = this.dailyUsage
+        ? {
+            ...this.dailyUsage,
+            costPerTask: { ...this.dailyUsage.costPerTask },
+            createdToday: { ...this.dailyUsage.createdToday },
+          }
+        : null
       const result = await this.submitTask(taskRef, input)
       if (!result.ok && result.errorCode === 'DAILY_POINTS_EXCEEDED' && !taskRef.backendId) {
         this.tasks = this.tasks.filter((item) => item.id !== taskRef.id)
         this.saveToStorage()
+      }
+      if (result.ok) {
+        this.applyOptimisticUsageAfterCreate(input.taskType, usageBeforeSubmit)
+        // Asynchronously refresh real usage from server to reconcile any lag.
+        setTimeout(() => {
+          void this.fetchUsage(input.taskType)
+        }, 1200)
       }
       return result
     },

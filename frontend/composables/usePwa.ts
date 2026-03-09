@@ -80,10 +80,16 @@ export const usePwa = () => {
   const installApp = async (): Promise<InstallActionResult> => {
     const promptEvent = deferredPrompt.value
     if (promptEvent) {
+      const promptStartAt = Date.now()
       await promptEvent.prompt()
       const result = await promptEvent.userChoice
+      const elapsedMs = Date.now() - promptStartAt
       deferredPrompt.value = null
-      return result.outcome === 'accepted' ? 'accepted' : 'dismissed'
+      if (result.outcome === 'accepted') return 'accepted'
+      if (elapsedMs <= 800) {
+        return canShowIOSGuide.value ? 'ios-guide' : 'unsupported'
+      }
+      return 'dismissed'
     }
 
     if (canShowIOSGuide.value) return 'ios-guide'

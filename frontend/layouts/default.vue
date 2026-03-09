@@ -301,8 +301,8 @@ const onInstallApp = async () => {
 }
 
 const onInstallAppFromMobileMenu = async () => {
-  closeMobileMenu()
   await onInstallApp()
+  closeMobileMenu()
 }
 
 const onApplyUpdate = async () => {
