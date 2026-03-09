@@ -25,7 +25,7 @@ class GenerateCoreNode(BaseNode):
         patent_data = item_get(state, "patent_data", None)
         parts_db = item_get(state, "parts_db", None)
         image_parts = item_get(state, "image_parts", None)
-        if not patent_data or not parts_db or image_parts is None:
+        if patent_data is None or parts_db is None or image_parts is None:
             raise RuntimeError("generate_core 阶段缺少 patent_data/parts_db/image_parts")
 
         if path_objs["report_core_json"].exists():

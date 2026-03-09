@@ -44,7 +44,7 @@ class Settings:
     LLM_BASE_URL = os.getenv("LLM_BASE_URL")
     LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
     LLM_MODEL_REASONING = os.getenv("LLM_MODEL_REASONING", "deepseek-reasoner")
-    LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "90"))
+    LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "600"))
 
     # --- 视觉模型配置 ---
     VLM_API_KEY = os.getenv("VLM_API_KEY")

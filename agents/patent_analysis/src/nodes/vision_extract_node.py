@@ -18,7 +18,7 @@ class VisionExtractNode(BaseNode):
 
         patent_data = item_get(state, "patent_data", None)
         parts_db = item_get(state, "parts_db", None)
-        if not patent_data or not parts_db:
+        if patent_data is None or parts_db is None:
             raise RuntimeError("vision_extract 阶段缺少 patent_data 或 parts_db")
 
         if path_objs["image_parts_json"].exists() and path_objs["image_labels_json"].exists():

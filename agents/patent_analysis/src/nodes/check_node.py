@@ -17,7 +17,7 @@ class CheckNode(BaseNode):
         paths, path_objs = ensure_pipeline_paths(state)
         parts_db = item_get(state, "parts_db", None)
         image_parts = item_get(state, "image_parts", None)
-        if not parts_db or image_parts is None:
+        if parts_db is None or image_parts is None:
             raise RuntimeError("check 阶段缺少 parts_db 或 image_parts")
 
         logger.info("执行形式缺陷检查")
