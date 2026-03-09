@@ -60,6 +60,14 @@
                 个人空间
               </NuxtLink>
               <button
+                v-if="canInstall"
+                type="button"
+                class="mt-1 block w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-cyan-700 transition hover:bg-cyan-50"
+                @click="onInstallAppFromMobileMenu"
+              >
+                安装应用
+              </button>
+              <button
                 v-if="hasAuthingEnabled && authStore.isLoggedIn"
                 type="button"
                 class="mt-1 block w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition hover:bg-slate-50"
@@ -80,6 +88,14 @@
         </div>
 
         <div class="hidden items-center justify-end gap-2 md:flex">
+          <button
+            v-if="canInstall"
+            type="button"
+            class="shrink-0 whitespace-nowrap rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-700 transition hover:bg-cyan-100"
+            @click="onInstallApp"
+          >
+            安装应用
+          </button>
           <span
             v-if="hasAuthingEnabled && authStore.isLoggedIn"
             class="text-xs font-medium text-slate-600"
@@ -105,6 +121,40 @@
         </div>
       </div>
     </header>
+
+    <div
+      v-if="needRefresh"
+      class="border-b border-amber-200/80 bg-amber-50/95"
+    >
+      <div class="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-2 px-4 py-2.5 text-xs text-amber-800 sm:px-6">
+        <p class="font-medium">检测到新版本，刷新后可使用最新内容。</p>
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            class="rounded-full bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-700"
+            @click="onApplyUpdate"
+          >
+            立即更新
+          </button>
+          <button
+            type="button"
+            class="rounded-full border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-700 transition hover:bg-amber-100"
+            @click="dismissUpdate"
+          >
+            稍后
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isOffline"
+      class="border-b border-slate-200/80 bg-slate-100/95"
+    >
+      <div class="mx-auto w-full max-w-6xl px-4 py-2 text-xs text-slate-600 sm:px-6">
+        当前处于离线状态：页面壳层可访问，在线任务能力将在网络恢复后可用。
+      </div>
+    </div>
 
     <main class="mx-auto w-full max-w-6xl flex-1 px-4 pb-8 pt-5 sm:px-6 sm:pt-7">
       <slot />
@@ -132,6 +182,7 @@ import { useAuthStore } from '~/stores/auth'
 const route = useRoute()
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
+const { canInstall, installApp, needRefresh, applyUpdate, dismissUpdate, isOffline } = usePwa()
 const currentYear = new Date().getFullYear()
 const serviceStatus = ref<string | null>(null)
 const serviceVersion = ref<string | null>(null)
@@ -206,6 +257,27 @@ const onMobileLogin = async () => {
 const onMobileLogout = async () => {
   closeMobileMenu()
   await onLogout()
+}
+
+const onInstallApp = async () => {
+  try {
+    await installApp()
+  } catch (error) {
+    console.error('安装应用失败：', error)
+  }
+}
+
+const onInstallAppFromMobileMenu = async () => {
+  closeMobileMenu()
+  await onInstallApp()
+}
+
+const onApplyUpdate = async () => {
+  try {
+    await applyUpdate()
+  } catch (error) {
+    console.error('应用更新失败：', error)
+  }
 }
 
 watch(

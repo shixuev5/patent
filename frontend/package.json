@@ -16,6 +16,7 @@
   "dependencies": {
     "@heroicons/vue": "^2.1.1",
     "@pinia/nuxt": "^0.5.1",
+    "@vite-pwa/nuxt": "^1.1.1",
     "autoprefixer": "^10.4.17",
     "nuxt": "^3.10.0",
     "pinia": "^2.1.7",
@@ -31,10 +32,10 @@
   },
   "optionalDependencies": {
     "@oxc-minify/binding-linux-x64-gnu": "0.116.0",
-    "@oxc-parser/binding-linux-x64-gnu": "0.116.0",
-    "@oxc-transform/binding-linux-x64-gnu": "0.116.0",
     "@oxc-parser/binding-darwin-arm64": "0.116.0",
     "@oxc-parser/binding-darwin-universal": "0.116.0",
+    "@oxc-parser/binding-linux-x64-gnu": "0.116.0",
+    "@oxc-transform/binding-linux-x64-gnu": "0.116.0",
     "@rollup/rollup-linux-x64-gnu": "4.57.0"
   }
 }

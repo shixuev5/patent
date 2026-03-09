@@ -40,6 +40,25 @@ npm run dev
 npm run generate
 ```
 
+## PWA 能力
+
+当前前端已启用 PWA（Progressive Web App），包含：
+- **安装能力**：支持桌面/移动端安装到主屏，页面内提供“安装应用”按钮。
+- **壳层离线**：已缓存的页面和静态资源离线可访问；任务提交、进度跟踪等 API 保持网络优先。
+- **版本更新提示**：检测到新版本后，显示“立即更新/稍后”提示，手动刷新接管新版本。
+
+### 本地验证 PWA
+
+1. 构建并预览静态产物：
+   ```bash
+   npm run generate
+   npm run preview
+   ```
+2. 在 Chrome/Edge 打开站点，确认可出现安装入口（地址栏或页面“安装应用”按钮）。
+3. 打开 DevTools -> Application -> Service Workers，确认 Service Worker 已注册。
+4. 先在线访问一次主页与任务页，再断网刷新，确认壳层页面可访问。
+5. 断网状态下尝试创建任务，确认出现现有错误提示且页面不崩溃。
+
 ## Cloudflare Pages 部署
 
 ### 方法一：自动部署脚本
@@ -81,6 +100,12 @@ npx wrangler login
    - Build command: `npm run generate`
    - Build output directory: `.output/public`
    - Node.js version: `22.12.0`（建议在 Cloudflare 环境变量中设置 `NODE_VERSION=22.12.0`）
+
+### PWA 部署注意事项
+
+- 部署后请确保 `manifest.webmanifest` 和 Service Worker 文件可被公开访问（位于 `.output/public`）。
+- 若页面看起来仍是旧版本，通常是 Service Worker 缓存导致；可在应用内点击“立即更新”或清除站点缓存后重开。
+- Cloudflare 缓存策略不要长期强缓存 Service Worker 文件，避免更新提示延迟。
 
 ## 项目结构
 
