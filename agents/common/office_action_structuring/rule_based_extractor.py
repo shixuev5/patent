@@ -75,7 +75,6 @@ class OfficeActionExtractor:
                             document_number=document_number,
                             is_patent=is_patent,
                             publication_date=cells[2].strip() if cells[2].strip() else None,
-                            page_range=[] if is_patent else self._extract_page_range(document_number)
                         )
                         comparison_documents.append(doc)
 
@@ -127,28 +126,6 @@ class OfficeActionExtractor:
             logger.warning("未找到审查意见通知书章节")
 
         return paragraphs
-
-    def _extract_page_range(self, text: str) -> List[str]:
-        """
-        从文本中提取“第x-y页”页码范围，提取失败返回空列表。
-        兼容连接符：-、－、—、~、～、至、到
-        """
-        clean_text = re.sub(r"<[^>]+>", " ", text or "")
-        range_match = re.search(r"第\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)\s*页", clean_text)
-        if range_match:
-            start, end = range_match.group(1), range_match.group(2)
-            try:
-                low, high = sorted((int(start), int(end)))
-                return [str(low), str(high)]
-            except ValueError:
-                return [start, end]
-
-        single_match = re.search(r"第\s*(\d+)\s*页", clean_text)
-        if single_match:
-            page = single_match.group(1)
-            return [page, page]
-
-        return []
 
     def _extract_claim_ids(self, content: str) -> List[str]:
         """提取段落中关联的权利要求编号，兼容单点与区间表达（如 1-3）。"""

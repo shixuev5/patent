@@ -79,7 +79,6 @@ class DataPreparationNode:
             document_number = doc.get("document_number", "")
             is_patent = bool(doc.get("is_patent", False))
             publication_date = doc.get("publication_date")
-            page_range = doc.get("page_range", []) or []
 
             if is_patent:
                 data = patent_data_map.get(document_number, {})
@@ -91,7 +90,6 @@ class DataPreparationNode:
                 "document_number": document_number,
                 "is_patent": is_patent,
                 "publication_date": publication_date,
-                "page_range": page_range,
                 "data": data
             })
 

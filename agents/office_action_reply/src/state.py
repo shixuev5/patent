@@ -165,7 +165,6 @@ class PreparedComparisonDocument(BaseModel):
     document_number: str = Field("", description="对比文件号或名称")
     is_patent: bool = Field(False, description="是否为专利文献")
     publication_date: Optional[str] = Field(None, description="公开日期或申请日")
-    page_range: List[str] = Field(default_factory=list, description="页码范围，格式如 [\"12\", \"15\"]")
     data: Union[Dict[str, Any], str] = Field(default_factory=dict, description="专利为结构化数据，非专为markdown内容")
 
 
