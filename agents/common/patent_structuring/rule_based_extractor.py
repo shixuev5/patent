@@ -58,13 +58,35 @@ class RuleBasedExtractor:
     @staticmethod
     def _parse_claims(md_content: str) -> list:
         """解析 claims (权利要求) 部分"""
-        claims = []
-        for item in RuleBasedExtractor.extract_structured_claims(md_content):
+        claims =[]
+        
+        # 1. 定位并截取仅属于权利要求的区域
+        # 为了避免匹配到前文内容，从 (57)摘要 之后开始寻找
+        abstract_match = re.search(r"\(57\)\s*摘要", md_content)
+        start_search_pos = abstract_match.end() if abstract_match else 0
+        
+        # 寻找真正的权利要求起点：行首的 1. 或 1．
+        start_match = re.search(r"(?m)^1\s*[\.．]\s*", md_content[start_search_pos:])
+        if not start_match:
+            return claims
+            
+        start_idx = start_search_pos + start_match.start()
+        
+        # 寻找权利要求终点：第一个 Markdown 标题（如 "# 一种基于..." 或 "# 技术领域"）
+        end_match = re.search(r"(?m)^#+\s+", md_content[start_idx:])
+        end_idx = start_idx + end_match.start() if end_match else len(md_content)
+            
+        # 截取纯净的权利要求段落
+        claims_section = md_content[start_idx:end_idx].strip()
+
+        # 2. 从限定的纯净文本中解析结构化权利要求
+        for item in RuleBasedExtractor.extract_structured_claims(claims_section):
             claims.append({
                 "claim_id": item.get("claim_id", ""),
                 "claim_text": item["claim_text"],
                 "claim_type": item["claim_type"],
             })
+            
         return claims
 
     @staticmethod
@@ -83,7 +105,7 @@ class RuleBasedExtractor:
     @staticmethod
     def _parse_drawings(md_content: str) -> list:
         """解析 drawings (附图资源) 部分"""
-        drawings = []
+        drawings =[]
         figure_captions = RuleBasedExtractor._extract_figure_captions(md_content)
 
         # 仅提取“# 具体实施方式”到文末的附图区域，避免误纳入摘要附图。
@@ -110,7 +132,7 @@ class RuleBasedExtractor:
                         "figure_label": f"图{fig_num}",
                         "caption": caption,
                     })
-                pending_images = []
+                pending_images =[]
                 return
 
             # 多个图号连在一起：每个图号只绑定一张图片，绝不一图多号
@@ -143,7 +165,7 @@ class RuleBasedExtractor:
                     "caption": caption,
                 })
 
-            pending_images = []
+            pending_images =[]
 
         i = 0
         while i < len(lines):
@@ -155,13 +177,14 @@ class RuleBasedExtractor:
                 pending_images.append(file_path)
                 i += 1
                 continue
-
-            label_match = re.match(r"^图\s*(\d+)\s*$", re.sub(r"\[\d{4}\]\s*", "", line))
+            
+            # 支持字母和连接符图号（如图1A, 图2b）
+            label_match = re.match(r"^图\s*([0-9a-zA-Z\-]+)\s*$", re.sub(r"\[\d{4}\]\s*", "", line))
             if label_match:
-                labels: List[str] = []
+                labels: List[str] =[]
                 while i < len(lines):
                     current = re.sub(r"\[\d{4}\]\s*", "", lines[i]).strip()
-                    current_match = re.match(r"^图\s*(\d+)\s*$", current)
+                    current_match = re.match(r"^图\s*([0-9a-zA-Z\-]+)\s*$", current)
                     if not current_match:
                         break
                     labels.append(current_match.group(1))
@@ -199,7 +222,8 @@ class RuleBasedExtractor:
             if not line:
                 continue
 
-            match = re.search(r"^图\s*(\d+)(?:[^，,。；;\n]*?[为是：:])\s*(.*)", line)
+            # 支持字母图号
+            match = re.search(r"^图\s*([0-9a-zA-Z\-]+)(?:[^，,。；;\n]*?[为是：:])\s*(.*)", line)
             if not match:
                 continue
 
@@ -253,14 +277,14 @@ class RuleBasedExtractor:
         pattern = r"\(51\)\s*Int\s*\.\s*[Cc][LlIi1]\.?\s*([\s\S]*?)(?=(?:\(\d+\)|\([A-Z]{2,}\)|#|$))"
         match = re.search(pattern, md_content, re.DOTALL)
         if not match:
-            return []
+            return[]
 
         ipc_text = match.group(1).strip()
         ipc_pattern = re.compile(
             r"([A-Z])([0-9OIlL])([0-9OIlL])([A-Z])\s*([0-9OIlL]+)\s*/\s*([0-9OIlL]+)(?:\s*\(\d{4}\.\d{2}\))?",
             re.IGNORECASE,
         )
-        ipc_codes = []
+        ipc_codes =[]
 
         for item in ipc_pattern.finditer(ipc_text):
             section = item.group(1).upper()
@@ -330,7 +354,9 @@ class RuleBasedExtractor:
             inventor_text = match.group(1).strip()
             if "地址" in inventor_text:
                 inventor_text = inventor_text.split("地址")[0].strip()
-            inventors = re.split(r"[\s;；，,\n]+", inventor_text)
+            
+            # 使用多个空格作为切割符，兼容包含单个空格的欧美姓名
+            inventors = re.split(r"[;；，,\n]+|\s{2,}", inventor_text)
             return [name.strip() for name in inventors if name.strip()]
         return[]
 
@@ -347,7 +373,8 @@ class RuleBasedExtractor:
             agent_match = re.search(agent_pattern, md_content)
             if agent_match:
                 agents_raw = agent_match.group(1)
-                agents = [name.strip() for name in re.split(r"[\s;；，,]+", agents_raw) if name.strip()]
+                # 同样支持多个空格切割
+                agents =[name.strip() for name in re.split(r"[;；，,\n]+|\s{2,}", agents_raw) if name.strip()]
                 
             return {"agency_name": agency_name, "agents": agents}
         return None
@@ -379,36 +406,12 @@ class RuleBasedExtractor:
     # ================= 权利要求与说明书字段提取 =================
 
     @staticmethod
-    def _extract_claim_texts(md_content: str) -> list:
-        claims = []
-        abstract_match = re.search(r"\(57\)\s*摘要", md_content)
-        start_search_pos = abstract_match.end() if abstract_match else 0
-        
-        start_match = re.search(r"(?m)^1\s*[\.．]\s*", md_content[start_search_pos:])
-        if not start_match:
-            return claims
-            
-        start_idx = start_search_pos + start_match.start()
-        
-        end_match = re.search(r"(?m)^#+\s+", md_content[start_idx:])
-        end_idx = start_idx + end_match.start() if end_match else len(md_content)
-            
-        claims_section = md_content[start_idx:end_idx].strip()
-        
-        for item in RuleBasedExtractor.extract_structured_claims(claims_section):
-            claim_text = item.get("claim_text", "").strip()
-            if claim_text:
-                claims.append(claim_text)
-
-        return claims
-
-    @staticmethod
     def extract_structured_claims(claims_section: str) -> List[Dict[str, str]]:
         """
         解析权利要求文本为结构化列表。
         从 1. 开始到结尾，每个序号之间文本为一项权利要求。
         """
-        claims: List[Dict[str, str]] = []
+        claims: List[Dict[str, str]] =[]
         if not claims_section:
             return claims
 
@@ -507,11 +510,11 @@ class RuleBasedExtractor:
         if not content:
             return None
 
-        # 匹配示例：1-单色仪、10A-连接件、101:处理器
+        # 增加各种顿号、点号、空格作为连接符以防遗漏
         marker_pattern = re.compile(
-            r"(\d+[A-Za-z]?)\s*[-：:]\s*([^、，,。；;\n]+)"
+            r"(\d+[A-Za-z]?)\s*[-：:、\.\s]\s*([^、，,。；;\n]+)"
         )
-        items: List[str] = []
+        items: List[str] =[]
         for item in marker_pattern.finditer(content):
             marker = item.group(1).strip()
             name = item.group(2).strip()
@@ -529,11 +532,21 @@ class RuleBasedExtractor:
         match = re.search(pattern, md_content, re.DOTALL)
         if match:
             content = match.group(1).strip()
+            
+            # 1. 剔除段首常见的 [0001] 等段落编号
             content = re.sub(r"\[\d{4}\]\s*", "", content)
             
-            img_start_idx = content.find("![")
-            if img_start_idx != -1:
-                content = content[:img_start_idx].strip()
+            # 2. 精准剥离文末的“附图+图号”区域，保留正文内的公式图片
+            # 正则解释：
+            # (?: ... )+$ 表示从文末倒推，匹配一个或多个以下组合，直到碰到正常正文为止
+            #   \s+                             匹配换行符、空格
+            #   !\[.*?\]\(.*?\)                 匹配Markdown图片
+            #   (?:^|\n)\s*图\s*[0-9a-zA-Z\-]+   匹配独立成行的图号（如：图1、图2A）
+            tail_pattern = r"(?:\s|!\[.*?\]\(.*?\)|(?:^|\n)\s*图\s*[0-9a-zA-Z\-]+)+$"
+            
+            # 仅替换掉文末的附图区，正文中间的 ![公式](...) 会安然无恙
+            content = re.sub(tail_pattern, "", content)
                 
-            return content
+            # 3. 去除首尾多余空白字符
+            return content.strip()
         return None
