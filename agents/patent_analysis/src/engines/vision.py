@@ -626,7 +626,7 @@ class VisualProcessor:
     ) -> List[Dict]:
         """
         利用 VLM 结合零部件库，对 OCR 结果进行清洗、纠错和漏检补全。
-        失败时回退到 raw_ocr。
+        仅以 VLM 返回结果为准，不回退 raw_ocr。
         """
         try:
             llm_service = get_llm_service()
@@ -635,7 +635,7 @@ class VisualProcessor:
             img = cv2.imread(img_path)
             if img is None:
                 logger.error(f"[视觉] 读取图片失败：{img_path}")
-                return raw_ocr
+                return []
             h, w = img.shape[:2]
 
             parts_context = self._build_parts_context(max_chars=7000)
@@ -682,9 +682,9 @@ class VisualProcessor:
             data = self._parse_vlm_json_array(content)
             if not isinstance(data, list):
                 logger.warning(
-                    f"[视觉] 混合纠错解析失败，回退原始 OCR：{Path(img_path).name}"
+                    f"[视觉] 混合纠错解析失败，返回空结果：{Path(img_path).name}"
                 )
-                return raw_ocr
+                return []
 
             formatted = []
             for item in data:
@@ -714,18 +714,13 @@ class VisualProcessor:
             logger.info(
                 f"[视觉] 混合纠错完成，识别到 {len(formatted)} 个标号：{Path(img_path).name}"
             )
-            if not formatted and raw_ocr:
-                logger.warning(
-                    f"[视觉] 混合纠错返回空结果，回退原始 OCR：{Path(img_path).name}"
-                )
-                return raw_ocr
             return formatted
 
         except Exception as e:
             logger.warning(
-                f"[视觉] 混合纠错失败，已回退原始 OCR：{Path(img_path).name}，错误：{e}"
+                f"[视觉] 混合纠错失败，返回空结果：{Path(img_path).name}，错误：{e}"
             )
-            return raw_ocr
+            return []
 
     @staticmethod
     def _parse_vlm_json_array(content: str) -> List[Dict]:

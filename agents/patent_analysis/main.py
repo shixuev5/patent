@@ -110,8 +110,7 @@ def create_workflow(config: WorkflowConfig | None = None):
     workflow.add_edge("generate_core", "generate_figures")
     workflow.add_edge("vision_annotate", "generate_figures")
 
-    workflow.add_edge("check", "check_generate_join")
-    workflow.add_edge("generate_figures", "check_generate_join")
+    workflow.add_edge(["check", "generate_figures"], "check_generate_join")
 
     workflow.add_conditional_edges(
         "check_generate_join",
