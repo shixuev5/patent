@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Event
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger
 from config import settings
@@ -89,26 +89,84 @@ class PatentPipeline:
     def _update_step_status(self, step_name: str, status: str):
         """更新任务步骤状态"""
         if self.task_id and self.task_manager:
-            # 根据 DEFAULT_PIPELINE_STEPS 找到对应的中文步骤名和进度百分比
             from backend.storage import DEFAULT_PIPELINE_STEPS
             step_name_map = {en: zh for en, zh in DEFAULT_PIPELINE_STEPS}
             chinese_step_name = step_name_map.get(step_name, step_name)
 
-            # 计算进度百分比（总共有9个步骤，每个步骤大约占11%）
             total_steps = len(DEFAULT_PIPELINE_STEPS)
             step_index = next((i for i, (en, zh) in enumerate(DEFAULT_PIPELINE_STEPS) if en == step_name), 0)
 
             if status == "processing":
-                # 步骤开始时，进度为当前步骤的起始百分比
                 progress = int((step_index / total_steps) * 100)
             elif status == "completed":
-                # 步骤完成时，进度为当前步骤的结束百分比
                 progress = int(((step_index + 1) / total_steps) * 100)
             else:
-                # 其他状态（如pending）保持当前进度
                 progress = 0
 
             self.task_manager.update_progress(self.task_id, progress, chinese_step_name, step_status=status)
+
+    def _run_check_step(self, parts_db: Dict[str, Any], image_parts: Dict[str, Any]) -> Dict[str, Any]:
+        self._check_cancelled()
+        self._stage_log("check").info("执行形式缺陷检查")
+        examiner = FormalExaminer(parts_db=parts_db, image_parts=image_parts)
+        check_result = examiner.check()
+        self.paths["check_json"].write_text(
+            json.dumps(check_result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return check_result
+
+    def _run_generate_step(
+        self, patent_data: Dict[str, Any], parts_db: Dict[str, Any], image_parts: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        self._check_cancelled()
+        if self.paths["report_json"].exists():
+            self._stage_log("generate").info("加载已有报告 JSON")
+            return json.loads(self.paths["report_json"].read_text(encoding="utf-8"))
+
+        self._stage_log("generate").info("生成报告 JSON")
+        cache_file = self.paths["root"].joinpath("report_intermediate.json")
+        generator = ContentGenerator(
+            patent_data=patent_data,
+            parts_db=parts_db,
+            image_parts=image_parts,
+            annotated_dir=self.paths["annotated_dir"],
+            cache_file=cache_file,
+        )
+        report_json = generator.generate_report_json()
+        self.paths["report_json"].write_text(
+            json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return report_json
+
+    def _run_check_and_generate_parallel(
+        self, patent_data: Dict[str, Any], parts_db: Dict[str, Any], image_parts: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        check_result: Optional[Dict[str, Any]] = None
+        report_json: Optional[Dict[str, Any]] = None
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline") as executor:
+            future_check = executor.submit(self._run_check_step, parts_db, image_parts)
+            future_generate = executor.submit(
+                self._run_generate_step, patent_data, parts_db, image_parts
+            )
+            futures = {future_check: "check", future_generate: "generate"}
+            try:
+                for future in as_completed(futures):
+                    stage = futures[future]
+                    result = future.result()
+                    if stage == "check":
+                        check_result = result
+                        self._update_step_status("check", "completed")
+                    else:
+                        report_json = result
+                        self._update_step_status("generate", "completed")
+            except Exception:
+                for pending in futures:
+                    pending.cancel()
+                raise
+
+        if check_result is None or report_json is None:
+            raise RuntimeError("并行阶段未产出完整结果")
+        return check_result, report_json
 
     def run(self) -> dict:
         """
@@ -119,33 +177,29 @@ class PatentPipeline:
 
         try:
             self._check_cancelled()
-            # --- Step 0: 下载专利文件 ---
             self._update_step_status("download", "processing")
             self._step_download()
             self._update_step_status("download", "completed")
             self._check_cancelled()
 
-            # --- Step 1: 解析 PDF ---
             self._update_step_status("parse", "processing")
             if not self.paths["raw_md"].exists():
-                self._stage_log("parse").info("步骤 1/9：开始解析 PDF")
-                # Mineru 解析 PDF
+                self._stage_log("parse").info("开始解析 PDF")
                 PDFParser.parse(self.raw_pdf_path, self.paths["mineru_dir"])
             else:
-                self._stage_log("parse").info("步骤 1/9：已存在解析结果，跳过")
+                self._stage_log("parse").info("已存在解析结果，跳过")
 
             md_content = self.paths["raw_md"].read_text(encoding="utf-8")
             self._update_step_status("parse", "completed")
             self._check_cancelled()
 
-            # --- Step 2: 专利结构化转换 ---
             self._update_step_status("transform", "processing")
             patent_data = {}
             if self.paths["patent_json"].exists():
-                self._stage_log("transform").info("步骤 2/9：加载已有结构化专利数据")
+                self._stage_log("transform").info("加载已有结构化专利数据")
                 patent_data = json.loads(self.paths["patent_json"].read_text(encoding="utf-8"))
             else:
-                self._stage_log("transform").info("步骤 2/9：将 Markdown 转换为结构化 JSON")
+                self._stage_log("transform").info("将 Markdown 转换为结构化 JSON")
                 patent_data = extract_structured_data(md_content, method="hybrid")
                 self.paths["patent_json"].write_text(
                     json.dumps(patent_data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -154,14 +208,13 @@ class PatentPipeline:
             self._update_step_status("transform", "completed")
             self._check_cancelled()
 
-            # --- Step 3: 知识提取 ---
             self._update_step_status("extract", "processing")
             parts_db = {}
             if self.paths["parts_json"].exists():
-                self._stage_log("extract").info("步骤 3/9：加载已有部件知识库")
+                self._stage_log("extract").info("加载已有部件知识库")
                 parts_db = json.loads(self.paths["parts_json"].read_text(encoding="utf-8"))
             else:
-                self._stage_log("extract").info("步骤 3/9：提取知识要素")
+                self._stage_log("extract").info("提取知识要素")
                 extractor = KnowledgeExtractor()
                 parts_db = extractor.extract_entities(patent_data)
                 self.paths["parts_json"].write_text(
@@ -170,14 +223,13 @@ class PatentPipeline:
             self._update_step_status("extract", "completed")
             self._check_cancelled()
 
-            # --- Step 4: 视觉处理 (OCR + Annotate) ---
             self._update_step_status("vision", "processing")
             image_parts = {}
             if self.paths["image_parts_json"].exists():
-                self._stage_log("vision").info("步骤 4/9：加载已有图像部件映射")
+                self._stage_log("vision").info("加载已有图像部件映射")
                 image_parts = json.loads(self.paths["image_parts_json"].read_text(encoding="utf-8"))
             else:
-                self._stage_log("vision").info("步骤 4/9：执行图像处理与 OCR")
+                self._stage_log("vision").info("执行图像处理与 OCR")
                 processor = VisualProcessor(
                     patent_data=patent_data,
                     parts_db=parts_db,
@@ -191,73 +243,39 @@ class PatentPipeline:
             self._update_step_status("vision", "completed")
             self._check_cancelled()
 
-            # --- Step 5: 形式缺陷检查 ---
             self._update_step_status("check", "processing")
-            self._stage_log("check").info("步骤 5/9：执行形式缺陷检查")
-            # 即使文件存在也重新跑检查，因为检查逻辑可能很快且需要最新状态
-            examiner = FormalExaminer(
+            self._update_step_status("generate", "processing")
+            check_result, report_json = self._run_check_and_generate_parallel(
+                patent_data=patent_data,
                 parts_db=parts_db,
                 image_parts=image_parts,
             )
-            check_result = examiner.check()
-            self.paths["check_json"].write_text(
-                json.dumps(check_result, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            self._update_step_status("check", "completed")
             self._check_cancelled()
 
-            # --- Step 6: 报告内容生成 ---
-            self._update_step_status("generate", "processing")
-            report_json = {}
-            if self.paths["report_json"].exists():
-                self._stage_log("generate").info("步骤 6/9：加载已有报告 JSON")
-                report_json = json.loads(self.paths["report_json"].read_text(encoding="utf-8"))
-            else:
-                self._stage_log("generate").info("步骤 6/9：生成报告 JSON")
-                cache_file = self.paths["root"].joinpath("report_intermediate.json")
-                generator = ContentGenerator(
-                    patent_data=patent_data,
-                    parts_db=parts_db,
-                    image_parts=image_parts,
-                    annotated_dir=self.paths["annotated_dir"],
-                    cache_file=cache_file,
-                )
-                report_json = generator.generate_report_json()
-                self.paths["report_json"].write_text(
-                    json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            self._update_step_status("generate", "completed")
-            self._check_cancelled()
-
-            # --- Step 7: 检索策略生成 ---
             self._update_step_status("search", "processing")
-            self._stage_log("search").info("步骤 7/9：生成检索策略与语义查询")
+            self._stage_log("search").info("生成检索策略与语义查询")
             search_json = {}
             if self.paths["search_strategy_json"].exists():
-                self._stage_log("search").info("步骤 7/9：加载已有检索策略")
+                self._stage_log("search").info("加载已有检索策略")
                 search_json = json.loads(
                     self.paths["search_strategy_json"].read_text(encoding="utf-8")
                 )
             else:
-                self._stage_log("search").info("步骤 7/9：生成检索策略 JSON")
+                self._stage_log("search").info("生成检索策略 JSON")
 
-                # 初始化生成器
                 cache_file = self.paths["root"].joinpath("search_strategy_intermediate.json")
                 search_gen = SearchStrategyGenerator(patent_data, report_json, cache_file)
 
-                # 执行生成
                 search_json = search_gen.generate_strategy()
 
-                # 4. 写入独立的 JSON 文件
                 self.paths["search_strategy_json"].write_text(
                     json.dumps(search_json, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
             self._update_step_status("search", "completed")
             self._check_cancelled()
 
-            # --- Step 8: 渲染 ---
             self._update_step_status("render", "processing")
-            self._stage_log("render").info("步骤 8/9：渲染 Markdown/PDF 报告")
+            self._stage_log("render").info("渲染 Markdown/PDF 报告")
             renderer = ReportRenderer(patent_data)
             renderer.render(
                 report_data=report_json,
@@ -282,22 +300,19 @@ class PatentPipeline:
         """处理文件下载与归档（支持上传文件或下载专利）"""
         self._check_cancelled()
         if self.raw_pdf_path.exists():
-            self._stage_log("download").info("步骤 0/9：已存在 raw.pdf，跳过下载")
+            self._stage_log("download").info("已存在 raw.pdf，跳过下载")
             return
 
-        # 如果有上传文件，直接使用上传的文件
         if self.upload_file_path and Path(self.upload_file_path).exists():
-            self._stage_log("download").info(f"步骤 0/9：使用上传文件: {self.upload_file_path}")
+            self._stage_log("download").info(f"使用上传文件: {self.upload_file_path}")
             import shutil
             shutil.copy2(self.upload_file_path, self.raw_pdf_path)
             return
 
-        self._stage_log("download").info("步骤 0/9：下载专利原文")
+        self._stage_log("download").info("下载专利原文")
 
-        # 获取单例 Client
         client = SearchClientFactory.get_client("zhihuiya")
 
-        # 直接下载到目标 output 目录
         success = client.download_patent_document(self.pn, str(self.raw_pdf_path))
 
         if not success:

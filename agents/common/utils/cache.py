@@ -7,11 +7,8 @@ from agents.common.utils.serialization import to_jsonable
 
 class StepCache:
     """
-    通用步骤缓存管理器。
-    支持：
-    1. 自动加载/保存 JSON 文件。
-    2. 线程安全的写入 (适配并行任务)。
-    3. 'Load or Compute' 模式，简化调用代码。
+    通用缓存管理器。
+    支持自动加载/保存、线程安全写入和惰性计算。
     """
     def __init__(self, file_path: Path):
         self.file_path = file_path
@@ -34,7 +31,6 @@ class StepCache:
             self.data[key] = value
             try:
                 self.file_path.parent.mkdir(parents=True, exist_ok=True)
-                # 写入原子性通过锁保证，但文件系统层面建议 write+rename，这里简化为直接覆盖
                 self.file_path.write_text(
                     json.dumps(self.data, ensure_ascii=False, indent=2, default=self._json_default),
                     encoding='utf-8'
@@ -48,19 +44,15 @@ class StepCache:
 
     def run_step(self, key: str, func: Callable, *args, **kwargs) -> Any:
         """
-        核心方法：
-        如果 key 存在，直接返回缓存值；
-        否则，执行 func(*args, **kwargs)，保存并返回结果。
+        如果 key 存在则直接返回；否则执行函数并缓存结果。
         """
         if key in self.data:
-            logger.info(f"Step [{key}]: 跳过 (命中缓存)")
+            logger.info(f"缓存命中: [{key}]")
             return self.data[key]
 
-        # 执行计算
-        logger.info(f"Step [{key}]: 开始执行...")
+        logger.info(f"开始执行: [{key}]")
         result = func(*args, **kwargs)
 
-        # 保存结果
         if result is not None:
             self.save(key, result)
 

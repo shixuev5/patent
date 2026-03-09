@@ -1,8 +1,9 @@
 import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
@@ -10,6 +11,9 @@ from config import Settings
 
 
 class ContentGenerator:
+    LOGIC_PARALLEL_WORKERS = 2
+    FIGURE_PARALLEL_WORKERS = 3
+
     def __init__(
         self,
         patent_data: Dict,
@@ -47,73 +51,80 @@ class ContentGenerator:
         # 3. 用于验证细节：看具体实施方式
         self.text_details = self.description.get("detailed_description", "")
 
+    def _run_cached(
+        self,
+        key: str,
+        func,
+        *args,
+        **kwargs,
+    ):
+        if not self.cache:
+            return func(*args, **kwargs)
+        return self.cache.run_step(key, func, *args, **kwargs)
+
     def generate_report_json(self) -> Dict[str, Any]:
         """
         执行专利逻辑分析流水线。
-        Flow: [Domain/Problem] -> [Solution/Title] -> [Features] -> [Verification] -> [Visuals]
         """
         logger.info(
             f"开始生成专利分析报告: {self.biblio.get('application_number', '未知')}"
         )
 
         try:
-            # === Step 1: 领域定位与问题定义 ===
-            # 输入：背景技术、技术效果
-            # 输出：technical_field, technical_problem
-            domain_problem_data = self.cache.run_step(
-                "step1_domain_problem", self._analyze_domain_and_problem
+            domain_problem_data = self._run_cached(
+                "domain_problem",
+                self._analyze_domain_and_problem,
             )
 
-            # === Step 2: 解决方案封装 ===
-            # 输入：Step 1的结果、独立权利要求、发明内容
-            # 输出：ai_title, ai_abstract, technical_scheme
-            solution_data = self.cache.run_step(
-                "step2_solution", self._synthesize_solution_package, domain_problem_data
+            solution_data = self._run_cached(
+                "solution_package",
+                self._synthesize_solution_package,
+                domain_problem_data,
             )
 
-            # 合并核心逻辑数据 (Core Logic Context)
             core_logic = {**domain_problem_data, **solution_data}
 
-            # === Step 2.5: 背景知识百科 (NEW) ===
-            # 输入：核心逻辑、详细描述的前半部分(通常包含定义)
-            # 输出：background_knowledge (List[Dict])
-            background_data = self.cache.run_step(
-                "step2_5_background", self._generate_background_knowledge, core_logic
-            )
+            with ThreadPoolExecutor(max_workers=self.LOGIC_PARALLEL_WORKERS, thread_name_prefix="report") as executor:
+                future_background = executor.submit(
+                    self._run_cached,
+                    "background_knowledge",
+                    self._generate_background_knowledge,
+                    core_logic,
+                )
+                future_features = executor.submit(
+                    self._run_cached,
+                    "features",
+                    self._extract_features,
+                    core_logic,
+                )
+                background_data = future_background.result()
+                features_data = future_features.result()
 
-            # === Step 3: 权利要求解构与特征定义 ===
-            # 输入：核心逻辑、全部权利要求
-            # 输出：claim_subject_matter、technical_features
-            features_data = self.cache.run_step(
-                "step3_features", self._extract_features, core_logic
-            )
             feature_list = features_data.get("technical_features", [])
 
-            # === Step 4: 实施例取证与效果验证 ===
-            # 输入：核心逻辑、技术特征、具体实施方式
-            # 输出：technical_means, technical_effects
-            verification_data = self.cache.run_step(
-                "step4_verification", self._verify_evidence, core_logic, feature_list
+            verification_data = self._run_cached(
+                "verification",
+                self._verify_evidence,
+                core_logic,
+                feature_list,
             )
 
-            # 图解生成 (遍历每一张图，生成解说和部件表)
             global_context = {
                 "title": solution_data.get("ai_title"),
                 "problem": domain_problem_data.get("technical_problem"),
                 "effects": verification_data.get("technical_effects", []),
             }
-            figures_data = self.cache.run_step(
-                "step5_figures", self._generate_figures_analysis, global_context
+            figures_data = self._run_cached(
+                "figures_analysis",
+                self._generate_figures_analysis,
+                global_context,
             )
 
-            # 组装最终 JSON
-            # 寻找主图：通常是第一张图，或者摘要附图
             main_fig = self.biblio.get("abstract_figure")
             if not main_fig and self.drawings:
                 main_fig = self.drawings[0].get("file_path")
 
             final_report = {
-                # 基础信息
                 "ai_title": solution_data.get(
                     "ai_title", self.biblio.get("invention_title")
                 ),
@@ -123,26 +134,14 @@ class ContentGenerator:
                 "abstract_figure": (
                     main_fig.replace("images", "annotated_images") if main_fig else None
                 ),
-                # 核心逻辑六要素
-                "technical_field": domain_problem_data.get(
-                    "technical_field"
-                ),  # 技术领域
-                "claim_subject_matter": features_data.get(
-                    "claim_subject_matter", ""
-                ),  # 保护主题
-                "technical_problem": domain_problem_data.get(
-                    "technical_problem"
-                ),  # 技术问题
-                "technical_scheme": solution_data.get("technical_scheme"),  # 技术方案
-                "technical_means": verification_data.get("technical_means"),  # 技术手段
+                "technical_field": domain_problem_data.get("technical_field"),
+                "claim_subject_matter": features_data.get("claim_subject_matter", ""),
+                "technical_problem": domain_problem_data.get("technical_problem"),
+                "technical_scheme": solution_data.get("technical_scheme"),
+                "technical_means": verification_data.get("technical_means"),
                 "background_knowledge": background_data.get("background_knowledge", []),
-                "technical_features": features_data.get(
-                    "technical_features", []
-                ),  # 技术特征
-                "technical_effects": verification_data.get(
-                    "technical_effects", []
-                ),  # 技术效果
-                # 图解详细信息
+                "technical_features": features_data.get("technical_features", []),
+                "technical_effects": verification_data.get("technical_effects", []),
                 "figure_explanations": figures_data,
             }
 
@@ -185,10 +184,9 @@ class ContentGenerator:
 
     def _analyze_domain_and_problem(self) -> Dict[str, str]:
         """
-        Step 1: 定位领域与定义问题。
-        关键点：只看“过去(Background)”和“目标(Effect)”，不看“现在(Claims)”，以确保问题的客观性。
+        定位领域并定义问题。
         """
-        logger.debug("Step 1: Analyzing Domain and Problem...")
+        logger.debug("正在分析技术领域与技术问题...")
 
         system_prompt = """
         你是一名资深专利审查员。任务是基于‘问题-解决方案’方法（Problem-Solution Approach），
@@ -256,10 +254,9 @@ class ContentGenerator:
         self, problem_context: Dict[str, str]
     ) -> Dict[str, str]:
         """
-        Step 2: 封装解决方案。
-        关键点：结合 Step 1 确定的“问题”，将“独权”转化为易读的方案和标题。
+        封装解决方案。
         """
-        logger.debug("Step 2: Synthesizing Solution Package...")
+        logger.debug("正在封装解决方案...")
 
         # 筛选出独立权利要求并格式化为 Markdown
         indep_claims_text = self._format_claims_to_text(only_independent=True)
@@ -347,10 +344,9 @@ class ContentGenerator:
         self, core_logic: Dict[str, str]
     ) -> Dict[str, List[Dict[str, str]]]:
         """
-        Step 2.5: 生成背景知识与术语解释。
-        目标：识别文中晦涩的专有名词（Acronyms, Jargon），提供通俗解释。
+        生成背景知识与术语解释。
         """
-        logger.debug("Step 2.5: Generating Background Knowledge...")
+        logger.debug("正在生成背景知识...")
 
         system_prompt = """
         你是一名 **科学传播专家** (Science Communicator)，专门负责协助非本领域的专利审查员理解复杂的前沿技术。
@@ -424,10 +420,9 @@ class ContentGenerator:
 
     def _extract_features(self, core_logic: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Step 3: 权利要求分析。
-        目标：从审查员视角提取“区别技术特征”，剔除公知常识。
+        权利要求分析。
         """
-        logger.debug("Step 3: Analyzing Claims structure...")
+        logger.debug("正在分析权利要求结构...")
 
         # 1. 格式化权利要求 (比 JSON dump 更易于语义理解)
         claims_text = self._format_claims_to_text()
@@ -536,10 +531,9 @@ class ContentGenerator:
         self, core_logic: Dict[str, Any], feature_list: List[Dict]
     ) -> Dict[str, Any]:
         """
-        Step 4: TCS 贡献度评分与证据验证
-        目标：基于 TCS 模型，建立【特征-原理-效果-证据】的闭环验证体系。
+        TCS 贡献度评分与证据验证。
         """
-        logger.debug("Step 4: Running TCS Analysis (Deep Evidence Verification)...")
+        logger.debug("正在执行 TCS 技术贡献分析...")
 
         # 1. 预处理特征列表，供 LLM 选词 (避免 LLM 编造特征名称)
         # 格式：[序号] 特征名称 (状态)
@@ -566,7 +560,7 @@ class ContentGenerator:
 
         ---
 
-        # 任务一：揭示技术机理 (The "Black Box" Revelation)
+        # 揭示技术机理 (The "Black Box" Revelation)
         **字段**: `technical_means`
         **指令**：请撰写一段约 200 字的深度技术综述，揭示该发明**“如何从根本上起作用”**。
 
@@ -593,7 +587,7 @@ class ContentGenerator:
         *   *High Quality (机理洞察)*: 
             "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [4] 将高频载波中的低频故障冲击特征（信息熵高的部分）进行非线性映射，实质上是在频域上对信噪比进行了‘放大’。配合 **多级带通滤波器** [5] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
 
-        # 任务二：效果验证与 TCS 评分 (The Strict Audit)
+        # 效果验证与 TCS 评分 (The Strict Audit)
         **字段**: `technical_effects`
         **指令**：对申请人声称的每一个效果进行“创造性审计”。
 
@@ -687,11 +681,8 @@ class ContentGenerator:
 
     def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """
-        Step 3: 图解生成。
-        按图号聚合 drawings：同图号多图只生成一份解说文本。
+        图解生成。按图号聚合 drawings，同图号多图只生成一份解说文本。
         """
-        results = []
-
         grouped_drawings: Dict[str, List[Dict[str, Any]]] = {}
         for drawing in self.drawings:
             if not isinstance(drawing, dict):
@@ -701,115 +692,118 @@ class ContentGenerator:
                 continue
             grouped_drawings.setdefault(label, []).append(drawing)
 
-        for label, grouped_items in grouped_drawings.items():
-            caption = ""
-            file_paths: List[str] = []
-            seen_paths = set()
+        grouped_items: List[Tuple[str, List[Dict[str, Any]]]] = list(grouped_drawings.items())
+        if not grouped_items:
+            return []
 
-            for item in grouped_items:
-                item_caption = str(item.get("caption", "")).strip()
-                if item_caption and not caption:
-                    caption = item_caption
+        results: List[Optional[Dict[str, Any]]] = [None] * len(grouped_items)
+        max_workers = min(self.FIGURE_PARALLEL_WORKERS, len(grouped_items))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="figures") as executor:
+            future_map = {
+                executor.submit(self._build_single_figure_result, label, items, global_context): idx
+                for idx, (label, items) in enumerate(grouped_items)
+            }
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                results[idx] = future.result()
 
-                path = str(item.get("file_path", "")).strip()
-                if not path or path in seen_paths:
-                    continue
-                seen_paths.add(path)
-                file_paths.append(path)
+        return [item for item in results if item is not None]
 
-            # 处理图片路径（同图号可对应多图）
-            image_abs_paths: List[str] = []
-            display_image_paths: List[str] = []
-            for file_path in file_paths:
-                filename = os.path.basename(file_path)
-                if not filename:
-                    continue
+    def _build_single_figure_result(
+        self, label: str, grouped_items: List[Dict[str, Any]], global_context: Dict
+    ) -> Dict[str, Any]:
+        caption = ""
+        file_paths: List[str] = []
+        seen_paths = set()
 
-                display_image_paths.append(
-                    file_path.replace("images", "annotated_images")
-                )
-                target_path = self.annotated_dir / filename
-                if target_path.exists():
-                    image_abs_paths.append(str(target_path))
-                else:
-                    logger.warning(f"未找到标注图文件，跳过该图片: {target_path}")
+        for item in grouped_items:
+            item_caption = str(item.get("caption", "")).strip()
+            if item_caption and not caption:
+                caption = item_caption
 
-            # 匹配图片 OCR 识别部件（合并同图号下所有图片的部件）
-            part_ids = []
-            for file_path in file_paths:
-                filename = os.path.basename(file_path)
-                part_ids.extend(self.image_parts.get(filename, []))
+            path = str(item.get("file_path", "")).strip()
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            file_paths.append(path)
 
-            # 构建当前图片的局部部件上下文 (用于识别图里有什么)
-            local_parts_context_str = ""
-            related_parts_context_str = ""
-            parts_table_data = []  # 用于 JSON 输出的结构化数据
-            local_part_ids_for_context: List[str] = []
+        image_abs_paths: List[str] = []
+        display_image_paths: List[str] = []
+        for file_path in file_paths:
+            filename = os.path.basename(file_path)
+            if not filename:
+                continue
 
-            if part_ids:
-                temp_desc_list = []
-                part_ids = sorted(set(part_ids), key=self._natural_part_id_key)
-
-                for pid in part_ids:
-                    pid_key = self._normalize_part_id(pid)
-                    if not pid_key:
-                        continue
-
-                    info = self.parts_db.get(pid_key)
-                    if info:
-                        name = info.get("name") or "未知"
-                        func = info.get("function") or "未知功能"
-                        hierarchy = info.get("hierarchy")
-                        spatial = info.get("spatial_connections") or "未提及"
-                        motion = info.get("motion_state") or "未提及"
-                        attributes = info.get("attributes") or "未提及"
-                        local_part_ids_for_context.append(pid_key)
-                        # 为 Prompt 准备的文本
-                        temp_desc_list.append(
-                            f"- 标号 {pid_key} ({name}): 功能={func}；层级={hierarchy or '未提及'}；"
-                            f"空间连接={spatial}；运动状态={motion}"
-                        )
-                        # 为 JSON 准备的数据
-                        parts_table_data.append(
-                            {
-                                "id": pid_key,
-                                "name": name,
-                                "function": func,
-                                "hierarchy": hierarchy,
-                                "spatial_connections": spatial,
-                                "motion_state": motion,
-                                "attributes": attributes,
-                            }
-                        )
-                local_parts_context_str = "\n".join(temp_desc_list)
+            display_image_paths.append(file_path.replace("images", "annotated_images"))
+            target_path = self.annotated_dir / filename
+            if target_path.exists():
+                image_abs_paths.append(str(target_path))
             else:
-                local_parts_context_str = "（该图未识别到具体部件标号）"
+                logger.warning(f"未找到标注图文件，跳过该图片: {target_path}")
 
-            related_parts_context_str = self._build_related_parts_context(
-                local_part_ids_for_context
-            )
+        part_ids: List[str] = []
+        for file_path in file_paths:
+            filename = os.path.basename(file_path)
+            part_ids.extend(self.image_parts.get(filename, []))
 
-            # 3. 生成图片解说
-            image_explanation = self._generate_single_figure_caption(
-                label,
-                caption,
-                local_parts_context_str,
-                related_parts_context_str,
-                global_context,
-                image_abs_paths,
-            )
+        local_parts_context_str = ""
+        parts_table_data: List[Dict[str, Any]] = []
+        local_part_ids_for_context: List[str] = []
 
-            # 4. 存入结果
-            results.append(
-                {
-                    "image_paths": display_image_paths,
-                    "image_title": f"{label} {caption}".strip(),
-                    "image_explanation": image_explanation,
-                    "parts_info": parts_table_data,  # 结构化部件数据（可能为空列表）
-                }
-            )
+        if part_ids:
+            temp_desc_list = []
+            part_ids = sorted(set(part_ids), key=self._natural_part_id_key)
 
-        return results
+            for pid in part_ids:
+                pid_key = self._normalize_part_id(pid)
+                if not pid_key:
+                    continue
+
+                info = self.parts_db.get(pid_key)
+                if not info:
+                    continue
+
+                name = info.get("name") or "未知"
+                func = info.get("function") or "未知功能"
+                hierarchy = info.get("hierarchy")
+                spatial = info.get("spatial_connections") or "未提及"
+                motion = info.get("motion_state") or "未提及"
+                attributes = info.get("attributes") or "未提及"
+                local_part_ids_for_context.append(pid_key)
+                temp_desc_list.append(
+                    f"- 标号 {pid_key} ({name}): 功能={func}；层级={hierarchy or '未提及'}；"
+                    f"空间连接={spatial}；运动状态={motion}"
+                )
+                parts_table_data.append(
+                    {
+                        "id": pid_key,
+                        "name": name,
+                        "function": func,
+                        "hierarchy": hierarchy,
+                        "spatial_connections": spatial,
+                        "motion_state": motion,
+                        "attributes": attributes,
+                    }
+                )
+            local_parts_context_str = "\n".join(temp_desc_list)
+        else:
+            local_parts_context_str = "（该图未识别到具体部件标号）"
+
+        related_parts_context_str = self._build_related_parts_context(local_part_ids_for_context)
+        image_explanation = self._generate_single_figure_caption(
+            label,
+            caption,
+            local_parts_context_str,
+            related_parts_context_str,
+            global_context,
+            image_abs_paths,
+        )
+        return {
+            "image_paths": display_image_paths,
+            "image_title": f"{label} {caption}".strip(),
+            "image_explanation": image_explanation,
+            "parts_info": parts_table_data,
+        }
 
     @staticmethod
     def _normalize_part_id(value: Any) -> str:

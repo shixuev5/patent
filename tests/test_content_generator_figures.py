@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 from agents.patent_analysis.src.generator import ContentGenerator
 
@@ -123,3 +124,60 @@ def test_generate_figures_analysis_no_paragraph_dependency(tmp_path: Path, monke
     assert "标号 10a (定位肋)" in captured["related_parts_context"]
     assert "标号 99 (无关件)" not in captured["related_parts_context"]
     assert captured["image_paths"] == [str(annotated_dir / "fig1.png")]
+
+
+def test_generate_figures_analysis_keeps_input_order_when_parallel(tmp_path: Path, monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.generator.get_llm_service", lambda: StubLLMService()
+    )
+
+    annotated_dir = tmp_path / "annotated_images"
+    annotated_dir.mkdir(parents=True)
+    (annotated_dir / "fig1.png").write_bytes(b"fake")
+    (annotated_dir / "fig2.png").write_bytes(b"fake")
+
+    patent_data = {
+        "bibliographic_data": {},
+        "claims": [],
+        "description": {
+            "technical_field": "",
+            "background_art": "",
+            "technical_effect": "",
+            "summary_of_invention": "",
+            "detailed_description": "",
+        },
+        "drawings": [
+            {"figure_label": "图1", "caption": "第一图", "file_path": "images/fig1.png"},
+            {"figure_label": "图2", "caption": "第二图", "file_path": "images/fig2.png"},
+        ],
+    }
+
+    generator = ContentGenerator(
+        patent_data=patent_data,
+        parts_db={},
+        image_parts={},
+        annotated_dir=annotated_dir,
+        cache_file=tmp_path / "cache_order.json",
+    )
+
+    def _fake_caption(
+        self, label, caption, local_parts, related_parts_context, global_context, image_paths
+    ):
+        if label == "图1":
+            time.sleep(0.1)
+        return f"{label}-解说"
+
+    monkeypatch.setattr(ContentGenerator, "_generate_single_figure_caption", _fake_caption)
+
+    results = generator._generate_figures_analysis(
+        {"title": "T", "problem": "P", "effects": []}
+    )
+
+    assert len(results) == 2
+    assert results[0]["image_title"].startswith("图1")
+    assert results[1]["image_title"].startswith("图2")
+    assert results[0]["image_explanation"] == "图1-解说"
+    assert results[1]["image_explanation"] == "图2-解说"

@@ -1,6 +1,7 @@
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
@@ -18,6 +19,8 @@ ELEMENT_TYPE_LOWER_MAP = {item.lower(): item for item in VALID_ELEMENT_TYPES}
 
 
 class SearchStrategyGenerator:
+    PARALLEL_WORKERS = 2
+
     def __init__(self, patent_data: Dict, report_data: Dict, cache_file: Path = None):
         self.llm_service = get_llm_service()
         self.patent_data = patent_data
@@ -30,28 +33,45 @@ class SearchStrategyGenerator:
             "ipc_classifications", []
         )
 
+    def _run_cached(
+        self,
+        key: str,
+        func,
+        *args,
+        **kwargs,
+    ):
+        if not self.cache:
+            return func(*args, **kwargs)
+        return self.cache.run_step(key, func, *args, **kwargs)
+
     def generate_strategy(self) -> Dict[str, Any]:
         """
         主流程入口：只生成语义匹配相关的内容
         """
         logger.info("开始构建语义匹配策略...")
 
-        # 构建检索要素表
         def _execute_phase1():
             matrix_context = self._build_matrix_context()
             return self._build_search_matrix(matrix_context)
 
-        search_matrix = self.cache.run_step("step1_matrix_v2", _execute_phase1)
+        with ThreadPoolExecutor(max_workers=self.PARALLEL_WORKERS, thread_name_prefix="search") as executor:
+            future_matrix = executor.submit(
+                self._run_cached,
+                "search_matrix_v2",
+                _execute_phase1,
+            )
+            future_semantic = executor.submit(
+                self._run_cached,
+                "semantic_strategy",
+                self._build_semantic_strategy,
+            )
+            search_matrix = future_matrix.result()
+            semantic_strategy = future_semantic.result()
+
         if not search_matrix:
-            logger.warning("Search Matrix 为空，策略生成将受限。")
+            logger.warning("检索要素矩阵为空，策略生成将受限。")
             search_matrix = []
 
-        # 语义检索
-        semantic_strategy = self.cache.run_step(
-            "step2_semantic", self._build_semantic_strategy
-        )
-
-        # 合并结果
         return {
             "search_matrix": search_matrix,
             "semantic_strategy": semantic_strategy,
@@ -60,18 +80,15 @@ class SearchStrategyGenerator:
     def _build_matrix_context(self) -> str:
         """
         阶段一上下文：构建全维度的技术理解环境 (基于 TCS 评分分级)
-        将 Step 4 的评分结果直接映射为检索块 (Block B/C)，指导检索策略生成。
+        将评分结果直接映射为检索块 (Block B/C)，指导检索策略生成。
         """
         biblio = self.patent_data.get("bibliographic_data", {})
         report = self.report_data
 
-        # 1. 建立特征详细信息查询表 (Feature Lookup Map)
         feature_details = {
             f.get("name", "").strip(): f for f in report.get("technical_features", [])
         }
 
-        # 2. 基于 TCS 评分对特征进行桶排序 (Bucket Sort by Score)
-        # 逻辑：一个特征可能贡献多个效果，取其最高得分作为定位依据
         feature_max_scores = {}  # {feature_name: max_score}
 
         for effect in report.get("technical_effects", []):
@@ -84,12 +101,10 @@ class SearchStrategyGenerator:
                 if score > current_max:
                     feature_max_scores[feat_name] = score
 
-        # 3. 构建分块内容列表
         block_a_preamble = [] # 前序/背景特征 (无视分数，用于圈定环境)
         block_b_content = []  # Score 5 (Vital)
         block_c_content = []  # Score 4 (Enabler) & 3 (Improver)
 
-        # --- 基于 TCS 评分的精确逻辑（与独权前序特征提取合并为单循环） ---
         for feat_name, info in feature_details.items():
             claim_source = str(info.get("claim_source", "")).strip().lower()
             is_distinguishing = bool(info.get("is_distinguishing", False))
@@ -102,11 +117,9 @@ class SearchStrategyGenerator:
                 else raw_rationale
             )
 
-            # Block A: 独权前序特征（仅由 claim_source + is_distinguishing 判定）
             if claim_source == "independent" and (not is_distinguishing):
                 block_a_preamble.append(f"- 【{feat_name}】: {desc}")
 
-            # 格式: [名称] - [描述] (TCS Score: X)
             if score >= 3:
                 entry = (
                     f"- 【{feat_name}】 (TCS: {score})\n"
@@ -121,11 +134,10 @@ class SearchStrategyGenerator:
             elif score >= 3:
                 block_c_content.append(entry)
 
-        # 4. 提取效果描述 (用于 Block C 的补充)
         effects_summary = []
         for e in report.get("technical_effects", []):
             score = e.get("tcs_score", 0)
-            if score >= 3:  # 只关注有价值的效果
+            if score >= 3:
                 effects_summary.append(f"- [Score {score}] {e.get('effect')}")
 
         return f"""
@@ -161,9 +173,7 @@ class SearchStrategyGenerator:
         """
         阶段一：基于专家策略构建检索要素表 (Search Matrix)
         """
-        logger.info(
-            "步骤 1/2：基于 TCS 指导策略构建检索要素矩阵"
-        )
+        logger.info("基于 TCS 指导策略构建检索要素矩阵")
 
         system_prompt = """
         你是一位拥有 20 年实战经验的全球顶级专利检索专家（精通 CNIPA, EPO, USPTO 审查与检索逻辑）。
@@ -293,7 +303,7 @@ class SearchStrategyGenerator:
         """
         通过独立的 LLM 调用，将原始技术交底内容重写为高密度的向量检索 Query
         """
-        logger.info("步骤 2/2：调用 LLM 生成语义检索 Query")
+        logger.info("调用 LLM 生成语义检索查询")
 
         if not raw_text.strip():
             return ""
@@ -336,12 +346,12 @@ class SearchStrategyGenerator:
                 return response["semantic_query"].strip()
             else:
                 logger.warning(
-                    "LLM 返回的 Semantic Query 格式不符合预期，回退到基础代码清理。"
+                    "LLM 返回的语义检索查询格式不符合预期，回退到基础代码清理。"
                 )
                 return self._fallback_clean_text(raw_text)
 
         except Exception as e:
-            logger.error(f"语义检索 Query 生成失败: {str(e)}")
+            logger.error(f"语义检索查询生成失败: {str(e)}")
             return self._fallback_clean_text(raw_text)
 
     def _fallback_clean_text(self, text: str) -> str:
