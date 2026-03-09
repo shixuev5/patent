@@ -39,7 +39,7 @@ export default defineNuxtConfig({
   
   app: {
     head: {
-      title: 'AI Patents - AI 专利审查助手',
+      title: 'AI Patents',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
@@ -68,9 +68,9 @@ export default defineNuxtConfig({
     registerType: 'prompt',
     manifest: {
       id: '/',
-      name: 'AI Patents - AI 专利审查助手',
+      name: 'AI Patents',
       short_name: 'AI Patents',
-      description: 'AI 专利审查助手，聚焦 AI 分析与 AI 研判协同。',
+      description: 'AI 专利审查助手，聚焦 AI 分析、AI 检索与 AI 研判协同。',
       lang: 'zh-CN',
       start_url: '/',
       scope: '/',

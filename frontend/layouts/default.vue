@@ -60,9 +60,9 @@
                 个人空间
               </NuxtLink>
               <button
-                v-if="canInstall"
+                v-if="showInstallEntry"
                 type="button"
-                class="mt-1 block w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-cyan-700 transition hover:bg-cyan-50"
+                class="mt-1 block w-full rounded-lg border border-cyan-200 bg-cyan-50 px-2.5 py-2 text-left text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
                 @click="onInstallAppFromMobileMenu"
               >
                 安装应用
@@ -89,9 +89,9 @@
 
         <div class="hidden items-center justify-end gap-2 md:flex">
           <button
-            v-if="canInstall"
+            v-if="showInstallEntry"
             type="button"
-            class="shrink-0 whitespace-nowrap rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-700 transition hover:bg-cyan-100"
+            class="shrink-0 whitespace-nowrap rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
             @click="onInstallApp"
           >
             安装应用
@@ -121,6 +121,22 @@
         </div>
       </div>
     </header>
+
+    <div
+      v-if="installHint"
+      class="border-b border-sky-200/80 bg-sky-50/95"
+    >
+      <div class="mx-auto flex w-full max-w-6xl items-center gap-2 px-4 py-2.5 text-xs text-sky-800 sm:px-6">
+        <p class="font-medium">{{ installHint }}</p>
+        <button
+          type="button"
+          class="ml-auto rounded-full border border-sky-300 bg-white px-2.5 py-1 text-[11px] font-medium text-sky-700 transition hover:bg-sky-100"
+          @click="installHint = ''"
+        >
+          知道了
+        </button>
+      </div>
+    </div>
 
     <div
       v-if="needRefresh"
@@ -182,11 +198,12 @@ import { useAuthStore } from '~/stores/auth'
 const route = useRoute()
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
-const { canInstall, installApp, needRefresh, applyUpdate, dismissUpdate, isOffline } = usePwa()
+const { showInstallEntry, installApp, needRefresh, applyUpdate, dismissUpdate, isOffline, canShowIOSGuide } = usePwa()
 const currentYear = new Date().getFullYear()
 const serviceStatus = ref<string | null>(null)
 const serviceVersion = ref<string | null>(null)
 const isMobileMenuOpen = ref(false)
+const installHint = ref('')
 let healthTimer: ReturnType<typeof setInterval> | null = null
 
 const isServiceHealthy = computed(() => {
@@ -261,9 +278,25 @@ const onMobileLogout = async () => {
 
 const onInstallApp = async () => {
   try {
-    await installApp()
+    const result = await installApp()
+    if (result === 'ios-guide') {
+      installHint.value = 'iOS Safari 暂不支持弹窗安装：请点击浏览器“分享”按钮，再选择“添加到主屏幕”。'
+      return
+    }
+    if (result === 'unsupported') {
+      installHint.value = '当前浏览器不支持快捷安装。建议使用最新版本的 Chrome / Edge / Safari。'
+      return
+    }
+    if (result === 'dismissed') {
+      installHint.value = canShowIOSGuide.value
+        ? '已取消安装。iOS 可通过“分享 -> 添加到主屏幕”手动安装。'
+        : '已取消安装。你可以稍后再次点击安装图标。'
+      return
+    }
+    installHint.value = ''
   } catch (error) {
     console.error('安装应用失败：', error)
+    installHint.value = '安装流程未完成，请稍后重试。'
   }
 }
 
@@ -284,6 +317,7 @@ watch(
   () => route.fullPath,
   () => {
     closeMobileMenu()
+    installHint.value = ''
   },
 )
 
