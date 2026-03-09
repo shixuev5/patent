@@ -13,6 +13,73 @@ def test_extract_brief_description_only_marker_entries() -> None:
     assert brief == "1-单色仪、2A-扩束镜、101-处理器"
 
 
+def test_extract_brief_description_supports_alpha_numeric_markers() -> None:
+    md = """
+# 附图说明
+图1表示系统框图。
+附图标记说明：
+D1:预测电脑程序、D2：运作时间预测模型、N:网路、T-外部联络人。
+# 具体实施方式
+"""
+    brief = RuleBasedExtractor._extract_brief_description(md)
+    assert brief == "D1-预测电脑程序、D2-运作时间预测模型、N-网路、T-外部联络人"
+
+
+def test_extract_figure_captions_supports_multiple_verbs() -> None:
+    md = """
+# 附图说明
+图1是表示本发明的一实施方式的管理系统的方块图。
+图2表示航路的一例。
+图3示出取得航路及气象信息的区域的一例。
+图4为风速及风向的气象图的一例。
+图5：表示波高及波向的气象图的一例。
+# 具体实施方式
+"""
+    captions = RuleBasedExtractor._extract_figure_captions(md)
+    assert captions["1"] == "本发明的一实施方式的管理系统的方块图"
+    assert captions["2"] == "航路的一例"
+    assert captions["3"] == "取得航路及气象信息的区域的一例"
+    assert captions["4"] == "风速及风向的气象图的一例"
+    assert captions["5"] == "波高及波向的气象图的一例"
+
+
+def test_extract_figure_captions_ignores_futu_biaoji_noise_line() -> None:
+    md = """
+# 附图说明
+图1的附图标记如下：
+图2表示航路的一例。
+# 具体实施方式
+"""
+    captions = RuleBasedExtractor._extract_figure_captions(md)
+    assert "1" not in captions
+    assert captions["2"] == "航路的一例"
+
+
+def test_extract_summary_and_effect_recognizes_faming_xiaoguo_heading() -> None:
+    md = """
+# 发明内容
+[0007] 本发明是为了解决上述问题所成的发明，其课题在于可正确地预测设置在船舶上的机器的运作时间。
+[0008] 本发明的上述课题是通过一种预测装置来解决。
+[0017] 发明效果
+[0018] 根据本发明，可正确地预测设置在船舶上的机器的运作时间。
+# 附图说明
+"""
+    summary, effect = RuleBasedExtractor._extract_summary_and_effect(md)
+    assert summary is not None and "课题在于可正确地预测" in summary
+    assert effect == "根据本发明，可正确地预测设置在船舶上的机器的运作时间。"
+
+
+def test_extract_brief_description_fallback_without_marker_heading() -> None:
+    md = """
+# 附图说明
+图1表示装置结构图。
+1-壳体、2A:连接件、D1：控制程序、T:外部终端。
+# 具体实施方式
+"""
+    brief = RuleBasedExtractor._extract_brief_description(md)
+    assert brief == "1-壳体、2A-连接件、D1-控制程序、T-外部终端"
+
+
 def test_parse_drawings_never_binds_one_image_to_multiple_labels() -> None:
     md = """
 # 附图说明

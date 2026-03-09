@@ -34,6 +34,15 @@ def merge_current_node(left: str, right: str) -> str:
     return str(left or "")
 
 
+def merge_paths(left: Dict[str, str], right: Dict[str, str]) -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    if isinstance(left, dict):
+        merged.update(left)
+    if isinstance(right, dict):
+        merged.update(right)
+    return merged
+
+
 class ErrorInfo(BaseModel):
     node_name: str = Field(..., description="错误发生节点")
     error_message: str = Field(..., description="错误详情")
@@ -47,7 +56,9 @@ class WorkflowState(BaseModel):
     task_id: str = Field("", description="任务ID")
     output_dir: str = Field("", description="输出目录")
 
-    paths: Dict[str, str] = Field(default_factory=dict, description="流水线路径字典")
+    paths: Annotated[Dict[str, str], merge_paths] = Field(
+        default_factory=dict, description="流水线路径字典"
+    )
     resolved_pn: str = Field("", description="最终用于产物命名的专利号")
 
     patent_data: Optional[Dict[str, Any]] = Field(None, description="结构化专利数据")

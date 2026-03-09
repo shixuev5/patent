@@ -222,13 +222,23 @@ class RuleBasedExtractor:
             if not line:
                 continue
 
-            # 支持字母图号
-            match = re.search(r"^图\s*([0-9a-zA-Z\-]+)(?:[^，,。；;\n]*?[为是：:])\s*(.*)", line)
-            if not match:
+            # 支持图1表示/示出/为/是/: ... 等句式
+            head_match = re.search(r"^图\s*([0-9a-zA-Z\-]+)\s*(.*)$", line)
+            if not head_match:
                 continue
 
-            fig_num = match.group(1)
-            caption = match.group(2).strip("；;。 ")
+            fig_num = head_match.group(1)
+            remainder = head_match.group(2).strip()
+            if not remainder:
+                continue
+
+            # 排除“图1的附图标记如下”及其变体等非图题行
+            if re.search(r"附图标记", remainder):
+                continue
+
+            caption = re.sub(r"^(?:是|为|示出|表示|[:：])+\s*", "", remainder).strip("；;。 ")
+            if not caption:
+                continue
             if fig_num not in figure_captions:
                 figure_captions[fig_num] = caption
 
@@ -471,6 +481,20 @@ class RuleBasedExtractor:
             return None, None
             
         content = match.group(1).strip()
+
+        def _clean_section_text(text: str) -> str:
+            return re.sub(r"\[\d{4}\]\s*", "", str(text or "")).strip()
+
+        # 优先识别“发明效果/有益效果/技术效果”作为显式分界标题
+        heading_match = re.search(
+            r"(?m)^\s*(?:\[\d{4}\]\s*)?(?:发明效果|有益效果|技术效果)\s*[：:]?\s*",
+            content,
+        )
+        if heading_match:
+            summary = _clean_section_text(content[: heading_match.start()])
+            effect = _clean_section_text(content[heading_match.start() :])
+            effect = re.sub(r"^(?:发明效果|有益效果|技术效果)\s*[：:]?\s*", "", effect).strip()
+            return summary or None, effect or None
         
         split_pattern = r"(\[?\d{4}\]?\s*(?:总体而言[，,]\s*)?(?:通过.*?)?与现有技术相比[^\n]*?(?:有益|技术)效果[。：]?|\[?\d{4}\]?\s*(?:有益|技术)效果[：为。]|\[?\d{4}\]?\s*优点[：为。]|\[?\d{4}\]?\s*本(?:发明|实用新型)的?(?:有益)?效果[^\n]*?[：。])"
         
@@ -480,9 +504,9 @@ class RuleBasedExtractor:
             summary = content[:split_idx].strip()
             effect = content[split_idx:].strip()
             
-            summary = re.sub(r"\[\d{4}\]\s*", "", summary).strip()
-            effect = re.sub(r"\[\d{4}\]\s*", "", effect).strip()
-            return summary, effect if effect else None
+            summary = _clean_section_text(summary)
+            effect = _clean_section_text(effect)
+            return summary or None, effect or None
             
         backup_pattern = r"(\[?\d{4}\]?\s*[^\[\n]*(?:本(?:发明|实用新型).*?(?:有益|效果|优点)|通过.*?实现.*?效果)[^\n]*)"
         backup_matches = list(re.finditer(backup_pattern, content))
@@ -491,16 +515,16 @@ class RuleBasedExtractor:
             summary = content[:split_idx].strip()
             effect = content[split_idx:].strip()
             
-            summary = re.sub(r"\[\d{4}\]\s*", "", summary).strip()
-            effect = re.sub(r"\[\d{4}\]\s*", "", effect).strip()
-            return summary, effect
+            summary = _clean_section_text(summary)
+            effect = _clean_section_text(effect)
+            return summary or None, effect or None
             
-        summary = re.sub(r"\[\d{4}\]\s*", "", content).strip()
-        return summary, None
+        summary = _clean_section_text(content)
+        return summary or None, None
 
     @staticmethod
     def _extract_brief_description(md_content: str) -> str:
-        """仅提取“数字(+字母)-名称 / 数字(+字母):名称”类附图标记说明。"""
+        """提取附图标记说明中的“标记-名称”，支持数字与字母数字标记。"""
         pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
         if not match:
@@ -510,16 +534,37 @@ class RuleBasedExtractor:
         if not content:
             return None
 
-        # 增加各种顿号、点号、空格作为连接符以防遗漏
-        marker_pattern = re.compile(
-            r"(\d+[A-Za-z]?)\s*[-：:、\.\s]\s*([^、，,。；;\n]+)"
+        # 优先在“附图标记说明”子区块提取，避免误吸收图解说明句
+        marker_block_match = re.search(
+            r"(?:附图标记(?:说明|如下|说明如下|对照|释义)?(?:表)?\s*[：:]?)\s*([\s\S]*)$",
+            content,
+            re.DOTALL,
         )
-        items: List[str] =[]
-        for item in marker_pattern.finditer(content):
-            marker = item.group(1).strip()
-            name = item.group(2).strip()
-            if marker and name:
-                items.append(f"{marker}-{name}")
+        marker_block_text = marker_block_match.group(1).strip() if marker_block_match else ""
+
+        # 支持 D1/N/T/2A/101 等标记，并避免把“图1...”中的1误识别为标记
+        marker_pattern = re.compile(
+            r"(?<!图)\b([A-Za-z]+\d+[A-Za-z]?|\d+[A-Za-z]?|[A-Za-z]{1,3})\b\s*[-：:、\.\s]\s*([^、，,。；;\n]+)"
+        )
+        def _collect_items(text: str) -> List[str]:
+            items: List[str] = []
+            seen = set()
+            for item in marker_pattern.finditer(text):
+                marker = item.group(1).strip()
+                name = item.group(2).strip()
+                if not marker or not name:
+                    continue
+                normalized = f"{marker}-{name}"
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                items.append(normalized)
+            return items
+
+        # 先尝试“附图标记说明”子区块，若无结果再回退全附图说明，兼容无固定标识的文档
+        items = _collect_items(marker_block_text) if marker_block_text else []
+        if not items:
+            items = _collect_items(content)
 
         if items:
             return "、".join(items)
