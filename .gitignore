@@ -11,8 +11,9 @@ wheels/
 .venv
 
 # Output
-output
+output/
 data/
+uploads/
 
 # Environment variables
 .env
