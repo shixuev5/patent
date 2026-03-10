@@ -380,10 +380,16 @@ class ReportRenderer:
         """
         lines = []
         lines.append("# 形式缺陷审查报告\n")
+        
+        lines.append("## 1. 审查依据")
+        lines.append("**《中华人民共和国专利法实施细则》第二十一条：**")
+        lines.append("> 发明或者实用新型的几幅附图应当按照“图1，图2，……”顺序编号排列。")
+        lines.append("> 发明或者实用新型说明书文字部分中未提及的附图标记不得在附图中出现，附图中未出现的附图标记不得在说明书文字部分中提及。申请文件中表示同一组成部分的附图标记应当一致。")
+        lines.append("> 附图中除必需的词语外，不应当含有其他注释。")
 
         # 仅展示最终可执行结论，不展示中间复核过程
         consistency_text = check_results.get("consistency")
-        lines.append("## 1. 最终结论")
+        lines.append("## 2. 最终结论")
         if consistency_text:
             lines.append(f"{consistency_text}\n")
         else:
@@ -405,6 +411,31 @@ class ReportRenderer:
         title = biblio.get("invention_title", "未知标题")
         app_date = biblio.get("application_date", "未知")
         prio_date = biblio.get("priority_date")  # 获取优先权日
+        applicants_raw = biblio.get("applicants", [])
+        inventors_raw = biblio.get("inventors", [])
+
+        applicant_names = []
+        if isinstance(applicants_raw, list):
+            for item in applicants_raw:
+                name = ""
+                if isinstance(item, dict):
+                    name = str(item.get("name", "")).strip()
+                elif item is not None:
+                    name = str(item).strip()
+                if name:
+                    applicant_names.append(name)
+
+        inventor_names = []
+        if isinstance(inventors_raw, list):
+            for item in inventors_raw:
+                if item is None:
+                    continue
+                name = str(item).strip()
+                if name:
+                    inventor_names.append(name)
+
+        applicants_display = "、".join(applicant_names) if applicant_names else "-"
+        inventors_display = "、".join(inventor_names) if inventor_names else "-"
 
         # 确定检索截止日
         if prio_date:
@@ -422,6 +453,8 @@ class ReportRenderer:
         lines.append(f"- **发明名称**: {title}")
         lines.append(f"- **申请日**: {app_date}")
         lines.append(f"- **优先权日**: {prio_display}")
+        lines.append(f"- **申请人**: {applicants_display}")
+        lines.append(f"- **发明人**: {inventors_display}")
 
         # 动态提示块
         lines.append(f"> **📅 检索截止日: {critical_date}**")
