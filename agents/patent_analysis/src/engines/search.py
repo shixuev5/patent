@@ -1,10 +1,7 @@
 import re
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any, Dict, List
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
-from agents.common.utils.cache import StepCache
 
 VALID_ELEMENT_ROLES = {"Subject", "KeyFeature", "Functional"}
 VALID_ELEMENT_TYPES = {
@@ -18,63 +15,25 @@ ELEMENT_TYPE_LOWER_MAP = {item.lower(): item for item in VALID_ELEMENT_TYPES}
 
 
 class SearchStrategyGenerator:
-    PARALLEL_WORKERS = 2
-
-    def __init__(self, patent_data: Dict, report_data: Dict, cache_file: Path = None):
+    def __init__(self, patent_data: Dict, report_data: Dict):
         self.llm_service = get_llm_service()
         self.patent_data = patent_data
         self.report_data = report_data
-
-        # 初始化缓存管理器
-        self.cache = StepCache(cache_file) if cache_file else None
 
         self.base_ipcs = self.patent_data.get("bibliographic_data", {}).get(
             "ipc_classifications", []
         )
 
-    def _run_cached(
-        self,
-        key: str,
-        func,
-        *args,
-        **kwargs,
-    ):
-        if not self.cache:
-            return func(*args, **kwargs)
-        return self.cache.run_step(key, func, *args, **kwargs)
-
-    def generate_strategy(self) -> Dict[str, Any]:
-        """
-        主流程入口：只生成语义匹配相关的内容
-        """
-        logger.info("开始构建语义匹配策略...")
-
-        def _execute_phase1():
-            matrix_context = self._build_matrix_context()
-            return self._build_search_matrix(matrix_context)
-
-        with ThreadPoolExecutor(max_workers=self.PARALLEL_WORKERS, thread_name_prefix="search") as executor:
-            future_matrix = executor.submit(
-                self._run_cached,
-                "search_matrix_v2",
-                _execute_phase1,
-            )
-            future_semantic = executor.submit(
-                self._run_cached,
-                "semantic_strategy",
-                self._build_semantic_strategy,
-            )
-            search_matrix = future_matrix.result()
-            semantic_strategy = future_semantic.result()
-
+    def build_search_matrix(self) -> List[Dict[str, Any]]:
+        matrix_context = self._build_matrix_context()
+        search_matrix = self._build_search_matrix(matrix_context)
         if not search_matrix:
             logger.warning("检索要素矩阵为空，策略生成将受限。")
-            search_matrix = []
+            return []
+        return search_matrix
 
-        return {
-            "search_matrix": search_matrix,
-            "semantic_strategy": semantic_strategy,
-        }
+    def build_semantic_strategy(self) -> Dict[str, Any]:
+        return self._build_semantic_strategy()
 
     def _build_matrix_context(self) -> str:
         """

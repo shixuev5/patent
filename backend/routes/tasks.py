@@ -4,9 +4,9 @@
 import asyncio
 import json
 import os
-import uuid
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -66,10 +66,16 @@ PATENT_NODE_LABELS = {
     "transform": "专利结构化转换",
     "extract": "知识提取",
     "vision": "视觉处理",
+    "vision_extract": "视觉提取",
+    "vision_annotate": "视觉标注",
     "check": "形式缺陷检查",
     "generate": "报告内容生成",
+    "generate_core": "生成报告核心内容",
+    "generate_figures": "生成图解说明",
     "check_generate_join": "汇总检查结果",
-    "search": "检索策略生成",
+    "search_matrix": "生成检索要素",
+    "search_semantic": "生成语义检索",
+    "search_join": "汇总检索策略",
     "render": "渲染报告",
     "handle_error": "处理异常",
 }
@@ -237,6 +243,7 @@ async def run_patent_analysis_task(
 
         loop = asyncio.get_event_loop()
         def run_workflow() -> Dict[str, Any]:
+            workflow_start = perf_counter()
             from agents.patent_analysis.main import create_workflow, build_runtime_config
             from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 
@@ -263,48 +270,55 @@ async def run_patent_analysis_task(
 
             workflow = create_workflow(config)
             runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
-            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn or "-"), task_usage_collection(usage_collector):
-                last_state: Dict[str, Any] = _to_dict(initial_state)
-                last_progress = -1
-                last_step = ""
-                for state_value in workflow.stream(initial_state, config=runtime_config, stream_mode="values"):
-                    if cancel_event and cancel_event.is_set():
-                        raise RuntimeError("任务已取消")
-                    state_dict = _to_dict(state_value)
-                    if not state_dict:
-                        continue
-                    last_state = state_dict
-                    node_name = str(state_dict.get("current_node", "")).strip()
-                    if not node_name or node_name == "start":
-                        continue
-                    step_label = PATENT_NODE_LABELS.get(node_name, "处理中")
-                    progress_raw = state_dict.get("progress")
-                    try:
-                        progress = int(float(progress_raw))
-                    except Exception:
-                        continue
-                    progress = max(0, min(95, progress))
-                    if progress <= 0:
-                        continue
-                    if progress != last_progress or step_label != last_step:
-                        task_manager.update_progress(task_id, progress, step_label)
-                        emit_system_log(
-                            category="task_execution",
-                            event_name="task_progress",
-                            owner_id=owner_id,
-                            task_id=task_id,
-                            task_type=TaskType.PATENT_ANALYSIS.value,
-                            success=True,
-                            message=f"progress={progress} step={step_label}",
-                            payload={
-                                "progress": progress,
-                                "step": step_label,
-                                "node": node_name,
-                            },
-                        )
-                        last_progress = progress
-                        last_step = step_label
-            return last_state
+            last_state: Dict[str, Any] = _to_dict(initial_state)
+            try:
+                with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn or "-"), task_usage_collection(usage_collector):
+                    last_progress = -1
+                    last_step = ""
+                    for state_value in workflow.stream(initial_state, config=runtime_config, stream_mode="values"):
+                        if cancel_event and cancel_event.is_set():
+                            raise RuntimeError("任务已取消")
+                        state_dict = _to_dict(state_value)
+                        if not state_dict:
+                            continue
+                        last_state = state_dict
+                        node_name = str(state_dict.get("current_node", "")).strip()
+                        if not node_name or node_name == "start":
+                            continue
+                        step_label = PATENT_NODE_LABELS.get(node_name, "处理中")
+                        progress_raw = state_dict.get("progress")
+                        try:
+                            progress = int(float(progress_raw))
+                        except Exception:
+                            continue
+                        progress = max(0, min(95, progress))
+                        if progress <= 0:
+                            continue
+                        if progress != last_progress or step_label != last_step:
+                            task_manager.update_progress(task_id, progress, step_label)
+                            emit_system_log(
+                                category="task_execution",
+                                event_name="task_progress",
+                                owner_id=owner_id,
+                                task_id=task_id,
+                                task_type=TaskType.PATENT_ANALYSIS.value,
+                                success=True,
+                                message=f"progress={progress} step={step_label}",
+                                payload={
+                                    "progress": progress,
+                                    "step": step_label,
+                                    "node": node_name,
+                                },
+                            )
+                            last_progress = progress
+                            last_step = step_label
+                return last_state
+            finally:
+                workflow_elapsed = perf_counter() - workflow_start
+                status = str(last_state.get("status", "unknown")).strip().lower()
+                task_logger.info(
+                    f"patent_analysis workflow 总耗时: {workflow_elapsed:.3f}s status={status}"
+                )
 
         result = await loop.run_in_executor(None, run_workflow)
 

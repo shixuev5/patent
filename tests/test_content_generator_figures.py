@@ -126,6 +126,40 @@ def test_generate_figures_analysis_no_paragraph_dependency(tmp_path: Path, monke
     assert captured["image_paths"] == [str(annotated_dir / "fig1.png")]
 
 
+def test_figure_parallel_workers_uses_unified_setting(tmp_path: Path, monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
+    )
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.settings",
+        type("S", (), {"VISION_MAX_WORKERS": 6})(),
+    )
+
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {},
+            "claims": [],
+            "description": {
+                "technical_field": "",
+                "background_art": "",
+                "technical_effect": "",
+                "summary_of_invention": "",
+                "detailed_description": "",
+            },
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=tmp_path / "cache_workers.json",
+    )
+
+    assert generator.figure_parallel_workers == 6
+
+
 def test_generate_figures_analysis_keeps_input_order_when_parallel(tmp_path: Path, monkeypatch) -> None:
     class StubLLMService:
         pass

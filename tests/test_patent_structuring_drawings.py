@@ -124,3 +124,36 @@ def test_parse_drawings_excludes_abstract_figure() -> None:
 """
     drawings = RuleBasedExtractor._parse_drawings(md)
     assert [d["file_path"] for d in drawings] == ["images/a.jpg"]
+
+
+def test_extract_priority_date_from_30_block() -> None:
+    md = """
+(22) 申请日 2022.03.22
+(30) 优先权数据
+2021-068366 2021.04.14 JP
+(71)申请人 某公司
+"""
+    assert RuleBasedExtractor._extract_priority_date(md) == "2021.04.14"
+
+
+def test_extract_inventors_split_chinese_names_by_single_space() -> None:
+    md = """
+(72)发明人竹内高穗 铃木修一 池田充志
+"""
+    assert RuleBasedExtractor._extract_inventors(md) == ["竹内高穗", "铃木修一", "池田充志"]
+
+
+def test_extract_agency_removes_code_and_splits_agents() -> None:
+    md = """
+(74)专利代理机构北京品源专利代理有限公司11332
+专利代理师吕琳 朴秀玉
+"""
+    agency = RuleBasedExtractor._extract_agency(md)
+    assert agency == {
+        "agency_name": "北京品源专利代理有限公司",
+        "agents": ["吕琳", "朴秀玉"],
+    }
+
+
+def test_split_people_keeps_english_full_name() -> None:
+    assert RuleBasedExtractor._split_people("John Smith") == ["John Smith"]

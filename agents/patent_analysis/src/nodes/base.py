@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -28,6 +29,7 @@ class BaseNode:
         if current_status in {"failed", "cancelled"}:
             return {"status": current_status}
 
+        start_time = perf_counter()
         updates: Dict[str, Any] = {
             "current_node": self.node_name,
             "status": "running",
@@ -58,5 +60,9 @@ class BaseNode:
                     "error_type": self.node_name,
                 }
             ]
+        elapsed = perf_counter() - start_time
+        logger.info(
+            f"节点 {self.node_name} 执行完成 status={updates.get('status', 'unknown')} 耗时={elapsed:.3f}s"
+        )
 
         return updates

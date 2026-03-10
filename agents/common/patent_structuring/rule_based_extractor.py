@@ -260,9 +260,27 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_priority_date(md_content: str) -> str:
-        pattern = r"\(30\)\s*优先权数据\s*(\d{4}\s*[\.\-]\s*\d{1,2}\s*[\.\-]\s*\d{1,2})"
-        match = re.search(pattern, md_content)
-        return match.group(1).replace(" ", "") if match else None
+        block_pattern = r"\(30\)\s*优先权数据\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
+        block_match = re.search(block_pattern, md_content, re.DOTALL)
+        search_text = block_match.group(1) if block_match else ""
+
+        date_pattern = r"(\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2})"
+        date_matches = re.findall(date_pattern, search_text)
+        if not date_matches and block_match:
+            date_matches = re.findall(date_pattern, block_match.group(0))
+        if not date_matches:
+            return None
+
+        normalized_dates = []
+        for raw_date in date_matches:
+            normalized = RuleBasedExtractor._normalize_date(raw_date)
+            if normalized:
+                normalized_dates.append(normalized)
+
+        if not normalized_dates:
+            return None
+
+        return sorted(normalized_dates)[0]
 
     @staticmethod
     def _extract_publication_number(md_content: str) -> str:
@@ -357,6 +375,37 @@ class RuleBasedExtractor:
         }))
 
     @staticmethod
+    def _normalize_date(text: str) -> str | None:
+        cleaned = (text or "").strip()
+        match = re.search(r"(\d{4})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{1,2})", cleaned)
+        if not match:
+            return None
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        if month < 1 or month > 12 or day < 1 or day > 31:
+            return None
+        return f"{year:04d}.{month:02d}.{day:02d}"
+
+    @staticmethod
+    def _split_people(raw_text: str) -> List[str]:
+        text = str(raw_text or "").strip()
+        if not text:
+            return []
+
+        primary = [item.strip() for item in re.split(r"[;；，,\n]+|\s{2,}", text) if item.strip()]
+        if len(primary) == 1:
+            candidate = primary[0]
+            if " " in candidate and re.fullmatch(r"[\u4e00-\u9fff·\s]+", candidate):
+                primary = [item.strip() for item in re.split(r"\s+", candidate) if item.strip()]
+
+        deduped: List[str] = []
+        for name in primary:
+            if name not in deduped:
+                deduped.append(name)
+        return deduped
+
+    @staticmethod
     def _extract_inventors(md_content: str) -> list:
         pattern = r"\(72\)\s*发明人\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
         match = re.search(pattern, md_content, re.DOTALL)
@@ -364,10 +413,8 @@ class RuleBasedExtractor:
             inventor_text = match.group(1).strip()
             if "地址" in inventor_text:
                 inventor_text = inventor_text.split("地址")[0].strip()
-            
-            # 使用多个空格作为切割符，兼容包含单个空格的欧美姓名
-            inventors = re.split(r"[;；，,\n]+|\s{2,}", inventor_text)
-            return [name.strip() for name in inventors if name.strip()]
+
+            return RuleBasedExtractor._split_people(inventor_text)
         return[]
 
     @staticmethod
@@ -376,16 +423,15 @@ class RuleBasedExtractor:
         match = re.search(pattern, md_content)
         if match:
             agency_raw = match.group(1).strip()
-            agency_name = re.sub(r"\s+\d+$", "", agency_raw).strip()
-            
+            agency_name = re.sub(r"\d{3,}$", "", agency_raw).strip()
+
             agents =[]
             agent_pattern = r"(?:专利代理师|代理人)\s*([^\n]+)"
             agent_match = re.search(agent_pattern, md_content)
             if agent_match:
                 agents_raw = agent_match.group(1)
-                # 同样支持多个空格切割
-                agents =[name.strip() for name in re.split(r"[;；，,\n]+|\s{2,}", agents_raw) if name.strip()]
-                
+                agents = RuleBasedExtractor._split_people(agents_raw)
+
             return {"agency_name": agency_name, "agents": agents}
         return None
 

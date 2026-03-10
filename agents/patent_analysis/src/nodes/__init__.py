@@ -8,7 +8,9 @@ from .check_node import CheckNode
 from .generate_core_node import GenerateCoreNode
 from .generate_figures_node import GenerateFiguresNode
 from .check_generate_join_node import CheckGenerateJoinNode
-from .search_node import SearchNode
+from .search_matrix_node import SearchMatrixNode
+from .search_semantic_node import SearchSemanticNode
+from .search_join_node import SearchJoinNode
 from .render_node import RenderNode
 
 __all__ = [
@@ -22,6 +24,8 @@ __all__ = [
     "GenerateCoreNode",
     "GenerateFiguresNode",
     "CheckGenerateJoinNode",
-    "SearchNode",
+    "SearchMatrixNode",
+    "SearchSemanticNode",
+    "SearchJoinNode",
     "RenderNode",
 ]

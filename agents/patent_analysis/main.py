@@ -8,6 +8,7 @@ import argparse
 import os
 import uuid
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict
 
 from langgraph.graph import END, StateGraph
@@ -29,7 +30,9 @@ from agents.patent_analysis.src.nodes import (
     GenerateFiguresNode,
     ParseNode,
     RenderNode,
-    SearchNode,
+    SearchJoinNode,
+    SearchMatrixNode,
+    SearchSemanticNode,
     TransformNode,
     VisionAnnotateNode,
     VisionExtractNode,
@@ -55,7 +58,9 @@ def create_workflow(config: WorkflowConfig | None = None):
     workflow.add_node("generate_core", GenerateCoreNode(config), retry_policy=retry_policy)
     workflow.add_node("generate_figures", GenerateFiguresNode(config), retry_policy=retry_policy)
     workflow.add_node("check_generate_join", CheckGenerateJoinNode(config), retry_policy=retry_policy)
-    workflow.add_node("search", SearchNode(config), retry_policy=retry_policy)
+    workflow.add_node("search_matrix", SearchMatrixNode(config), retry_policy=retry_policy)
+    workflow.add_node("search_semantic", SearchSemanticNode(config), retry_policy=retry_policy)
+    workflow.add_node("search_join", SearchJoinNode(config), retry_policy=retry_policy)
     workflow.add_node("render", RenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
 
@@ -75,6 +80,12 @@ def create_workflow(config: WorkflowConfig | None = None):
         if status in {"failed", "cancelled"}:
             return "failed"
         return ["check", "generate_core", "vision_annotate"]
+
+    def route_from_check_generate_join(state: Any):
+        status = str(item_get(state, "status", "pending") or "pending").lower()
+        if status in {"failed", "cancelled"}:
+            return "failed"
+        return ["search_matrix", "search_semantic"]
 
     workflow.add_conditional_edges(
         "download",
@@ -114,11 +125,12 @@ def create_workflow(config: WorkflowConfig | None = None):
 
     workflow.add_conditional_edges(
         "check_generate_join",
-        create_router("search"),
-        {"failed": "handle_error", "search": "search"},
+        route_from_check_generate_join,
+        {"failed": "handle_error", "search_matrix": "search_matrix", "search_semantic": "search_semantic"},
     )
+    workflow.add_edge(["search_matrix", "search_semantic"], "search_join")
     workflow.add_conditional_edges(
-        "search",
+        "search_join",
         create_router("render"),
         {"failed": "handle_error", "render": "render"},
     )
@@ -212,6 +224,7 @@ def main() -> int:
     workflow = create_workflow(config)
 
     task_logger.info("开始执行工作流")
+    workflow_start = perf_counter()
     try:
         with task_log_context(task_id, "patent_analysis", pn=pn or "-"):
             result = workflow.invoke(
@@ -222,6 +235,9 @@ def main() -> int:
         task_logger.error(f"工作流执行异常: {exc}")
         task_logger.exception("异常堆栈")
         return 1
+    finally:
+        workflow_elapsed = perf_counter() - workflow_start
+        task_logger.info(f"patent_analysis workflow 总耗时: {workflow_elapsed:.3f}s")
 
     result_dict = _to_dict(result)
     status = str(result_dict.get("status", "failed") or "failed").lower()

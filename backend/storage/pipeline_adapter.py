@@ -21,7 +21,9 @@ DEFAULT_PIPELINE_STEPS = [
     ("vision", "视觉处理"),
     ("check", "形式缺陷检查"),
     ("generate", "报告内容生成"),
-    ("search", "检索策略生成"),
+    ("search_matrix", "生成检索要素"),
+    ("search_semantic", "生成语义检索"),
+    ("search_join", "汇总检索策略"),
     ("render", "渲染报告"),
 ]
 

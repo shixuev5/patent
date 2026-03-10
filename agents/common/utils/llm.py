@@ -15,7 +15,7 @@ from backend.task_usage_tracking import get_current_task_usage_context, record_l
 class LLMService:
     """统一的 LLM 服务类，提供文本和视觉模型的调用接口"""
 
-    _THINKING_BUDGET = 8192
+    _THINKING_BUDGET = 4096
 
     _TASK_POLICY_MAP: Dict[str, Dict[str, Any]] = {
         "patent_structuring_extract": {"tier": "default", "thinking": True},
@@ -33,7 +33,7 @@ class LLMService:
         "oar_common_knowledge_verification": {"tier": "large", "thinking": True},
         "oar_topup_search_verification": {"tier": "large", "thinking": True},
         "vision_ocr_correction": {"tier": "default", "thinking": True},
-        "vision_single_figure_explain": {"tier": "default", "thinking": True},
+        "vision_single_figure_explain": {"tier": "large", "thinking": True},
         "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},
     }
 

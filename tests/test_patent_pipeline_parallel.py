@@ -14,7 +14,9 @@ from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
 from agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
 from agents.patent_analysis.src.nodes.parse_node import ParseNode
 from agents.patent_analysis.src.nodes.render_node import RenderNode
-from agents.patent_analysis.src.nodes.search_node import SearchNode
+from agents.patent_analysis.src.nodes.search_join_node import SearchJoinNode
+from agents.patent_analysis.src.nodes.search_matrix_node import SearchMatrixNode
+from agents.patent_analysis.src.nodes.search_semantic_node import SearchSemanticNode
 from agents.patent_analysis.src.nodes.transform_node import TransformNode
 from agents.patent_analysis.src.nodes.vision_annotate_node import VisionAnnotateNode
 from agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
@@ -66,7 +68,21 @@ def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None
         lambda self, state: {"report_json": {"ai_title": "ok"}},
     )
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
-    monkeypatch.setattr(SearchNode, "run", lambda self, state: {"search_json": {"ok": True}})
+    monkeypatch.setattr(
+        SearchMatrixNode,
+        "run",
+        lambda self, state: {"search_matrix": []},
+    )
+    monkeypatch.setattr(
+        SearchSemanticNode,
+        "run",
+        lambda self, state: {"search_semantic_strategy": {"content": "q"}},
+    )
+    monkeypatch.setattr(
+        SearchJoinNode,
+        "run",
+        lambda self, state: {"search_json": {"ok": True}},
+    )
     monkeypatch.setattr(
         RenderNode,
         "run",
@@ -86,7 +102,12 @@ def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None
 
 
 def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> None:
-    flags = {"search_called": False, "render_called": False}
+    flags = {
+        "search_matrix_called": False,
+        "search_semantic_called": False,
+        "search_join_called": False,
+        "render_called": False,
+    }
 
     monkeypatch.setattr(DownloadNode, "run", lambda self, state: {})
     monkeypatch.setattr(ParseNode, "run", lambda self, state: {})
@@ -116,15 +137,25 @@ def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
 
-    def _fake_search(self, state):
-        flags["search_called"] = True
+    def _fake_search_matrix(self, state):
+        flags["search_matrix_called"] = True
+        return {"search_matrix": []}
+
+    def _fake_search_semantic(self, state):
+        flags["search_semantic_called"] = True
+        return {"search_semantic_strategy": {"content": "q"}}
+
+    def _fake_search_join(self, state):
+        flags["search_join_called"] = True
         return {"search_json": {"ok": True}}
 
     def _fake_render(self, state):
         flags["render_called"] = True
         return {"status": "completed", "final_output_pdf": str(tmp_path / "out.pdf")}
 
-    monkeypatch.setattr(SearchNode, "run", _fake_search)
+    monkeypatch.setattr(SearchMatrixNode, "run", _fake_search_matrix)
+    monkeypatch.setattr(SearchSemanticNode, "run", _fake_search_semantic)
+    monkeypatch.setattr(SearchJoinNode, "run", _fake_search_join)
     monkeypatch.setattr(RenderNode, "run", _fake_render)
 
     workflow = create_workflow(WorkflowConfig(max_retries=1))
@@ -132,7 +163,9 @@ def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> N
     result_dict = result if isinstance(result, dict) else result.model_dump()
 
     assert result_dict["status"] == "failed"
-    assert flags["search_called"] is False
+    assert flags["search_matrix_called"] is False
+    assert flags["search_semantic_called"] is False
+    assert flags["search_join_called"] is False
     assert flags["render_called"] is False
 
 
@@ -192,7 +225,13 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
         lambda self, state: {"report_json": {"ok": True}},
     )
     monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
-    monkeypatch.setattr(SearchNode, "run", lambda self, state: {"search_json": {"ok": True}})
+    monkeypatch.setattr(SearchMatrixNode, "run", lambda self, state: {"search_matrix": []})
+    monkeypatch.setattr(
+        SearchSemanticNode,
+        "run",
+        lambda self, state: {"search_semantic_strategy": {"content": "q"}},
+    )
+    monkeypatch.setattr(SearchJoinNode, "run", lambda self, state: {"search_json": {"ok": True}})
     monkeypatch.setattr(RenderNode, "run", lambda self, state: {"status": "completed"})
 
     workflow = create_workflow(
@@ -248,7 +287,7 @@ def test_generate_core_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path:
     assert not (Path(updates["paths"]["root"]) / "report_intermediate.json").exists()
 
 
-def test_search_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path: Path, monkeypatch) -> None:
+def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch) -> None:
     state = WorkflowState(
         pn="CNTEST",
         task_id="task4",
@@ -261,20 +300,46 @@ def test_search_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path: Path, 
     )
 
     cache_dir = tmp_path / "cache"
-    captured: Dict[str, Any] = {"cache_file": None}
 
-    class _FakeSearchGenerator:
-        def __init__(self, patent_data, report_data, cache_file=None):
-            captured["cache_file"] = cache_file
+    class _FakeMatrixGenerator:
+        def __init__(self, patent_data, report_data):
+            pass
 
-        def generate_strategy(self):
-            return {"search_matrix": [], "semantic_strategy": {"content": "q"}}
+        def build_search_matrix(self):
+            return []
 
-    monkeypatch.setattr("agents.patent_analysis.src.nodes.search_node.SearchStrategyGenerator", _FakeSearchGenerator)
+    class _FakeSemanticGenerator:
+        def __init__(self, patent_data, report_data):
+            pass
 
-    node = SearchNode(WorkflowConfig(cache_dir=str(cache_dir)))
-    updates = node(state)
+        def build_semantic_strategy(self):
+            return {"content": "q"}
 
-    assert updates["search_json"] == {"search_matrix": [], "semantic_strategy": {"content": "q"}}
-    assert Path(str(captured["cache_file"])) == cache_dir / "search_cache.json"
-    assert not (Path(updates["paths"]["root"]) / "search_strategy_intermediate.json").exists()
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
+        _FakeMatrixGenerator,
+    )
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.nodes.search_semantic_node.SearchStrategyGenerator",
+        _FakeSemanticGenerator,
+    )
+
+    matrix_node = SearchMatrixNode(WorkflowConfig(cache_dir=str(cache_dir)))
+    semantic_node = SearchSemanticNode(WorkflowConfig(cache_dir=str(cache_dir)))
+    join_node = SearchJoinNode(WorkflowConfig(cache_dir=str(cache_dir)))
+
+    matrix_updates = matrix_node(state)
+    semantic_updates = semantic_node(state)
+
+    join_updates = join_node.run(
+        {
+            "paths": matrix_updates["paths"],
+            "search_matrix": matrix_updates["search_matrix"],
+            "search_semantic_strategy": semantic_updates["search_semantic_strategy"],
+        }
+    )
+
+    assert join_updates["search_json"] == {"search_matrix": [], "semantic_strategy": {"content": "q"}}
+    assert (cache_dir / "search_matrix_cache.json").exists()
+    assert (cache_dir / "search_semantic_cache.json").exists()
+    assert not (Path(matrix_updates["paths"]["root"]) / "search_strategy_intermediate.json").exists()

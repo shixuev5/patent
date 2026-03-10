@@ -17,8 +17,6 @@ from config import settings
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 
-VISION_ONLINE_MAX_WORKERS_CAP = 3
-
 
 class VisualProcessor:
     """视觉处理核心类，负责 OCR、标注和图片批处理"""
@@ -188,12 +186,8 @@ class VisualProcessor:
 
     @staticmethod
     def _resolve_max_workers(total_images: int) -> int:
-        raw = str(os.getenv("VISION_MAX_WORKERS", "")).strip()
-        if raw.isdigit():
-            configured = max(1, int(raw))
-        else:
-            configured = VISION_ONLINE_MAX_WORKERS_CAP
-        return min(configured, VISION_ONLINE_MAX_WORKERS_CAP, max(1, total_images))
+        configured = max(1, int(getattr(settings, "VISION_MAX_WORKERS", 6) or 6))
+        return min(configured, max(1, total_images))
 
     def _extract_target_filenames(self) -> Set[str]:
         """解析 JSON 数据，提取摘要图和附图的文件名"""

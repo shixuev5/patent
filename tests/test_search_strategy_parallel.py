@@ -1,10 +1,7 @@
-from pathlib import Path
-from threading import Event
-
 from agents.patent_analysis.src.engines.search import SearchStrategyGenerator
 
 
-def test_matrix_and_semantic_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
+def test_build_search_matrix_uses_context(monkeypatch) -> None:
     class StubLLMService:
         pass
 
@@ -15,17 +12,12 @@ def test_matrix_and_semantic_run_in_parallel(tmp_path: Path, monkeypatch) -> Non
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
         report_data={"technical_means": "技术手段"},
-        cache_file=tmp_path / "search_cache.json",
     )
-
-    matrix_started = Event()
-    semantic_started = Event()
 
     monkeypatch.setattr(generator, "_build_matrix_context", lambda: "ctx")
 
     def _fake_matrix(context: str):
-        matrix_started.set()
-        assert semantic_started.wait(timeout=1.0)
+        assert context == "ctx"
         return [
             {
                 "element_name": "要素A",
@@ -37,17 +29,29 @@ def test_matrix_and_semantic_run_in_parallel(tmp_path: Path, monkeypatch) -> Non
             }
         ]
 
-    def _fake_semantic():
-        semantic_started.set()
-        assert matrix_started.wait(timeout=1.0)
-        return {"name": "语义检索", "description": "desc", "content": "query"}
-
     monkeypatch.setattr(generator, "_build_search_matrix", _fake_matrix)
-    monkeypatch.setattr(generator, "_build_semantic_strategy", _fake_semantic)
+    result = generator.build_search_matrix()
 
-    result = generator.generate_strategy()
+    assert result[0]["element_name"] == "要素A"
 
-    assert "search_matrix" in result
-    assert "semantic_strategy" in result
-    assert result["search_matrix"][0]["element_name"] == "要素A"
-    assert result["semantic_strategy"]["content"] == "query"
+
+def test_build_semantic_strategy_delegates(monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+    )
+
+    generator = SearchStrategyGenerator(
+        patent_data={"bibliographic_data": {"ipc_classifications": []}},
+        report_data={"technical_means": "技术手段"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_build_semantic_strategy",
+        lambda: {"name": "语义检索", "description": "desc", "content": "query"},
+    )
+
+    result = generator.build_semantic_strategy()
+    assert result["content"] == "query"

@@ -30,8 +30,9 @@
 5. `vision` 视觉处理（OCR + 标注图 + `image_parts.json`）
 6. 并行分支：`check` 与 `generate`
 7. `check_generate_join` 汇聚并行结果
-8. `search` 生成检索策略 JSON（`search_strategy.json`）
-9. `render` 渲染 Markdown/PDF（`<pn>.md`, `<pn>.pdf`）
+8. 并行分支：`search_matrix` 与 `search_semantic`
+9. `search_join` 汇聚检索策略（`search_strategy.json`）
+10. `render` 渲染 Markdown/PDF（`<pn>.md`, `<pn>.pdf`）
 
 说明：`check/generate` 为并行节点；任一节点失败会路由到 `handle_error` 后结束。
 默认执行路径已接入 LangGraph checkpoint（按 `task_id` 作为 `thread_id`）。
@@ -112,9 +113,11 @@
 - 图解说明阶段仅依赖图像视觉识别结果与全局部件库，不再依赖说明书段落滑窗上下文。
 - 输出：`report.json`
 
-## 4.8 search
+## 4.8 search_matrix + search_semantic + search_join
 
-- 调用 `SearchStrategyGenerator.generate_strategy()`
+- `search_matrix` 调用 `SearchStrategyGenerator.build_search_matrix()`
+- `search_semantic` 调用 `SearchStrategyGenerator.build_semantic_strategy()`
+- `search_join` 汇总两路结果并写入 `search_strategy.json`
 - 生成两部分：
   - `search_matrix`：检索要素表（Search Element、关键词扩展、IPC/CPC）
   - `semantic_strategy`：语义检索高密度 Query
@@ -152,7 +155,7 @@
 本模块在多个阶段采用“文件存在即复用”策略：
 
 1. `raw.md`、`patent.json`、`parts.json`、`image_parts.json`、`report.json`、`search_strategy.json` 若已存在，优先读取而非重算。
-2. `generate` 与 `search` 节点使用 `StepCache` 保存节点缓存，统一落盘到 `output/<task_id>/.cache/*.json`（例如 `generate_cache.json`、`search_cache.json`）。
+2. `generate`、`search_matrix`、`search_semantic` 节点使用 `StepCache` 保存节点缓存，统一落盘到 `output/<task_id>/.cache/*.json`（例如 `generate_core_cache.json`、`search_matrix_cache.json`、`search_semantic_cache.json`）。
 
 说明：
 - `report.json`、`search_strategy.json` 仍作为中间产物复用文件保留。
@@ -239,7 +242,7 @@ python -m agents.patent_analysis.main --upload-file /path/to/raw.pdf
 - `ZHIHUIYA_USERNAME` / `ZHIHUIYA_PASSWORD`：智慧芽下载
 - `OCR_ENGINE`：`local` / `online`（其他值自动回退 `local`）
 - `OCR_BASE_URL` / `OCR_API_KEY`：在线 OCR 模式
-- `VISION_MAX_WORKERS`：在线 OCR 模式下的视觉处理并发数（可选，默认 3，且最大不超过 3）
+- `VISION_MAX_WORKERS`：统一视觉并发（在线 OCR + 附图视觉分析），默认 `6`
 - `LLM_*`：报告与检索策略生成
 - `APP_OUTPUT_DIR`：输出根目录
 
