@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 from loguru import logger
 
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.search_clients.factory import SearchClientFactory
 from config import settings
 
@@ -68,9 +69,16 @@ class ExternalEvidenceAggregator:
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_map = {}
             if openalex_queries:
-                future_map["openalex"] = executor.submit(self._search_openalex, openalex_queries, priority_date, 4)
+                future_map["openalex"] = submit_with_current_context(
+                    executor,
+                    self._search_openalex,
+                    openalex_queries,
+                    priority_date,
+                    4,
+                )
             if zhihuiya_queries:
-                future_map["zhihuiya"] = executor.submit(
+                future_map["zhihuiya"] = submit_with_current_context(
+                    executor,
                     self._search_zhihuiya,
                     zhihuiya_queries,
                     priority_date,
@@ -78,7 +86,13 @@ class ExternalEvidenceAggregator:
                     self.zhihuiya_min_similarity_score,
                 )
             if tavily_queries:
-                future_map["tavily"] = executor.submit(self._search_tavily, tavily_queries, priority_date, 4)
+                future_map["tavily"] = submit_with_current_context(
+                    executor,
+                    self._search_tavily,
+                    tavily_queries,
+                    priority_date,
+                    4,
+                )
 
             for engine_name in ["openalex", "zhihuiya", "tavily"]:
                 future = future_map.get(engine_name)

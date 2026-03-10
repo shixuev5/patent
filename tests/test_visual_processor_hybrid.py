@@ -1,5 +1,4 @@
 import importlib
-import json
 import sys
 import types
 from pathlib import Path
@@ -25,18 +24,20 @@ def _import_vision_module():
 
 
 class _StubLLM:
-    def __init__(self, content: str = "", error: Exception = None):
-        self._content = content
+    def __init__(self, response=None, error: Exception = None):
+        self._response = response if response is not None else {}
         self._error = error
         self.system_prompt = ""
         self.user_prompt = ""
+        self.image_paths = []
 
-    def invoke_vision_image(self, img_path, system_prompt, user_prompt, *args, **kwargs):
+    def invoke_vision_images_json(self, image_paths, system_prompt, user_prompt, *args, **kwargs):
+        self.image_paths = image_paths
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         if self._error is not None:
             raise self._error
-        return self._content
+        return self._response
 
 
 def _build_processor(monkeypatch, tmp_path: Path, engine: str = "local"):
@@ -72,24 +73,45 @@ def test_resolve_max_workers_uses_unified_setting(monkeypatch, tmp_path: Path):
 def test_hybrid_correction_success(monkeypatch, tmp_path: Path):
     vision, processor = _build_processor(monkeypatch, tmp_path)
     monkeypatch.setattr(vision.cv2, "imread", lambda _: np.zeros((100, 200, 3), dtype=np.uint8))
-    content = json.dumps([{"text": "10", "box": [1, 2, 30, 40]}], ensure_ascii=False)
-    monkeypatch.setattr(vision, "get_llm_service", lambda: _StubLLM(content=content))
+    llm = _StubLLM(
+        response={
+            "reasoning": "ok",
+            "image_type": "structure",
+            "marks": [{"text": "10", "box": [1, 2, 30, 40]}],
+        }
+    )
+    monkeypatch.setattr(vision, "get_llm_service", lambda: llm)
 
     raw_ocr = [{"text": "1O", "box": [1, 2, 30, 40]}]
     result = processor._run_hybrid_vlm_correction("fake.png", raw_ocr)
 
-    assert result == [{"text": "10", "box": [1, 2, 30, 40]}]
+    assert llm.image_paths == ["fake.png"]
+    assert result["image_type"] == "structure"
+    assert result["marks"] == [{"text": "10", "box": [1, 2, 30, 40]}]
 
 
-def test_hybrid_correction_invalid_json_fallback_raw(monkeypatch, tmp_path: Path):
+def test_hybrid_correction_invalid_marks_filtered(monkeypatch, tmp_path: Path):
     vision, processor = _build_processor(monkeypatch, tmp_path)
     monkeypatch.setattr(vision.cv2, "imread", lambda _: np.zeros((100, 200, 3), dtype=np.uint8))
-    monkeypatch.setattr(vision, "get_llm_service", lambda: _StubLLM(content="not-json"))
+    monkeypatch.setattr(
+        vision,
+        "get_llm_service",
+        lambda: _StubLLM(
+            response={
+                "reasoning": "ok",
+                "image_type": "structure",
+                "marks": [
+                    {"text": "", "box": [1, 2, 30, 40]},
+                    {"text": "20", "box": [5, 5, 205, 120]},  # 会被裁剪到图像边界
+                    {"text": "30", "box": [10, 10, 10, 20]},  # 无效框
+                ],
+            }
+        ),
+    )
 
-    raw_ocr = [{"text": "10", "box": [1, 2, 30, 40]}]
-    result = processor._run_hybrid_vlm_correction("fake.png", raw_ocr)
+    result = processor._run_hybrid_vlm_correction("fake.png", [])
 
-    assert result == raw_ocr
+    assert result["marks"] == [{"text": "20", "box": [5, 5, 200, 100]}]
 
 
 def test_hybrid_correction_exception_fallback_raw(monkeypatch, tmp_path: Path):
@@ -99,38 +121,45 @@ def test_hybrid_correction_exception_fallback_raw(monkeypatch, tmp_path: Path):
         vision, "get_llm_service", lambda: _StubLLM(error=RuntimeError("mock error"))
     )
 
-    raw_ocr = [{"text": "10", "box": [1, 2, 30, 40]}]
-    result = processor._run_hybrid_vlm_correction("fake.png", raw_ocr)
+    result = processor._run_hybrid_vlm_correction("fake.png", [])
 
-    assert result == raw_ocr
+    assert result == {"image_type": "other", "reasoning": "VLM调用异常", "marks": []}
 
 
-def test_hybrid_correction_empty_result_fallback_raw(monkeypatch, tmp_path: Path):
+def test_hybrid_correction_read_image_failed(monkeypatch, tmp_path: Path):
     vision, processor = _build_processor(monkeypatch, tmp_path)
-    monkeypatch.setattr(vision.cv2, "imread", lambda _: np.zeros((100, 200, 3), dtype=np.uint8))
-    monkeypatch.setattr(vision, "get_llm_service", lambda: _StubLLM(content="[]"))
+    monkeypatch.setattr(vision.cv2, "imread", lambda _: None)
+    monkeypatch.setattr(vision, "get_llm_service", lambda: _StubLLM(response={}))
 
-    raw_ocr = [{"text": "10", "box": [1, 2, 30, 40]}]
-    result = processor._run_hybrid_vlm_correction("fake.png", raw_ocr)
+    result = processor._run_hybrid_vlm_correction("fake.png", [])
 
-    assert result == raw_ocr
+    assert result == {}
 
 
 def test_hybrid_correction_can_supplement_missing_raw(monkeypatch, tmp_path: Path):
     vision, processor = _build_processor(monkeypatch, tmp_path)
     monkeypatch.setattr(vision.cv2, "imread", lambda _: np.zeros((100, 200, 3), dtype=np.uint8))
-    content = json.dumps([{"text": "10", "box": [3, 4, 20, 25]}], ensure_ascii=False)
-    monkeypatch.setattr(vision, "get_llm_service", lambda: _StubLLM(content=content))
+    monkeypatch.setattr(
+        vision,
+        "get_llm_service",
+        lambda: _StubLLM(
+            response={
+                "reasoning": "ok",
+                "image_type": "structure",
+                "marks": [{"text": "10", "box": [3, 4, 20, 25]}],
+            }
+        ),
+    )
 
     result = processor._run_hybrid_vlm_correction("fake.png", [])
 
-    assert result == [{"text": "10", "box": [3, 4, 20, 25]}]
+    assert result["marks"] == [{"text": "10", "box": [3, 4, 20, 25]}]
 
 
 def test_hybrid_prompt_contains_spatial_and_motion_context(monkeypatch, tmp_path: Path):
     vision, processor = _build_processor(monkeypatch, tmp_path)
     monkeypatch.setattr(vision.cv2, "imread", lambda _: np.zeros((100, 200, 3), dtype=np.uint8))
-    llm = _StubLLM(content="[]")
+    llm = _StubLLM(response={"image_type": "structure", "marks": []})
     monkeypatch.setattr(vision, "get_llm_service", lambda: llm)
 
     _ = processor._run_hybrid_vlm_correction("fake.png", [])
@@ -141,11 +170,10 @@ def test_hybrid_prompt_contains_spatial_and_motion_context(monkeypatch, tmp_path
     assert "保持静止" in llm.user_prompt
 
 
-def test_process_single_image_keeps_unknown_pid_for_formal_examiner(monkeypatch, tmp_path: Path):
+def test_extract_single_image_keeps_unknown_pid_for_formal_examiner(monkeypatch, tmp_path: Path):
     _, processor = _build_processor(monkeypatch, tmp_path)
 
     img_path = tmp_path / "fig1.png"
-    out_path = tmp_path / "out.png"
     img_path.write_bytes(b"fake")
 
     monkeypatch.setattr(processor, "_run_local_ocr", lambda _: [])
@@ -153,18 +181,12 @@ def test_process_single_image_keeps_unknown_pid_for_formal_examiner(monkeypatch,
     monkeypatch.setattr(
         processor,
         "_run_hybrid_vlm_correction",
-        lambda *_: [{"text": "11-A", "box": [1, 2, 30, 40]}],
+        lambda *_: {
+            "reasoning": "ok",
+            "image_type": "structure",
+            "marks": [{"text": "11-A", "box": [1, 2, 30, 40]}],
+        },
     )
-
-    annotate_called = {"called": False}
-
-    def _mark_annotate(*args, **kwargs):
-        annotate_called["called"] = True
-
-    monkeypatch.setattr(processor, "_annotate_image", _mark_annotate)
-
-    found = processor._process_single_image(img_path, out_path)
-
-    assert found == ["11a"]
-    assert annotate_called["called"] is False
-    assert out_path.exists()
+    result = processor._extract_single_image(img_path)
+    assert result["found_pids"] == ["11a"]
+    assert result["labels"] == []

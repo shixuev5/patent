@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from config import settings
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
 
@@ -125,13 +126,15 @@ class ContentGenerator:
                 max_workers=self.LOGIC_PARALLEL_WORKERS,
                 thread_name_prefix="report",
             ) as executor:
-                future_background = executor.submit(
+                future_background = submit_with_current_context(
+                    executor,
                     self._run_cached,
                     "background_knowledge",
                     self._generate_background_knowledge,
                     core_logic,
                 )
-                future_features = executor.submit(
+                future_features = submit_with_current_context(
+                    executor,
                     self._run_cached,
                     "features",
                     self._extract_features,
@@ -744,7 +747,9 @@ class ContentGenerator:
         max_workers = min(self.figure_parallel_workers, len(grouped_items))
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="figures") as executor:
             future_map = {
-                executor.submit(self._build_single_figure_result, label, items, global_context): idx
+                submit_with_current_context(
+                    executor, self._build_single_figure_result, label, items, global_context
+                ): idx
                 for idx, (label, items) in enumerate(grouped_items)
             }
             for future in as_completed(future_map):

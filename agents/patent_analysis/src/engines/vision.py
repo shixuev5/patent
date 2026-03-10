@@ -4,6 +4,7 @@ import os
 import json
 import shutil
 import math
+import time
 import numpy as np
 import base64
 import requests
@@ -15,11 +16,12 @@ from PIL import Image, ImageDraw, ImageFont
 from paddleocr import PaddleOCR
 from config import settings
 from loguru import logger
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 
 
 class VisualProcessor:
-    """视觉处理核心类，负责 OCR、标注和图片批处理"""
+    """视觉处理核心类，负责 OCR、标注和图片批处理 (两阶段架构分离 CPU 与 IO)"""
 
     def __init__(
         self,
@@ -35,8 +37,6 @@ class VisualProcessor:
         :param raw_img_dir: 原始图片目录
         :param out_dir: 输出目录 (annotated_dir)
         """
-
-        # 支持模式: 'local', 'online'。其余值自动回退到 local。
         self.engine_type = os.getenv("OCR_ENGINE", "local").lower()
         if self.engine_type not in {"local", "online"}:
             logger.warning(
@@ -63,15 +63,15 @@ class VisualProcessor:
             self.ocr_engine = PaddleOCR(
                 text_detection_model_name="PP-OCRv5_server_det",
                 text_recognition_model_name="PP-OCRv5_server_rec",
-                use_doc_orientation_classify=False,  # 不使用文档方向分类模型
-                use_doc_unwarping=False,  # 不使用文本图像矫正模型
-                use_textline_orientation=False,  # 不使用文本行方向分类模型
-                text_rec_score_thresh=0.7,  # 识别置信度
-                text_det_thresh=0.2,  # 文本检测像素阈值
-                text_det_box_thresh=0.3,  # 文本检测框阈值
-                text_det_unclip_ratio=1.5,  # 文本检测扩张系数
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                text_rec_score_thresh=0.7,
+                text_det_thresh=0.2,
+                text_det_box_thresh=0.3,
+                text_det_unclip_ratio=1.5,
             )
-            self._ocr_engine_lock: Optional[Lock] = Lock()
+            self._ocr_engine_lock = Lock()
 
         elif self.engine_type == "online":
             logger.info("[视觉] 使用 AI Studio 在线 OCR 接口。")
@@ -79,18 +79,13 @@ class VisualProcessor:
             self._ocr_engine_lock = None
 
     def process_patent_images(self) -> Dict[str, List[str]]:
-        """
-        兼容入口：先做识别，再做标注。
-        """
+        """兼容入口：先做识别，再做标注。"""
         image_parts, image_labels = self.extract_image_labels()
         self.annotate_from_image_labels(image_labels)
         return image_parts
 
     def extract_image_labels(self) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict[str, Any]]]]:
-        """
-        提取图片中的部件标号与可视化标签，不写入标注图。
-        :return: (image_parts, image_labels)
-        """
+        """提取图片中的部件标号与可视化标签 (按引擎类型动态调度架构)。"""
         target_filenames = self._extract_target_filenames()
         logger.info(f"[视觉] 检测到 {len(target_filenames)} 张目标图片待分析。")
 
@@ -102,61 +97,83 @@ class VisualProcessor:
         if not all_images:
             return {}, {}
 
+        # 预过滤出真正需要处理的图片
+        target_images =[img for img in all_images if self.parts_db and img.name in target_filenames]
+        max_workers = self._resolve_max_workers(len(all_images))
+        
+        # 初始化结果字典，默认跳过VLM的为 None
+        ocr_results_map = {img.name: None for img in all_images}
+
+        # =========================================================
+        # 阶段一：OCR 初筛提取 (根据引擎动态决定并发策略)
+        # =========================================================
+        if self.engine_type == "local":
+            logger.info("[视觉] 阶段一：本地模式，串行执行 OCR 以保护 CPU/GPU 资源...")
+            for img_path in target_images:
+                try:
+                    ocr_results_map[img_path.name] = self._run_ocr_pipeline(str(img_path))
+                except Exception as e:
+                    logger.error(f"[视觉] 本地 OCR 处理异常 {img_path.name}: {e}")
+                    ocr_results_map[img_path.name] = []
+        else:
+            logger.info(f"[视觉] 阶段一：在线模式，并发执行 OCR 请求 (并发数={max_workers})...")
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vision_ocr") as executor:
+                future_map = {
+                    submit_with_current_context(
+                        executor, self._run_ocr_pipeline, str(img_path)
+                    ): img_path.name
+                    for img_path in target_images
+                }
+                for future in as_completed(future_map):
+                    filename = future_map[future]
+                    try:
+                        ocr_results_map[filename] = future.result()
+                    except Exception as e:
+                        logger.error(f"[视觉] 在线 OCR 并发异常 {filename}: {e}")
+                        ocr_results_map[filename] =[]
+
+        # =========================================================
+        # 阶段二：网络 IO 密集型任务 (并发调用 VLM 大模型)
+        # =========================================================
+        logger.info(f"[视觉] 阶段二：开始并发请求 VLM 大模型进行图像清洗与分类 (并发数={max_workers})...")
+        static_system_prompt = self._build_static_system_prompt()
+        
         image_parts: Dict[str, List[str]] = {}
         image_labels: Dict[str, List[Dict[str, Any]]] = {}
-
-        if self.engine_type == "local":
-            logger.info(f"[视觉] 本地模式按顺序识别图片，总数={len(all_images)}")
+        
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vision_vlm") as executor:
+            future_map = {}
             for img_path in all_images:
                 filename = img_path.name
-                try:
-                    processed_name, part_ids, labels = self._extract_image_task(
-                        img_path, target_filenames
+                raw_ocr = ocr_results_map.get(filename)
+                
+                # 如果该图在目标列表中且完成了 OCR，进入 VLM 审查队列
+                if raw_ocr is not None:
+                    future = submit_with_current_context(
+                        executor,
+                        self._run_vlm_pipeline,
+                        str(img_path),
+                        raw_ocr,
+                        static_system_prompt,
                     )
-                except Exception as e:
-                    logger.error(f"[视觉] 顺序识别异常 {filename}: {e}")
-                    continue
-                if part_ids:
-                    image_parts[processed_name] = part_ids
-                if labels:
-                    image_labels[processed_name] = labels
-            return image_parts, image_labels
-
-        max_workers = self._resolve_max_workers(len(all_images))
-        logger.info(
-            f"[视觉] 在线模式并行识别图片，总数={len(all_images)}，并发={max_workers}"
-        )
-
-        with ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="vision"
-        ) as executor:
-            future_map = {
-                executor.submit(self._extract_image_task, img_path, target_filenames): img_path.name
-                for img_path in all_images
-            }
+                    future_map[future] = filename
 
             for future in as_completed(future_map):
                 filename = future_map[future]
                 try:
-                    processed_name, part_ids, labels = future.result()
+                    part_ids, labels = future.result()
+                    if part_ids:
+                        image_parts[filename] = part_ids
+                    if labels:
+                        image_labels[filename] = labels
                 except Exception as e:
-                    logger.error(f"[视觉] 并行识别异常 {filename}: {e}")
-                    continue
-                if part_ids:
-                    image_parts[processed_name] = part_ids
-                if labels:
-                    image_labels[processed_name] = labels
+                    logger.error(f"[视觉] 并发 VLM 异常 {filename}: {e}")
 
         return image_parts, image_labels
-
-    def annotate_from_image_labels(
-        self, image_labels: Dict[str, List[Dict[str, Any]]]
-    ) -> None:
-        """
-        根据已识别标签生成标注图；无标签的图片直接复制。
-        """
+    
+    def annotate_from_image_labels(self, image_labels: Dict[str, List[Dict[str, Any]]]) -> None:
+        """根据已识别标签生成标注图；无标签的图片直接复制。"""
         if not self.raw_img_dir.exists():
-            logger.warning(f"[视觉] 原始图片目录不存在：{self.raw_img_dir}")
             return
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -164,7 +181,7 @@ class VisualProcessor:
         for img_path in all_images:
             filename = img_path.name
             out_path = self.out_dir / filename
-            labels = image_labels.get(filename, []) if isinstance(image_labels, dict) else []
+            labels = image_labels.get(filename, []) if isinstance(image_labels, dict) else[]
             try:
                 if labels:
                     self._annotate_image(str(img_path), labels, str(out_path))
@@ -175,15 +192,6 @@ class VisualProcessor:
                 if img_path.exists():
                     shutil.copy2(img_path, out_path)
 
-    def _extract_image_task(
-        self, img_path: Path, target_filenames: Set[str]
-    ) -> Tuple[str, List[str], List[Dict[str, Any]]]:
-        filename = img_path.name
-        if self.parts_db and filename in target_filenames:
-            extracted = self._extract_single_image(img_path)
-            return filename, extracted["found_pids"], extracted["labels"]
-        return filename, [], []
-
     @staticmethod
     def _resolve_max_workers(total_images: int) -> int:
         configured = max(1, int(getattr(settings, "VISION_MAX_WORKERS", 6) or 6))
@@ -192,505 +200,89 @@ class VisualProcessor:
     def _extract_target_filenames(self) -> Set[str]:
         """解析 JSON 数据，提取摘要图和附图的文件名"""
         filenames = set()
-
-        # 1. 提取摘要附图
         abs_fig = self.patent_data.get("bibliographic_data", {}).get("abstract_figure")
         if abs_fig:
             fname = self._clean_md_path(abs_fig)
             if fname:
                 filenames.add(fname)
 
-        # 2. 提取附图列表
-        drawings = self.patent_data.get("drawings", [])
+        drawings = self.patent_data.get("drawings",[])
         for draw in drawings:
             path_str = draw.get("file_path", "")
             fname = self._clean_md_path(path_str)
             if fname:
                 filenames.add(fname)
-
         return filenames
 
     def _clean_md_path(self, md_str: str) -> str:
         """从 markdown 链接提取文件名"""
         if not md_str:
             return ""
-
         match = re.search(r"([^/]+?)$", md_str)
         path = match.group(1) if match else md_str
-
         return Path(path).name
 
-    def _extract_single_image(self, img_path: Path) -> Dict[str, Any]:
-        """对单张图片做 OCR + VLM 纠错并提取标签，不进行绘图。"""
+    def _run_ocr_pipeline(self, img_path: str) -> List[Dict]:
+        """纯 OCR 提取管道（智能放大 + 除法去底 + 粘连切分）"""
+        if self.engine_type == "local":
+            raw_ocr = self._run_local_ocr(img_path)
+        else:
+            raw_ocr = self._run_online_ocr(img_path)
+        
+        # 修复粘连：将 "101 106" 拆分为独立的坐标框，为 VLM 降低认知负担
+        raw_ocr = self._expand_merged_ocr_results(raw_ocr)
+        return raw_ocr
+
+    def _run_vlm_pipeline(self, img_path: str, raw_ocr: List[Dict], static_system_prompt: str) -> Tuple[List[str], List[Dict]]:
+        """纯 VLM 提取管道：利用缓存的 System Prompt 结合当前图片和 OCR 数据纠错"""
         try:
-            # 1) 基础 OCR
-            if self.engine_type == "local":
-                raw_ocr = self._run_local_ocr(str(img_path))
-            else:
-                raw_ocr = self._run_online_ocr(str(img_path))
+            llm_service = get_llm_service()
+            img = cv2.imread(img_path)
+            if img is None:
+                logger.error(f"[视觉] 读取图片失败：{img_path}")
+                return [],[]
+            h, w = img.shape[:2]
 
-            # 修复粘连：拆分 "101 106" 这种结果
-            raw_ocr = self._expand_merged_ocr_results(raw_ocr)
+            ocr_context = json.dumps(raw_ocr, ensure_ascii=False)
+            
+            # 缩减 User Prompt 的长度，只传入图片特征数据
+            user_prompt = f"""
+            图片分辨率：{w}x{h}
+            【初筛 OCR 结果 (含坐标，可能包含大量坐标刻度/等高线噪点)】：
+            {ocr_context}
+            
+            请严格按照要求分类，并清洗修正 OCR 结果。
+            """
 
-            # 2) VLM 结合 parts_db 进行清洗/纠错/补全
-            corrected_results = self._run_hybrid_vlm_correction(str(img_path), raw_ocr)
+            # 使用安全重试调用机制
+            content = self._safe_invoke_vlm(llm_service, img_path, static_system_prompt, user_prompt)
+            data = self._parse_vlm_response(content)
+            
+            image_type = data.get("image_type", "other")
+            reasoning = data.get("reasoning", "无推理过程")
+            marks = data.get("marks",[])
+            img_name = Path(img_path).name
+
+            logger.info(f"[视觉] 图纸分析 {img_name} | 分类: {image_type} | 理由: {reasoning}")
+
+            # 核心防御：如果是图表曲线/等高线/坐标系等，绝对不要提取数字，防止形式缺陷审查误报
+            if image_type == "chart_graph":
+                logger.info(f"[视觉] {img_name} 为数据图表，主动跳过标记提取。")
+                return [],[]
 
             valid_labels = []
-            found_pids = []
+            found_pids =[]
             seen_pids = set()
 
-            for item in corrected_results:
+            for item in marks:
                 text = str(item.get("text", ""))
                 box = item.get("box")
                 if not text or not isinstance(box, list) or len(box) != 4:
                     continue
 
-                # 统一归一化：保留数字/字母并转小写
-                # 例如: "(16a)" -> "16a", "11-A" -> "11a"
+                # 归一化保留数字/字母
                 match_key = self._normalize_pid(text)
                 if not match_key:
-                    continue
-
-                # 情况 1: 在零部件库中找到了 (用于生成标注图 + 记录存在性)
-                if match_key in self.parts_db:
-                    label_text = self.parts_db[match_key].get("name") or match_key
-                    valid_labels.append(
-                        {
-                            "text": label_text,
-                            "box": box,
-                        }
-                    )
-                    if match_key not in seen_pids:
-                        found_pids.append(match_key)
-                        seen_pids.add(match_key)
-
-                # 情况 2: 库里没有，但是格式非常像一个部件编号 (用于形式审查报错)
-                # 只有当它"长得像编号"且之前没添加过时才记录
-                elif self._is_potential_part_id(match_key):
-                    # 注意：这里不加入 valid_labels，因为没有中文名，画在图上没意义
-                    # 但是要加入 found_pids，这样 FormalExaminer 就会发现它在 parts_db 里不存在
-                    if match_key not in seen_pids:
-                        found_pids.append(match_key)
-                        seen_pids.add(match_key)
-
-            return {
-                "found_pids": found_pids,
-                "labels": valid_labels,
-            }
-
-        except Exception as e:
-            logger.error(f"[视觉] 识别图片失败 {img_path.name}: {e}")
-            return {"found_pids": [], "labels": []}
-
-    @staticmethod
-    def _normalize_pid(value: str) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            return ""
-        clean_text = re.sub(r"[^a-zA-Z0-9]", "", raw)
-        return clean_text.lower()
-
-    def _is_potential_part_id(self, text: str) -> bool:
-        """
-        判断一个未定义的文本是否像是一个附图标记。
-
-        核心规则：
-        1. 必须以数字开头。
-        2. 开头数字不能是 '0' (排除 '0', '01', '05' 等 OCR 误识别)。
-        """
-        if not text:
-            return False
-
-        # --- 规则 1: 必须以数字开头 (排除 FIG, A-A, Section) ---
-        if not text[0].isdigit():
-            return False
-
-        # --- 规则 2: 开头数字不能是 0 (User Request) ---
-        # 专利中不使用 '0' 或 '0x' 作为标记
-        if text.startswith("0"):
-            return False
-
-        # --- 规则 3: 长度过滤 ---
-        # 附图标记通常很短，如 "1", "10", "102", "12a"
-        if len(text) > 6:
-            return False
-
-        # --- 规则 4: 排除明显的单位或序数词 ---
-        # text 已经是小写且去除了标点
-
-        # 常见物理单位 (排除 mm, cm, kg, hz 等)
-        if text.endswith(("mm", "cm", "km", "kg", "hz", "kv", "mg", "ml")):
-            return False
-
-        # 常见序数词缩写 (1st, 2nd, 3rd, 4th)
-        if text.endswith(("st", "nd", "rd", "th")):
-            return False
-
-        return True
-
-    def _preprocess_for_ocr(self, img_path: str) -> Tuple[Optional[np.ndarray], float]:
-        """
-        OCR 专用预处理：智能放大 + 背景除法清洗
-        :return: (处理后的图像array, 缩放比例)
-        """
-        if not os.path.exists(img_path):
-            return None, 1.0
-
-        img = cv2.imread(img_path)
-        if img is None:
-            return None, 1.0
-
-        h, w = img.shape[:2]
-
-        # 1. 智能放大逻辑
-        # 目标：确保短边至少 1600px，使 10px 的小数字变成 ~25px 以上
-        target_min_side = 1600
-        # 与 PaddleOCR 文本检测侧长上限对齐，避免预处理放大后再被模型内部缩小
-        det_max_side_limit = 4000
-        min_side = min(h, w)
-        max_side = max(h, w)
-
-        if min_side < target_min_side:
-            scale_factor = target_min_side / min_side
-            scale_factor = min(scale_factor, 4.0)  # 限制最大 4 倍
-        else:
-            scale_factor = 1.0
-
-        # 防止放大后超过检测上限，导致二次插值损失细节并增加耗时
-        if max_side * scale_factor > det_max_side_limit:
-            scale_factor = det_max_side_limit / max_side
-
-        if scale_factor > 1.0:
-            # 使用 Lanczos 插值，保持线条平滑
-            processed_img = cv2.resize(
-                img,
-                None,
-                fx=scale_factor,
-                fy=scale_factor,
-                interpolation=cv2.INTER_LANCZOS4,
-            )
-        else:
-            processed_img = img.copy()
-
-        # 转灰度
-        if len(processed_img.shape) == 3:
-            gray = cv2.cvtColor(processed_img, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = processed_img
-
-        # 2. 背景除法清洗 (Background Division)
-        # 估算背景 (膨胀去除线条)
-        dilated = cv2.dilate(gray, np.ones((25, 25), np.uint8))
-        bg_blur = cv2.medianBlur(dilated, 21)
-
-        # 核心算法：(原图 / 背景)
-        # 255 - absdiff 近似于除法效果，能强制背景变白
-        diff = 255 - cv2.absdiff(gray, bg_blur)
-
-        # 线性拉伸到 0-255
-        norm_img = cv2.normalize(
-            diff, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1
-        )
-
-        # 阈值漂白：去除浅灰色的水印/噪点 (Truncate mode)
-        _, result = cv2.threshold(norm_img, 230, 255, cv2.THRESH_TRUNC)
-
-        # 再次拉伸对比度，使文字更黑
-        final_result = cv2.normalize(
-            result,
-            None,
-            alpha=0,
-            beta=255,
-            norm_type=cv2.NORM_MINMAX,
-            dtype=cv2.CV_8UC1,
-        )
-
-        # 对浅灰底细线稿做极轻加粗，提升小标号(如 1/2/3/S1)可读性
-        dark_ratio = float(np.mean(final_result < 170))
-        if dark_ratio < 0.12:
-            kernel = np.ones((2, 2), np.uint8)
-            final_result = cv2.erode(final_result, kernel, iterations=1)
-
-        # # B. 高斯模糊 (Smoothing)
-        # # 这一步非常关键：它能消除锯齿，把"马赛克"变成"线条"，极大提升 OCR 识别率
-        # result = cv2.GaussianBlur(result, (3, 3), 0)
-
-        return final_result, scale_factor
-
-    def _expand_merged_ocr_results(self, results: List[Dict]) -> List[Dict]:
-        """
-        修复 OCR 粘连问题：将 "101 106" 或 "10a 10b" 拆分为独立的 box。
-        使用线性插值估算每个子串的坐标。
-        """
-        expanded = []
-
-        for item in results:
-            text = item["text"]
-            box = item["box"]  # [xmin, ymin, xmax, ymax]
-
-            if re.search(r"[a-zA-Z0-9]+\s+[a-zA-Z0-9]+", text):
-                # 按空格拆分
-                parts = text.split()
-
-                # 准备坐标计算
-                xmin, ymin, xmax, ymax = box
-                total_width = xmax - xmin
-                total_chars = len(text)  # 原文总长度（含空格）
-
-                current_char_idx = 0
-
-                for part in parts:
-                    # 跳过空字符串
-                    if not part.strip():
-                        continue
-
-                    # 找到该片段在原字符串中的起始位置
-                    start_idx = text.find(part, current_char_idx)
-                    if start_idx == -1:
-                        continue  # 防止极端异常导致系统崩溃
-                    end_idx = start_idx + len(part)
-
-                    # 线性插值计算新坐标
-                    # 假设字符是等宽的，根据字符索引位置比例切割 box
-                    new_xmin = xmin + int((start_idx / total_chars) * total_width)
-                    new_xmax = xmin + int((end_idx / total_chars) * total_width)
-
-                    # 构造新 item
-                    new_box = [new_xmin, ymin, new_xmax, ymax]
-
-                    expanded.append({"text": part, "box": new_box})
-
-                    # 更新搜索游标，防止重复查找
-                    current_char_idx = end_idx
-            else:
-                # 没有粘连，保留原样
-                expanded.append(item)
-
-        return expanded
-
-    def _run_local_ocr(self, img_path: str) -> List[Dict]:
-        """运行 OCR 返回原始结果"""
-
-        processed_img, scale = self._preprocess_for_ocr(img_path)
-
-        if processed_img is None:
-            logger.warning(f"[视觉] 图片预处理失败：{img_path}")
-            return []
-
-        # PaddleOCR 3.x text-det expects 3-channel input (H, W, C).
-        # _preprocess_for_ocr may return grayscale (H, W), so convert before predict.
-        ocr_input = processed_img
-        if len(ocr_input.shape) == 2:
-            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_GRAY2BGR)
-        elif len(ocr_input.shape) == 3 and ocr_input.shape[2] == 4:
-            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_BGRA2BGR)
-
-        try:
-            # PaddleOCR 推理对象并非强线程安全，推理调用加锁，其他步骤保持并行。
-            if self._ocr_engine_lock is None:
-                result = self.ocr_engine.predict(ocr_input)
-            else:
-                with self._ocr_engine_lock:
-                    result = self.ocr_engine.predict(ocr_input)
-        except Exception as e:
-            logger.error(f"[视觉] PaddleOCR 推理失败：{e}")
-            return []
-
-        if not result or not result[0]:
-            return []
-
-        texts = result[0].get("rec_texts", [])
-        boxes = result[0].get("rec_boxes", []).tolist()
-
-        formatted = []
-        for text, box in zip(texts, boxes):
-            xmin, ymin, xmax, ymax = box
-
-            xmin = max(0, int(xmin / scale))
-            ymin = max(0, int(ymin / scale))
-            xmax = int(xmax / scale)
-            ymax = int(ymax / scale)
-
-            formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
-
-        return formatted
-
-    def _run_online_ocr(self, img_path: str) -> List[Dict]:
-        """
-        调用自定义的 AI Studio OCR 接口
-        流程：本地预处理(放大/去底) -> 内存转Base64 -> POST请求 -> 解析坐标 -> 坐标还原
-        """
-        # 1. 复用图像增强 (关键)
-        processed_img, scale = self._preprocess_for_ocr(img_path)
-        if processed_img is None:
-            return []
-
-        try:
-            # 2. 内存编码: Numpy -> JPG Bytes -> Base64 String
-            success, encoded_img = cv2.imencode(".jpg", processed_img)
-            if not success:
-                logger.error(f"[在线OCR] 图片编码失败：{img_path}")
-                return []
-
-            file_data = base64.b64encode(encoded_img.tobytes()).decode("ascii")
-
-            # 3. 构造请求
-            headers = {
-                "Authorization": f"token {self.api_token}",
-                "Content-Type": "application/json",
-            }
-
-            payload = {
-                "file": file_data,
-                "fileType": 1,  # 1 for Image
-                "useDocOrientationClassify": False,
-                "useDocUnwarping": False,
-                "useTextlineOrientation": False,
-                "textDetThresh": 0.2,
-                "textDetBoxThresh": 0.3,
-                "textDetUnclipRatio": 1.5,
-                "textRecScoreThresh": 0.7,
-            }
-
-            # 4. 发送请求
-            response = requests.post(self.api_url, json=payload, headers=headers)
-            response.raise_for_status()  # 检查 200
-
-            result_json = response.json()
-
-            # 5. 解析结果
-            ocr_results = result_json.get("result", {}).get("ocrResults", [])
-            ocr_result = ocr_results[0].get("prunedResult", {})
-
-            texts = ocr_result.get("rec_texts", [])
-            boxes = ocr_result.get("rec_boxes", [])
-
-            formatted = []
-            for text, box in zip(texts, boxes):
-                xmin, ymin, xmax, ymax = box
-
-                xmin = max(0, int(xmin / scale))
-                ymin = max(0, int(ymin / scale))
-                xmax = int(xmax / scale)
-                ymax = int(ymax / scale)
-
-                formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
-
-            return formatted
-
-        except Exception as e:
-            logger.error(f"[在线OCR] 请求失败 {Path(img_path).name}: {e}")
-            return []
-
-    def _build_parts_context(self, max_chars: int = 7000) -> str:
-        """
-        将 parts_db 压缩为用于 VLM 纠错的上下文，包含多维关系字段并做长度保护。
-        """
-        if not self.parts_db:
-            return "（无部件上下文）"
-
-        lines: List[str] = []
-        current_length = 0
-        for pid, info in self.parts_db.items():
-            if not isinstance(info, dict):
-                continue
-            name = str(info.get("name", "未知部件") or "未知部件").strip()
-            function = str(info.get("function", "未提及") or "未提及").strip()
-            hierarchy = str(info.get("hierarchy", "未提及") or "未提及").strip()
-            spatial = str(
-                info.get("spatial_connections", "未提及") or "未提及"
-            ).strip()
-            motion = str(info.get("motion_state", "未提及") or "未提及").strip()
-            line = (
-                f"- 标号:{pid}; 名称:{name}; 功能:{function}; 层级:{hierarchy}; "
-                f"空间连接:{spatial}; 运动状态:{motion}"
-            )
-
-            next_length = current_length + len(line) + 1
-            if next_length > max_chars:
-                lines.append("- ... (parts_context 已截断)")
-                break
-            lines.append(line)
-            current_length = next_length
-
-        return "\n".join(lines) if lines else "（无部件上下文）"
-
-    def _run_hybrid_vlm_correction(
-        self, img_path: str, raw_ocr: List[Dict]
-    ) -> List[Dict]:
-        """
-        利用 VLM 结合零部件库，对 OCR 结果进行清洗、纠错和漏检补全。
-        仅以 VLM 返回结果为准，不回退 raw_ocr。
-        """
-        try:
-            llm_service = get_llm_service()
-
-            # 读取图片尺寸用于坐标边界约束
-            img = cv2.imread(img_path)
-            if img is None:
-                logger.error(f"[视觉] 读取图片失败：{img_path}")
-                return []
-            h, w = img.shape[:2]
-
-            parts_context = self._build_parts_context(max_chars=7000)
-            ocr_context = json.dumps(raw_ocr, ensure_ascii=False)
-
-            system_prompt = """
-            你是专利视觉审查专家。请结合【说明书部件库】和【初筛OCR结果】，输出图片中真实存在的附图标记。
-
-            传统OCR常见错误：
-            1. 错认：如 10->1O、101->10l，或把噪点认成标号；
-            2. 漏认：低对比度标号未识别；
-            3. 截断：OCR 框未包全字符。
-
-            判定原则：
-            - 优先识别部件库中出现过的标号；
-            - 带引出线的数字通常是附图标记；
-            - 不要把图名（FIG.1）、正文、尺寸线、剖面线字母（A-A）当作标号。
-
-            输出要求：
-            - 只输出 JSON 数组，不要 Markdown；
-            - 格式必须是：
-              [{"text":"10","box":[xmin,ymin,xmax,ymax]}, ...]
-            - box 使用像素坐标（与输入图片同坐标系）。
-            """
-
-            user_prompt = f"""
-            图片分辨率：{w}x{h}
-
-            【说明书部件库 (Ground Truth)】：
-            {parts_context}
-
-            【初筛 OCR 结果 (含坐标，可能有误)】：
-            {ocr_context}
-
-            请审视图片后修正 OCR：
-            - 纠正错字、删除噪点框；
-            - 若部件库中的标号明显存在但 OCR 漏检，请补充并给出坐标框。
-            """
-
-            content = llm_service.invoke_vision_image(
-                img_path,
-                system_prompt,
-                user_prompt,
-                task_kind="vision_ocr_correction",
-            )
-
-            data = self._parse_vlm_json_array(content)
-            if not isinstance(data, list):
-                logger.warning(
-                    f"[视觉] 混合纠错解析失败，返回空结果：{Path(img_path).name}"
-                )
-                return []
-
-            formatted = []
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-
-                text = str(item.get("text", "")).strip()
-                box = item.get("box", [])
-                if not text or not isinstance(box, list) or len(box) != 4:
                     continue
 
                 try:
@@ -706,60 +298,313 @@ class VisualProcessor:
                 if x2 <= x1 or y2 <= y1:
                     continue
 
-                formatted.append({"text": text, "box": [x1, y1, x2, y2]})
+                # 直接信任 VLM 的提取结果并记入审查队列，废弃脆弱的正则过滤
+                if match_key not in seen_pids:
+                    found_pids.append(match_key)
+                    seen_pids.add(match_key)
 
-            logger.info(
-                f"[视觉] 混合纠错完成，识别到 {len(formatted)} 个标号：{Path(img_path).name}"
-            )
-            return formatted
+                # 如果在说明书零部件库中找到了，用于生成标注图
+                if match_key in self.parts_db:
+                    label_text = self.parts_db[match_key].get("name") or match_key
+                    valid_labels.append({
+                        "text": label_text,
+                        "box":[x1, y1, x2, y2],
+                    })
+
+            return found_pids, valid_labels
 
         except Exception as e:
-            logger.warning(
-                f"[视觉] 混合纠错失败，返回空结果：{Path(img_path).name}，错误：{e}"
-            )
-            return []
+            logger.error(f"[视觉] 混合纠错提取异常 {Path(img_path).name}: {e}")
+            return [],[]
+
+    def _safe_invoke_vlm(self, llm_service, img_path: str, sys_prompt: str, usr_prompt: str) -> str:
+        """带退避重试机制的 LLM 调用（抗并发限流保护）"""
+        max_retries = 3
+        base_wait = 2
+        
+        for attempt in range(max_retries):
+            try:
+                return llm_service.invoke_vision_image(
+                    img_path, sys_prompt, usr_prompt, task_kind="vision_ocr_correction"
+                )
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = base_wait * (2 ** attempt)  # 2s, 4s, 8s
+                    logger.warning(f"[视觉] VLM API 调用受阻，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"[视觉] VLM API 达到最大重试次数，调用失败: {e}")
+                    raise
+
+    def _build_static_system_prompt(self) -> str:
+        """构建静态前缀提示词，触发大型模型底层 Prompt Caching 从而降本提速"""
+        parts_context = self._build_parts_context(max_chars=7000)
+        
+        return f"""你是专利视觉审查专家。你的核心任务是对专利附图进行【分类审查】，并结合【说明书部件库】和【初筛OCR结果】，提取图片中真实存在的【附图标记】。
+
+【说明书部件库 (Ground Truth)】（请牢记以下部件）：
+{parts_context}
+
+【任务1：专利图纸分类判断 (image_type)】
+你必须先判断当前图片的类型：
+1. structure: 机械/结构图纸。特征是有实物轮廓、剖面线、带【引出线】的数字标号。
+2. flowchart_block: 流程图/系统框图。特征是包含矩形/菱形框、连接箭头，框内包含模块/步骤编号（如 S101, 100）。
+3. chart_graph: 数据图表。特征是坐标轴(X/Y)、刻度数字、波形曲线、等高线、实验数据散点、柱状图等。
+4. circuit: 电路原理图。特征是包含电气符号、电阻电容标号（如 R1, C2）。
+5. other: 界面截图、化学式、无法归类的其他图纸。
+
+【任务2：提取附图标记原则】
+- 优先提取【说明书部件库】中出现过的标号并修正坐标。
+- 真正的物理零部件标记通常带有【引出线】。
+- 【严格排除（任何情况都不要提取）】：图名（如 FIG.1, 图2）、正文段落文字、尺寸标注（10mm, R5）、剖面线字母（A-A）。
+- 【极度危险警告】：如果你判断图纸类型为 `chart_graph`，则图中的坐标刻度（如 10, 100, 500）、等高线数值、时间轴数值【绝对不是附图标记】！此时你的 marks 数组必须输出为空 `[]`，不可产生形式审查误报。
+- 仅提取标号本身，不要带上中文名称。
+
+【输出格式要求】：
+仅输出合法的 JSON，不要带有 ```json 的 Markdown 包装。格式如下：
+{{
+    "reasoning": "请简要分析图片的视觉特征，判断它的分类，解释哪些是真正的标记，哪些是刻度或尺寸需被剔除。",
+    "image_type": "structure|flowchart_block|chart_graph|circuit|other",
+    "marks":[
+        {{"text": "10", "box":[xmin, ymin, xmax, ymax]}}
+    ]
+}}
+"""
 
     @staticmethod
-    def _parse_vlm_json_array(content: str) -> List[Dict]:
-        text = str(content or "").strip()
-        if not text:
+    def _normalize_pid(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        clean_text = re.sub(r"[^a-zA-Z0-9]", "", raw)
+        return clean_text.lower()
+
+    def _preprocess_for_ocr(self, img_path: str) -> Tuple[Optional[np.ndarray], float]:
+        """OCR 专用预处理：智能放大 + 背景除法清洗"""
+        if not os.path.exists(img_path):
+            return None, 1.0
+
+        img = cv2.imread(img_path)
+        if img is None:
+            return None, 1.0
+
+        h, w = img.shape[:2]
+        target_min_side = 1600
+        det_max_side_limit = 4000
+        min_side = min(h, w)
+        max_side = max(h, w)
+
+        if min_side < target_min_side:
+            scale_factor = target_min_side / min_side
+            scale_factor = min(scale_factor, 4.0)
+        else:
+            scale_factor = 1.0
+
+        if max_side * scale_factor > det_max_side_limit:
+            scale_factor = det_max_side_limit / max_side
+
+        if scale_factor > 1.0:
+            processed_img = cv2.resize(
+                img, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LANCZOS4
+            )
+        else:
+            processed_img = img.copy()
+
+        if len(processed_img.shape) == 3:
+            gray = cv2.cvtColor(processed_img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = processed_img
+
+        dilated = cv2.dilate(gray, np.ones((25, 25), np.uint8))
+        bg_blur = cv2.medianBlur(dilated, 21)
+
+        diff = 255 - cv2.absdiff(gray, bg_blur)
+        norm_img = cv2.normalize(diff, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+        _, result = cv2.threshold(norm_img, 230, 255, cv2.THRESH_TRUNC)
+        final_result = cv2.normalize(result, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+
+        dark_ratio = float(np.mean(final_result < 170))
+        if dark_ratio < 0.12:
+            kernel = np.ones((2, 2), np.uint8)
+            final_result = cv2.erode(final_result, kernel, iterations=1)
+
+        return final_result, scale_factor
+
+    def _expand_merged_ocr_results(self, results: List[Dict]) -> List[Dict]:
+        expanded = []
+        for item in results:
+            text = item["text"]
+            box = item["box"] 
+
+            if re.search(r"[a-zA-Z0-9]+\s+[a-zA-Z0-9]+", text):
+                parts = text.split()
+                xmin, ymin, xmax, ymax = box
+                total_width = xmax - xmin
+                total_chars = len(text)
+                current_char_idx = 0
+
+                for part in parts:
+                    if not part.strip():
+                        continue
+                    start_idx = text.find(part, current_char_idx)
+                    if start_idx == -1:
+                        continue
+                    end_idx = start_idx + len(part)
+
+                    new_xmin = xmin + int((start_idx / total_chars) * total_width)
+                    new_xmax = xmin + int((end_idx / total_chars) * total_width)
+                    new_box =[new_xmin, ymin, new_xmax, ymax]
+                    expanded.append({"text": part, "box": new_box})
+                    current_char_idx = end_idx
+            else:
+                expanded.append(item)
+        return expanded
+
+    def _run_local_ocr(self, img_path: str) -> List[Dict]:
+        processed_img, scale = self._preprocess_for_ocr(img_path)
+        if processed_img is None:
+            logger.warning(f"[视觉] 图片预处理失败：{img_path}")
+            return[]
+
+        ocr_input = processed_img
+        if len(ocr_input.shape) == 2:
+            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_GRAY2BGR)
+        elif len(ocr_input.shape) == 3 and ocr_input.shape[2] == 4:
+            ocr_input = cv2.cvtColor(ocr_input, cv2.COLOR_BGRA2BGR)
+
+        try:
+            # 串行执行无需强制抢占 Lock，但为保持健壮性依旧保留锁定
+            if self._ocr_engine_lock is None:
+                result = self.ocr_engine.predict(ocr_input)
+            else:
+                with self._ocr_engine_lock:
+                    result = self.ocr_engine.predict(ocr_input)
+        except Exception as e:
+            logger.error(f"[视觉] PaddleOCR 推理失败：{e}")
             return []
 
-        cleaned = text.replace("```json", "").replace("```", "").strip()
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, list):
-                return parsed
-        except json.JSONDecodeError:
-            pass
+        if not result or not result[0]:
+            return []
 
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
+        texts = result[0].get("rec_texts", [])
+        boxes = result[0].get("rec_boxes", []).tolist()
+
+        formatted =[]
+        for text, box in zip(texts, boxes):
+            xmin, ymin, xmax, ymax = box
+            xmin = max(0, int(xmin / scale))
+            ymin = max(0, int(ymin / scale))
+            xmax = int(xmax / scale)
+            ymax = int(ymax / scale)
+            formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
+
+        return formatted
+
+    def _run_online_ocr(self, img_path: str) -> List[Dict]:
+        processed_img, scale = self._preprocess_for_ocr(img_path)
+        if processed_img is None:
+            return[]
+
+        try:
+            success, encoded_img = cv2.imencode(".jpg", processed_img)
+            if not success:
+                logger.error(f"[在线OCR] 图片编码失败：{img_path}")
+                return[]
+
+            file_data = base64.b64encode(encoded_img.tobytes()).decode("ascii")
+
+            headers = {
+                "Authorization": f"token {self.api_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "file": file_data,
+                "fileType": 1,
+                "useDocOrientationClassify": False,
+                "useDocUnwarping": False,
+                "useTextlineOrientation": False,
+                "textDetThresh": 0.2,
+                "textDetBoxThresh": 0.3,
+                "textDetUnclipRatio": 1.5,
+                "textRecScoreThresh": 0.7,
+            }
+
+            response = requests.post(self.api_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result_json = response.json()
+
+            ocr_results = result_json.get("result", {}).get("ocrResults", [])
+            ocr_result = ocr_results[0].get("prunedResult", {})
+
+            texts = ocr_result.get("rec_texts",[])
+            boxes = ocr_result.get("rec_boxes", [])
+
+            formatted =[]
+            for text, box in zip(texts, boxes):
+                xmin, ymin, xmax, ymax = box
+                xmin = max(0, int(xmin / scale))
+                ymin = max(0, int(ymin / scale))
+                xmax = int(xmax / scale)
+                ymax = int(ymax / scale)
+                formatted.append({"text": text, "box": [xmin, ymin, xmax, ymax]})
+
+            return formatted
+        except Exception as e:
+            logger.error(f"[在线OCR] 请求失败 {Path(img_path).name}: {e}")
+            return[]
+
+    def _build_parts_context(self, max_chars: int = 7000) -> str:
+        if not self.parts_db:
+            return "（无部件上下文）"
+
+        lines: List[str] =[]
+        current_length = 0
+        for pid, info in self.parts_db.items():
+            if not isinstance(info, dict):
+                continue
+            name = str(info.get("name", "未知部件") or "未知部件").strip()
+            function = str(info.get("function", "未提及") or "未提及").strip()
+            hierarchy = str(info.get("hierarchy", "未提及") or "未提及").strip()
+            spatial = str(info.get("spatial_connections", "未提及") or "未提及").strip()
+            motion = str(info.get("motion_state", "未提及") or "未提及").strip()
+            line = f"- 标号:{pid}; 名称:{name}; 功能:{function}; 层级:{hierarchy}; 空间连接:{spatial}; 运动状态:{motion}"
+
+            next_length = current_length + len(line) + 1
+            if next_length > max_chars:
+                lines.append("- ... (parts_context 已截断)")
+                break
+            lines.append(line)
+            current_length = next_length
+
+        return "\n".join(lines) if lines else "（无部件上下文）"
+
+    @staticmethod
+    def _parse_vlm_response(content: str) -> Dict:
+        text = str(content or "").strip()
+        if not text:
+            return {"image_type": "other", "marks":[]}
+
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
         if start != -1 and end != -1 and start < end:
-            candidate = cleaned[start : end + 1]
             try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, list):
+                parsed = json.loads(cleaned[start : end + 1])
+                if isinstance(parsed, dict):
                     return parsed
             except json.JSONDecodeError:
-                return []
+                pass
 
-        return []
+        return {"image_type": "other", "reasoning": "JSON解析失败", "marks":[]}
 
     def _annotate_image(self, img_path: str, labels: list, output_path: str):
-        """
-        在图片上绘制标签
-        labels: [{'text': '中文名', 'box': [x1,y1,x2,y2]}, ...]
-        """
         try:
             processor = LabelPlacer(img_path)
             result_img = processor.place_labels(labels)
             cv2.imwrite(output_path, result_img)
         except Exception as e:
             logger.error(f"[视觉] 标注绘制失败：{img_path}，错误：{e}")
-            # 失败时尝试直接拷贝原图
             shutil.copy2(img_path, output_path)
-
 
 class LabelPlacer:
     """智能避障标签放置器"""

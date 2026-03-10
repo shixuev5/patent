@@ -6,6 +6,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from loguru import logger
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
@@ -180,7 +181,9 @@ class PatentRetrievalNode:
         results_by_number: dict[str, dict] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(self._retrieve_single_patent, patent_number, output_dir): patent_number
+                submit_with_current_context(
+                    executor, self._retrieve_single_patent, patent_number, output_dir
+                ): patent_number
                 for patent_number in dedup_patents
             }
             for future in as_completed(futures):

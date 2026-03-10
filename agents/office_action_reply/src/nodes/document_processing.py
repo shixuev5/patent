@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from loguru import logger
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.parsers.word_parser import WordParser
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
@@ -148,7 +149,11 @@ class DocumentProcessingNode:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             for index, input_file in enumerate(input_files):
-                futures[executor.submit(self._parse_single_file, input_file, output_dir)] = index
+                futures[
+                    submit_with_current_context(
+                        executor, self._parse_single_file, input_file, output_dir
+                    )
+                ] = index
 
             for future in as_completed(futures):
                 index = futures[future]
