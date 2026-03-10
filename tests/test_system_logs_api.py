@@ -27,14 +27,16 @@ def _seed_users(storage: SQLiteTaskStorage):
         User(
             owner_id="authing:admin-1",
             authing_sub="admin-1",
-            raw_profile={"roles": ["admin"]},
+            role="admin",
+            raw_profile={},
         )
     )
     storage.upsert_authing_user(
         User(
             owner_id="authing:user-1",
             authing_sub="user-1",
-            raw_profile={"roles": ["member"]},
+            role="member",
+            raw_profile={},
         )
     )
 

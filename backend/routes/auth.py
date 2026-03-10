@@ -2,8 +2,10 @@
 认证路由
 """
 import hashlib
+import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any, Set
 
 from fastapi import APIRouter
 
@@ -42,6 +44,45 @@ def _normalize_guest_device_id(value: str | None) -> str:
     return text
 
 
+def _parse_role_tokens(text: str) -> Set[str]:
+    tokens = [item.strip().lower() for item in re.split(r"[\s,|;/]+", text or "") if item.strip()]
+    return {item for item in tokens if item}
+
+
+def _collect_roles(value: Any, output: Set[str]):
+    if isinstance(value, str):
+        output.update(_parse_role_tokens(value))
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_roles(item, output)
+        return
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        lower_key = str(key or "").strip().lower()
+        if lower_key in {"code", "name", "value", "slug", "id"} and isinstance(item, str):
+            output.update(_parse_role_tokens(item))
+        if "role" in lower_key or isinstance(item, (list, dict)):
+            _collect_roles(item, output)
+
+
+def _extract_primary_role(claims: dict) -> str | None:
+    roles: Set[str] = set()
+    for key, value in claims.items():
+        if "role" in str(key or "").strip().lower():
+            _collect_roles(value, roles)
+        elif isinstance(value, dict):
+            for child_key, child_value in value.items():
+                if "role" in str(child_key or "").strip().lower():
+                    _collect_roles(child_value, roles)
+    if not roles:
+        return None
+    if "admin" in roles:
+        return "admin"
+    return sorted(roles)[0]
+
+
 @router.post("/api/auth/guest", response_model=GuestAuthResponse)
 async def create_guest_auth(payload: GuestAuthRequest | None = None):
     """创建访客身份认证"""
@@ -66,6 +107,7 @@ async def exchange_authing_token(payload: AuthingTokenExchangeRequest):
     user_record = User(
         owner_id=owner_id,
         authing_sub=sub,
+        role=_extract_primary_role(claims),
         name=_sanitize_profile_text(claims.get("name")),
         nickname=_sanitize_profile_text(claims.get("nickname")),
         email=_sanitize_profile_text(claims.get("email")),

@@ -33,6 +33,7 @@ class D1TaskStorage:
         "users": [
             ("owner_id", "owner_id TEXT PRIMARY KEY"),
             ("authing_sub", "authing_sub TEXT NOT NULL UNIQUE"),
+            ("role", "role TEXT"),
             ("name", "name TEXT"),
             ("nickname", "nickname TEXT"),
             ("email", "email TEXT"),
@@ -124,6 +125,7 @@ class D1TaskStorage:
     CREATE TABLE IF NOT EXISTS users (
         owner_id TEXT PRIMARY KEY,
         authing_sub TEXT NOT NULL UNIQUE,
+        role TEXT,
         name TEXT,
         nickname TEXT,
         email TEXT,
@@ -294,6 +296,9 @@ class D1TaskStorage:
             for column_name, ddl in required_columns:
                 if column_name not in existing_columns:
                     self._request(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+        user_columns = self._get_existing_columns("users")
+        if "role" in user_columns:
+            self._request("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)")
         self._request(
             "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
             [TaskType.PATENT_ANALYSIS.value],
@@ -371,6 +376,7 @@ class D1TaskStorage:
         return User(
             owner_id=row["owner_id"],
             authing_sub=row["authing_sub"],
+            role=row.get("role"),
             name=row.get("name"),
             nickname=row.get("nickname"),
             email=row.get("email"),
@@ -978,11 +984,12 @@ class D1TaskStorage:
         self._request(
             """
             INSERT INTO users (
-                owner_id, authing_sub, name, nickname, email, phone, picture,
+                owner_id, authing_sub, role, name, nickname, email, phone, picture,
                 raw_profile, created_at, updated_at, last_login_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_id) DO UPDATE SET
                 authing_sub = excluded.authing_sub,
+                role = excluded.role,
                 name = excluded.name,
                 nickname = excluded.nickname,
                 email = excluded.email,
@@ -995,6 +1002,7 @@ class D1TaskStorage:
             [
                 user.owner_id,
                 user.authing_sub,
+                user.role,
                 user.name,
                 user.nickname,
                 user.email,

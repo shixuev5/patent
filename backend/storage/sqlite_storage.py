@@ -37,6 +37,7 @@ class SQLiteTaskStorage:
         "users": [
             ("owner_id", "owner_id TEXT PRIMARY KEY"),
             ("authing_sub", "authing_sub TEXT NOT NULL UNIQUE"),
+            ("role", "role TEXT"),
             ("name", "name TEXT"),
             ("nickname", "nickname TEXT"),
             ("email", "email TEXT"),
@@ -128,6 +129,7 @@ class SQLiteTaskStorage:
     CREATE TABLE IF NOT EXISTS users (
         owner_id TEXT PRIMARY KEY,
         authing_sub TEXT NOT NULL UNIQUE,
+        role TEXT,
         name TEXT,
         nickname TEXT,
         email TEXT,
@@ -233,6 +235,9 @@ class SQLiteTaskStorage:
                 for column_name, ddl in required_columns:
                     if column_name not in existing_columns:
                         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+            user_columns = self._get_existing_columns(conn, "users")
+            if "role" in user_columns:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)")
             conn.execute(
                 "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
                 (TaskType.PATENT_ANALYSIS.value,),
@@ -295,6 +300,7 @@ class SQLiteTaskStorage:
         return User(
             owner_id=row["owner_id"],
             authing_sub=row["authing_sub"],
+            role=row["role"] if "role" in row.keys() else None,
             name=row["name"],
             nickname=row["nickname"],
             email=row["email"],
@@ -957,11 +963,12 @@ class SQLiteTaskStorage:
             conn.execute(
                 """
                 INSERT INTO users (
-                    owner_id, authing_sub, name, nickname, email, phone, picture,
+                    owner_id, authing_sub, role, name, nickname, email, phone, picture,
                     raw_profile, created_at, updated_at, last_login_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(owner_id) DO UPDATE SET
                     authing_sub = excluded.authing_sub,
+                    role = excluded.role,
                     name = excluded.name,
                     nickname = excluded.nickname,
                     email = excluded.email,
@@ -974,6 +981,7 @@ class SQLiteTaskStorage:
                 (
                     user.owner_id,
                     user.authing_sub,
+                    user.role,
                     user.name,
                     user.nickname,
                     user.email,

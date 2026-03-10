@@ -28,46 +28,6 @@ def _parse_role_tokens(text: str) -> Set[str]:
     return {item for item in tokens if item}
 
 
-def _collect_role_values(value: Any, output: Set[str]):
-    if isinstance(value, str):
-        output.update(_parse_role_tokens(value))
-        return
-    if isinstance(value, list):
-        for item in value:
-            _collect_role_values(item, output)
-        return
-    if not isinstance(value, dict):
-        return
-
-    for key, item in value.items():
-        lower_key = str(key or "").strip().lower()
-        if lower_key in {"code", "name", "value", "slug", "id"} and isinstance(item, str):
-            output.update(_parse_role_tokens(item))
-        if "role" in lower_key:
-            _collect_role_values(item, output)
-        elif isinstance(item, (list, dict)):
-            _collect_role_values(item, output)
-
-
-def _extract_roles_from_raw_profile(raw_profile: Any) -> Set[str]:
-    if not isinstance(raw_profile, dict):
-        return set()
-
-    candidates = []
-    for key, value in raw_profile.items():
-        if "role" in str(key or "").strip().lower():
-            candidates.append(value)
-        elif isinstance(value, dict):
-            for child_key, child_value in value.items():
-                if "role" in str(child_key or "").strip().lower():
-                    candidates.append(child_value)
-
-    roles: Set[str] = set()
-    for candidate in candidates:
-        _collect_role_values(candidate, roles)
-    return {role for role in roles if role}
-
-
 def get_admin_role_name() -> str:
     role_name = _normalize_role(os.getenv(ADMIN_ROLE_ENV_KEY, DEFAULT_ADMIN_ROLE))
     return role_name or DEFAULT_ADMIN_ROLE
@@ -82,7 +42,10 @@ def is_admin_owner(owner_id: str) -> bool:
     if not user:
         return False
 
-    roles = _extract_roles_from_raw_profile(getattr(user, "raw_profile", {}) or {})
+    roles: Set[str] = set()
+    user_role = str(getattr(user, "role", "") or "").strip()
+    if user_role:
+        roles.update(_parse_role_tokens(user_role))
     required_role = get_admin_role_name()
     return required_role in roles
 

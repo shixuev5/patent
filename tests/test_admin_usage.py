@@ -27,21 +27,32 @@ def _seed_users(storage: SQLiteTaskStorage):
         User(
             owner_id="authing:admin-1",
             authing_sub="admin-1",
-            raw_profile={"roles": ["admin"]},
+            role="admin",
+            raw_profile={},
         )
     )
     storage.upsert_authing_user(
         User(
             owner_id="authing:user-1",
             authing_sub="user-1",
-            raw_profile={"roles": ["member"]},
+            role="member",
+            raw_profile={},
         )
     )
     storage.upsert_authing_user(
         User(
             owner_id="authing:user-2",
             authing_sub="user-2",
-            raw_profile={"roles": ["member"]},
+            role="member",
+            raw_profile={},
+        )
+    )
+    storage.upsert_authing_user(
+        User(
+            owner_id="authing:admin-by-role-field",
+            authing_sub="admin-by-role-field",
+            role="admin",
+            raw_profile={},
         )
     )
 
@@ -96,6 +107,7 @@ def test_admin_role_check_from_raw_profile(monkeypatch, tmp_path):
     _seed_users(storage)
 
     assert admin_auth.is_admin_owner("authing:admin-1") is True
+    assert admin_auth.is_admin_owner("authing:admin-by-role-field") is True
     assert admin_auth.is_admin_owner("authing:user-1") is False
 
     with pytest.raises(HTTPException) as exc_info:

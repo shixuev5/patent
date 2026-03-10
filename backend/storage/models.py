@@ -26,6 +26,7 @@ class TaskType(str, Enum):
 class User:
     owner_id: str
     authing_sub: str
+    role: Optional[str] = None
     name: Optional[str] = None
     nickname: Optional[str] = None
     email: Optional[str] = None
@@ -40,6 +41,7 @@ class User:
         return {
             "owner_id": self.owner_id,
             "authing_sub": self.authing_sub,
+            "role": self.role,
             "name": self.name,
             "nickname": self.nickname,
             "email": self.email,
