@@ -145,7 +145,7 @@
             </label>
             <label class="field">
               <span>模型</span>
-              <input v-model.trim="modelFilter" type="text" placeholder="deepseek-chat" class="field-input" />
+              <input v-model.trim="modelFilter" type="text" placeholder="qwen3.5-flash" class="field-input" />
             </label>
             <button
               type="button"

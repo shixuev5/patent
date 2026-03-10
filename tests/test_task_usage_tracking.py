@@ -9,7 +9,7 @@ from backend.storage.sqlite_storage import SQLiteTaskStorage
 def test_task_usage_collector_aggregates_and_persists(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen-plus":{"prompt":0.8,"completion":2.0}}',
+        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
     )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_test.db")
 
@@ -22,7 +22,7 @@ def test_task_usage_collector_aggregates_and_persists(monkeypatch, tmp_path):
 
     with task_usage_tracking.task_usage_collection(collector):
         task_usage_tracking.record_llm_usage(
-            model="qwen-plus",
+            model="qwen3.5-flash",
             prompt_tokens=200,
             completion_tokens=100,
             total_tokens=300,
@@ -54,5 +54,5 @@ def test_task_usage_collector_aggregates_and_persists(monkeypatch, tmp_path):
     assert row["llm_call_count"] == 2
     assert row["estimated_cost_cny"] > 0
     assert row["price_missing"] is True
-    assert "qwen-plus" in (row["model_breakdown_json"] or {})
+    assert "qwen3.5-flash" in (row["model_breakdown_json"] or {})
     assert "unknown-model" in (row["model_breakdown_json"] or {})

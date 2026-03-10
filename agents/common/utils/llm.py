@@ -15,13 +15,15 @@ from backend.task_usage_tracking import get_current_task_usage_context, record_l
 class LLMService:
     """统一的 LLM 服务类，提供文本和视觉模型的调用接口"""
 
+    _THINKING_BUDGET = 8192
+
     _TASK_POLICY_MAP: Dict[str, Dict[str, Any]] = {
-        "patent_structuring_extract": {"tier": "default", "thinking": False},
-        "knowledge_extract": {"tier": "default", "thinking": False},
-        "retrieval_query_planning": {"tier": "default", "thinking": False},
+        "patent_structuring_extract": {"tier": "default", "thinking": True},
+        "knowledge_extract": {"tier": "default", "thinking": True},
+        "retrieval_query_planning": {"tier": "default", "thinking": True},
         "search_matrix_reasoning": {"tier": "large", "thinking": True},
-        "semantic_query_rewrite": {"tier": "default", "thinking": False},
-        "core_summary_generation": {"tier": "default", "thinking": False},
+        "semantic_query_rewrite": {"tier": "default", "thinking": True},
+        "core_summary_generation": {"tier": "default", "thinking": True},
         "claim_feature_reasoning": {"tier": "large", "thinking": True},
         "technical_effect_verification": {"tier": "large", "thinking": True},
         "oar_dispute_extraction": {"tier": "large", "thinking": True},
@@ -30,8 +32,8 @@ class LLMService:
         "oar_evidence_verification": {"tier": "large", "thinking": True},
         "oar_common_knowledge_verification": {"tier": "large", "thinking": True},
         "oar_topup_search_verification": {"tier": "large", "thinking": True},
-        "vision_ocr_correction": {"tier": "default", "thinking": False},
-        "vision_single_figure_explain": {"tier": "default", "thinking": False},
+        "vision_ocr_correction": {"tier": "default", "thinking": True},
+        "vision_single_figure_explain": {"tier": "default", "thinking": True},
         "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},
     }
 
@@ -216,6 +218,15 @@ class LLMService:
             return reasoning.strip()
         return ""
 
+    @classmethod
+    def _build_thinking_extra_body(cls, thinking: bool) -> Dict[str, Any]:
+        if not thinking:
+            return {"enable_thinking": False}
+        return {
+            "enable_thinking": True,
+            "thinking_budget": cls._THINKING_BUDGET,
+        }
+
     def invoke_text_json(
         self,
         messages: List[Dict[str, str]],
@@ -294,7 +305,7 @@ class LLMService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"},
-                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+                extra_body=self._build_thinking_extra_body(thinking),
                 timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
 
@@ -469,7 +480,7 @@ class LLMService:
                         ],
                     },
                 ],
-                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+                extra_body=self._build_thinking_extra_body(thinking),
                 temperature=temperature,
                 timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
@@ -656,7 +667,7 @@ class LLMService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": content},
                 ],
-                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+                extra_body=self._build_thinking_extra_body(thinking),
                 temperature=temperature,
                 timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )

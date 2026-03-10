@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import agents.common.utils.llm as llm_module
 from agents.common.utils.llm import LLMService
 from backend import system_logs
 from backend import task_usage_tracking
@@ -17,10 +18,14 @@ class _MemoryStorage:
 
 
 class _FakeCompletions:
-    @staticmethod
-    def create(**kwargs):
+    def __init__(self, content: str):
+        self._content = content
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
         message = SimpleNamespace(
-            content='{"answer":"ok"}',
+            content=self._content,
             reasoning_content="reasoning text",
         )
         choice = SimpleNamespace(message=message)
@@ -38,11 +43,19 @@ class _FakeCompletions:
 
 
 class _FakeChat:
-    completions = _FakeCompletions()
+    def __init__(self, completions: _FakeCompletions):
+        self.completions = completions
 
 
 class _FakeClient:
-    chat = _FakeChat()
+    def __init__(self, content: str):
+        self.completions = _FakeCompletions(content)
+        self.chat = _FakeChat(self.completions)
+
+
+def _assert_thinking_payload(call_kwargs):
+    assert call_kwargs["extra_body"]["enable_thinking"] is True
+    assert call_kwargs["extra_body"]["thinking_budget"] == 8192
 
 
 def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
@@ -53,7 +66,8 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
 
     service = LLMService(api_key="test", base_url="https://example.com")
-    service.text_client = _FakeClient()
+    text_client = _FakeClient(content='{"answer":"ok"}')
+    service.text_client = text_client
 
     collector = task_usage_tracking.create_task_usage_collector(
         task_id="task-llm-1",
@@ -68,7 +82,7 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
                 {"role": "user", "content": "user prompt with token sk-abcdef1234567890"},
             ],
             task_kind="core_summary_generation",
-            model_override="deepseek-chat",
+            model_override="qwen3.5-flash",
         )
 
     assert result["answer"] == "ok"
@@ -81,3 +95,57 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
     # key-like string should be redacted in serialized payload
     payload_text = row.get("payload_inline_json") or ""
     assert "sk-abcdef1234567890" not in payload_text
+    _assert_thinking_payload(text_client.completions.calls[-1])
+
+
+def test_all_task_policies_enable_thinking():
+    for task_kind in LLMService._TASK_POLICY_MAP:
+        policy = LLMService._resolve_policy(task_kind)
+        assert policy["thinking"] is True
+        assert policy["tier"] in {"default", "large"}
+
+
+def test_vision_single_image_uses_thinking_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
+
+    service = LLMService(api_key="test", base_url="https://example.com")
+    vision_client = _FakeClient(content="single-image-ok")
+    service.vlm_client = vision_client
+
+    image_path = tmp_path / "single.png"
+    image_path.write_bytes(b"fake-image")
+
+    result = service.invoke_vision_image(
+        image_path=str(image_path),
+        system_prompt="sys",
+        user_prompt="user",
+        task_kind="vision_single_figure_explain",
+        model_override="qwen3.5-flash",
+    )
+
+    assert result == "single-image-ok"
+    _assert_thinking_payload(vision_client.completions.calls[-1])
+
+
+def test_vision_multi_image_json_uses_thinking_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
+
+    service = LLMService(api_key="test", base_url="https://example.com")
+    vision_client = _FakeClient(content='{"ok": true}')
+    service.vlm_client = vision_client
+
+    image_path1 = tmp_path / "img1.png"
+    image_path2 = tmp_path / "img2.png"
+    image_path1.write_bytes(b"fake-image-1")
+    image_path2.write_bytes(b"fake-image-2")
+
+    result = service.invoke_vision_images_json(
+        image_paths=[str(image_path1), str(image_path2)],
+        system_prompt="sys",
+        user_prompt="user",
+        task_kind="vision_multi_figure_synthesis",
+        model_override="qwen3.5-plus",
+    )
+
+    assert result == {"ok": True}
+    _assert_thinking_payload(vision_client.completions.calls[-1])

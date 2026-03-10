@@ -8,17 +8,17 @@ from backend import token_pricing
 def test_estimate_cost_cny_with_configured_model(monkeypatch):
     monkeypatch.setenv(
         token_pricing.TOKEN_PRICING_ENV_KEY,
-        '{"qwen-plus":{"prompt":0.8,"completion":2.0}}',
+        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
     )
 
     cost, missing = token_pricing.estimate_cost_cny(
-        model="qwen-plus",
+        model="qwen3.5-flash",
         prompt_tokens=1_000_000,
         completion_tokens=500_000,
     )
 
     assert missing is False
-    assert cost == pytest.approx(1.8)
+    assert cost == pytest.approx(1.2)
 
 
 def test_estimate_cost_cny_missing_model_returns_zero(monkeypatch):
@@ -39,7 +39,7 @@ def test_invalid_pricing_json_fallbacks_to_empty_table(monkeypatch):
 
     table = token_pricing.get_pricing_table()
     cost, missing = token_pricing.estimate_cost_cny(
-        model="qwen-plus",
+        model="qwen3.5-flash",
         prompt_tokens=1_000_000,
         completion_tokens=1_000_000,
     )
