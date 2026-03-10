@@ -72,10 +72,10 @@ def plan_engine_queries(
         },
     ]
     try:
-        response = llm_service.chat_completion_json(
-            messages,
+        response = llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="retrieval_query_planning",
             temperature=0.1,
-            thinking=True,
         )
         parsed = _to_dict(response)
         normalized = normalize_engine_queries(parsed, limit=per_engine_limit)

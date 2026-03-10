@@ -338,10 +338,10 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             if item.get("doc_id")
         }
 
-        response = self.llm_service.chat_completion_json(
-            messages,
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_common_knowledge_verification",
             temperature=0.05,
-            thinking=True,
         )
         parsed = self._normalize_llm_output(response, allowed_doc_ids, external_doc_map)
 

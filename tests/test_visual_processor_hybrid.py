@@ -31,7 +31,7 @@ class _StubLLM:
         self.system_prompt = ""
         self.user_prompt = ""
 
-    def analyze_image_with_thinking(self, img_path, system_prompt, user_prompt, *args, **kwargs):
+    def invoke_vision_image(self, img_path, system_prompt, user_prompt, *args, **kwargs):
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         if self._error is not None:

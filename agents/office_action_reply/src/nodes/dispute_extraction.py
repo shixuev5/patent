@@ -114,7 +114,11 @@ class DisputeExtractionNode:
         ]
 
         try:
-            result = self.llm_service.chat_completion_json(messages, temperature=0.05, thinking=True)
+            result = self.llm_service.invoke_text_json(
+                messages=messages,
+                task_kind="oar_dispute_extraction",
+                temperature=0.05,
+            )
             if isinstance(result, list):
                 return result
             elif isinstance(result, dict) and "disputes" in result:

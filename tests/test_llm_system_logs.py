@@ -62,13 +62,13 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
     )
 
     with task_usage_tracking.task_usage_collection(collector):
-        result = service.chat_completion_json(
+        result = service.invoke_text_json(
             messages=[
                 {"role": "system", "content": "sys prompt"},
                 {"role": "user", "content": "user prompt with token sk-abcdef1234567890"},
             ],
-            model="deepseek-chat",
-            thinking=True,
+            task_kind="core_summary_generation",
+            model_override="deepseek-chat",
         )
 
     assert result["answer"] == "ok"

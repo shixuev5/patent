@@ -7,7 +7,6 @@ import re
 import json
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
-from config import Settings
 from agents.common.patent_structuring.models import PatentDocument
 
 
@@ -32,12 +31,12 @@ class LLMBasedExtractor:
         cleaned_content = self.preprocess_patent_text(md_content)
 
         try:
-            json_data = self.llm_service.chat_completion_json(
-                model=Settings.LLM_MODEL,
+            json_data = self.llm_service.invoke_text_json(
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": cleaned_content},
                 ],
+                task_kind="patent_structuring_extract",
                 temperature=0.1,  # 低温度保持精确
             )
 

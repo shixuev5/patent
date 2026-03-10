@@ -134,10 +134,10 @@ class TopupSearchVerificationNode:
                 ),
             },
         ]
-        response = self.llm_service.chat_completion_json(
-            messages,
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_topup_search_verification",
             temperature=0.05,
-            thinking=True,
         )
         parsed = self._normalize_llm_output(response, allowed_doc_ids, evidence_map)
 

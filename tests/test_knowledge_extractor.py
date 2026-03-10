@@ -5,7 +5,7 @@ class _StubLLM:
     def __init__(self, payload):
         self.payload = payload
 
-    def chat_completion_json(self, **kwargs):
+    def invoke_text_json(self, **kwargs):
         return self.payload
 
 

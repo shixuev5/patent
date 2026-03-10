@@ -258,10 +258,10 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
 """
         messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]
 
-        response = self.llm_service.chat_completion_json(
-            messages,
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_evidence_verification",
             temperature=0.05,
-            thinking=True,
         )
         parsed = self._normalize_llm_output(response, set(doc_group))
 

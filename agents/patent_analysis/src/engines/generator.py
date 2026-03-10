@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
-from config import Settings
 
 
 class ContentGenerator:
@@ -283,12 +282,12 @@ class ContentGenerator:
         {self.text_effect if self.text_effect else "（未明确列出，需推断）"}
         """
 
-        return self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING,
+        return self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            task_kind="core_summary_generation",
             temperature=0.1,
         )
 
@@ -373,12 +372,12 @@ class ContentGenerator:
         {self.text_abstract}
         """
 
-        return self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING,
+        return self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            task_kind="core_summary_generation",
             temperature=0.1,
         )
 
@@ -451,12 +450,12 @@ class ContentGenerator:
         {self._format_claims_to_text(only_independent=True)}
         """
 
-        return self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING,  # 建议使用推理能力强的模型以生成好的类比
+        return self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            task_kind="core_summary_generation",
             temperature=0.3,  # 稍微增加一点创造性，以便生成生动的类比
         )
 
@@ -542,12 +541,12 @@ class ContentGenerator:
         {claims_text}
         """
 
-        response = self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING,
+        response = self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            task_kind="claim_feature_reasoning",
             temperature=0.0,  # 保持零温度，追求最严谨的逻辑
         )
 
@@ -704,12 +703,12 @@ class ContentGenerator:
         {self.text_details[:12000]} 
         """
 
-        response = self.llm_service.chat_completion_json(
-            model=Settings.LLM_MODEL_REASONING,
+        response = self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            task_kind="technical_effect_verification",
             temperature=0.1,  # 保持低温度以确保精准引用特征名称
         )
 
@@ -1013,14 +1012,15 @@ class ContentGenerator:
             logger.info(f"正在进行视觉思考分析: {label} ({basenames})")
 
             if len(image_paths) == 1:
-                content = self.llm_service.analyze_image_with_thinking(
+                content = self.llm_service.invoke_vision_image(
                     image_path=image_paths[0],
                     system_prompt=system_prompt,
                     user_prompt=user_content,
+                    task_kind="vision_single_figure_explain",
                 )
                 return content.strip()
 
-            response = self.llm_service.analyze_images_json_with_thinking(
+            response = self.llm_service.invoke_vision_images_json(
                 image_paths=image_paths,
                 system_prompt=system_prompt,
                 user_prompt=(
@@ -1028,7 +1028,7 @@ class ContentGenerator:
                     + "\n\n请将多图合并解说后，严格输出 JSON："
                     + '{"image_explanation":"..."}'
                 ),
-                model=Settings.VLM_MODEL,
+                task_kind="vision_multi_figure_synthesis",
                 temperature=0.2,
             )
             content = str(

@@ -98,10 +98,10 @@ class SupportBasisCheckNode:
             {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": self._build_user_prompt(spec_features, detailed_description)},
         ]
-        response = self.llm_service.chat_completion_json(
-            messages,
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_support_basis_check",
             temperature=0.05,
-            thinking=True,
         )
         normalized = self._normalize_result(response)
         expected_ids = {

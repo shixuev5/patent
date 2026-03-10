@@ -87,10 +87,10 @@ class AmendmentTrackingNode:
         ]
         
         # 依赖外部 LangGraph 节点的自动重试机制
-        response = self.llm_service.chat_completion_json(
-            messages,
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_amendment_tracking",
             temperature=0.05,
-            thinking=True,
         )
         normalized = self._normalize_tracking_result(response)
         

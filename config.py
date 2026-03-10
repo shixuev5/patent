@@ -39,17 +39,18 @@ class Settings:
     # 确保字体文件路径 (请手动放入 simhei.ttf 到 assets 目录)
     FONT_PATH = ASSETS_DIR / "simhei.ttf"
 
-    # --- 核心 LLM 配置 (生成/推理) ---
+    # --- 核心 LLM 配置（两档） ---
     LLM_API_KEY = os.getenv("LLM_API_KEY")
     LLM_BASE_URL = os.getenv("LLM_BASE_URL")
-    LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
-    LLM_MODEL_REASONING = os.getenv("LLM_MODEL_REASONING", "deepseek-reasoner")
+    LLM_MODEL_DEFAULT = os.getenv("LLM_MODEL_DEFAULT")
+    LLM_MODEL_LARGE = os.getenv("LLM_MODEL_LARGE")
     LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "600"))
 
-    # --- 视觉模型配置 ---
+    # --- 视觉模型配置（两档） ---
     VLM_API_KEY = os.getenv("VLM_API_KEY")
     VLM_BASE_URL = os.getenv("VLM_BASE_URL")
-    VLM_MODEL = os.getenv("VLM_MODEL", "glm-4.6v")
+    VLM_MODEL_DEFAULT = os.getenv("VLM_MODEL_DEFAULT")
+    VLM_MODEL_LARGE = os.getenv("VLM_MODEL_LARGE")
 
     # --- 视觉处理配置 ---
     LABEL_COLOR = (0, 0, 255)

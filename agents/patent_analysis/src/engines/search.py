@@ -5,7 +5,6 @@ from typing import Any, Dict, List
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 from agents.common.utils.cache import StepCache
-from config import settings
 
 VALID_ELEMENT_ROLES = {"Subject", "KeyFeature", "Functional"}
 VALID_ELEMENT_TYPES = {
@@ -238,13 +237,13 @@ class SearchStrategyGenerator:
         ]
         """
 
-        response = self.llm_service.chat_completion_json(
-            model=settings.LLM_MODEL_REASONING,
+        response = self.llm_service.invoke_text_json(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context},
             ],
-            temperature=0.2
+            task_kind="search_matrix_reasoning",
+            temperature=0.2,
         )
 
         raw_matrix = response if isinstance(response, list) else []
@@ -332,13 +331,13 @@ class SearchStrategyGenerator:
         """
 
         try:
-            response = self.llm_service.chat_completion_json(
-                model=settings.LLM_MODEL,
+            response = self.llm_service.invoke_text_json(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"原始输入文本：\n{raw_text}"},
                 ],
-                temperature=0.1
+                task_kind="semantic_query_rewrite",
+                temperature=0.1,
             )
 
             # 提取清洗后的文本

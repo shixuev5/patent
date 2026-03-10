@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
-from config import settings
 
 
 class KnowledgeExtractor:
@@ -16,7 +15,7 @@ class KnowledgeExtractor:
         model: Optional[str] = None,
     ):
         self.llm_service = llm_service or get_llm_service()
-        self.model = model or settings.LLM_MODEL
+        self.model = model
 
     def extract_entities(self, patent_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """从结构化专利数据中提取多维部件知识图谱。"""
@@ -119,12 +118,13 @@ class KnowledgeExtractor:
         )
 
         try:
-            data = self.llm_service.chat_completion_json(
-                model=self.model,
+            data = self.llm_service.invoke_text_json(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                task_kind="knowledge_extract",
+                model_override=self.model,
                 temperature=0.0,
             )
 

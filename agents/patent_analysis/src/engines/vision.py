@@ -675,8 +675,11 @@ class VisualProcessor:
             - 若部件库中的标号明显存在但 OCR 漏检，请补充并给出坐标框。
             """
 
-            content = llm_service.analyze_image_with_thinking(
-                img_path, system_prompt, user_prompt
+            content = llm_service.invoke_vision_image(
+                img_path,
+                system_prompt,
+                user_prompt,
+                task_kind="vision_ocr_correction",
             )
 
             data = self._parse_vlm_json_array(content)

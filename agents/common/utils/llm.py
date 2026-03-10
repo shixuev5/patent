@@ -3,8 +3,10 @@ import base64
 import json
 import time
 from typing import Optional, List, Dict, Any
+
 from openai import OpenAI
 from loguru import logger
+
 from config import settings
 from backend.system_logs import emit_system_log
 from backend.task_usage_tracking import get_current_task_usage_context, record_llm_usage
@@ -12,6 +14,29 @@ from backend.task_usage_tracking import get_current_task_usage_context, record_l
 
 class LLMService:
     """统一的 LLM 服务类，提供文本和视觉模型的调用接口"""
+
+    _TASK_POLICY_MAP: Dict[str, Dict[str, Any]] = {
+        "patent_structuring_extract": {"tier": "default", "thinking": False},
+        "knowledge_extract": {"tier": "default", "thinking": False},
+        "retrieval_query_planning": {"tier": "default", "thinking": False},
+        "search_matrix_reasoning": {"tier": "large", "thinking": True},
+        "semantic_query_rewrite": {"tier": "default", "thinking": False},
+        "core_summary_generation": {"tier": "default", "thinking": False},
+        "claim_feature_reasoning": {"tier": "large", "thinking": True},
+        "technical_effect_verification": {"tier": "large", "thinking": True},
+        "oar_dispute_extraction": {"tier": "large", "thinking": True},
+        "oar_amendment_tracking": {"tier": "large", "thinking": True},
+        "oar_support_basis_check": {"tier": "large", "thinking": True},
+        "oar_evidence_verification": {"tier": "large", "thinking": True},
+        "oar_common_knowledge_verification": {"tier": "large", "thinking": True},
+        "oar_topup_search_verification": {"tier": "large", "thinking": True},
+        "vision_ocr_correction": {"tier": "default", "thinking": False},
+        "vision_single_figure_explain": {"tier": "default", "thinking": False},
+        "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},
+    }
+
+    _JSON_PARSE_ERROR = "Model output is not valid JSON"
+    _VISION_JSON_PARSE_ERROR = "Vision model output is not valid JSON"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
@@ -21,17 +46,58 @@ class LLMService:
             api_key: 可选，指定的 API Key。如果不传，则使用 config.settings.LLM_API_KEY
             base_url: 可选，指定的 Base URL。如果不传，则使用 config.settings.LLM_BASE_URL
         """
-        # 1. 确定配置 (支持实例级重写，用于独立实例化审查员 Agent)
         final_api_key = api_key or settings.LLM_API_KEY
         final_base_url = base_url or settings.LLM_BASE_URL
 
-        # 2. 初始化文本模型客户端
+        # 文本模型客户端
         self.text_client = OpenAI(api_key=final_api_key, base_url=final_base_url)
 
-        # 3. 初始化视觉模型客户端 (VLM 通常使用全局配置)
+        # 视觉模型客户端
         self.vlm_client = OpenAI(
             api_key=settings.VLM_API_KEY, base_url=settings.VLM_BASE_URL
         )
+
+    @classmethod
+    def _resolve_policy(cls, task_kind: str) -> Dict[str, Any]:
+        key = str(task_kind or "").strip()
+        if not key:
+            raise ValueError("task_kind is required")
+
+        policy = cls._TASK_POLICY_MAP.get(key)
+        if not policy:
+            allowed = ", ".join(sorted(cls._TASK_POLICY_MAP.keys()))
+            raise ValueError(f"Unsupported task_kind: {key}. Allowed: {allowed}")
+        return {"task_kind": key, **policy}
+
+    @staticmethod
+    def _resolve_text_model(tier: str) -> str:
+        if tier == "default":
+            model = str(settings.LLM_MODEL_DEFAULT or "").strip()
+            env_name = "LLM_MODEL_DEFAULT"
+        elif tier == "large":
+            model = str(settings.LLM_MODEL_LARGE or "").strip()
+            env_name = "LLM_MODEL_LARGE"
+        else:
+            raise ValueError(f"Unsupported text model tier: {tier}")
+
+        if not model:
+            raise RuntimeError(f"Missing environment variable: {env_name}")
+        return model
+
+    @staticmethod
+    def _resolve_vision_model(tier: str) -> str:
+        if tier == "default":
+            model = str(settings.VLM_MODEL_DEFAULT or "").strip()
+            env_name = "VLM_MODEL_DEFAULT"
+        elif tier == "large":
+            model = str(settings.VLM_MODEL_LARGE or "").strip()
+            env_name = "VLM_MODEL_LARGE"
+        else:
+            raise ValueError(f"Unsupported vision model tier: {tier}")
+
+        if not model:
+            raise RuntimeError(f"Missing environment variable: {env_name}")
+        return model
 
     @staticmethod
     def _message_content_to_text(content: Any) -> str:
@@ -145,38 +211,70 @@ class LLMService:
                     chunks.append(str(item))
             return "\n".join([c for c in chunks if c]).strip()
 
-        # 兼容部分模型将思考内容放在 reasoning 字段
         reasoning = getattr(message, "reasoning", None)
         if isinstance(reasoning, str):
             return reasoning.strip()
         return ""
 
-    def chat_completion_json(
+    def invoke_text_json(
         self,
         messages: List[Dict[str, str]],
+        *,
+        task_kind: str,
         temperature: float = 0.1,
         max_tokens: int = 65536,
-        model: Optional[str] = None,
-        thinking: bool = True,
+        model_override: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        JSON 格式对话，自动解析返回的 JSON
+        policy = self._resolve_policy(task_kind)
+        chosen_model = str(model_override or "").strip() or self._resolve_text_model(
+            policy["tier"]
+        )
 
-        Args:
-            messages: 对话消息列表
-            temperature: 温度参数，默认 0.1 保持精确
-            max_tokens: 最大 token 数，deepseek-chat 支持 8k，deepseek-reasoner 支持 64k
-            model: 模型
+        try:
+            return self._invoke_text_json_once(
+                messages=messages,
+                chosen_model=chosen_model,
+                thinking=bool(policy["thinking"]),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                policy=policy,
+            )
+        except ValueError as exc:
+            if str(exc) != self._JSON_PARSE_ERROR or bool(policy["thinking"]):
+                raise
+            logger.warning(
+                f"[LLM] chat_completion_json parse failed with thinking disabled, retry with thinking enabled. "
+                f"task_kind={policy['task_kind']}, model={chosen_model}"
+            )
+            return self._invoke_text_json_once(
+                messages=messages,
+                chosen_model=chosen_model,
+                thinking=True,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                policy=policy,
+            )
 
-        Returns:
-            解析后的 JSON 字典
-        """
-        chosen_model = model or settings.LLM_MODEL
+    def _invoke_text_json_once(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        chosen_model: str,
+        thinking: bool,
+        temperature: float,
+        max_tokens: int,
+        timeout: Optional[float],
+        policy: Dict[str, Any],
+    ) -> Dict[str, Any]:
         log_payload = self._collect_prompt_summary(messages)
         task_context = self._current_task_log_context()
         log_payload.update(
             {
+                "task_kind": policy["task_kind"],
+                "tier": policy["tier"],
                 "model": chosen_model,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
@@ -190,9 +288,6 @@ class LLMService:
 
         start = time.perf_counter()
         try:
-            if chosen_model == "kimi-k2.5":
-                temperature = 1.0
-
             response = self.text_client.chat.completions.create(
                 model=chosen_model,
                 messages=messages,
@@ -204,12 +299,13 @@ class LLMService:
             )
 
             content = response.choices[0].message.content
-
-            content = content.replace("```json", "").replace("```", "").strip()
+            content = str(content).replace("```json", "").replace("```", "").strip()
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             reasoning_text = self._extract_reasoning_text(response)
             usage_summary = self._get_usage_summary(response)
             response_payload = {
+                "task_kind": policy["task_kind"],
+                "tier": policy["tier"],
                 "model": chosen_model,
                 "elapsed_ms": elapsed_ms,
                 "response_id": getattr(response, "id", None),
@@ -237,6 +333,8 @@ class LLMService:
                 message="chat_completion_json success",
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "messages": messages,
                         "temperature": temperature,
@@ -268,6 +366,8 @@ class LLMService:
                 message=str(e),
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "messages": messages,
                         "temperature": temperature,
@@ -276,7 +376,7 @@ class LLMService:
                     },
                 },
             )
-            raise ValueError("Model output is not valid JSON")
+            raise ValueError(self._JSON_PARSE_ERROR)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
@@ -296,6 +396,8 @@ class LLMService:
                 message=str(e),
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "messages": messages,
                         "temperature": temperature,
@@ -316,32 +418,34 @@ class LLMService:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
         return f"data:image/jpeg;base64,{img_b64}"
 
-    def analyze_image_with_thinking(
-        self, image_path: str, system_prompt: str, user_prompt: str, temperature: float = 0.6
+    def invoke_vision_image(
+        self,
+        image_path: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        task_kind: str,
+        temperature: float = 0.6,
+        model_override: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> str:
-        """
-        使用思考模式的视觉模型图片理解
-
-        Args:
-            image_path: 图片路径
-            system_prompt: 静态指令（用于缓存）
-            user_prompt: 动态上下文描述（结合图片）
-
-        Returns:
-            模型返回的分析结果
-        """
         if not self.vlm_client:
             raise RuntimeError(
                 "[LLM] Vision client not initialized. Please set VLM_API_KEY in environment"
             )
 
-        model = settings.VLM_MODEL
+        policy = self._resolve_policy(task_kind)
+        model = str(model_override or "").strip() or self._resolve_vision_model(policy["tier"])
+        thinking = bool(policy["thinking"])
+
         log_payload = {
+            "task_kind": policy["task_kind"],
+            "tier": policy["tier"],
             "model": model,
             "image_path": image_path,
             "system_prompt_chars": len(system_prompt or ""),
             "user_prompt_chars": len(user_prompt or ""),
-            "thinking_enabled": True,
+            "thinking_enabled": thinking,
             "temperature": temperature,
         }
         logger.info(
@@ -353,9 +457,6 @@ class LLMService:
         try:
             img_url = self._to_data_url(image_path)
 
-            temperature = 1.0 if model == "kimi-k2.5" else temperature
-
-            # 调用视觉模型
             response = self.vlm_client.chat.completions.create(
                 model=model,
                 messages=[
@@ -368,14 +469,17 @@ class LLMService:
                         ],
                     },
                 ],
-                extra_body={"thinking": {"type": "enabled"}},
+                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
                 temperature=temperature,
+                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
             content = response.choices[0].message.content or ""
             reasoning_text = self._extract_reasoning_text(response)
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             usage_summary = self._get_usage_summary(response)
             response_payload = {
+                "task_kind": policy["task_kind"],
+                "tier": policy["tier"],
                 "model": model,
                 "image_path": image_path,
                 "elapsed_ms": elapsed_ms,
@@ -404,11 +508,14 @@ class LLMService:
                 message="analyze_image_with_thinking success",
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": model,
                         "image_path": image_path,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                         "temperature": temperature,
+                        "thinking": thinking,
                     },
                     "response": {
                         **response_payload,
@@ -417,7 +524,7 @@ class LLMService:
                     },
                 },
             )
-            return content
+            return str(content)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
@@ -437,11 +544,14 @@ class LLMService:
                 message=str(e),
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": model,
                         "image_path": image_path,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                         "temperature": temperature,
+                        "thinking": thinking,
                     },
                     "error": {
                         "type": type(e).__name__,
@@ -451,24 +561,17 @@ class LLMService:
             )
             raise
 
-    def analyze_images_json_with_thinking(
+    def invoke_vision_images_json(
         self,
         image_paths: List[str],
         system_prompt: str,
         user_prompt: str,
-        model: Optional[str] = None,
+        *,
+        task_kind: str,
         temperature: float = 0.2,
+        model_override: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        多图视觉分析，要求模型返回 JSON。
-
-        Args:
-            image_paths: 图片路径列表
-            system_prompt: 静态系统指令
-            user_prompt: 动态用户指令
-            model: 可选模型名（为空则使用 settings.VLM_MODEL）
-            temperature: 温度参数
-        """
         if not self.vlm_client:
             raise RuntimeError(
                 "[LLM] Vision client not initialized. Please set VLM_API_KEY in environment"
@@ -476,14 +579,61 @@ class LLMService:
         if not image_paths:
             raise ValueError("image_paths is empty")
 
-        chosen_model = model or settings.VLM_MODEL
+        policy = self._resolve_policy(task_kind)
+        chosen_model = str(model_override or "").strip() or self._resolve_vision_model(
+            policy["tier"]
+        )
+
+        try:
+            return self._invoke_vision_images_json_once(
+                image_paths=image_paths,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chosen_model=chosen_model,
+                thinking=bool(policy["thinking"]),
+                temperature=temperature,
+                timeout=timeout,
+                policy=policy,
+            )
+        except ValueError as exc:
+            if str(exc) != self._VISION_JSON_PARSE_ERROR or bool(policy["thinking"]):
+                raise
+            logger.warning(
+                f"[LLM] analyze_images_json_with_thinking parse failed with thinking disabled, retry with thinking enabled. "
+                f"task_kind={policy['task_kind']}, model={chosen_model}"
+            )
+            return self._invoke_vision_images_json_once(
+                image_paths=image_paths,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chosen_model=chosen_model,
+                thinking=True,
+                temperature=temperature,
+                timeout=timeout,
+                policy=policy,
+            )
+
+    def _invoke_vision_images_json_once(
+        self,
+        *,
+        image_paths: List[str],
+        system_prompt: str,
+        user_prompt: str,
+        chosen_model: str,
+        thinking: bool,
+        temperature: float,
+        timeout: Optional[float],
+        policy: Dict[str, Any],
+    ) -> Dict[str, Any]:
         log_payload = {
+            "task_kind": policy["task_kind"],
+            "tier": policy["tier"],
             "model": chosen_model,
             "image_count": len(image_paths),
             "image_paths": image_paths,
             "system_prompt_chars": len(system_prompt or ""),
             "user_prompt_chars": len(user_prompt or ""),
-            "thinking_enabled": True,
+            "thinking_enabled": thinking,
             "temperature": temperature,
         }
         logger.info(
@@ -500,16 +650,15 @@ class LLMService:
                 )
             content.append({"type": "text", "text": user_prompt})
 
-            final_temperature = 1.0 if chosen_model == "kimi-k2.5" else temperature
-
             response = self.vlm_client.chat.completions.create(
                 model=chosen_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": content},
                 ],
-                extra_body={"thinking": {"type": "enabled"}},
-                temperature=final_temperature,
+                extra_body={"thinking": {"type": "enabled" if thinking else "disabled"}},
+                temperature=temperature,
+                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
             )
 
             raw_content = response.choices[0].message.content or ""
@@ -517,6 +666,8 @@ class LLMService:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             usage_summary = self._get_usage_summary(response)
             response_payload = {
+                "task_kind": policy["task_kind"],
+                "tier": policy["tier"],
                 "model": chosen_model,
                 "image_count": len(image_paths),
                 "elapsed_ms": elapsed_ms,
@@ -545,11 +696,14 @@ class LLMService:
                 message="analyze_images_json_with_thinking success",
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "image_paths": image_paths,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
-                        "temperature": final_temperature,
+                        "temperature": temperature,
+                        "thinking": thinking,
                     },
                     "response": {
                         **response_payload,
@@ -575,15 +729,18 @@ class LLMService:
                 message=str(e),
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "image_paths": image_paths,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                         "temperature": temperature,
+                        "thinking": thinking,
                     },
                 },
             )
-            raise ValueError("Vision model output is not valid JSON")
+            raise ValueError(self._VISION_JSON_PARSE_ERROR)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
@@ -603,11 +760,14 @@ class LLMService:
                 message=str(e),
                 payload={
                     "request": {
+                        "task_kind": policy["task_kind"],
+                        "tier": policy["tier"],
                         "model": chosen_model,
                         "image_paths": image_paths,
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
                         "temperature": temperature,
+                        "thinking": thinking,
                     },
                     "error": {
                         "type": type(e).__name__,
