@@ -506,7 +506,7 @@ export const useTaskStore = defineStore('tasks', {
         dailyPointLimit: detail.dailyPointLimit,
         usedPoints: detail.usedPoints,
         remainingPoints: detail.remainingPoints,
-        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, officeActionReply: 1.5 },
+        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, officeActionReply: 2 },
         createdToday: baseUsage?.createdToday || { analysisCount: 0, replyCount: 0, totalCount: 0 },
         requestedTaskType: detail.taskType,
         requestedTaskPoints: detail.requiredPoints,

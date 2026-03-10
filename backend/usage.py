@@ -19,12 +19,13 @@ DEFAULT_DAILY_POINTS_GUEST = 3.0
 DEFAULT_DAILY_POINTS_AUTHING = 10.0
 TASK_POINT_COST_UNITS = {
     TaskType.PATENT_ANALYSIS.value: 2,  # 1.0
-    TaskType.OFFICE_ACTION_REPLY.value: 3,  # 1.5
+    TaskType.OFFICE_ACTION_REPLY.value: 4,  # 2.0
 }
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.OFFICE_ACTION_REPLY.value,
 }
+POINT_OCCUPIED_STATUSES = ("pending", "processing", "completed")
 
 
 def _parse_point_limit_units(value: Optional[str], fallback_points: float) -> int:
@@ -94,14 +95,26 @@ def _today_created_count(owner_id: str, task_type: str) -> int:
     )
 
 
+def _today_point_occupied_count(owner_id: str, task_type: str) -> int:
+    return task_manager.storage.count_user_tasks_today(
+        owner_id,
+        tz_offset_hours=APP_TZ_OFFSET_HOURS,
+        task_type=task_type,
+        include_deleted=True,
+        statuses=list(POINT_OCCUPIED_STATUSES),
+    )
+
+
 def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResponse:
     auth_type = _auth_type_for_owner_id(owner_id)
     daily_limit_units = _daily_point_limit_units_for_auth_type(auth_type)
     analysis_count = _today_created_count(owner_id, TaskType.PATENT_ANALYSIS.value)
     reply_count = _today_created_count(owner_id, TaskType.OFFICE_ACTION_REPLY.value)
+    analysis_occupied_count = _today_point_occupied_count(owner_id, TaskType.PATENT_ANALYSIS.value)
+    reply_occupied_count = _today_point_occupied_count(owner_id, TaskType.OFFICE_ACTION_REPLY.value)
     used_units = (
-        analysis_count * TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]
-        + reply_count * TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]
+        analysis_occupied_count * TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]
+        + reply_occupied_count * TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]
     )
     remaining_units = max(0, daily_limit_units - used_units)
 

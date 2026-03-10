@@ -382,6 +382,7 @@ class SQLiteTaskStorage:
         tz_offset_hours: int = 8,
         task_type: Optional[str] = None,
         include_deleted: bool = False,
+        statuses: Optional[List[str]] = None,
     ) -> int:
         today = datetime.utcnow() + timedelta(hours=tz_offset_hours)
         today_str = today.strftime("%Y-%m-%d")
@@ -391,6 +392,15 @@ class SQLiteTaskStorage:
         if task_type:
             where.append("task_type = ?")
             params.append(task_type)
+        normalized_statuses = [
+            str(status).strip().lower()
+            for status in (statuses or [])
+            if str(status).strip()
+        ]
+        if normalized_statuses:
+            placeholders = ", ".join(["?"] * len(normalized_statuses))
+            where.append(f"LOWER(status) IN ({placeholders})")
+            params.extend(normalized_statuses)
         if not include_deleted:
             where.append("deleted_at IS NULL")
         with self._get_connection() as conn:

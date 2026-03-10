@@ -192,7 +192,7 @@ npm run deploy
 - 访客用户默认每日 `3` 积分（`MAX_DAILY_POINTS_GUEST`）。
 - 登录用户默认每日 `10` 积分（`MAX_DAILY_POINTS_AUTHING`）。
 - AI 分析任务（`patent_analysis`）每次消耗 `1` 积分。
-- AI 研判任务（`office_action_reply`）每次消耗 `1.5` 积分。
+- AI 研判任务（`office_action_reply`）每次消耗 `2` 积分。
 - `GET /api/usage` 支持可选参数 `taskType`，用于查询当前模式是否还能创建任务。
 
 新增环境变量：

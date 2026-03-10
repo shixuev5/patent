@@ -493,9 +493,9 @@ const usageProgressCenterLabel = computed(() => {
   return `${used} / ${limit}`
 })
 const usageInfoLine = computed(() => {
-  if (!usageHasLimit.value) return '分析 1 点 / 研判 1.5 点 · 每日上限未配置'
-  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 1.5 点 · 今日已用完 · 距重置 ${usageResetLabel.value}`
-  return `分析 1 点 / 研判 1.5 点 · 剩余 ${usageRemainingLabel.value} · 距重置 ${usageResetLabel.value}`
+  if (!usageHasLimit.value) return '分析 1 点 / 研判 2 点 · 每日上限未配置'
+  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 2 点 · 今日已用完 · 距重置 ${usageResetLabel.value}`
+  return `分析 1 点 / 研判 2 点 · 剩余 ${usageRemainingLabel.value} · 距重置 ${usageResetLabel.value}`
 })
 const usageInfoToneClass = computed(() => {
   if (!usageHasLimit.value || (dailyUsage.value?.remainingPoints || 0) <= 0) return 'text-amber-500'

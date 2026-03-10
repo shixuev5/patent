@@ -183,6 +183,13 @@ def _cleanup_upload_only(task: Any):
         _cleanup_path(path)
 
 
+def _best_effort_fail_task(task_id: str, message: str):
+    try:
+        task_manager.fail_task(task_id, message)
+    except Exception:
+        pass
+
+
 def _get_owned_task(task_id: str, owner_id: str):
     task = task_manager.get_task(task_id)
     if not task:
@@ -525,40 +532,48 @@ async def create_task(
 
         task_metadata: Dict[str, Any] = {"task_type": task_type, "input_files": []}
         upload_file_path: Optional[str] = None
+        try:
+            if file:
+                upload_file_path = await _save_upload_file(task.id, file, "patent", "source")
+                task_metadata["input_files"].append(
+                    {
+                        "file_type": "patent_pdf",
+                        "original_name": file.filename or "upload.pdf",
+                        "stored_path": upload_file_path,
+                    }
+                )
+                task_manager.storage.update_task(
+                    task.id,
+                    metadata=task_metadata,
+                )
+            else:
+                task_manager.storage.update_task(task.id, metadata=task_metadata)
 
-        if file:
-            upload_file_path = await _save_upload_file(task.id, file, "patent", "source")
-            task_metadata["input_files"].append(
-                {
-                    "file_type": "patent_pdf",
-                    "original_name": file.filename or "upload.pdf",
-                    "stored_path": upload_file_path,
-                }
+            cancel_event = Event()
+            RUNNING_TASKS[task.id] = cancel_event
+            pipeline_task = asyncio.create_task(
+                run_patent_analysis_task(
+                    task.id,
+                    pn,
+                    upload_file_path,
+                    cancel_event=cancel_event,
+                )
             )
-            task_manager.storage.update_task(
-                task.id,
-                metadata=task_metadata,
-            )
-        else:
-            task_manager.storage.update_task(task.id, metadata=task_metadata)
+            pipeline_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
 
-        cancel_event = Event()
-        RUNNING_TASKS[task.id] = cancel_event
-        pipeline_task = asyncio.create_task(
-            run_patent_analysis_task(
-                task.id,
-                pn,
-                upload_file_path,
-                cancel_event=cancel_event,
+            return TaskResponse(
+                taskId=task.id,
+                status="pending",
+                message="任务已创建并开始处理。",
             )
-        )
-        pipeline_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
-
-        return TaskResponse(
-            taskId=task.id,
-            status="pending",
-            message="任务已创建并开始处理。",
-        )
+        except HTTPException as exc:
+            _best_effort_fail_task(task.id, f"任务创建失败：{exc.detail}")
+            _cleanup_path(upload_file_path)
+            raise
+        except Exception as exc:
+            _best_effort_fail_task(task.id, f"任务创建失败：{str(exc)}")
+            _cleanup_path(upload_file_path)
+            raise HTTPException(status_code=500, detail="任务创建失败，请稍后重试。") from exc
 
     if not officeActionFile or not responseFile:
         raise HTTPException(status_code=400, detail="审查意见答复任务必须上传审查意见通知书和意见陈述书。")
@@ -578,67 +593,83 @@ async def create_task(
     )
 
     input_files: List[Dict[str, str]] = []
+    saved_paths: List[str] = []
 
-    office_action_path = await _save_upload_file(task.id, officeActionFile, "office_action", "office_action")
-    input_files.append(
-        {
-            "file_type": "office_action",
-            "original_name": officeActionFile.filename or "office_action.pdf",
-            "stored_path": office_action_path,
-        }
-    )
-
-    response_path = await _save_upload_file(task.id, responseFile, "office_action", "response")
-    input_files.append(
-        {
-            "file_type": "response",
-            "original_name": responseFile.filename or "response.pdf",
-            "stored_path": response_path,
-        }
-    )
-
-    if claimsFile:
-        claims_path = await _save_upload_file(task.id, claimsFile, "office_action", "claims")
+    try:
+        office_action_path = await _save_upload_file(task.id, officeActionFile, "office_action", "office_action")
+        saved_paths.append(office_action_path)
         input_files.append(
             {
-                "file_type": "claims",
-                "original_name": claimsFile.filename or "claims.pdf",
-                "stored_path": claims_path,
+                "file_type": "office_action",
+                "original_name": officeActionFile.filename or "office_action.pdf",
+                "stored_path": office_action_path,
             }
         )
 
-    for index, doc in enumerate(comparisonDocs or []):
-        doc_path = await _save_upload_file(task.id, doc, "office_action", f"comparison_{index + 1}")
+        response_path = await _save_upload_file(task.id, responseFile, "office_action", "response")
+        saved_paths.append(response_path)
         input_files.append(
             {
-                "file_type": "comparison_doc",
-                "original_name": doc.filename or f"comparison_{index + 1}.pdf",
-                "stored_path": doc_path,
+                "file_type": "response",
+                "original_name": responseFile.filename or "response.pdf",
+                "stored_path": response_path,
             }
         )
 
-    task_metadata: Dict[str, Any] = {
-        "task_type": task_type,
-        "input_files": input_files,
-    }
-    task_manager.storage.update_task(task.id, metadata=task_metadata)
+        if claimsFile:
+            claims_path = await _save_upload_file(task.id, claimsFile, "office_action", "claims")
+            saved_paths.append(claims_path)
+            input_files.append(
+                {
+                    "file_type": "claims",
+                    "original_name": claimsFile.filename or "claims.pdf",
+                    "stored_path": claims_path,
+                }
+            )
 
-    cancel_event = Event()
-    RUNNING_TASKS[task.id] = cancel_event
-    workflow_task = asyncio.create_task(
-        run_office_action_reply_task(
-            task.id,
-            input_files,
-            cancel_event=cancel_event,
+        for index, doc in enumerate(comparisonDocs or []):
+            doc_path = await _save_upload_file(task.id, doc, "office_action", f"comparison_{index + 1}")
+            saved_paths.append(doc_path)
+            input_files.append(
+                {
+                    "file_type": "comparison_doc",
+                    "original_name": doc.filename or f"comparison_{index + 1}.pdf",
+                    "stored_path": doc_path,
+                }
+            )
+
+        task_metadata: Dict[str, Any] = {
+            "task_type": task_type,
+            "input_files": input_files,
+        }
+        task_manager.storage.update_task(task.id, metadata=task_metadata)
+
+        cancel_event = Event()
+        RUNNING_TASKS[task.id] = cancel_event
+        workflow_task = asyncio.create_task(
+            run_office_action_reply_task(
+                task.id,
+                input_files,
+                cancel_event=cancel_event,
+            )
         )
-    )
-    workflow_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
+        workflow_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
 
-    return TaskResponse(
-        taskId=task.id,
-        status="pending",
-        message="审查意见答复任务已创建并开始处理。",
-    )
+        return TaskResponse(
+            taskId=task.id,
+            status="pending",
+            message="审查意见答复任务已创建并开始处理。",
+        )
+    except HTTPException as exc:
+        _best_effort_fail_task(task.id, f"任务创建失败：{exc.detail}")
+        for path in saved_paths:
+            _cleanup_path(path)
+        raise
+    except Exception as exc:
+        _best_effort_fail_task(task.id, f"任务创建失败：{str(exc)}")
+        for path in saved_paths:
+            _cleanup_path(path)
+        raise HTTPException(status_code=500, detail="任务创建失败，请稍后重试。") from exc
 
 
 @router.get("/api/tasks/{task_id}")
@@ -654,6 +685,8 @@ async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_cur
 
     if task.status.value in {"processing", "pending"} and runtime:
         runtime.set()
+    if task.status.value in {"processing", "pending"}:
+        task_manager.cancel_task(task_id, "任务已取消")
 
     if task.status.value == "completed":
         _cleanup_upload_only(task)
@@ -673,6 +706,8 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
         runtime = RUNNING_TASKS.get(task.id)
         if task.status.value in {"processing", "pending"} and runtime:
             runtime.set()
+        if task.status.value in {"processing", "pending"}:
+            task_manager.cancel_task(task.id, "任务已取消")
 
         if task.status.value == "completed":
             _cleanup_upload_only(task)

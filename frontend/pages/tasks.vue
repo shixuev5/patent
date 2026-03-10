@@ -59,7 +59,7 @@
             :style="{ width: `${pointUsagePercent}%` }"
           />
         </div>
-        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 研判 1.5 点</p>
+        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 研判 2 点</p>
       </div>
 
       <div
