@@ -105,6 +105,8 @@ def add_loguru_file_sink(
     log_file: str,
     level: str = "DEBUG",
     rotation: str = "10 MB",
+    retention: str = "14 days",
+    compression: str = "zip",
     fmt: str = FILE_LOG_FORMAT,
 ) -> None:
     """Attach an additional file sink using the same UTC+8 timestamp field."""
@@ -113,6 +115,8 @@ def add_loguru_file_sink(
         level=level,
         format=fmt,
         rotation=rotation,
+        retention=retention,
+        compression=compression,
     )
 
 
@@ -121,9 +125,17 @@ def setup_logging_utc8(
     log_file: Optional[str] = None,
     file_level: str = "DEBUG",
     rotation: str = "10 MB",
+    retention: str = "14 days",
+    compression: str = "zip",
 ) -> None:
     """Unified logging setup: process timezone + loguru console + optional file sink."""
     configure_process_timezone_to_utc8()
     configure_loguru_to_utc8(level=level)
     if log_file:
-        add_loguru_file_sink(log_file, level=file_level, rotation=rotation)
+        add_loguru_file_sink(
+            log_file,
+            level=file_level,
+            rotation=rotation,
+            retention=retention,
+            compression=compression,
+        )

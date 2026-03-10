@@ -6,7 +6,8 @@ from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from loguru import logger
 from config import settings
-from backend.task_usage_tracking import record_llm_usage
+from backend.system_logs import emit_system_log
+from backend.task_usage_tracking import get_current_task_usage_context, record_llm_usage
 
 
 class LLMService:
@@ -73,6 +74,15 @@ class LLMService:
         return {
             "system_prompt_chars": len(system_prompt),
             "user_prompt_chars": len(user_prompt),
+        }
+
+    @staticmethod
+    def _current_task_log_context() -> Dict[str, Optional[str]]:
+        context = get_current_task_usage_context()
+        return {
+            "owner_id": context.get("owner_id"),
+            "task_id": context.get("task_id"),
+            "task_type": context.get("task_type"),
         }
 
     @staticmethod
@@ -164,6 +174,7 @@ class LLMService:
         """
         chosen_model = model or settings.LLM_MODEL
         log_payload = self._collect_prompt_summary(messages)
+        task_context = self._current_task_log_context()
         log_payload.update(
             {
                 "model": chosen_model,
@@ -213,16 +224,89 @@ class LLMService:
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(chosen_model, usage_summary)
+            emit_system_log(
+                category="llm_call",
+                event_name="chat_completion_json",
+                level="INFO",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=True,
+                duration_ms=elapsed_ms,
+                message="chat_completion_json success",
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "thinking": thinking,
+                    },
+                    "response": {
+                        **response_payload,
+                        "content": content,
+                        "reasoning_text": reasoning_text,
+                    },
+                },
+            )
 
             return json.loads(content)
         except json.JSONDecodeError as e:
             logger.error(f"[LLM] Failed to parse JSON response: {e}")
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            emit_system_log(
+                category="llm_call",
+                event_name="chat_completion_json_parse_error",
+                level="ERROR",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=False,
+                duration_ms=elapsed_ms,
+                message=str(e),
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "thinking": thinking,
+                    },
+                },
+            )
             raise ValueError("Model output is not valid JSON")
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
                 "[LLM] JSON completion failed: "
                 f"{json.dumps({'model': chosen_model, 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
+            )
+            emit_system_log(
+                category="llm_call",
+                event_name="chat_completion_json_error",
+                level="ERROR",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=False,
+                duration_ms=elapsed_ms,
+                message=str(e),
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "thinking": thinking,
+                    },
+                    "error": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                    },
+                },
             )
             raise
 
@@ -264,6 +348,7 @@ class LLMService:
             f"[LLM] analyze_image_with_thinking request: {json.dumps(log_payload, ensure_ascii=False)}"
         )
         start = time.perf_counter()
+        task_context = self._current_task_log_context()
 
         try:
             img_url = self._to_data_url(image_path)
@@ -306,12 +391,63 @@ class LLMService:
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(model, usage_summary)
+            emit_system_log(
+                category="llm_call",
+                event_name="analyze_image_with_thinking",
+                level="INFO",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=True,
+                duration_ms=elapsed_ms,
+                message="analyze_image_with_thinking success",
+                payload={
+                    "request": {
+                        "model": model,
+                        "image_path": image_path,
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "temperature": temperature,
+                    },
+                    "response": {
+                        **response_payload,
+                        "content": content,
+                        "reasoning_text": reasoning_text,
+                    },
+                },
+            )
             return content
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
                 "[LLM] Vision analysis with thinking failed: "
                 f"{json.dumps({'model': model, 'image_path': image_path, 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
+            )
+            emit_system_log(
+                category="llm_call",
+                event_name="analyze_image_with_thinking_error",
+                level="ERROR",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=False,
+                duration_ms=elapsed_ms,
+                message=str(e),
+                payload={
+                    "request": {
+                        "model": model,
+                        "image_path": image_path,
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "temperature": temperature,
+                    },
+                    "error": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                    },
+                },
             )
             raise
 
@@ -354,6 +490,7 @@ class LLMService:
             f"[LLM] analyze_images_json_with_thinking request: {json.dumps(log_payload, ensure_ascii=False)}"
         )
         start = time.perf_counter()
+        task_context = self._current_task_log_context()
 
         try:
             content: List[Dict[str, Any]] = []
@@ -395,15 +532,88 @@ class LLMService:
             )
             self._report_usage(chosen_model, usage_summary)
             cleaned = str(raw_content).replace("```json", "").replace("```", "").strip()
+            emit_system_log(
+                category="llm_call",
+                event_name="analyze_images_json_with_thinking",
+                level="INFO",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=True,
+                duration_ms=elapsed_ms,
+                message="analyze_images_json_with_thinking success",
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "image_paths": image_paths,
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "temperature": final_temperature,
+                    },
+                    "response": {
+                        **response_payload,
+                        "content": cleaned,
+                        "reasoning_text": reasoning_text,
+                    },
+                },
+            )
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
             logger.error(f"[LLM] Failed to parse vision JSON response: {e}")
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            emit_system_log(
+                category="llm_call",
+                event_name="analyze_images_json_with_thinking_parse_error",
+                level="ERROR",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=False,
+                duration_ms=elapsed_ms,
+                message=str(e),
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "image_paths": image_paths,
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "temperature": temperature,
+                    },
+                },
+            )
             raise ValueError("Vision model output is not valid JSON")
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
                 "[LLM] Multi-image vision analysis failed: "
                 f"{json.dumps({'model': chosen_model, 'image_count': len(image_paths), 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
+            )
+            emit_system_log(
+                category="llm_call",
+                event_name="analyze_images_json_with_thinking_error",
+                level="ERROR",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                provider="llm",
+                success=False,
+                duration_ms=elapsed_ms,
+                message=str(e),
+                payload={
+                    "request": {
+                        "model": chosen_model,
+                        "image_paths": image_paths,
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "temperature": temperature,
+                    },
+                    "error": {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                    },
+                },
             )
             raise
 

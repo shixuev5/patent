@@ -175,6 +175,17 @@ def record_llm_usage(
     )
 
 
+def get_current_task_usage_context() -> Dict[str, Optional[str]]:
+    collector = _CURRENT_COLLECTOR.get()
+    if collector is None:
+        return {"task_id": None, "owner_id": None, "task_type": None}
+    return {
+        "task_id": collector.task_id or None,
+        "owner_id": collector.owner_id or None,
+        "task_type": collector.task_type or None,
+    }
+
+
 def persist_task_usage(storage, collector: Optional[TaskUsageCollector]) -> bool:
     if collector is None:
         return False

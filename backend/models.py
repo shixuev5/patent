@@ -178,6 +178,50 @@ class AdminUsageTableResponse(BaseModel):
     items: List[Dict[str, Any]]
 
 
+class AdminSystemLogSummaryResponse(BaseModel):
+    totalLogs: int
+    failedLogs: int
+    failedRate: float
+    llmCallCount: int
+    byCategory: List[Dict[str, Any]]
+
+
+class AdminSystemLogItem(BaseModel):
+    logId: str
+    timestamp: str
+    category: str
+    eventName: str
+    level: str
+    ownerId: Optional[str] = None
+    taskId: Optional[str] = None
+    taskType: Optional[str] = None
+    requestId: Optional[str] = None
+    traceId: Optional[str] = None
+    method: Optional[str] = None
+    path: Optional[str] = None
+    statusCode: Optional[int] = None
+    durationMs: Optional[int] = None
+    provider: Optional[str] = None
+    targetHost: Optional[str] = None
+    success: bool
+    message: Optional[str] = None
+    payloadBytes: int
+    payloadOverflow: bool
+    createdAt: str
+
+
+class AdminSystemLogListResponse(BaseModel):
+    page: int
+    pageSize: int
+    total: int
+    items: List[AdminSystemLogItem]
+
+
+class AdminSystemLogDetailResponse(BaseModel):
+    item: AdminSystemLogItem
+    payload: Any = None
+
+
 @dataclass
 class CurrentUser:
     user_id: str

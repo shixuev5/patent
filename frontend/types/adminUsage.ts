@@ -60,3 +60,50 @@ export interface AdminUsageTableResponse {
   priceMissing: boolean
   items: Record<string, any>[]
 }
+
+export interface AdminSystemLogSummaryResponse {
+  totalLogs: number
+  failedLogs: number
+  failedRate: number
+  llmCallCount: number
+  byCategory: Array<{
+    category: string
+    count: number
+  }>
+}
+
+export interface AdminSystemLogItem {
+  logId: string
+  timestamp: string
+  category: string
+  eventName: string
+  level: string
+  ownerId?: string | null
+  taskId?: string | null
+  taskType?: string | null
+  requestId?: string | null
+  traceId?: string | null
+  method?: string | null
+  path?: string | null
+  statusCode?: number | null
+  durationMs?: number | null
+  provider?: string | null
+  targetHost?: string | null
+  success: boolean
+  message?: string | null
+  payloadBytes: number
+  payloadOverflow: boolean
+  createdAt: string
+}
+
+export interface AdminSystemLogListResponse {
+  page: number
+  pageSize: number
+  total: number
+  items: AdminSystemLogItem[]
+}
+
+export interface AdminSystemLogDetailResponse {
+  item: AdminSystemLogItem
+  payload: unknown
+}

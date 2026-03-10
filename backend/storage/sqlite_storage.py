@@ -74,6 +74,31 @@ class SQLiteTaskStorage:
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
         ],
+        "system_logs": [
+            ("log_id", "log_id TEXT PRIMARY KEY"),
+            ("timestamp", "timestamp TEXT NOT NULL"),
+            ("category", "category TEXT NOT NULL"),
+            ("event_name", "event_name TEXT NOT NULL"),
+            ("level", "level TEXT NOT NULL"),
+            ("owner_id", "owner_id TEXT"),
+            ("task_id", "task_id TEXT"),
+            ("task_type", "task_type TEXT"),
+            ("request_id", "request_id TEXT"),
+            ("trace_id", "trace_id TEXT"),
+            ("method", "method TEXT"),
+            ("path", "path TEXT"),
+            ("status_code", "status_code INTEGER"),
+            ("duration_ms", "duration_ms INTEGER"),
+            ("provider", "provider TEXT"),
+            ("target_host", "target_host TEXT"),
+            ("success", "success INTEGER NOT NULL DEFAULT 0"),
+            ("message", "message TEXT"),
+            ("payload_inline_json", "payload_inline_json TEXT"),
+            ("payload_file_path", "payload_file_path TEXT"),
+            ("payload_bytes", "payload_bytes INTEGER NOT NULL DEFAULT 0"),
+            ("payload_overflow", "payload_overflow INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "created_at TEXT NOT NULL"),
+        ],
     }
 
     CREATE_TABLES_SQL = """
@@ -144,6 +169,32 @@ class SQLiteTaskStorage:
         updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS system_logs (
+        log_id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        category TEXT NOT NULL,
+        event_name TEXT NOT NULL,
+        level TEXT NOT NULL,
+        owner_id TEXT,
+        task_id TEXT,
+        task_type TEXT,
+        request_id TEXT,
+        trace_id TEXT,
+        method TEXT,
+        path TEXT,
+        status_code INTEGER,
+        duration_ms INTEGER,
+        provider TEXT,
+        target_host TEXT,
+        success INTEGER NOT NULL DEFAULT 0,
+        message TEXT,
+        payload_inline_json TEXT,
+        payload_file_path TEXT,
+        payload_bytes INTEGER NOT NULL DEFAULT 0,
+        payload_overflow INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
@@ -155,6 +206,13 @@ class SQLiteTaskStorage:
     CREATE INDEX IF NOT EXISTS idx_task_llm_usage_last_usage_at ON task_llm_usage(last_usage_at);
     CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_type ON task_llm_usage(task_type);
     CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_status ON task_llm_usage(task_status);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_category ON system_logs(category);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_owner_id ON system_logs(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_task_id ON system_logs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_request_id ON system_logs(request_id);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_provider ON system_logs(provider);
+    CREATE INDEX IF NOT EXISTS idx_system_logs_success ON system_logs(success);
     """
 
     def __init__(self, db_path: Union[str, Path, None] = None):
@@ -469,6 +527,252 @@ class SQLiteTaskStorage:
                 (start_iso, end_iso),
             ).fetchall()
         return [self._row_to_task_llm_usage(row) for row in rows]
+
+    def _row_to_system_log(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "log_id": row["log_id"],
+            "timestamp": row["timestamp"],
+            "category": row["category"],
+            "event_name": row["event_name"],
+            "level": row["level"],
+            "owner_id": row["owner_id"],
+            "task_id": row["task_id"],
+            "task_type": row["task_type"],
+            "request_id": row["request_id"],
+            "trace_id": row["trace_id"],
+            "method": row["method"],
+            "path": row["path"],
+            "status_code": row["status_code"],
+            "duration_ms": row["duration_ms"],
+            "provider": row["provider"],
+            "target_host": row["target_host"],
+            "success": bool(int(row["success"] or 0)),
+            "message": row["message"],
+            "payload_inline_json": row["payload_inline_json"],
+            "payload_file_path": row["payload_file_path"],
+            "payload_bytes": int(row["payload_bytes"] or 0),
+            "payload_overflow": bool(int(row["payload_overflow"] or 0)),
+            "created_at": row["created_at"],
+        }
+
+    def insert_system_log(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "log_id": str(record.get("log_id", "")).strip(),
+            "timestamp": str(record.get("timestamp") or datetime.now().isoformat()),
+            "category": str(record.get("category", "")).strip(),
+            "event_name": str(record.get("event_name", "")).strip(),
+            "level": str(record.get("level", "INFO")).strip().upper() or "INFO",
+            "owner_id": str(record.get("owner_id") or "").strip() or None,
+            "task_id": str(record.get("task_id") or "").strip() or None,
+            "task_type": str(record.get("task_type") or "").strip() or None,
+            "request_id": str(record.get("request_id") or "").strip() or None,
+            "trace_id": str(record.get("trace_id") or "").strip() or None,
+            "method": str(record.get("method") or "").strip() or None,
+            "path": str(record.get("path") or "").strip() or None,
+            "status_code": int(record.get("status_code")) if record.get("status_code") is not None else None,
+            "duration_ms": int(record.get("duration_ms")) if record.get("duration_ms") is not None else None,
+            "provider": str(record.get("provider") or "").strip() or None,
+            "target_host": str(record.get("target_host") or "").strip() or None,
+            "success": 1 if record.get("success") else 0,
+            "message": str(record.get("message") or "").strip() or None,
+            "payload_inline_json": str(record.get("payload_inline_json") or "").strip() or None,
+            "payload_file_path": str(record.get("payload_file_path") or "").strip() or None,
+            "payload_bytes": int(record.get("payload_bytes") or 0),
+            "payload_overflow": 1 if record.get("payload_overflow") else 0,
+            "created_at": str(record.get("created_at") or datetime.now().isoformat()),
+        }
+        if not payload["log_id"] or not payload["category"] or not payload["event_name"]:
+            return False
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR REPLACE INTO system_logs (
+                    log_id, timestamp, category, event_name, level,
+                    owner_id, task_id, task_type, request_id, trace_id,
+                    method, path, status_code, duration_ms,
+                    provider, target_host, success, message,
+                    payload_inline_json, payload_file_path, payload_bytes, payload_overflow, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["log_id"],
+                    payload["timestamp"],
+                    payload["category"],
+                    payload["event_name"],
+                    payload["level"],
+                    payload["owner_id"],
+                    payload["task_id"],
+                    payload["task_type"],
+                    payload["request_id"],
+                    payload["trace_id"],
+                    payload["method"],
+                    payload["path"],
+                    payload["status_code"],
+                    payload["duration_ms"],
+                    payload["provider"],
+                    payload["target_host"],
+                    payload["success"],
+                    payload["message"],
+                    payload["payload_inline_json"],
+                    payload["payload_file_path"],
+                    payload["payload_bytes"],
+                    payload["payload_overflow"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_system_log(self, log_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM system_logs WHERE log_id = ?",
+                (log_id,),
+            ).fetchone()
+        return self._row_to_system_log(row) if row else None
+
+    def list_system_logs(
+        self,
+        *,
+        category: Optional[str] = None,
+        event_name: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        provider: Optional[str] = None,
+        success: Optional[bool] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        q: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        if event_name:
+            where.append("event_name = ?")
+            params.append(event_name)
+        if owner_id:
+            where.append("owner_id = ?")
+            params.append(owner_id)
+        if task_id:
+            where.append("task_id = ?")
+            params.append(task_id)
+        if request_id:
+            where.append("request_id = ?")
+            params.append(request_id)
+        if trace_id:
+            where.append("trace_id = ?")
+            params.append(trace_id)
+        if provider:
+            where.append("provider = ?")
+            params.append(provider)
+        if success is not None:
+            where.append("success = ?")
+            params.append(1 if success else 0)
+        if date_from:
+            where.append("timestamp >= ?")
+            params.append(date_from)
+        if date_to:
+            where.append("timestamp <= ?")
+            params.append(date_to)
+        if q:
+            where.append(
+                "(category LIKE ? OR event_name LIKE ? OR owner_id LIKE ? OR task_id LIKE ? "
+                "OR request_id LIKE ? OR trace_id LIKE ? OR message LIKE ? OR path LIKE ? OR provider LIKE ?)"
+            )
+            wildcard = f"%{q}%"
+            params.extend([wildcard] * 9)
+
+        base_where = " AND ".join(where)
+        offset = max(0, (page - 1) * page_size)
+        with self._get_connection() as conn:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM system_logs WHERE {base_where}",
+                params,
+            ).fetchone()
+            rows = conn.execute(
+                f"""
+                SELECT * FROM system_logs
+                WHERE {base_where}
+                ORDER BY timestamp DESC
+                LIMIT ? OFFSET ?
+                """,
+                params + [page_size, offset],
+            ).fetchall()
+        return {
+            "total": int(total_row["c"] if total_row else 0),
+            "items": [self._row_to_system_log(row) for row in rows],
+        }
+
+    def summarize_system_logs(
+        self,
+        *,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        where = ["1=1"]
+        params: List[Any] = []
+        if date_from:
+            where.append("timestamp >= ?")
+            params.append(date_from)
+        if date_to:
+            where.append("timestamp <= ?")
+            params.append(date_to)
+
+        where_clause = " AND ".join(where)
+        with self._get_connection() as conn:
+            overview_row = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total_logs,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed_logs,
+                    SUM(CASE WHEN category = 'llm_call' THEN 1 ELSE 0 END) AS llm_call_count
+                FROM system_logs
+                WHERE {where_clause}
+                """,
+                params,
+            ).fetchone()
+            category_rows = conn.execute(
+                f"""
+                SELECT category, COUNT(*) AS count
+                FROM system_logs
+                WHERE {where_clause}
+                GROUP BY category
+                ORDER BY count DESC
+                """,
+                params,
+            ).fetchall()
+
+        total_logs = int(overview_row["total_logs"] or 0) if overview_row else 0
+        failed_logs = int(overview_row["failed_logs"] or 0) if overview_row else 0
+        llm_call_count = int(overview_row["llm_call_count"] or 0) if overview_row else 0
+        failed_rate = (failed_logs / total_logs) if total_logs else 0.0
+        return {
+            "totalLogs": total_logs,
+            "failedLogs": failed_logs,
+            "failedRate": round(failed_rate, 6),
+            "llmCallCount": llm_call_count,
+            "byCategory": [
+                {"category": row["category"], "count": int(row["count"] or 0)}
+                for row in category_rows
+            ],
+        }
+
+    def cleanup_system_logs_before(self, cutoff_iso: str) -> int:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM system_logs WHERE timestamp < ?",
+                (cutoff_iso,),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def list_tasks(
         self,

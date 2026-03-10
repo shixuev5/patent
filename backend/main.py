@@ -2,6 +2,7 @@
 专利分析后端 API 主应用入口
 """
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +10,25 @@ from contextlib import asynccontextmanager
 
 from config import settings
 from backend.logging_setup import setup_logging_utc8
+from backend.system_logs import (
+    cleanup_expired_system_logs,
+    initialize_system_logging,
+    request_logging_middleware,
+    start_system_log_cleanup_loop,
+    stop_system_log_cleanup_loop,
+)
 
-setup_logging_utc8(level="INFO")
+_app_log_file = Path(os.getenv("APP_LOG_FILE", str(settings.DATA_DIR / "logs" / "app.log")))
+_app_log_file.parent.mkdir(parents=True, exist_ok=True)
+setup_logging_utc8(
+    level=os.getenv("APP_LOG_LEVEL", "INFO"),
+    log_file=str(_app_log_file),
+    file_level=os.getenv("APP_LOG_FILE_LEVEL", "DEBUG"),
+    rotation=os.getenv("APP_LOG_ROTATION", "10 MB"),
+    retention=os.getenv("APP_LOG_RETENTION", "14 days"),
+    compression=os.getenv("APP_LOG_COMPRESSION", "zip"),
+)
+initialize_system_logging()
 from backend.routes import router as api_router
 
 
@@ -21,8 +39,11 @@ async def lifespan(app: FastAPI):
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    cleanup_expired_system_logs()
+    start_system_log_cleanup_loop()
     yield
     # 关闭时的清理操作（如果需要）
+    await stop_system_log_cleanup_loop()
 
 
 from config import VERSION
@@ -41,6 +62,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(request_logging_middleware)
 
 app.include_router(api_router)
 

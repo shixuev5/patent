@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from config import settings
 from backend.auth import _get_current_user
 from backend.log_context import bind_task_logger, task_log_context
+from backend.system_logs import emit_system_log
 from backend.usage import _enforce_daily_quota
 from backend.task_usage_tracking import (
     create_task_usage_collector,
@@ -213,14 +214,25 @@ async def run_patent_analysis_task(
     """后台执行专利分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
     task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_patent_analysis_task")
     task_snapshot = task_manager.get_task(task_id)
+    owner_id = getattr(task_snapshot, "owner_id", "") or ""
     usage_collector = create_task_usage_collector(
         task_id=task_id,
-        owner_id=getattr(task_snapshot, "owner_id", "") or "",
+        owner_id=owner_id,
         task_type=TaskType.PATENT_ANALYSIS.value,
     )
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
+        emit_system_log(
+            category="task_execution",
+            event_name="task_started",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.PATENT_ANALYSIS.value,
+            success=True,
+            message="专利分析任务开始执行",
+            payload={"pn": pn or None},
+        )
         task_manager.update_progress(task_id, 5, "正在准备材料")
 
         loop = asyncio.get_event_loop()
@@ -276,6 +288,20 @@ async def run_patent_analysis_task(
                         continue
                     if progress != last_progress or step_label != last_step:
                         task_manager.update_progress(task_id, progress, step_label)
+                        emit_system_log(
+                            category="task_execution",
+                            event_name="task_progress",
+                            owner_id=owner_id,
+                            task_id=task_id,
+                            task_type=TaskType.PATENT_ANALYSIS.value,
+                            success=True,
+                            message=f"progress={progress} step={step_label}",
+                            payload={
+                                "progress": progress,
+                                "step": step_label,
+                                "node": node_name,
+                            },
+                        )
                         last_progress = progress
                         last_step = step_label
             return last_state
@@ -285,12 +311,30 @@ async def run_patent_analysis_task(
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
             task_logger.warning("任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=False,
+                message="任务已取消",
+            )
             return
 
         status = str(result.get("status", "failed")).strip().lower()
         if status == "cancelled":
             task_manager.cancel_task(task_id, "任务已取消")
             task_logger.warning("任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=False,
+                message="流程返回 cancelled",
+            )
             return
 
         if status == "failed":
@@ -301,6 +345,16 @@ async def run_patent_analysis_task(
             error_msg = first_error or "专利分析任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             task_logger.error(f"任务失败：{error_msg}")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_failed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=False,
+                message=error_msg,
+                payload={"status": status},
+            )
             return
 
         if status == "completed":
@@ -340,22 +394,69 @@ async def run_patent_analysis_task(
 
             task_manager.complete_task(task_id, output_files=output_files)
             task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_completed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=True,
+                message="任务执行完成",
+                payload={"output_pdf": output_pdf, "pn": final_pn},
+            )
         else:
             error_msg = f"未知流程状态: {status}"
             task_manager.fail_task(task_id, error_msg)
             task_logger.error(f"任务失败：{error_msg}")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_failed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=False,
+                message=error_msg,
+                payload={"status": status},
+            )
 
     except asyncio.CancelledError:
         task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
+        emit_system_log(
+            category="task_execution",
+            event_name="task_cancelled",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.PATENT_ANALYSIS.value,
+            success=False,
+            message="任务被 asyncio 取消",
+        )
         raise
     except Exception as exc:
         if cancel_event and cancel_event.is_set():
             task_logger.warning("任务已取消")
             task_manager.cancel_task(task_id, "任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.PATENT_ANALYSIS.value,
+                success=False,
+                message="异常分支检测到任务已取消",
+            )
             return
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
+        emit_system_log(
+            category="task_execution",
+            event_name="task_exception",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.PATENT_ANALYSIS.value,
+            success=False,
+            message=str(exc),
+        )
     finally:
         latest_task = task_manager.get_task(task_id)
         if latest_task:
@@ -372,14 +473,25 @@ async def run_office_action_reply_task(
     """后台执行审查意见答复流程。"""
     task_logger = bind_task_logger(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-", stage="run_office_action_reply_task")
     task_snapshot = task_manager.get_task(task_id)
+    owner_id = getattr(task_snapshot, "owner_id", "") or ""
     usage_collector = create_task_usage_collector(
         task_id=task_id,
-        owner_id=getattr(task_snapshot, "owner_id", "") or "",
+        owner_id=owner_id,
         task_type=TaskType.OFFICE_ACTION_REPLY.value,
     )
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
+        emit_system_log(
+            category="task_execution",
+            event_name="task_started",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            success=True,
+            message="审查意见答复任务开始执行",
+            payload={"input_file_count": len(input_files)},
+        )
         task_manager.update_progress(task_id, 5, "正在准备材料")
 
         loop = asyncio.get_event_loop()
@@ -443,6 +555,20 @@ async def run_office_action_reply_task(
                         continue
                     if progress != last_progress or step_label != last_step:
                         task_manager.update_progress(task_id, progress, step_label)
+                        emit_system_log(
+                            category="task_execution",
+                            event_name="task_progress",
+                            owner_id=owner_id,
+                            task_id=task_id,
+                            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                            success=True,
+                            message=f"progress={progress} step={step_label}",
+                            payload={
+                                "progress": progress,
+                                "step": step_label,
+                                "node": node_name,
+                            },
+                        )
                         last_progress = progress
                         last_step = step_label
             return last_state
@@ -455,6 +581,15 @@ async def run_office_action_reply_task(
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
             task_logger.warning("任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                success=False,
+                message="任务已取消",
+            )
             return
 
         status = str(result.get("status", "failed")).strip().lower()
@@ -466,6 +601,16 @@ async def run_office_action_reply_task(
             error_msg = first_error or "审查意见答复任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             task_logger.error(f"任务失败：{error_msg}")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_failed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                success=False,
+                message=error_msg,
+                payload={"status": status},
+            )
             return
 
         task_manager.update_progress(task_id, 95, "正在整理报告")
@@ -491,22 +636,68 @@ async def run_office_action_reply_task(
 
         task_manager.complete_task(task_id, output_files=output_files)
         task_logger.bind(stage="finalize_report").success(f"任务已完成：{pdf_path}")
+        emit_system_log(
+            category="task_execution",
+            event_name="task_completed",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            success=True,
+            message="任务执行完成",
+            payload={"output_pdf": pdf_path},
+        )
 
     except asyncio.CancelledError:
         task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
+        emit_system_log(
+            category="task_execution",
+            event_name="task_cancelled",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            success=False,
+            message="任务被 asyncio 取消",
+        )
         raise
     except asyncio.TimeoutError:
         error_msg = f"审查意见答复任务超时（>{settings.OAR_WORKFLOW_TIMEOUT_SECONDS}秒）"
         task_logger.error(error_msg)
         task_manager.fail_task(task_id, error_msg)
+        emit_system_log(
+            category="task_execution",
+            event_name="task_timeout",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            success=False,
+            message=error_msg,
+        )
     except Exception as exc:
         if cancel_event and cancel_event.is_set():
             task_logger.warning("任务已取消")
             task_manager.cancel_task(task_id, "任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                success=False,
+                message="异常分支检测到任务已取消",
+            )
             return
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
+        emit_system_log(
+            category="task_execution",
+            event_name="task_exception",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            success=False,
+            message=str(exc),
+        )
     finally:
         latest_task = task_manager.get_task(task_id)
         if latest_task:
@@ -553,6 +744,19 @@ async def create_task(
             task_type=task_type,
             pn=pn,
             title=patentNumber or (file.filename if file else "未命名任务"),
+        )
+        emit_system_log(
+            category="task_execution",
+            event_name="task_created",
+            owner_id=current_user.user_id,
+            task_id=task.id,
+            task_type=task_type,
+            success=True,
+            message="创建专利分析任务",
+            payload={
+                "pn": pn,
+                "has_upload_file": bool(file),
+            },
         )
 
         task_metadata: Dict[str, Any] = {"task_type": task_type, "input_files": []}
@@ -615,6 +819,21 @@ async def create_task(
         task_type=task_type,
         pn=None,
         title=f"审查意见答复任务 - {officeActionFile.filename or '未命名文件'}",
+    )
+    emit_system_log(
+        category="task_execution",
+        event_name="task_created",
+        owner_id=current_user.user_id,
+        task_id=task.id,
+        task_type=task_type,
+        success=True,
+        message="创建审查意见答复任务",
+        payload={
+            "office_action_file": officeActionFile.filename,
+            "response_file": responseFile.filename,
+            "claims_file": claimsFile.filename if claimsFile else None,
+            "comparison_doc_count": len(comparisonDocs or []),
+        },
     )
 
     input_files: List[Dict[str, str]] = []
@@ -720,6 +939,15 @@ async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_cur
 
     task_manager.delete_task(task_id)
     RUNNING_TASKS.pop(task_id, None)
+    emit_system_log(
+        category="task_execution",
+        event_name="task_deleted",
+        owner_id=current_user.user_id,
+        task_id=task_id,
+        task_type=_task_type(task),
+        success=True,
+        message="删除单个任务",
+    )
     return {"deleted": True}
 
 
@@ -743,6 +971,14 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
             deleted += 1
         RUNNING_TASKS.pop(task.id, None)
 
+    emit_system_log(
+        category="task_execution",
+        event_name="task_bulk_deleted",
+        owner_id=current_user.user_id,
+        success=True,
+        message="批量删除任务",
+        payload={"deleted": deleted},
+    )
     return {"deleted": deleted}
 
 
@@ -835,6 +1071,16 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
                 from io import BytesIO
                 from urllib.parse import quote
 
+                emit_system_log(
+                    category="task_execution",
+                    event_name="task_download",
+                    owner_id=current_user.user_id,
+                    task_id=task_id,
+                    task_type=task_type,
+                    success=True,
+                    message="下载任务报告（R2）",
+                    payload={"filename": filename},
+                )
                 return StreamingResponse(
                     BytesIO(r2_pdf),
                     media_type="application/pdf",
@@ -862,6 +1108,17 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
                 "suggestion": "请稍后重试或联系管理员。",
             },
         )
+
+    emit_system_log(
+        category="task_execution",
+        event_name="task_download",
+        owner_id=current_user.user_id,
+        task_id=task_id,
+        task_type=task_type,
+        success=True,
+        message="下载任务报告",
+        payload={"filename": filename},
+    )
 
     return FileResponse(
         path=str(pdf_path),

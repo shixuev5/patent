@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { useTaskStore } from '~/stores/task'
 import type {
   AdminAccessResponse,
+  AdminSystemLogDetailResponse,
+  AdminSystemLogListResponse,
+  AdminSystemLogSummaryResponse,
   AdminUsageDashboardResponse,
   AdminUsageTableResponse,
   UsageRangeType,
@@ -22,6 +25,22 @@ interface FetchTableInput {
   sortOrder?: 'asc' | 'desc'
 }
 
+interface FetchSystemLogInput {
+  category?: string
+  eventName?: string
+  ownerId?: string
+  taskId?: string
+  requestId?: string
+  traceId?: string
+  provider?: string
+  success?: string
+  dateFrom?: string
+  dateTo?: string
+  q?: string
+  page?: number
+  pageSize?: number
+}
+
 const withQuery = (base: string, query: Record<string, string | number | undefined>) => {
   const params = new URLSearchParams()
   Object.entries(query).forEach(([key, value]) => {
@@ -39,8 +58,14 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     loadingAccess: false,
     loadingDashboard: false,
     loadingTable: false,
+    loadingSystemLogs: false,
+    loadingSystemLogDetail: false,
+    loadingSystemSummary: false,
     dashboard: null as AdminUsageDashboardResponse | null,
     tableData: null as AdminUsageTableResponse | null,
+    systemLogSummary: null as AdminSystemLogSummaryResponse | null,
+    systemLogs: null as AdminSystemLogListResponse | null,
+    systemLogDetail: null as AdminSystemLogDetailResponse | null,
   }),
 
   actions: {
@@ -121,6 +146,68 @@ export const useAdminUsageStore = defineStore('admin-usage', {
       } finally {
         this.loadingTable = false
       }
+    },
+
+    async fetchSystemLogSummary(dateFrom?: string, dateTo?: string): Promise<AdminSystemLogSummaryResponse | null> {
+      this.loadingSystemSummary = true
+      try {
+        const path = withQuery('/api/admin/logs/summary', {
+          dateFrom,
+          dateTo,
+        })
+        const response = await this._authorizedFetch(path)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminSystemLogSummaryResponse
+        this.systemLogSummary = data
+        return data
+      } finally {
+        this.loadingSystemSummary = false
+      }
+    },
+
+    async fetchSystemLogs(input: FetchSystemLogInput): Promise<AdminSystemLogListResponse | null> {
+      this.loadingSystemLogs = true
+      try {
+        const path = withQuery('/api/admin/logs', {
+          category: input.category,
+          eventName: input.eventName,
+          ownerId: input.ownerId,
+          taskId: input.taskId,
+          requestId: input.requestId,
+          traceId: input.traceId,
+          provider: input.provider,
+          success: input.success,
+          dateFrom: input.dateFrom,
+          dateTo: input.dateTo,
+          q: input.q,
+          page: input.page ?? 1,
+          pageSize: input.pageSize ?? 20,
+        })
+        const response = await this._authorizedFetch(path)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminSystemLogListResponse
+        this.systemLogs = data
+        return data
+      } finally {
+        this.loadingSystemLogs = false
+      }
+    },
+
+    async fetchSystemLogDetail(logId: string): Promise<AdminSystemLogDetailResponse | null> {
+      this.loadingSystemLogDetail = true
+      try {
+        const response = await this._authorizedFetch(`/api/admin/logs/${encodeURIComponent(logId)}`)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminSystemLogDetailResponse
+        this.systemLogDetail = data
+        return data
+      } finally {
+        this.loadingSystemLogDetail = false
+      }
+    },
+
+    clearSystemLogDetail() {
+      this.systemLogDetail = null
     },
   },
 })
