@@ -2,7 +2,6 @@
 专利分析后端 API 主应用入口
 """
 import os
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,15 +17,15 @@ from backend.system_logs import (
     stop_system_log_cleanup_loop,
 )
 
-_app_log_file = Path(os.getenv("APP_LOG_FILE", str(settings.DATA_DIR / "logs" / "app.log")))
+_app_log_file = settings.DATA_DIR / "logs" / "app.log"
 _app_log_file.parent.mkdir(parents=True, exist_ok=True)
 setup_logging_utc8(
     level=os.getenv("APP_LOG_LEVEL", "INFO"),
     log_file=str(_app_log_file),
-    file_level=os.getenv("APP_LOG_FILE_LEVEL", "DEBUG"),
-    rotation=os.getenv("APP_LOG_ROTATION", "10 MB"),
-    retention=os.getenv("APP_LOG_RETENTION", "14 days"),
-    compression=os.getenv("APP_LOG_COMPRESSION", "zip"),
+    file_level="DEBUG",
+    rotation="10 MB",
+    retention="14 days",
+    compression="zip",
 )
 initialize_system_logging()
 from backend.routes import router as api_router
