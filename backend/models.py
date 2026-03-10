@@ -3,7 +3,7 @@ API 数据模型定义
 """
 from dataclasses import dataclass
 from threading import Event
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -134,6 +134,48 @@ class UsageResponse(BaseModel):
     requestedTaskPoints: Optional[float] = None
     canCreateRequestedTask: Optional[bool] = None
     resetAt: str
+
+
+class AdminAccessResponse(BaseModel):
+    isAdmin: bool
+
+
+class AdminUsageOverview(BaseModel):
+    totalTasks: int
+    totalUsers: int
+    totalPromptTokens: int
+    totalCompletionTokens: int
+    totalTokens: int
+    totalReasoningTokens: int
+    totalEstimatedCostCny: float
+    avgTokensPerTask: float
+    avgCostPerTaskCny: float
+    priceMissing: bool
+
+
+class AdminUsageDashboardResponse(BaseModel):
+    rangeType: Literal["day", "month", "year"]
+    anchor: str
+    startAt: str
+    endAt: str
+    currency: str = "CNY"
+    overview: AdminUsageOverview
+    trend: List[Dict[str, Any]]
+    byTaskType: List[Dict[str, Any]]
+    topUsers: List[Dict[str, Any]]
+    priceMissing: bool
+
+
+class AdminUsageTableResponse(BaseModel):
+    scope: Literal["task", "user", "all"]
+    rangeType: Literal["day", "month", "year"]
+    anchor: str
+    currency: str = "CNY"
+    page: int
+    pageSize: int
+    total: int
+    priceMissing: bool
+    items: List[Dict[str, Any]]
 
 
 @dataclass

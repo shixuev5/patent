@@ -16,6 +16,11 @@ from config import settings
 from backend.auth import _get_current_user
 from backend.log_context import bind_task_logger, task_log_context
 from backend.usage import _enforce_daily_quota
+from backend.task_usage_tracking import (
+    create_task_usage_collector,
+    persist_task_usage,
+    task_usage_collection,
+)
 from backend.models import CurrentUser, TaskResponse
 from backend.utils import (
     _cleanup_path,
@@ -207,6 +212,12 @@ async def run_patent_analysis_task(
 ):
     """后台执行专利分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
     task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_patent_analysis_task")
+    task_snapshot = task_manager.get_task(task_id)
+    usage_collector = create_task_usage_collector(
+        task_id=task_id,
+        owner_id=getattr(task_snapshot, "owner_id", "") or "",
+        task_type=TaskType.PATENT_ANALYSIS.value,
+    )
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
@@ -240,7 +251,7 @@ async def run_patent_analysis_task(
 
             workflow = create_workflow(config)
             runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
-            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn or "-"):
+            with task_log_context(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn or "-"), task_usage_collection(usage_collector):
                 last_state: Dict[str, Any] = _to_dict(initial_state)
                 last_progress = -1
                 last_step = ""
@@ -346,6 +357,10 @@ async def run_patent_analysis_task(
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
     finally:
+        latest_task = task_manager.get_task(task_id)
+        if latest_task:
+            usage_collector.mark_status(latest_task.status.value)
+        persist_task_usage(task_manager.storage, usage_collector)
         PATENT_CHECKPOINTERS.pop(task_id, None)
 
 
@@ -356,6 +371,12 @@ async def run_office_action_reply_task(
 ):
     """后台执行审查意见答复流程。"""
     task_logger = bind_task_logger(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-", stage="run_office_action_reply_task")
+    task_snapshot = task_manager.get_task(task_id)
+    usage_collector = create_task_usage_collector(
+        task_id=task_id,
+        owner_id=getattr(task_snapshot, "owner_id", "") or "",
+        task_type=TaskType.OFFICE_ACTION_REPLY.value,
+    )
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
@@ -397,7 +418,7 @@ async def run_office_action_reply_task(
 
             workflow = create_workflow(config)
             runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
-            with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"):
+            with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"), task_usage_collection(usage_collector):
                 last_state: Dict[str, Any] = _to_dict(initial_state)
                 last_progress = -1
                 last_step = ""
@@ -487,6 +508,10 @@ async def run_office_action_reply_task(
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
     finally:
+        latest_task = task_manager.get_task(task_id)
+        if latest_task:
+            usage_collector.mark_status(latest_task.status.value)
+        persist_task_usage(task_manager.storage, usage_collector)
         OAR_CHECKPOINTERS.pop(task_id, None)
 
 

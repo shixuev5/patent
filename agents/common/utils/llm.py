@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from loguru import logger
 from config import settings
+from backend.task_usage_tracking import record_llm_usage
 
 
 class LLMService:
@@ -77,16 +78,38 @@ class LLMService:
     @staticmethod
     def _get_usage_summary(response: Any) -> Dict[str, Optional[int]]:
         usage = getattr(response, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        if prompt_tokens is None:
+            prompt_tokens = getattr(usage, "input_tokens", None)
+        if completion_tokens is None:
+            completion_tokens = getattr(usage, "output_tokens", None)
+        if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+            total_tokens = int(prompt_tokens) + int(completion_tokens)
         return {
-            "prompt_tokens": getattr(usage, "prompt_tokens", None),
-            "completion_tokens": getattr(usage, "completion_tokens", None),
-            "total_tokens": getattr(usage, "total_tokens", None),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
             "reasoning_tokens": getattr(
                 getattr(usage, "completion_tokens_details", None),
                 "reasoning_tokens",
                 None,
             ),
         }
+
+    @staticmethod
+    def _report_usage(model: str, usage_summary: Dict[str, Optional[int]]) -> None:
+        try:
+            record_llm_usage(
+                model=model,
+                prompt_tokens=int(usage_summary.get("prompt_tokens") or 0),
+                completion_tokens=int(usage_summary.get("completion_tokens") or 0),
+                total_tokens=int(usage_summary.get("total_tokens") or 0),
+                reasoning_tokens=int(usage_summary.get("reasoning_tokens") or 0),
+            )
+        except Exception as exc:
+            logger.debug(f"[LLM] report usage skipped: {exc}")
 
     @staticmethod
     def _extract_reasoning_text(response: Any) -> str:
@@ -189,6 +212,7 @@ class LLMService:
                 "[LLM] chat_completion_json response: "
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
+            self._report_usage(chosen_model, usage_summary)
 
             return json.loads(content)
         except json.JSONDecodeError as e:
@@ -281,6 +305,7 @@ class LLMService:
                 "[LLM] analyze_image_with_thinking response: "
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
+            self._report_usage(model, usage_summary)
             return content
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
@@ -368,6 +393,7 @@ class LLMService:
                 "[LLM] analyze_images_json_with_thinking response: "
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
+            self._report_usage(chosen_model, usage_summary)
             cleaned = str(raw_content).replace("```json", "").replace("```", "").strip()
             return json.loads(cleaned)
         except json.JSONDecodeError as e:

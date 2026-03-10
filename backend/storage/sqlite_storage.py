@@ -55,6 +55,25 @@ class SQLiteTaskStorage:
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
         ],
+        "task_llm_usage": [
+            ("task_id", "task_id TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("task_type", "task_type TEXT NOT NULL"),
+            ("task_status", "task_status TEXT"),
+            ("prompt_tokens", "prompt_tokens INTEGER NOT NULL DEFAULT 0"),
+            ("completion_tokens", "completion_tokens INTEGER NOT NULL DEFAULT 0"),
+            ("total_tokens", "total_tokens INTEGER NOT NULL DEFAULT 0"),
+            ("reasoning_tokens", "reasoning_tokens INTEGER NOT NULL DEFAULT 0"),
+            ("llm_call_count", "llm_call_count INTEGER NOT NULL DEFAULT 0"),
+            ("estimated_cost_cny", "estimated_cost_cny REAL NOT NULL DEFAULT 0"),
+            ("price_missing", "price_missing INTEGER NOT NULL DEFAULT 0"),
+            ("model_breakdown_json", "model_breakdown_json TEXT"),
+            ("first_usage_at", "first_usage_at TEXT"),
+            ("last_usage_at", "last_usage_at TEXT"),
+            ("currency", "currency TEXT NOT NULL DEFAULT 'CNY'"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+        ],
     }
 
     CREATE_TABLES_SQL = """
@@ -105,6 +124,26 @@ class SQLiteTaskStorage:
         PRIMARY KEY (owner_id, year, month)
     );
 
+    CREATE TABLE IF NOT EXISTS task_llm_usage (
+        task_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        task_type TEXT NOT NULL,
+        task_status TEXT,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        llm_call_count INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_cny REAL NOT NULL DEFAULT 0,
+        price_missing INTEGER NOT NULL DEFAULT 0,
+        model_breakdown_json TEXT,
+        first_usage_at TEXT,
+        last_usage_at TEXT,
+        currency TEXT NOT NULL DEFAULT 'CNY',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
@@ -112,6 +151,10 @@ class SQLiteTaskStorage:
     CREATE INDEX IF NOT EXISTS idx_users_authing_sub ON users(authing_sub);
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_account_month_targets_owner_ym ON account_month_targets(owner_id, year, month);
+    CREATE INDEX IF NOT EXISTS idx_task_llm_usage_owner_id ON task_llm_usage(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_task_llm_usage_last_usage_at ON task_llm_usage(last_usage_at);
+    CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_type ON task_llm_usage(task_type);
+    CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_status ON task_llm_usage(task_status);
     """
 
     def __init__(self, db_path: Union[str, Path, None] = None):
@@ -314,6 +357,118 @@ class SQLiteTaskStorage:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def _row_to_task_llm_usage(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "task_id": row["task_id"],
+            "owner_id": row["owner_id"],
+            "task_type": row["task_type"],
+            "task_status": row["task_status"] or "",
+            "prompt_tokens": int(row["prompt_tokens"] or 0),
+            "completion_tokens": int(row["completion_tokens"] or 0),
+            "total_tokens": int(row["total_tokens"] or 0),
+            "reasoning_tokens": int(row["reasoning_tokens"] or 0),
+            "llm_call_count": int(row["llm_call_count"] or 0),
+            "estimated_cost_cny": float(row["estimated_cost_cny"] or 0),
+            "price_missing": bool(int(row["price_missing"] or 0)),
+            "model_breakdown_json": self._parse_metadata(row["model_breakdown_json"]),
+            "first_usage_at": row["first_usage_at"],
+            "last_usage_at": row["last_usage_at"],
+            "currency": row["currency"] or "CNY",
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def upsert_task_llm_usage(self, usage: Dict[str, Any]) -> bool:
+        payload = {
+            "task_id": str(usage.get("task_id", "")).strip(),
+            "owner_id": str(usage.get("owner_id", "")).strip(),
+            "task_type": str(usage.get("task_type", "")).strip(),
+            "task_status": str(usage.get("task_status", "")).strip(),
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+            "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+            "llm_call_count": int(usage.get("llm_call_count") or 0),
+            "estimated_cost_cny": float(usage.get("estimated_cost_cny") or 0),
+            "price_missing": 1 if usage.get("price_missing") else 0,
+            "model_breakdown_json": self._encode_metadata(usage.get("model_breakdown_json") or {}),
+            "first_usage_at": str(usage.get("first_usage_at") or "").strip() or None,
+            "last_usage_at": str(usage.get("last_usage_at") or "").strip() or None,
+            "currency": str(usage.get("currency") or "CNY").strip() or "CNY",
+            "created_at": str(usage.get("created_at") or datetime.now().isoformat()),
+            "updated_at": str(usage.get("updated_at") or datetime.now().isoformat()),
+        }
+        if not payload["task_id"] or not payload["owner_id"] or not payload["task_type"]:
+            return False
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO task_llm_usage (
+                    task_id, owner_id, task_type, task_status,
+                    prompt_tokens, completion_tokens, total_tokens, reasoning_tokens,
+                    llm_call_count, estimated_cost_cny, price_missing, model_breakdown_json,
+                    first_usage_at, last_usage_at, currency, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    task_type = excluded.task_type,
+                    task_status = excluded.task_status,
+                    prompt_tokens = excluded.prompt_tokens,
+                    completion_tokens = excluded.completion_tokens,
+                    total_tokens = excluded.total_tokens,
+                    reasoning_tokens = excluded.reasoning_tokens,
+                    llm_call_count = excluded.llm_call_count,
+                    estimated_cost_cny = excluded.estimated_cost_cny,
+                    price_missing = excluded.price_missing,
+                    model_breakdown_json = excluded.model_breakdown_json,
+                    first_usage_at = excluded.first_usage_at,
+                    last_usage_at = excluded.last_usage_at,
+                    currency = excluded.currency,
+                    created_at = COALESCE(task_llm_usage.created_at, excluded.created_at),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    payload["task_id"],
+                    payload["owner_id"],
+                    payload["task_type"],
+                    payload["task_status"],
+                    payload["prompt_tokens"],
+                    payload["completion_tokens"],
+                    payload["total_tokens"],
+                    payload["reasoning_tokens"],
+                    payload["llm_call_count"],
+                    payload["estimated_cost_cny"],
+                    payload["price_missing"],
+                    payload["model_breakdown_json"],
+                    payload["first_usage_at"],
+                    payload["last_usage_at"],
+                    payload["currency"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_task_llm_usage_by_last_usage_range(
+        self,
+        start_iso: str,
+        end_iso: str,
+    ) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM task_llm_usage
+                WHERE last_usage_at IS NOT NULL
+                  AND last_usage_at >= ?
+                  AND last_usage_at < ?
+                ORDER BY last_usage_at DESC
+                """,
+                (start_iso, end_iso),
+            ).fetchall()
+        return [self._row_to_task_llm_usage(row) for row in rows]
 
     def list_tasks(
         self,

@@ -14,6 +14,7 @@
           <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">首页</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">AI 任务</NuxtLink>
           <NuxtLink to="/account" :class="navClass(route.path.startsWith('/account'))">个人空间</NuxtLink>
+          <NuxtLink v-if="showAdminEntry" to="/admin/usage" :class="navClass(route.path.startsWith('/admin/usage'))">管理统计</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
         </nav>
 
@@ -58,6 +59,14 @@
                 @click="closeMobileMenu"
               >
                 个人空间
+              </NuxtLink>
+              <NuxtLink
+                v-if="showAdminEntry"
+                to="/admin/usage"
+                class="mt-1 block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                @click="closeMobileMenu"
+              >
+                管理统计
               </NuxtLink>
               <button
                 v-if="showInstallEntry"
@@ -194,10 +203,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
+import { useAdminUsageStore } from '~/stores/adminUsage'
 
 const route = useRoute()
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
+const adminUsageStore = useAdminUsageStore()
 const { showInstallEntry, installApp, needRefresh, applyUpdate, dismissUpdate, isOffline, canShowIOSGuide } = usePwa()
 const currentYear = new Date().getFullYear()
 const serviceStatus = ref<string | null>(null)
@@ -230,6 +241,7 @@ const displayUserName = computed(() => {
   return candidates.find((item) => item && String(item).trim().length > 0) || '已登录用户'
 })
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
+const showAdminEntry = computed(() => adminUsageStore.isAdmin)
 
 const navClass = (active: boolean) => {
   return active
@@ -313,6 +325,15 @@ const onApplyUpdate = async () => {
   }
 }
 
+const refreshAdminAccess = async () => {
+  if (!hasAuthingEnabled.value) {
+    adminUsageStore.isAdmin = false
+    adminUsageStore.checkedAccess = true
+    return
+  }
+  await adminUsageStore.fetchAccess(true)
+}
+
 watch(
   () => route.fullPath,
   () => {
@@ -323,9 +344,17 @@ watch(
 
 onMounted(() => {
   if (hasAuthingEnabled.value) authStore.ensureInitialized()
+  refreshAdminAccess()
   fetchHealthStats()
   healthTimer = setInterval(fetchHealthStats, 30000)
 })
+
+watch(
+  () => authStore.isLoggedIn,
+  () => {
+    refreshAdminAccess()
+  },
+)
 
 onBeforeUnmount(() => {
   if (healthTimer) clearInterval(healthTimer)
