@@ -37,11 +37,11 @@ def _parse_pricing(text: str) -> Dict[str, Tuple[Decimal, Decimal]]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning(f"{TOKEN_PRICING_ENV_KEY} is not valid JSON; fallback to empty pricing table.")
+        logger.warning(f"{TOKEN_PRICING_ENV_KEY} 不是合法 JSON，已回退为空价格表。")
         return {}
 
     if not isinstance(parsed, dict):
-        logger.warning(f"{TOKEN_PRICING_ENV_KEY} should be a JSON object; fallback to empty pricing table.")
+        logger.warning(f"{TOKEN_PRICING_ENV_KEY} 应为 JSON 对象，已回退为空价格表。")
         return {}
 
     pricing: Dict[str, Tuple[Decimal, Decimal]] = {}

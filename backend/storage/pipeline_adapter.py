@@ -63,7 +63,7 @@ class PipelineTaskManager:
 
         self.storage.create_task(task)
 
-        logger.info(f"Task created: {task_id} (PN: {pn})")
+        logger.info(f"任务已创建：{task_id}（PN: {pn}）")
         return task
 
     def start_task(self, task_id: str) -> bool:
@@ -73,7 +73,7 @@ class PipelineTaskManager:
             updated_at=datetime.now().isoformat(),
         )
         if success:
-            logger.info(f"Task started: {task_id}")
+            logger.info(f"任务已开始：{task_id}")
         return success
 
     def update_progress(
@@ -124,8 +124,8 @@ class PipelineTaskManager:
                 if analysis_pn:
                     self.storage.record_patent_analysis(analysis_pn)
             except Exception as exc:
-                logger.warning(f"Failed to record patent analysis for {task_id}: {exc}")
-            logger.info(f"Task completed: {task_id}")
+                logger.warning(f"记录专利分析统计失败（{task_id}）：{exc}")
+            logger.info(f"任务已完成：{task_id}")
         return success
 
     def fail_task(self, task_id: str, error_message: str) -> bool:
@@ -136,7 +136,7 @@ class PipelineTaskManager:
             updated_at=datetime.now().isoformat(),
         )
         if success:
-            logger.error(f"Task failed: {task_id} - {error_message}")
+            logger.error(f"任务失败：{task_id} - {error_message}")
         return success
 
     def cancel_task(self, task_id: str, error_message: str = "任务已取消") -> bool:
@@ -147,7 +147,7 @@ class PipelineTaskManager:
             updated_at=datetime.now().isoformat(),
         )
         if success:
-            logger.info(f"Task cancelled: {task_id} - {error_message}")
+            logger.info(f"任务已取消：{task_id} - {error_message}")
         return success
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -178,11 +178,11 @@ class PipelineTaskManager:
                 try:
                     shutil.rmtree(task.output_dir, ignore_errors=True)
                 except Exception as e:
-                    logger.warning(f"Failed to delete output dir: {e}")
+                    logger.warning(f"删除输出目录失败：{e}")
 
         success = self.storage.delete_task(task_id)
         if success:
-            logger.info(f"Task deleted: {task_id}")
+            logger.info(f"任务已删除：{task_id}")
         return success
 
 

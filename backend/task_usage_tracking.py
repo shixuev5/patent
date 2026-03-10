@@ -196,5 +196,5 @@ def persist_task_usage(storage, collector: Optional[TaskUsageCollector]) -> bool
     try:
         return bool(storage.upsert_task_llm_usage(collector.to_record()))
     except Exception as exc:
-        logger.warning(f"Persist task LLM usage failed: {exc}")
+        logger.warning(f"持久化任务 LLM 用量失败：{exc}")
         return False

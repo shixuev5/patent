@@ -398,34 +398,34 @@ def render_markdown_to_pdf(
                         }
                         """
                     )
-                    logger.info("MathJax rendering promise resolved.")
+                    logger.info("MathJax 渲染已完成。")
                 except Exception as ex:
                     logger.warning(
-                        f"MathJax wait skipped or failed (safe to ignore if no math): {ex}"
+                        f"MathJax 等待已跳过或失败（无数学公式时可忽略）：{ex}"
                     )
 
             if post_render_script:
                 try:
                     page.evaluate(post_render_script)
                 except Exception as ex:
-                    logger.warning(f"Post render script execution failed: {ex}")
+                    logger.warning(f"后置渲染脚本执行失败：{ex}")
 
             if wait_for_function:
                 try:
                     page.wait_for_function(wait_for_function, timeout=wait_timeout_ms)
                 except Exception as ex:
-                    logger.warning(f"wait_for_function skipped or failed: {ex}")
+                    logger.warning(f"wait_for_function 已跳过或失败：{ex}")
 
             page.pdf(**default_pdf_options)
             browser.close()
 
         if not output_path.exists() or output_path.stat().st_size == 0:
-            raise RuntimeError(f"PDF generation failed: output file missing or empty: {output_path}")
+            raise RuntimeError(f"PDF 生成失败：输出文件缺失或为空：{output_path}")
 
-        logger.success(f"PDF successfully generated: {output_path}")
+        logger.success(f"PDF 生成成功：{output_path}")
         return output_path
     except Exception as ex:
-        logger.error(f"PDF generation failed: {ex}")
+        logger.error(f"PDF 生成失败：{ex}")
         raise
     finally:
         if temp_html_path.exists():

@@ -120,6 +120,7 @@ When adding new logs in agents:
 - Prefer concise action-oriented Chinese messages
 - Put changing values in message body (`key=value` or explicit text)
 - Keep stage binding (`bind_task_logger(..., stage=...)`) for task context
+- **强制要求：所有运行时日志输出必须为中文**。若提交英文日志，运行时会被统一规范化为中文提示。
 
 ## Core Components
 

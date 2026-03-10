@@ -30,7 +30,7 @@ class LocalPDFParser(BaseParser):
     @staticmethod
     def parse(pdf_path: Path, output_dir: Path) -> Path:
         pdf_name = pdf_path.stem
-        logger.info(f"[LocalParser] Starting to parse: {pdf_path}")
+        logger.info(f"[本地解析器] 开始解析：{pdf_path}")
 
         try:
             # 1. Read file
@@ -42,7 +42,7 @@ class LocalPDFParser(BaseParser):
             local_md_dir.mkdir(parents=True, exist_ok=True)
             local_image_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"[LocalParser] Output directory set to: {local_md_dir}")
+            logger.info(f"[本地解析器] 输出目录已设置：{local_md_dir}")
 
             image_writer = FileBasedDataWriter(str(local_image_dir))
             md_writer = FileBasedDataWriter(str(local_md_dir))
@@ -74,14 +74,14 @@ class LocalPDFParser(BaseParser):
             final_md_path = Path(local_md_dir) / md_file_name
 
             if not final_md_path.exists():
-                logger.error(f"[LocalParser] File check failed: {final_md_path} does not exist.")
+                logger.error(f"[本地解析器] 文件检查失败：{final_md_path} 不存在。")
             else:
-                logger.success(f"[LocalParser] Success. MD saved at: {final_md_path}")
+                logger.success(f"[本地解析器] 解析成功，MD 已保存至：{final_md_path}")
 
             return final_md_path
 
         except Exception as e:
-            logger.exception(f"[LocalParser] Failed to parse PDF: {e}")
+            logger.exception(f"[本地解析器] PDF 解析失败：{e}")
             raise e
 
 
@@ -99,7 +99,7 @@ class OnlinePDFParser(BaseParser):
         }
 
     def parse(self, pdf_path: Path, output_dir: Path) -> Path:
-        logger.info(f"[OnlineParser] Starting online parsing for: {pdf_path}")
+        logger.info(f"[在线解析器] 开始在线解析：{pdf_path}")
 
         if not self.api_key:
             raise ValueError("MINERU_API_KEY is missing in config.")
@@ -109,7 +109,7 @@ class OnlinePDFParser(BaseParser):
         try:
             # 1. Upload File (Get Data ID)
             batch_id = self._upload_file(pdf_path)
-            logger.info(f"[OnlineParser] File uploaded. Batch ID: {batch_id}")
+            logger.info(f"[在线解析器] 文件上传完成，批次 ID：{batch_id}")
 
             # 2. Poll for Completion
             result_data = self._poll_task(batch_id)
@@ -117,11 +117,11 @@ class OnlinePDFParser(BaseParser):
             # 3. Process Results (Download and unzip)
             final_md_path = self._process_results(result_data, output_dir)
 
-            logger.success(f"[OnlineParser] Success. MD saved at: {final_md_path}")
+            logger.success(f"[在线解析器] 解析成功，MD 已保存至：{final_md_path}")
             return final_md_path
 
         except Exception as e:
-            logger.exception(f"[OnlineParser] API Processing failed: {e}")
+            logger.exception(f"[在线解析器] API 处理失败：{e}")
             raise e
 
     def _upload_file(self, file_path: Path) -> str:
@@ -160,7 +160,7 @@ class OnlinePDFParser(BaseParser):
             put_resp = requests.put(upload_url, data=f, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
 
             if put_resp.status_code != 200:
-                logger.error(f"OSS Upload Failed [{put_resp.status_code}]: {put_resp.text}")
+                logger.error(f"OSS 上传失败 [{put_resp.status_code}]：{put_resp.text}")
 
             put_resp.raise_for_status()
 
@@ -174,7 +174,7 @@ class OnlinePDFParser(BaseParser):
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self.headers, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
             if resp.status_code != 200:
-                logger.warning(f"[OnlineParser] Poll status check failed: {resp.status_code}")
+                logger.warning(f"[在线解析器] 轮询状态检查失败：{resp.status_code}")
                 time.sleep(interval)
                 continue
 
@@ -191,7 +191,7 @@ class OnlinePDFParser(BaseParser):
             elif state == "failed":
                 raise Exception(f"Task failed on server: {task_info.get('err_msg')}")
             else:
-                logger.info(f"[OnlineParser] Status: {state}... waiting {interval}s")
+                logger.info(f"[在线解析器] 当前状态：{state}，等待 {interval}s 后重试")
                 time.sleep(interval)
 
         raise TimeoutError("Extraction task timed out.")
@@ -262,8 +262,8 @@ class PDFParser(BaseParser):
     def parse(pdf_path: Path, output_dir: Path) -> Path:
         pdf_parser = os.getenv("PDF_PARSER", "local").lower()
         if pdf_parser == 'online':
-            logger.info("Using Online PDF Parser (Mineru API)")
+            logger.info("使用在线 PDF 解析器（Mineru 接口）")
             return OnlinePDFParser().parse(pdf_path, output_dir)
         else:
-            logger.info("Using Local PDF Parser (Mineru Python Lib)")
+            logger.info("使用本地 PDF 解析器（Mineru 本地库）")
             return LocalPDFParser.parse(pdf_path, output_dir)

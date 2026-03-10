@@ -244,7 +244,7 @@ class D1TaskStorage:
         self.timeout_seconds = timeout_seconds
 
         self._init_database()
-        logger.info("D1TaskStorage initialized")
+        logger.info("D1 任务存储初始化完成")
 
     def _request(self, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"sql": sql}
@@ -315,7 +315,7 @@ class D1TaskStorage:
             return
 
         self._request("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
-        logger.info("Dropped legacy tasks.raw_pdf_path column in D1")
+        logger.info("D1 已删除历史字段 tasks.raw_pdf_path")
 
     def _get_existing_columns(self, table_name: str) -> set[str]:
         rows = self._fetchall(f"PRAGMA table_info({table_name})")
@@ -974,7 +974,7 @@ class D1TaskStorage:
         try:
             self._request("VACUUM")
         except Exception as exc:
-            logger.warning(f"D1 VACUUM skipped: {exc}")
+            logger.warning(f"D1 VACUUM 已跳过：{exc}")
 
     def upsert_authing_user(self, user: User) -> User:
         now_iso = datetime.now().isoformat()

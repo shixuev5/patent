@@ -225,7 +225,7 @@ class SQLiteTaskStorage:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_database()
-        logger.info(f"SQLiteTaskStorage initialized: {self.db_path}")
+        logger.info(f"SQLite 任务存储初始化完成：{self.db_path}")
 
     def _init_database(self):
         with self._get_connection() as conn:
@@ -258,7 +258,7 @@ class SQLiteTaskStorage:
             return
 
         conn.execute("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
-        logger.info("Dropped legacy tasks.raw_pdf_path column")
+        logger.info("已删除历史字段 tasks.raw_pdf_path")
 
     @contextmanager
     def _get_connection(self):

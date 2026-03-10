@@ -40,7 +40,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
     def _login(self):
         """执行登录流程获取 Token"""
-        logger.info("[Zhihuiya] Logging in...")
+        logger.info("[智慧芽] 正在登录...")
 
         if self.token:
             return
@@ -57,7 +57,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 pk_resp.raise_for_status()
                 public_key = pk_resp.text
             except Exception as e:
-                logger.error(f"[Zhihuiya] Failed to get public key: {e}")
+                logger.error(f"[智慧芽] 获取公钥失败：{e}")
                 raise
 
             # 2. 加密密码
@@ -81,12 +81,12 @@ class ZhihuiyaClient(BaseSearchClient):
                 data = login_resp.json()
                 self.token = data.get("token")
                 self.headers["Authorization"] = f"Bearer {self.token}"
-                logger.success("[Zhihuiya] Login successful.")
+                logger.success("[智慧芽] 登录成功。")
 
                 # 4. 登录成功后，初始化查询字段配置
                 self._configure_search_settings()
             except Exception as e:
-                logger.error(f"[Zhihuiya] Login failed: {e}")
+                logger.error(f"[智慧芽] 登录失败：{e}")
                 raise
 
     def _fetch_basic_info(self, patent_id: str) -> Dict[str, Any]:
@@ -144,7 +144,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 "technical_problem": info.get("AI_TECHNICAL_PROBLEM", ""), # AI 生成的技术问题
             }
         except Exception as e:
-            logger.error(f"[Zhihuiya] Fetch basic info failed: {e}")
+            logger.error(f"[智慧芽] 获取基础信息失败：{e}")
             return {}
 
     def _fetch_claims(self, patent_id: str) -> str:
@@ -168,7 +168,7 @@ class ZhihuiyaClient(BaseSearchClient):
             clms_html = data.get("data", {}).get("CLMS", {}).get("CN", "")
             return self._clean_html(clms_html)
         except Exception as e:
-            logger.error(f"[Zhihuiya] Fetch claims failed: {e}")
+            logger.error(f"[智慧芽] 获取权利要求失败：{e}")
             return ""
 
     def _fetch_description(self, patent_id: str) -> str:
@@ -192,7 +192,7 @@ class ZhihuiyaClient(BaseSearchClient):
             desc_html = data.get("data", {}).get("DESC", {}).get("CN", "")
             return self._clean_html(desc_html)
         except Exception as e:
-            logger.error(f"[Zhihuiya] Fetch description failed: {e}")
+            logger.error(f"[智慧芽] 获取说明书失败：{e}")
             return ""
 
     def _fetch_official_images(self, patent_id: str) -> List[str]:
@@ -221,7 +221,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
             return image_urls
         except Exception as e:
-            logger.error(f"[Zhihuiya] Fetch official images failed: {e}")
+            logger.error(f"[智慧芽] 获取官方附图失败：{e}")
             return []
 
     def get_patent_detail(self, pn_or_id: str) -> Dict[str, Any]:
@@ -240,16 +240,16 @@ class ZhihuiyaClient(BaseSearchClient):
             if resolved_id:
                 patent_id = resolved_id
             else:
-                logger.warning(f"[Zhihuiya] Could not resolve ID for {pn_or_id}, trying to use as ID anyway.")
+                logger.warning(f"[智慧芽] 无法解析 {pn_or_id} 的专利 ID，将尝试直接按 ID 使用。")
 
-        logger.info(f"[Zhihuiya] Fetching details for {patent_id}...")
+        logger.info(f"[智慧芽] 正在获取专利详情：{patent_id}...")
 
         # 2. 并行或串行获取各部分数据 (这里使用串行，简单可靠)
         # 如果追求性能，可以使用 ThreadPoolExecutor 并发这4个请求
 
         basic_info = self._fetch_basic_info(patent_id)
         if not basic_info:
-            logger.error(f"[Zhihuiya] Failed to get basic info for {patent_id}")
+            logger.error(f"[智慧芽] 获取基础信息失败：{patent_id}")
             return {}
 
         claims_text = self._fetch_claims(patent_id)
@@ -270,7 +270,7 @@ class ZhihuiyaClient(BaseSearchClient):
             )
         }
 
-        logger.success(f"[Zhihuiya] Details fetched for {basic_info.get('pn', patent_id)}")
+        logger.success(f"[智慧芽] 专利详情获取完成：{basic_info.get('pn', patent_id)}")
         return detail
 
     def _configure_search_settings(self):
@@ -286,13 +286,13 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            logger.info("[Zhihuiya] Configuring search result settings...")
+            logger.info("[智慧芽] 正在配置检索结果字段...")
             resp = self.session.put(url, headers=self.headers, json=payload)
             resp.raise_for_status()
-            logger.success("[Zhihuiya] Search settings configured successfully.")
+            logger.success("[智慧芽] 检索结果字段配置成功。")
         except Exception as e:
             # 记录错误但不阻断流程，可能使用默认字段
-            logger.error(f"[Zhihuiya] Failed to configure search settings: {e}")
+            logger.error(f"[智慧芽] 配置检索结果字段失败：{e}")
 
     def _clean_html(self, text: str) -> str:
         """清洗智慧芽返回的高亮标签和div标签"""
@@ -385,7 +385,7 @@ class ZhihuiyaClient(BaseSearchClient):
         if not self.token:
             self._login()
 
-        logger.info(f"[Zhihuiya] Starting Semantic Search (Limit date: {to_date})...")
+        logger.info(f"[智慧芽] 开始语义检索（截止日期：{to_date}）...")
 
         # --- Step 1: 获取 Semantic ID ---
         step1_url = "https://search-service.zhihuiya.com/core-search-api/search/input/search/semantic"
@@ -410,15 +410,15 @@ class ZhihuiyaClient(BaseSearchClient):
 
             if not match:
                 logger.error(
-                    f"[Zhihuiya] Failed to extract semantic_id from: {result_url}"
+                    f"[智慧芽] 从返回结果提取 semantic_id 失败：{result_url}"
                 )
                 return []
 
             semantic_id = match.group(1)
-            logger.debug(f"[Zhihuiya] Got Semantic ID: {semantic_id}")
+            logger.debug(f"[智慧芽] 已获取语义检索 ID：{semantic_id}")
 
         except Exception as e:
-            logger.error(f"[Zhihuiya] Semantic Step 1 failed: {e}")
+            logger.error(f"[智慧芽] 语义检索步骤1失败：{e}")
             return []
 
         # --- Step 2: 获取检索结果 ---
@@ -467,7 +467,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            logger.info(f"[Zhihuiya] Generating semantic ID for similar patents of {pn}...")
+            logger.info(f"[智慧芽] 正在为 {pn} 生成相似专利语义 ID...")
             resp = self.session.post(jump_url, headers=self.headers, json=jump_payload, timeout=self.request_timeout)
 
             # Token 过期重试逻辑
@@ -480,7 +480,7 @@ class ZhihuiyaClient(BaseSearchClient):
             data = resp.json()
 
             if not data.get("status"):
-                logger.warning(f"[Zhihuiya] Jump API returned false status: {data}")
+                logger.warning(f"[智慧芽] 跳转接口返回失败状态：{data}")
                 return {"total": 0, "results": []}
 
             # 解析 URL 参数获取 semantic_id
@@ -489,14 +489,14 @@ class ZhihuiyaClient(BaseSearchClient):
             match = re.search(r"semantic_id=([a-f0-9\-]+)", result_url)
 
             if not match:
-                logger.error(f"[Zhihuiya] Failed to extract semantic_id from jump url: {result_url}")
+                logger.error(f"[智慧芽] 从跳转链接提取 semantic_id 失败：{result_url}")
                 return {"total": 0, "results": []}
 
             semantic_id = match.group(1)
-            logger.debug(f"[Zhihuiya] Got Similar Semantic ID: {semantic_id}")
+            logger.debug(f"[智慧芽] 已获取相似检索语义 ID：{semantic_id}")
 
         except Exception as e:
-            logger.error(f"[Zhihuiya] Similar search Step 1 (Jump) failed: {e}")
+            logger.error(f"[智慧芽] 相似检索步骤1（Jump）失败：{e}")
             return {"total": 0, "results": []}
 
         # --- Step 2: 执行语义检索 ---
@@ -552,7 +552,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         # 构建同族检索式
         query = f"EFAM:({pn})"
-        logger.debug(f"[Zhihuiya] Fetching family for {pn} with query: {query}")
+        logger.debug(f"[智慧芽] 正在查询 {pn} 的同族专利，检索式：{query}")
 
         # 调用基础检索
         res = self.search(query=query, limit=limit)
@@ -571,7 +571,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         # 构建引证检索式
         query = f"BF_CITES:({pn})"
-        logger.debug(f"[Zhihuiya] Fetching citations for {pn} with query: {query}")
+        logger.debug(f"[智慧芽] 正在查询 {pn} 的引证信息，检索式：{query}")
 
         # 调用基础检索
         res = self.search(query=query, limit=limit)
@@ -589,7 +589,7 @@ class ZhihuiyaClient(BaseSearchClient):
                     resp.headers.get("content-type") == "application/json"
                     and "token expired" in resp.text
                 ):
-                    logger.warning("[Zhihuiya] Token expired, refreshing...")
+                    logger.warning("[智慧芽] Token 已过期，正在刷新...")
                     self.token = None
                     self._login()
                     continue
@@ -598,7 +598,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 data = resp.json()
 
                 if data.get("status") is False:
-                    logger.error(f"[Zhihuiya] API Error: {data}")
+                    logger.error(f"[智慧芽] API 错误：{data}")
                     return []
 
                 count_info = data.get("data", {}).get("patent_count", {})
@@ -612,7 +612,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 return {"total": total_hits, "results": normalized_results}
 
             except Exception as e:
-                logger.error(f"[Zhihuiya] Request failed: {e}")
+                logger.error(f"[智慧芽] 请求失败：{e}")
                 return {"total": 0, "results": []}
         return {"total": 0, "results": []}
 
@@ -632,7 +632,7 @@ class ZhihuiyaClient(BaseSearchClient):
         # 专利申请号格式通常为：YYYYXXXXXXXXX.X (如 202211411308.6)
         if re.match(r'\d{4}\d{7,8}\.\d', pn):
             # 申请号格式，使用 APNO 字段查询
-            logger.info(f"[Zhihuiya] Recognized as application number: {pn}")
+            logger.info(f"[智慧芽] 识别为申请号：{pn}")
             payload = {
                 "search_mode": "publication",
                 "q": f"APNO:({pn})",
@@ -641,7 +641,7 @@ class ZhihuiyaClient(BaseSearchClient):
             }
         else:
             # 公开号格式，使用 PN 字段查询
-            logger.info(f"[Zhihuiya] Recognized as publication number: {pn}")
+            logger.info(f"[智慧芽] 识别为公开号：{pn}")
             payload = {
                 "search_mode": "publication",
                 "q": f"PN:({pn})",
@@ -654,7 +654,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
 
                 if resp.status_code == 401:
-                    logger.warning("[Zhihuiya] Token expired during ID query, refreshing...")
+                    logger.warning("[智慧芽] 查询专利 ID 时 Token 过期，正在刷新...")
                     self.token = None
                     self._login()
                     continue
@@ -663,20 +663,20 @@ class ZhihuiyaClient(BaseSearchClient):
                 data = resp.json()
 
                 if not data.get("status"):
-                    logger.error(f"[Zhihuiya] Failed to query patent ID for {pn}: {data.get('message')}")
+                    logger.error(f"[智慧芽] 查询 {pn} 的专利 ID 失败：{data.get('message')}")
                     return None
 
                 patent_info = data.get("data", {}).get("patent_info", {})
                 patent_id = patent_info.get("PATENT_ID")
 
                 if not patent_id:
-                    logger.warning(f"[Zhihuiya] No patent ID found for {pn}")
+                    logger.warning(f"[智慧芽] 未查询到 {pn} 对应的专利 ID")
                     return None
 
                 return patent_id
 
             except Exception as e:
-                logger.error(f"[Zhihuiya] Error getting patent ID: {e}")
+                logger.error(f"[智慧芽] 获取专利 ID 失败：{e}")
                 return None
         return None
 
@@ -697,7 +697,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 resp = self.session.get(url, headers=self.headers, params=params, timeout=self.request_timeout)
 
                 if resp.status_code == 401:
-                    logger.warning("[Zhihuiya] Token expired during PDF URL query, refreshing...")
+                    logger.warning("[智慧芽] 查询 PDF 链接时 Token 过期，正在刷新...")
                     self.token = None
                     self._login()
                     continue
@@ -706,14 +706,14 @@ class ZhihuiyaClient(BaseSearchClient):
                 data = resp.json()
 
                 if not data.get("status"):
-                    logger.error(f"[Zhihuiya] Failed to get PDF URL: {data.get('message')}")
+                    logger.error(f"[智慧芽] 获取 PDF 链接失败：{data.get('message')}")
                     return None
 
                 pdf_url = data.get("data", {}).get("PDF_D")
                 return pdf_url
 
             except Exception as e:
-                logger.error(f"[Zhihuiya] Error getting PDF URL: {e}")
+                logger.error(f"[智慧芽] 获取 PDF 链接异常：{e}")
                 return None
         return None
 
@@ -727,18 +727,18 @@ class ZhihuiyaClient(BaseSearchClient):
         if not self.token:
             self._login()
 
-        logger.info(f"[Zhihuiya] Starting download for patent: {pn}")
+        logger.info(f"[智慧芽] 开始下载专利文件：{pn}")
 
         # 1. 获取 Patent ID
         patent_id = self._get_patent_id_by_pn(pn)
         if not patent_id:
-            logger.error(f"[Zhihuiya] Aborting download: Cannot find Patent ID for {pn}")
+            logger.error(f"[智慧芽] 终止下载：无法找到 {pn} 的专利 ID")
             return None
 
         # 2. 获取下载链接
         pdf_url = self._get_pdf_download_url(patent_id)
         if not pdf_url:
-            logger.error(f"[Zhihuiya] Aborting download: Cannot get PDF URL for {pn}")
+            logger.error(f"[智慧芽] 终止下载：无法获取 {pn} 的 PDF 链接")
             return None
 
         # 3. 下载文件
@@ -752,10 +752,10 @@ class ZhihuiyaClient(BaseSearchClient):
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
 
-            logger.success(f"[Zhihuiya] Downloaded: {save_path}")
+            logger.success(f"[智慧芽] 下载完成：{save_path}")
             return True
         except Exception as e:
-            logger.error(f"[Zhihuiya] Download failed: {e}")
+            logger.error(f"[智慧芽] 下载失败：{e}")
             if os.path.exists(save_path):
                 os.remove(save_path)
             return False

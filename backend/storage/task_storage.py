@@ -29,7 +29,7 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
         with _storage_lock:
             if _storage_instance is None:
                 backend = os.getenv("TASK_STORAGE_BACKEND", "sqlite").strip().lower()
-                logger.info(f"Initializing task storage backend: {backend}")
+                logger.info(f"初始化任务存储后端：{backend}")
 
                 if backend == "d1":
                     from .d1_storage import D1TaskStorage

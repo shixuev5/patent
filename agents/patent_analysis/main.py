@@ -237,7 +237,7 @@ def main() -> int:
         return 1
     finally:
         workflow_elapsed = perf_counter() - workflow_start
-        task_logger.info(f"patent_analysis workflow 总耗时: {workflow_elapsed:.3f}s")
+        task_logger.info(f"专利分析工作流总耗时: {workflow_elapsed:.3f}s")
 
     result_dict = _to_dict(result)
     status = str(result_dict.get("status", "failed") or "failed").lower()

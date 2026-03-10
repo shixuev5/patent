@@ -201,7 +201,7 @@ class AmendmentTrackingNode:
 
             # 自动容错修正：如果 LLM 判定为说明书增加，但错误地带上了来源权项编号，强制清空
             if source_type == "spec" and source_claim_ids:
-                logger.warning(f"Feature {feature_id} 被标记为 'spec' 但 source_claim_ids 非空，已自动修正清除。")
+                logger.warning(f"特征 {feature_id} 被标记为 'spec' 但 source_claim_ids 非空，已自动修正清除。")
                 source_claim_ids =[]
 
             features.append({

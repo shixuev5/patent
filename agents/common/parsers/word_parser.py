@@ -25,7 +25,7 @@ class OnlineWordParser(BaseParser):
         }
 
     def parse(self, docx_path: Path, output_dir: Path) -> Path:
-        logger.info(f"[OnlineWordParser] Starting online parsing for: {docx_path}")
+        logger.info(f"[在线Word解析器] 开始在线解析：{docx_path}")
 
         if not self.api_key:
             raise ValueError("MINERU_API_KEY is missing in config.")
@@ -35,7 +35,7 @@ class OnlineWordParser(BaseParser):
         try:
             # 1. Upload File (Get Data ID)
             batch_id = self._upload_file(docx_path)
-            logger.info(f"[OnlineWordParser] File uploaded. Batch ID: {batch_id}")
+            logger.info(f"[在线Word解析器] 文件上传完成，批次 ID：{batch_id}")
 
             # 2. Poll for Completion
             result_data = self._poll_task(batch_id)
@@ -43,11 +43,11 @@ class OnlineWordParser(BaseParser):
             # 3. Process Results (Download and unzip)
             final_md_path = self._process_results(result_data, output_dir)
 
-            logger.success(f"[OnlineWordParser] Success. MD saved at: {final_md_path}")
+            logger.success(f"[在线Word解析器] 解析成功，MD 已保存至：{final_md_path}")
             return final_md_path
 
         except Exception as e:
-            logger.exception(f"[OnlineWordParser] API Processing failed: {e}")
+            logger.exception(f"[在线Word解析器] API 处理失败：{e}")
             raise e
 
     def _upload_file(self, file_path: Path) -> str:
@@ -86,7 +86,7 @@ class OnlineWordParser(BaseParser):
             put_resp = requests.put(upload_url, data=f, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
 
             if put_resp.status_code != 200:
-                logger.error(f"OSS Upload Failed [{put_resp.status_code}]: {put_resp.text}")
+                logger.error(f"OSS 上传失败 [{put_resp.status_code}]：{put_resp.text}")
 
             put_resp.raise_for_status()
 
@@ -100,7 +100,7 @@ class OnlineWordParser(BaseParser):
         while time.time() - start_time < timeout:
             resp = requests.get(url, headers=self.headers, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
             if resp.status_code != 200:
-                logger.warning(f"[OnlineWordParser] Poll status check failed: {resp.status_code}")
+                logger.warning(f"[在线Word解析器] 轮询状态检查失败：{resp.status_code}")
                 time.sleep(interval)
                 continue
 
@@ -117,7 +117,7 @@ class OnlineWordParser(BaseParser):
             elif state == "failed":
                 raise Exception(f"Task failed on server: {task_info.get('err_msg')}")
             else:
-                logger.info(f"[OnlineWordParser] Status: {state}... waiting {interval}s")
+                logger.info(f"[在线Word解析器] 当前状态：{state}，等待 {interval}s 后重试")
                 time.sleep(interval)
 
         raise TimeoutError("Extraction task timed out.")
@@ -189,5 +189,5 @@ class WordParser(BaseParser):
     """
     @staticmethod
     def parse(docx_path: Path, output_dir: Path) -> Path:
-        logger.info("Using Online Word Parser (Mineru API)")
+        logger.info("使用在线 Word 解析器（Mineru 接口）")
         return OnlineWordParser().parse(docx_path, output_dir)

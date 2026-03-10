@@ -301,15 +301,15 @@ def emit_system_log(
     try:
         _append_system_log_file(file_record)
     except Exception as exc:
-        logger.warning(f"[SystemLog] append file failed: {exc}")
+        logger.warning(f"[系统日志] 追加文件失败：{exc}")
 
     try:
         logger.bind(system_event=True).log(
             db_record["level"],
-            f"[SystemLog] {db_record['category']}.{db_record['event_name']} success={success}",
+            f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}",
         )
     except Exception:
-        logger.info(f"[SystemLog] {db_record['category']}.{db_record['event_name']} success={success}")
+        logger.info(f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}")
 
     if SYSTEM_LOG_DB_ENABLED:
         try:
@@ -318,7 +318,7 @@ def emit_system_log(
                 with internal_log_write_context():
                     storage.insert_system_log(db_record)
         except Exception as exc:
-            logger.warning(f"[SystemLog] persist db failed: {exc}")
+            logger.warning(f"[系统日志] 持久化数据库失败：{exc}")
 
     return log_id
 
@@ -517,7 +517,7 @@ def cleanup_expired_system_logs(retention_days: Optional[int] = None) -> Dict[st
             with internal_log_write_context():
                 deleted_db = int(storage.cleanup_system_logs_before(cutoff_iso) or 0)
         except Exception as exc:
-            logger.warning(f"[SystemLog] cleanup db failed: {exc}")
+            logger.warning(f"[系统日志] 清理数据库失败：{exc}")
 
     deleted_files = 0
     if SYSTEM_LOG_PAYLOAD_DIR.exists():

@@ -187,7 +187,7 @@ class LLMService:
                 reasoning_tokens=int(usage_summary.get("reasoning_tokens") or 0),
             )
         except Exception as exc:
-            logger.debug(f"[LLM] report usage skipped: {exc}")
+            logger.debug(f"[LLM] 上报用量已跳过：{exc}")
 
     @staticmethod
     def _extract_reasoning_text(response: Any) -> str:
@@ -256,7 +256,7 @@ class LLMService:
             if str(exc) != self._JSON_PARSE_ERROR or bool(policy["thinking"]):
                 raise
             logger.warning(
-                f"[LLM] chat_completion_json parse failed with thinking disabled, retry with thinking enabled. "
+                f"[LLM] chat_completion_json 在关闭思考时解析失败，正在改为开启思考后重试。"
                 f"task_kind={policy['task_kind']}, model={chosen_model}"
             )
             return self._invoke_text_json_once(
@@ -293,7 +293,7 @@ class LLMService:
             }
         )
         logger.info(
-            "[LLM] chat_completion_json request: "
+            "[LLM] chat_completion_json 请求："
             f"{json.dumps(log_payload, ensure_ascii=False)}"
         )
 
@@ -327,7 +327,7 @@ class LLMService:
             }
 
             logger.info(
-                "[LLM] chat_completion_json response: "
+                "[LLM] chat_completion_json 响应："
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(chosen_model, usage_summary)
@@ -341,7 +341,7 @@ class LLMService:
                 provider="llm",
                 success=True,
                 duration_ms=elapsed_ms,
-                message="chat_completion_json success",
+                message="文本模型 JSON 调用成功",
                 payload={
                     "request": {
                         "task_kind": policy["task_kind"],
@@ -362,7 +362,7 @@ class LLMService:
 
             return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.error(f"[LLM] Failed to parse JSON response: {e}")
+            logger.error(f"[LLM] JSON 响应解析失败：{e}")
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             emit_system_log(
                 category="llm_call",
@@ -391,7 +391,7 @@ class LLMService:
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
-                "[LLM] JSON completion failed: "
+                "[LLM] JSON 补全调用失败："
                 f"{json.dumps({'model': chosen_model, 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
             )
             emit_system_log(
@@ -460,7 +460,7 @@ class LLMService:
             "temperature": temperature,
         }
         logger.info(
-            f"[LLM] analyze_image_with_thinking request: {json.dumps(log_payload, ensure_ascii=False)}"
+            f"[LLM] analyze_image_with_thinking 请求：{json.dumps(log_payload, ensure_ascii=False)}"
         )
         start = time.perf_counter()
         task_context = self._current_task_log_context()
@@ -502,7 +502,7 @@ class LLMService:
             }
 
             logger.info(
-                "[LLM] analyze_image_with_thinking response: "
+                "[LLM] analyze_image_with_thinking 响应："
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(model, usage_summary)
@@ -516,7 +516,7 @@ class LLMService:
                 provider="llm",
                 success=True,
                 duration_ms=elapsed_ms,
-                message="analyze_image_with_thinking success",
+                message="单图视觉分析调用成功",
                 payload={
                     "request": {
                         "task_kind": policy["task_kind"],
@@ -539,7 +539,7 @@ class LLMService:
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
-                "[LLM] Vision analysis with thinking failed: "
+                "[LLM] 视觉分析（含思考）失败："
                 f"{json.dumps({'model': model, 'image_path': image_path, 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
             )
             emit_system_log(
@@ -610,7 +610,7 @@ class LLMService:
             if str(exc) != self._VISION_JSON_PARSE_ERROR or bool(policy["thinking"]):
                 raise
             logger.warning(
-                f"[LLM] analyze_images_json_with_thinking parse failed with thinking disabled, retry with thinking enabled. "
+                f"[LLM] invoke_vision_images_json 在关闭思考时解析失败，正在改为开启思考后重试。"
                 f"task_kind={policy['task_kind']}, model={chosen_model}"
             )
             return self._invoke_vision_images_json_once(
@@ -648,7 +648,7 @@ class LLMService:
             "temperature": temperature,
         }
         logger.info(
-            f"[LLM] analyze_images_json_with_thinking request: {json.dumps(log_payload, ensure_ascii=False)}"
+            f"[LLM] invoke_vision_images_json 请求：{json.dumps(log_payload, ensure_ascii=False)}"
         )
         start = time.perf_counter()
         task_context = self._current_task_log_context()
@@ -689,14 +689,14 @@ class LLMService:
                 **usage_summary,
             }
             logger.info(
-                "[LLM] analyze_images_json_with_thinking response: "
+                "[LLM] invoke_vision_images_json 响应："
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(chosen_model, usage_summary)
             cleaned = str(raw_content).replace("```json", "").replace("```", "").strip()
             emit_system_log(
                 category="llm_call",
-                event_name="analyze_images_json_with_thinking",
+                event_name="invoke_vision_images_json",
                 level="INFO",
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
@@ -704,7 +704,7 @@ class LLMService:
                 provider="llm",
                 success=True,
                 duration_ms=elapsed_ms,
-                message="analyze_images_json_with_thinking success",
+                message="多图视觉分析调用成功",
                 payload={
                     "request": {
                         "task_kind": policy["task_kind"],
@@ -725,11 +725,11 @@ class LLMService:
             )
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
-            logger.error(f"[LLM] Failed to parse vision JSON response: {e}")
+            logger.error(f"[LLM] 视觉 JSON 响应解析失败：{e}")
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             emit_system_log(
                 category="llm_call",
-                event_name="analyze_images_json_with_thinking_parse_error",
+                event_name="invoke_vision_images_json_parse_error",
                 level="ERROR",
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
@@ -755,12 +755,12 @@ class LLMService:
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
-                "[LLM] Multi-image vision analysis failed: "
+                "[LLM] 多图视觉分析失败："
                 f"{json.dumps({'model': chosen_model, 'image_count': len(image_paths), 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
             )
             emit_system_log(
                 category="llm_call",
-                event_name="analyze_images_json_with_thinking_error",
+                event_name="invoke_vision_images_json_error",
                 level="ERROR",
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
