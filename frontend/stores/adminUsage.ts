@@ -77,6 +77,8 @@ const withQuery = (base: string, query: Record<string, string | number | undefin
   return q ? `${base}?${q}` : base
 }
 
+let accessInflight: Promise<boolean> | null = null
+
 export const useAdminUsageStore = defineStore('admin-usage', {
   state: () => ({
     isAdmin: false,
@@ -119,21 +121,28 @@ export const useAdminUsageStore = defineStore('admin-usage', {
 
     async fetchAccess(force = false): Promise<boolean> {
       if (!force && this.checkedAccess) return this.isAdmin
+      if (accessInflight) return accessInflight
+
       this.loadingAccess = true
-      try {
-        const response = await this._authorizedFetch('/api/admin/access')
-        if (!response || !response.ok) {
-          this.isAdmin = false
+      accessInflight = (async () => {
+        try {
+          const response = await this._authorizedFetch('/api/admin/access')
+          if (!response || !response.ok) {
+            this.isAdmin = false
+            this.checkedAccess = true
+            return false
+          }
+          const data = await response.json() as AdminAccessResponse
+          this.isAdmin = !!data?.isAdmin
           this.checkedAccess = true
-          return false
+          return this.isAdmin
+        } finally {
+          this.loadingAccess = false
+          accessInflight = null
         }
-        const data = await response.json() as AdminAccessResponse
-        this.isAdmin = !!data?.isAdmin
-        this.checkedAccess = true
-        return this.isAdmin
-      } finally {
-        this.loadingAccess = false
-      }
+      })()
+
+      return accessInflight
     },
 
     async fetchDashboard(rangeType: UsageRangeType, anchor?: string): Promise<AdminUsageDashboardResponse | null> {

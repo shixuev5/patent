@@ -1116,7 +1116,7 @@ watch(activeTab, async (value) => {
 })
 
 onMounted(async () => {
-  await adminStore.fetchAccess(true)
+  await adminStore.fetchAccess(false)
   if (!adminStore.isAdmin) return
   await refreshUsageAll()
   await refreshSystemLogsAll()

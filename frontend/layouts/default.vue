@@ -325,13 +325,13 @@ const onApplyUpdate = async () => {
   }
 }
 
-const refreshAdminAccess = async () => {
+const refreshAdminAccess = async (force = false) => {
   if (!hasAuthingEnabled.value) {
     adminUsageStore.isAdmin = false
     adminUsageStore.checkedAccess = true
     return
   }
-  await adminUsageStore.fetchAccess(true)
+  await adminUsageStore.fetchAccess(force)
 }
 
 watch(
@@ -342,9 +342,9 @@ watch(
   },
 )
 
-onMounted(() => {
-  if (hasAuthingEnabled.value) authStore.ensureInitialized()
-  refreshAdminAccess()
+onMounted(async () => {
+  if (hasAuthingEnabled.value) await authStore.ensureInitialized()
+  await refreshAdminAccess(false)
   fetchHealthStats()
   healthTimer = setInterval(fetchHealthStats, 30000)
 })
@@ -352,7 +352,7 @@ onMounted(() => {
 watch(
   () => authStore.isLoggedIn,
   () => {
-    refreshAdminAccess()
+    void refreshAdminAccess(true)
   },
 )
 
