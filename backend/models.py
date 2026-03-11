@@ -223,6 +223,47 @@ class AdminSystemLogDetailResponse(BaseModel):
     payload: Any = None
 
 
+class AdminEntityUserItem(BaseModel):
+    ownerId: str
+    userName: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None
+    lastLoginAt: Optional[str] = None
+    createdAt: Optional[str] = None
+    taskCount: int = 0
+    latestTaskAt: Optional[str] = None
+
+
+class AdminEntityUserListResponse(BaseModel):
+    page: int
+    pageSize: int
+    total: int
+    items: List[AdminEntityUserItem]
+
+
+class AdminEntityTaskItem(BaseModel):
+    taskId: str
+    title: Optional[str] = None
+    ownerId: Optional[str] = None
+    userName: Optional[str] = None
+    taskType: Optional[str] = None
+    status: Optional[str] = None
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+    completedAt: Optional[str] = None
+
+
+class AdminEntityTaskListResponse(BaseModel):
+    page: int
+    pageSize: int
+    total: int
+    items: List[AdminEntityTaskItem]
+
+
+class AdminEntityTaskDetailResponse(BaseModel):
+    item: Dict[str, Any]
+
+
 @dataclass
 class CurrentUser:
     user_id: str

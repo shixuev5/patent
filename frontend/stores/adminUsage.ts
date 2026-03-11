@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { useTaskStore } from '~/stores/task'
 import type {
   AdminAccessResponse,
+  AdminEntityTaskDetailResponse,
+  AdminEntityTaskListResponse,
+  AdminEntityUserListResponse,
   AdminSystemLogDetailResponse,
   AdminSystemLogListResponse,
   AdminSystemLogSummaryResponse,
@@ -42,6 +45,28 @@ interface FetchSystemLogInput {
   pageSize?: number
 }
 
+interface FetchEntityUsersInput {
+  q?: string
+  role?: string
+  page?: number
+  pageSize?: number
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
+}
+
+interface FetchEntityTasksInput {
+  q?: string
+  userName?: string
+  taskType?: string
+  status?: string
+  dateFrom?: string
+  dateTo?: string
+  page?: number
+  pageSize?: number
+  sortBy?: string
+  sortOrder?: 'asc' | 'desc'
+}
+
 const withQuery = (base: string, query: Record<string, string | number | undefined>) => {
   const params = new URLSearchParams()
   Object.entries(query).forEach(([key, value]) => {
@@ -62,11 +87,17 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     loadingSystemLogs: false,
     loadingSystemLogDetail: false,
     loadingSystemSummary: false,
+    loadingEntityUsers: false,
+    loadingEntityTasks: false,
+    loadingEntityTaskDetail: false,
     dashboard: null as AdminUsageDashboardResponse | null,
     tableData: null as AdminUsageTableResponse | null,
     systemLogSummary: null as AdminSystemLogSummaryResponse | null,
     systemLogs: null as AdminSystemLogListResponse | null,
     systemLogDetail: null as AdminSystemLogDetailResponse | null,
+    entityUsers: null as AdminEntityUserListResponse | null,
+    entityTasks: null as AdminEntityTaskListResponse | null,
+    entityTaskDetail: null as AdminEntityTaskDetailResponse | null,
   }),
 
   actions: {
@@ -210,6 +241,69 @@ export const useAdminUsageStore = defineStore('admin-usage', {
 
     clearSystemLogDetail() {
       this.systemLogDetail = null
+    },
+
+    async fetchEntityUsers(input: FetchEntityUsersInput): Promise<AdminEntityUserListResponse | null> {
+      this.loadingEntityUsers = true
+      try {
+        const path = withQuery('/api/admin/entities/users', {
+          q: input.q,
+          role: input.role,
+          page: input.page ?? 1,
+          pageSize: input.pageSize ?? 10,
+          sortBy: input.sortBy ?? 'taskCount',
+          sortOrder: input.sortOrder ?? 'desc',
+        })
+        const response = await this._authorizedFetch(path)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminEntityUserListResponse
+        this.entityUsers = data
+        return data
+      } finally {
+        this.loadingEntityUsers = false
+      }
+    },
+
+    async fetchEntityTasks(input: FetchEntityTasksInput): Promise<AdminEntityTaskListResponse | null> {
+      this.loadingEntityTasks = true
+      try {
+        const path = withQuery('/api/admin/entities/tasks', {
+          q: input.q,
+          userName: input.userName,
+          taskType: input.taskType,
+          status: input.status,
+          dateFrom: input.dateFrom,
+          dateTo: input.dateTo,
+          page: input.page ?? 1,
+          pageSize: input.pageSize ?? 10,
+          sortBy: input.sortBy ?? 'updatedAt',
+          sortOrder: input.sortOrder ?? 'desc',
+        })
+        const response = await this._authorizedFetch(path)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminEntityTaskListResponse
+        this.entityTasks = data
+        return data
+      } finally {
+        this.loadingEntityTasks = false
+      }
+    },
+
+    async fetchEntityTaskDetail(taskId: string): Promise<AdminEntityTaskDetailResponse | null> {
+      this.loadingEntityTaskDetail = true
+      try {
+        const response = await this._authorizedFetch(`/api/admin/entities/tasks/${encodeURIComponent(taskId)}`)
+        if (!response || !response.ok) return null
+        const data = await response.json() as AdminEntityTaskDetailResponse
+        this.entityTaskDetail = data
+        return data
+      } finally {
+        this.loadingEntityTaskDetail = false
+      }
+    },
+
+    clearEntityTaskDetail() {
+      this.entityTaskDetail = null
     },
   },
 })

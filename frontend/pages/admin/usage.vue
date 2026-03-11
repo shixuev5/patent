@@ -40,6 +40,22 @@
           >
             系统日志
           </button>
+          <button
+            type="button"
+            class="rounded-xl px-3 py-2 text-sm font-semibold transition"
+            :class="activeTab === 'users' ? 'bg-cyan-700 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+            @click="activeTab = 'users'"
+          >
+            用户列表
+          </button>
+          <button
+            type="button"
+            class="rounded-xl px-3 py-2 text-sm font-semibold transition"
+            :class="activeTab === 'tasks' ? 'bg-cyan-700 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+            @click="activeTab = 'tasks'"
+          >
+            任务列表
+          </button>
         </div>
       </section>
 
@@ -225,7 +241,7 @@
         </section>
       </template>
 
-      <template v-else>
+      <template v-else-if="activeTab === 'logs'">
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="grid gap-3 md:grid-cols-4 md:items-end">
             <label class="field">
@@ -399,6 +415,254 @@
         </section>
 
       </template>
+
+      <template v-else-if="activeTab === 'users'">
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="grid gap-3 md:grid-cols-[minmax(16rem,2fr)_minmax(10rem,1fr)_auto] md:items-end">
+            <label class="field">
+              <span>关键词</span>
+              <input
+                v-model.trim="entityUserKeyword"
+                type="text"
+                class="field-input"
+                placeholder="按用户名称或邮箱检索"
+              />
+            </label>
+            <label class="field">
+              <span>角色</span>
+              <select v-model="entityUserRole" class="field-input">
+                <option value="">全部</option>
+                <option value="admin">管理员</option>
+                <option value="member">成员</option>
+                <option value="guest">访客</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              :disabled="loadingEntityUsers"
+              @click="refreshEntityUsersAll"
+            >
+              {{ loadingEntityUsers ? '加载中...' : '检索用户' }}
+            </button>
+          </div>
+        </section>
+
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="overflow-x-auto rounded-xl border border-slate-200">
+            <table class="min-w-full divide-y divide-slate-200 text-xs">
+              <thead class="bg-slate-50 text-slate-600">
+                <tr>
+                  <th class="px-2.5 py-2 text-left font-semibold">用户</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">邮箱</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">角色</th>
+                  <th class="px-2.5 py-2 text-right font-semibold">任务数</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">最近任务时间</th>
+                  <th class="sticky right-0 z-10 min-w-[9rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
+                <tr
+                  v-for="row in entityUsers?.items || []"
+                  :key="row.ownerId"
+                  class="hover:bg-slate-50"
+                >
+                  <td class="px-2.5 py-2">
+                    <p>{{ row.userName || '未命名用户' }}</p>
+                  </td>
+                  <td class="px-2.5 py-2">{{ row.email || '-' }}</td>
+                  <td class="px-2.5 py-2">{{ formatUserRoleLabel(row.role) }}</td>
+                  <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
+                  <td class="px-2.5 py-2">{{ formatDateOnly(row.latestTaskAt || row.createdAt) }}</td>
+                  <td class="sticky right-0 bg-white px-2.5 py-2">
+                    <div class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        :disabled="!row.userName"
+                        @click="openTasksByUser(row.userName)"
+                      >
+                        查看任务
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        :disabled="!row.userName"
+                        @click="openLogsByUser(row.userName)"
+                      >
+                        查看日志
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!(entityUsers?.items?.length)">
+                  <td colspan="6" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无用户</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mt-3 flex items-center justify-end gap-2 text-xs text-slate-600">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
+              :disabled="entityUserCurrentPage <= 1 || loadingEntityUsers"
+              @click="entityUserCurrentPage -= 1; refreshEntityUsers()"
+            >
+              上一页
+            </button>
+            <span>第 {{ entityUserCurrentPage }} 页 · 共 {{ entityUsers?.total ?? 0 }} 条</span>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
+              :disabled="((entityUsers?.items?.length || 0) < pageSize) || loadingEntityUsers"
+              @click="entityUserCurrentPage += 1; refreshEntityUsers()"
+            >
+              下一页
+            </button>
+          </div>
+        </section>
+      </template>
+
+      <template v-else-if="activeTab === 'tasks'">
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="grid gap-3 md:grid-cols-4 md:items-end">
+            <label class="field">
+              <span>关键词</span>
+              <input
+                v-model.trim="entityTaskKeyword"
+                type="text"
+                class="field-input"
+                placeholder="按任务ID、标题或PN检索"
+              />
+            </label>
+            <label class="field">
+              <span>用户</span>
+              <input
+                v-model.trim="entityTaskUserName"
+                type="text"
+                class="field-input"
+                placeholder="请输入用户名称"
+              />
+            </label>
+            <label class="field">
+              <span>任务类型</span>
+              <select v-model="entityTaskType" class="field-input">
+                <option value="">全部</option>
+                <option value="patent_analysis">专利分析</option>
+                <option value="office_action_reply">答复研判</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>状态</span>
+              <select v-model="entityTaskStatus" class="field-input">
+                <option value="">全部</option>
+                <option value="pending">待处理</option>
+                <option value="processing">处理中</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+                <option value="paused">暂停</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="mt-3 flex flex-wrap items-end gap-3">
+            <label class="field">
+              <span>开始日期</span>
+              <input v-model="entityTaskDateFrom" type="date" class="field-input" />
+            </label>
+            <label class="field">
+              <span>结束日期</span>
+              <input v-model="entityTaskDateTo" type="date" class="field-input" />
+            </label>
+            <button
+              type="button"
+              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              :disabled="loadingEntityTasks"
+              @click="refreshEntityTasksAll"
+            >
+              {{ loadingEntityTasks ? '加载中...' : '检索任务' }}
+            </button>
+          </div>
+        </section>
+
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="overflow-x-auto rounded-xl border border-slate-200">
+            <table class="min-w-full divide-y divide-slate-200 text-xs">
+              <thead class="bg-slate-50 text-slate-600">
+                <tr>
+                  <th class="px-2.5 py-2 text-left font-semibold">任务ID</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">任务名称</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">用户</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">类型</th>
+                  <th class="min-w-[5.5rem] px-2.5 py-2 text-left font-semibold">状态</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">创建日期</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">更新时间</th>
+                  <th class="sticky right-0 z-10 min-w-[9rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
+                <tr
+                  v-for="row in entityTasks?.items || []"
+                  :key="row.taskId"
+                  class="hover:bg-slate-50"
+                >
+                  <td class="px-2.5 py-2 font-mono text-[11px]">{{ row.taskId }}</td>
+                  <td class="px-2.5 py-2">{{ row.title || '-' }}</td>
+                  <td class="px-2.5 py-2">{{ row.userName || '未知用户' }}</td>
+                  <td class="px-2.5 py-2">{{ formatTaskTypeLabel(row.taskType) }}</td>
+                  <td class="px-2.5 py-2">{{ formatTaskStatusLabel(row.status) }}</td>
+                  <td class="px-2.5 py-2">{{ formatDateOnly(row.createdAt) }}</td>
+                  <td class="px-2.5 py-2">{{ formatDateOnly(row.updatedAt || row.completedAt) }}</td>
+                  <td class="sticky right-0 bg-white px-2.5 py-2">
+                    <div class="flex items-center gap-2">
+                      <button
+                        type="button"
+                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        :disabled="loadingEntityTaskDetail && detailLoadingTaskId === row.taskId"
+                        @click="openEntityTaskDetail(row.taskId)"
+                      >
+                        {{ loadingEntityTaskDetail && detailLoadingTaskId === row.taskId ? '加载中' : '查看' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50"
+                        @click="openLogsByTask(row.taskId)"
+                      >
+                        查看日志
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!(entityTasks?.items?.length)">
+                  <td colspan="8" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无任务</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="mt-3 flex items-center justify-end gap-2 text-xs text-slate-600">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
+              :disabled="entityTaskCurrentPage <= 1 || loadingEntityTasks"
+              @click="entityTaskCurrentPage -= 1; refreshEntityTasks()"
+            >
+              上一页
+            </button>
+            <span>第 {{ entityTaskCurrentPage }} 页 · 共 {{ entityTasks?.total ?? 0 }} 条</span>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
+              :disabled="((entityTasks?.items?.length || 0) < pageSize) || loadingEntityTasks"
+              @click="entityTaskCurrentPage += 1; refreshEntityTasks()"
+            >
+              下一页
+            </button>
+          </div>
+        </section>
+      </template>
     </template>
 
     <div v-if="systemLogDetail" class="modal-overlay" @click="closeLogDetail">
@@ -425,6 +689,31 @@
         <pre class="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-5 text-slate-800">{{ systemLogDetailText }}</pre>
       </div>
     </div>
+
+    <div v-if="entityTaskDetail" class="modal-overlay" @click="closeEntityTaskDetail">
+      <div class="modal-panel" @click.stop>
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-sm font-semibold text-slate-900">任务详情：{{ entityTaskDetail.item.taskId }}</h3>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
+              @click="copyEntityTaskDetailPayload"
+            >
+              复制详情
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
+              @click="closeEntityTaskDetail"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+        <pre class="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-5 text-slate-800">{{ entityTaskDetailText }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -435,7 +724,7 @@ import type { UsageRangeType, UsageScopeType } from '~/types/adminUsage'
 
 const adminStore = useAdminUsageStore()
 
-const activeTab = ref<'usage' | 'logs'>('usage')
+const activeTab = ref<'usage' | 'logs' | 'users' | 'tasks'>('usage')
 
 const rangeType = ref<UsageRangeType>('day')
 const scope = ref<UsageScopeType>('task')
@@ -453,6 +742,8 @@ const logDateTo = ref(`${anchorDay.value}T23:59`)
 
 const usageCurrentPage = ref(1)
 const logCurrentPage = ref(1)
+const entityUserCurrentPage = ref(1)
+const entityTaskCurrentPage = ref(1)
 const pageSize = 10
 
 const logCategory = ref('')
@@ -464,6 +755,15 @@ const logRequestId = ref('')
 const logTraceId = ref('')
 const logKeyword = ref('')
 const detailLoadingLogId = ref('')
+const detailLoadingTaskId = ref('')
+const entityUserKeyword = ref('')
+const entityUserRole = ref('')
+const entityTaskKeyword = ref('')
+const entityTaskUserName = ref('')
+const entityTaskType = ref('')
+const entityTaskStatus = ref('')
+const entityTaskDateFrom = ref('')
+const entityTaskDateTo = ref('')
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   patent_analysis: '专利分析',
@@ -507,18 +807,30 @@ const LOG_EVENT_LABELS: Record<string, string> = {
   vision_completion_json: '视觉模型调用(JSON)',
 }
 
+const USER_ROLE_LABELS: Record<string, string> = {
+  admin: '管理员',
+  member: '成员',
+  guest: '访客',
+}
+
 const loadingAccess = computed(() => adminStore.loadingAccess)
 const loadingDashboard = computed(() => adminStore.loadingDashboard)
 const loadingTable = computed(() => adminStore.loadingTable)
 const loadingSystemLogs = computed(() => adminStore.loadingSystemLogs)
 const loadingSystemSummary = computed(() => adminStore.loadingSystemSummary)
 const loadingSystemLogDetail = computed(() => adminStore.loadingSystemLogDetail)
+const loadingEntityUsers = computed(() => adminStore.loadingEntityUsers)
+const loadingEntityTasks = computed(() => adminStore.loadingEntityTasks)
+const loadingEntityTaskDetail = computed(() => adminStore.loadingEntityTaskDetail)
 const isAdmin = computed(() => adminStore.isAdmin)
 const dashboard = computed(() => adminStore.dashboard)
 const tableData = computed(() => adminStore.tableData)
 const systemLogSummary = computed(() => adminStore.systemLogSummary)
 const systemLogs = computed(() => adminStore.systemLogs)
 const systemLogDetail = computed(() => adminStore.systemLogDetail)
+const entityUsers = computed(() => adminStore.entityUsers)
+const entityTasks = computed(() => adminStore.entityTasks)
+const entityTaskDetail = computed(() => adminStore.entityTaskDetail)
 const usagePrimaryLabel = computed(() => {
   if (scope.value === 'task') return '任务ID'
   if (scope.value === 'user') return '用户'
@@ -570,6 +882,11 @@ const formatLogEvent = (value: string | null | undefined) => {
   const text = String(value || '').trim()
   if (!text) return '-'
   return LOG_EVENT_LABELS[text] || text
+}
+const formatUserRoleLabel = (value: string | null | undefined) => {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return '-'
+  return USER_ROLE_LABELS[text] || text
 }
 const rowKey = (row: Record<string, any>) => {
   return row.taskId || row.ownerId || `all-${row.totalTokens || 0}-${row.estimatedCostCny || 0}`
@@ -632,6 +949,42 @@ const refreshSystemLogsAll = async () => {
   await Promise.all([refreshSystemSummary(), refreshSystemLogs()])
 }
 
+const refreshEntityUsers = async () => {
+  await adminStore.fetchEntityUsers({
+    q: entityUserKeyword.value,
+    role: entityUserRole.value,
+    page: entityUserCurrentPage.value,
+    pageSize,
+    sortBy: 'latestTaskAt',
+    sortOrder: 'desc',
+  })
+}
+
+const refreshEntityUsersAll = async () => {
+  entityUserCurrentPage.value = 1
+  await refreshEntityUsers()
+}
+
+const refreshEntityTasks = async () => {
+  await adminStore.fetchEntityTasks({
+    q: entityTaskKeyword.value,
+    userName: entityTaskUserName.value,
+    taskType: entityTaskType.value,
+    status: entityTaskStatus.value,
+    dateFrom: entityTaskDateFrom.value ? new Date(`${entityTaskDateFrom.value}T00:00:00`).toISOString() : undefined,
+    dateTo: entityTaskDateTo.value ? new Date(`${entityTaskDateTo.value}T23:59:59`).toISOString() : undefined,
+    page: entityTaskCurrentPage.value,
+    pageSize,
+    sortBy: 'updatedAt',
+    sortOrder: 'desc',
+  })
+}
+
+const refreshEntityTasksAll = async () => {
+  entityTaskCurrentPage.value = 1
+  await refreshEntityTasks()
+}
+
 const onRangeTypeChange = () => {
   usageCurrentPage.value = 1
 }
@@ -649,8 +1002,27 @@ const closeLogDetail = () => {
   adminStore.clearSystemLogDetail()
 }
 
+const openEntityTaskDetail = async (taskId: string) => {
+  detailLoadingTaskId.value = taskId
+  try {
+    await adminStore.fetchEntityTaskDetail(taskId)
+  } finally {
+    detailLoadingTaskId.value = ''
+  }
+}
+
+const closeEntityTaskDetail = () => {
+  adminStore.clearEntityTaskDetail()
+}
+
 const systemLogDetailText = computed(() => {
   const detail = systemLogDetail.value
+  if (!detail) return ''
+  return JSON.stringify(detail, null, 2)
+})
+
+const entityTaskDetailText = computed(() => {
+  const detail = entityTaskDetail.value
   if (!detail) return ''
   return JSON.stringify(detail, null, 2)
 })
@@ -665,12 +1037,58 @@ const copyDetailPayload = async () => {
   }
 }
 
+const copyEntityTaskDetailPayload = async () => {
+  const text = entityTaskDetailText.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (_error) {
+    // ignore
+  }
+}
+
+const openLogsByUser = async (userName: string | null | undefined) => {
+  const text = String(userName || '').trim()
+  if (!text) return
+  activeTab.value = 'logs'
+  logUserName.value = text
+  logTaskId.value = ''
+  logCurrentPage.value = 1
+  await refreshSystemLogsAll()
+}
+
+const openTasksByUser = async (userName: string | null | undefined) => {
+  const text = String(userName || '').trim()
+  if (!text) return
+  activeTab.value = 'tasks'
+  entityTaskUserName.value = text
+  entityTaskCurrentPage.value = 1
+  await refreshEntityTasks()
+}
+
+const openLogsByTask = async (taskId: string) => {
+  const text = String(taskId || '').trim()
+  if (!text) return
+  activeTab.value = 'logs'
+  logTaskId.value = text
+  logCurrentPage.value = 1
+  await refreshSystemLogsAll()
+}
+
 watch([scope, keyword, taskTypeFilter, statusFilter, modelFilter], () => {
   usageCurrentPage.value = 1
 })
 
 watch([logCategory, logProvider, logSuccess, logTaskId, logUserName, logRequestId, logTraceId, logKeyword], () => {
   logCurrentPage.value = 1
+})
+
+watch([entityUserKeyword, entityUserRole], () => {
+  entityUserCurrentPage.value = 1
+})
+
+watch([entityTaskKeyword, entityTaskUserName, entityTaskType, entityTaskStatus, entityTaskDateFrom, entityTaskDateTo], () => {
+  entityTaskCurrentPage.value = 1
 })
 
 watch(activeTab, async (value) => {
@@ -680,8 +1098,20 @@ watch(activeTab, async (value) => {
     }
     return
   }
-  if (!systemLogSummary.value || !systemLogs.value) {
-    await refreshSystemLogsAll()
+  if (value === 'logs') {
+    if (!systemLogSummary.value || !systemLogs.value) {
+      await refreshSystemLogsAll()
+    }
+    return
+  }
+  if (value === 'users') {
+    if (!entityUsers.value) {
+      await refreshEntityUsersAll()
+    }
+    return
+  }
+  if (!entityTasks.value) {
+    await refreshEntityTasksAll()
   }
 })
 

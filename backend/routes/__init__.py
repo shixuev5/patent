@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from backend.routes.auth import router as auth_router
 from backend.routes.account import router as account_router
+from backend.routes.admin_entities import router as admin_entities_router
 from backend.routes.admin_usage import router as admin_usage_router
 from backend.routes.admin_logs import router as admin_logs_router
 from backend.routes.changelog import router as changelog_router
@@ -17,6 +18,7 @@ router = APIRouter()
 
 router.include_router(auth_router)
 router.include_router(account_router)
+router.include_router(admin_entities_router)
 router.include_router(admin_usage_router)
 router.include_router(admin_logs_router)
 router.include_router(usage_router)

@@ -863,6 +863,303 @@ class D1TaskStorage:
         rows = self._fetchall(sql, params)
         return [self._row_to_task(row) for row in rows]
 
+    def list_admin_users(
+        self,
+        *,
+        q: Optional[str] = None,
+        role: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 10,
+        sort_by: str = "latest_task_at",
+        sort_order: str = "desc",
+    ) -> Dict[str, Any]:
+        where = ["1=1"]
+        params: List[Any] = []
+
+        if role:
+            where.append("base.role = ?")
+            params.append(role)
+
+        if q:
+            wildcard = f"%{q}%"
+            where.append("(base.owner_id LIKE ? OR COALESCE(base.user_name, '') LIKE ? OR COALESCE(base.email, '') LIKE ?)")
+            params.extend([wildcard, wildcard, wildcard])
+
+        where_clause = " AND ".join(where)
+        safe_sort_map = {
+            "owner_id": "base.owner_id",
+            "user_name": "COALESCE(base.user_name, '')",
+            "email": "COALESCE(base.email, '')",
+            "role": "COALESCE(base.role, '')",
+            "last_login_at": "COALESCE(base.last_login_at, '')",
+            "created_at": "COALESCE(base.created_at, '')",
+            "task_count": "base.task_count",
+            "latest_task_at": "COALESCE(base.latest_task_at, '')",
+        }
+        safe_sort = safe_sort_map.get(sort_by, "COALESCE(base.latest_task_at, '')")
+        direction = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
+        offset = max(0, (page - 1) * page_size)
+
+        total_row = self._fetchone(
+            f"""
+            WITH user_task_stats AS (
+                SELECT
+                    owner_id,
+                    COUNT(*) AS task_count,
+                    MAX(updated_at) AS latest_task_at
+                FROM tasks
+                WHERE deleted_at IS NULL
+                  AND owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+                GROUP BY owner_id
+            ),
+            base AS (
+                SELECT
+                    u.owner_id AS owner_id,
+                    u.name AS user_name,
+                    u.email AS email,
+                    u.role AS role,
+                    u.last_login_at AS last_login_at,
+                    u.created_at AS created_at,
+                    COALESCE(s.task_count, 0) AS task_count,
+                    s.latest_task_at AS latest_task_at
+                FROM users u
+                LEFT JOIN user_task_stats s ON u.owner_id = s.owner_id
+                UNION
+                SELECT
+                    s.owner_id AS owner_id,
+                    NULL AS user_name,
+                    NULL AS email,
+                    NULL AS role,
+                    NULL AS last_login_at,
+                    NULL AS created_at,
+                    s.task_count AS task_count,
+                    s.latest_task_at AS latest_task_at
+                FROM user_task_stats s
+                LEFT JOIN users u ON s.owner_id = u.owner_id
+                WHERE u.owner_id IS NULL
+            )
+            SELECT COUNT(*) AS c
+            FROM base
+            WHERE {where_clause}
+            """,
+            params,
+        )
+
+        rows = self._fetchall(
+            f"""
+            WITH user_task_stats AS (
+                SELECT
+                    owner_id,
+                    COUNT(*) AS task_count,
+                    MAX(updated_at) AS latest_task_at
+                FROM tasks
+                WHERE deleted_at IS NULL
+                  AND owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+                GROUP BY owner_id
+            ),
+            base AS (
+                SELECT
+                    u.owner_id AS owner_id,
+                    u.name AS user_name,
+                    u.email AS email,
+                    u.role AS role,
+                    u.last_login_at AS last_login_at,
+                    u.created_at AS created_at,
+                    COALESCE(s.task_count, 0) AS task_count,
+                    s.latest_task_at AS latest_task_at
+                FROM users u
+                LEFT JOIN user_task_stats s ON u.owner_id = s.owner_id
+                UNION
+                SELECT
+                    s.owner_id AS owner_id,
+                    NULL AS user_name,
+                    NULL AS email,
+                    NULL AS role,
+                    NULL AS last_login_at,
+                    NULL AS created_at,
+                    s.task_count AS task_count,
+                    s.latest_task_at AS latest_task_at
+                FROM user_task_stats s
+                LEFT JOIN users u ON s.owner_id = u.owner_id
+                WHERE u.owner_id IS NULL
+            )
+            SELECT *
+            FROM base
+            WHERE {where_clause}
+            ORDER BY {safe_sort} {direction}, base.owner_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset],
+        )
+
+        return {
+            "total": int((total_row or {}).get("c") or 0),
+            "items": [
+                {
+                    "owner_id": row.get("owner_id"),
+                    "user_name": row.get("user_name"),
+                    "email": row.get("email"),
+                    "role": row.get("role"),
+                    "last_login_at": row.get("last_login_at"),
+                    "created_at": row.get("created_at"),
+                    "task_count": int(row.get("task_count") or 0),
+                    "latest_task_at": row.get("latest_task_at"),
+                }
+                for row in rows
+            ],
+        }
+
+    def list_admin_tasks(
+        self,
+        *,
+        q: Optional[str] = None,
+        user_name: Optional[str] = None,
+        task_type: Optional[str] = None,
+        status: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 10,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
+    ) -> Dict[str, Any]:
+        where = ["t.deleted_at IS NULL"]
+        params: List[Any] = []
+
+        if user_name:
+            where.append("u.name LIKE ?")
+            params.append(f"%{user_name}%")
+        if task_type:
+            where.append("t.task_type = ?")
+            params.append(task_type)
+        if status:
+            where.append("LOWER(t.status) = ?")
+            params.append(str(status).strip().lower())
+        if date_from:
+            where.append("t.created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            where.append("t.created_at <= ?")
+            params.append(date_to)
+        if q:
+            wildcard = f"%{q}%"
+            where.append(
+                "(t.id LIKE ? OR COALESCE(t.title, '') LIKE ? OR COALESCE(t.pn, '') LIKE ? OR COALESCE(t.owner_id, '') LIKE ? OR COALESCE(u.name, '') LIKE ?)"
+            )
+            params.extend([wildcard, wildcard, wildcard, wildcard, wildcard])
+
+        where_clause = " AND ".join(where)
+        safe_sort_map = {
+            "task_id": "t.id",
+            "title": "COALESCE(t.title, '')",
+            "user_name": "COALESCE(u.name, '')",
+            "task_type": "COALESCE(t.task_type, '')",
+            "status": "COALESCE(t.status, '')",
+            "created_at": "COALESCE(t.created_at, '')",
+            "updated_at": "COALESCE(t.updated_at, '')",
+            "completed_at": "COALESCE(t.completed_at, '')",
+        }
+        safe_sort = safe_sort_map.get(sort_by, "COALESCE(t.updated_at, '')")
+        direction = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
+        offset = max(0, (page - 1) * page_size)
+
+        total_row = self._fetchone(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM tasks t
+            LEFT JOIN users u ON t.owner_id = u.owner_id
+            WHERE {where_clause}
+            """,
+            params,
+        )
+        rows = self._fetchall(
+            f"""
+            SELECT
+                t.id AS task_id,
+                t.title AS title,
+                t.owner_id AS owner_id,
+                u.name AS user_name,
+                t.task_type AS task_type,
+                t.status AS status,
+                t.created_at AS created_at,
+                t.updated_at AS updated_at,
+                t.completed_at AS completed_at
+            FROM tasks t
+            LEFT JOIN users u ON t.owner_id = u.owner_id
+            WHERE {where_clause}
+            ORDER BY {safe_sort} {direction}, t.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset],
+        )
+
+        return {
+            "total": int((total_row or {}).get("c") or 0),
+            "items": [
+                {
+                    "task_id": row.get("task_id"),
+                    "title": row.get("title"),
+                    "owner_id": row.get("owner_id"),
+                    "user_name": row.get("user_name"),
+                    "task_type": row.get("task_type"),
+                    "status": row.get("status"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                    "completed_at": row.get("completed_at"),
+                }
+                for row in rows
+            ],
+        }
+
+    def get_admin_task_detail(self, task_id: str) -> Optional[Dict[str, Any]]:
+        row = self._fetchone(
+            """
+            SELECT
+                t.id AS task_id,
+                t.owner_id AS owner_id,
+                u.name AS user_name,
+                t.task_type AS task_type,
+                t.pn AS pn,
+                t.title AS title,
+                t.status AS status,
+                t.progress AS progress,
+                t.current_step AS current_step,
+                t.output_dir AS output_dir,
+                t.error_message AS error_message,
+                t.created_at AS created_at,
+                t.updated_at AS updated_at,
+                t.completed_at AS completed_at,
+                t.metadata AS metadata
+            FROM tasks t
+            LEFT JOIN users u ON t.owner_id = u.owner_id
+            WHERE t.id = ?
+              AND t.deleted_at IS NULL
+            LIMIT 1
+            """,
+            [task_id],
+        )
+        if not row:
+            return None
+        return {
+            "task_id": row.get("task_id"),
+            "owner_id": row.get("owner_id"),
+            "user_name": row.get("user_name"),
+            "task_type": row.get("task_type"),
+            "pn": row.get("pn"),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "progress": int(row.get("progress") or 0),
+            "current_step": row.get("current_step"),
+            "output_dir": row.get("output_dir"),
+            "error_message": row.get("error_message"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "completed_at": row.get("completed_at"),
+            "metadata": self._parse_metadata(row.get("metadata")),
+        }
+
     def count_tasks(
         self,
         status: Optional[TaskStatus] = None,

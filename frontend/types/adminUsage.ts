@@ -108,3 +108,44 @@ export interface AdminSystemLogDetailResponse {
   item: AdminSystemLogItem
   payload: unknown
 }
+
+export interface AdminEntityUserItem {
+  ownerId: string
+  userName?: string | null
+  email?: string | null
+  role?: string | null
+  lastLoginAt?: string | null
+  createdAt?: string | null
+  taskCount: number
+  latestTaskAt?: string | null
+}
+
+export interface AdminEntityUserListResponse {
+  page: number
+  pageSize: number
+  total: number
+  items: AdminEntityUserItem[]
+}
+
+export interface AdminEntityTaskItem {
+  taskId: string
+  title?: string | null
+  ownerId?: string | null
+  userName?: string | null
+  taskType?: string | null
+  status?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  completedAt?: string | null
+}
+
+export interface AdminEntityTaskListResponse {
+  page: number
+  pageSize: number
+  total: number
+  items: AdminEntityTaskItem[]
+}
+
+export interface AdminEntityTaskDetailResponse {
+  item: Record<string, any>
+}
