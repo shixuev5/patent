@@ -143,10 +143,7 @@ class AdminAccessResponse(BaseModel):
 class AdminUsageOverview(BaseModel):
     totalTasks: int
     totalUsers: int
-    totalPromptTokens: int
-    totalCompletionTokens: int
     totalTokens: int
-    totalReasoningTokens: int
     totalEstimatedCostCny: float
     avgTokensPerTask: float
     avgCostPerTaskCny: float
@@ -160,9 +157,6 @@ class AdminUsageDashboardResponse(BaseModel):
     endAt: str
     currency: str = "CNY"
     overview: AdminUsageOverview
-    trend: List[Dict[str, Any]]
-    byTaskType: List[Dict[str, Any]]
-    topUsers: List[Dict[str, Any]]
     priceMissing: bool
 
 
@@ -239,6 +233,7 @@ class AdminEntityUserListResponse(BaseModel):
     pageSize: int
     total: int
     items: List[AdminEntityUserItem]
+    meta: Optional[Dict[str, Any]] = None
 
 
 class AdminEntityTaskItem(BaseModel):
@@ -248,6 +243,7 @@ class AdminEntityTaskItem(BaseModel):
     userName: Optional[str] = None
     taskType: Optional[str] = None
     status: Optional[str] = None
+    durationSeconds: Optional[int] = None
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
     completedAt: Optional[str] = None
@@ -258,6 +254,7 @@ class AdminEntityTaskListResponse(BaseModel):
     pageSize: int
     total: int
     items: List[AdminEntityTaskItem]
+    meta: Optional[Dict[str, Any]] = None
 
 
 class AdminEntityTaskDetailResponse(BaseModel):

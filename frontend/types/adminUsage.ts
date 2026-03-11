@@ -8,10 +8,7 @@ export interface AdminAccessResponse {
 export interface AdminUsageOverview {
   totalTasks: number
   totalUsers: number
-  totalPromptTokens: number
-  totalCompletionTokens: number
   totalTokens: number
-  totalReasoningTokens: number
   totalEstimatedCostCny: number
   avgTokensPerTask: number
   avgCostPerTaskCny: number
@@ -25,27 +22,6 @@ export interface AdminUsageDashboardResponse {
   endAt: string
   currency: string
   overview: AdminUsageOverview
-  trend: Array<{
-    label: string
-    promptTokens: number
-    completionTokens: number
-    totalTokens: number
-    estimatedCostCny: number
-  }>
-  byTaskType: Array<{
-    taskType: string
-    taskCount: number
-    totalTokens: number
-    estimatedCostCny: number
-  }>
-  topUsers: Array<{
-    ownerId: string
-    taskCount: number
-    totalTokens: number
-    estimatedCostCny: number
-    priceMissing?: boolean
-    latestTaskStatus?: string
-  }>
   priceMissing: boolean
 }
 
@@ -125,6 +101,16 @@ export interface AdminEntityUserListResponse {
   pageSize: number
   total: number
   items: AdminEntityUserItem[]
+  meta?: {
+    userStats?: {
+      activeUsers1d: number
+      activeUsers7d: number
+      activeUsers30d: number
+      newUsers1d: number
+      newUsers7d: number
+      newUsers30d: number
+    }
+  }
 }
 
 export interface AdminEntityTaskItem {
@@ -134,6 +120,7 @@ export interface AdminEntityTaskItem {
   userName?: string | null
   taskType?: string | null
   status?: string | null
+  durationSeconds?: number | null
   createdAt?: string | null
   updatedAt?: string | null
   completedAt?: string | null
@@ -144,6 +131,14 @@ export interface AdminEntityTaskListResponse {
   pageSize: number
   total: number
   items: AdminEntityTaskItem[]
+  meta?: {
+    taskTypeWindows?: Array<{
+      taskType: string
+      count1d: number
+      count7d: number
+      count30d: number
+    }>
+  }
 }
 
 export interface AdminEntityTaskDetailResponse {

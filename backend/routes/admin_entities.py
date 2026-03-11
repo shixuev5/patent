@@ -90,6 +90,7 @@ def _to_task_item(row: Dict[str, Any]) -> AdminEntityTaskItem:
         userName=row.get("user_name"),
         taskType=row.get("task_type"),
         status=row.get("status"),
+        durationSeconds=row.get("duration_seconds"),
         createdAt=row.get("created_at"),
         updatedAt=row.get("updated_at"),
         completedAt=row.get("completed_at"),
@@ -109,7 +110,22 @@ async def get_admin_entity_users(
     ensure_admin_owner(current_user.user_id)
 
     if not hasattr(task_manager.storage, "list_admin_users"):
-        return AdminEntityUserListResponse(page=page, pageSize=pageSize, total=0, items=[])
+        return AdminEntityUserListResponse(
+            page=page,
+            pageSize=pageSize,
+            total=0,
+            items=[],
+            meta={
+                "userStats": {
+                    "activeUsers1d": 0,
+                    "activeUsers7d": 0,
+                    "activeUsers30d": 0,
+                    "newUsers1d": 0,
+                    "newUsers7d": 0,
+                    "newUsers30d": 0,
+                }
+            },
+        )
 
     result = task_manager.storage.list_admin_users(
         q=_norm_optional_text(q),
@@ -120,11 +136,22 @@ async def get_admin_entity_users(
         sort_order=_norm_sort_order(sortOrder),
     )
     rows = result.get("items") or []
+    meta = result.get("meta") or {
+        "userStats": {
+            "activeUsers1d": 0,
+            "activeUsers7d": 0,
+            "activeUsers30d": 0,
+            "newUsers1d": 0,
+            "newUsers7d": 0,
+            "newUsers30d": 0,
+        }
+    }
     return AdminEntityUserListResponse(
         page=page,
         pageSize=pageSize,
         total=int(result.get("total") or 0),
         items=[_to_user_item(row) for row in rows],
+        meta=meta,
     )
 
 
@@ -145,7 +172,13 @@ async def get_admin_entity_tasks(
     ensure_admin_owner(current_user.user_id)
 
     if not hasattr(task_manager.storage, "list_admin_tasks"):
-        return AdminEntityTaskListResponse(page=page, pageSize=pageSize, total=0, items=[])
+        return AdminEntityTaskListResponse(
+            page=page,
+            pageSize=pageSize,
+            total=0,
+            items=[],
+            meta={"taskTypeWindows": []},
+        )
 
     result = task_manager.storage.list_admin_tasks(
         q=_norm_optional_text(q),
@@ -160,11 +193,13 @@ async def get_admin_entity_tasks(
         sort_order=_norm_sort_order(sortOrder),
     )
     rows = result.get("items") or []
+    meta = result.get("meta") or {"taskTypeWindows": []}
     return AdminEntityTaskListResponse(
         page=page,
         pageSize=pageSize,
         total=int(result.get("total") or 0),
         items=[_to_task_item(row) for row in rows],
+        meta=meta,
     )
 
 

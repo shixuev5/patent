@@ -63,7 +63,7 @@ def _seed_tasks(storage: SQLiteTaskStorage):
             status=TaskStatus.COMPLETED,
             progress=100,
             current_step="done",
-            created_at=now - timedelta(days=1),
+            created_at=now - timedelta(hours=12),
             updated_at=now,
             completed_at=now,
             metadata={"k": "v1"},
@@ -78,7 +78,7 @@ def _seed_tasks(storage: SQLiteTaskStorage):
             status=TaskStatus.PROCESSING,
             progress=40,
             current_step="running",
-            created_at=now - timedelta(days=2),
+            created_at=now - timedelta(days=3),
             updated_at=now - timedelta(hours=1),
             metadata={"k": "v2"},
         )
@@ -92,8 +92,8 @@ def _seed_tasks(storage: SQLiteTaskStorage):
             status=TaskStatus.FAILED,
             progress=80,
             current_step="error",
-            created_at=now - timedelta(days=3),
-            updated_at=now - timedelta(days=3, hours=1),
+            created_at=now - timedelta(days=10),
+            updated_at=now - timedelta(days=10, hours=1),
             metadata={"k": "v3"},
         )
     )
@@ -120,6 +120,16 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
     )
     assert users.total >= 1
     assert users.items[0].userName == "张三"
+    assert users.meta is not None
+    stats = users.meta["userStats"]
+    assert stats["activeUsers1d"] == 1
+    assert stats["activeUsers7d"] == 2
+    assert stats["activeUsers30d"] == 3
+    assert 2 <= stats["newUsers1d"] <= 3
+    assert stats["newUsers7d"] >= stats["newUsers1d"]
+    assert stats["newUsers30d"] >= stats["newUsers7d"]
+    assert stats["newUsers30d"] >= 4
+    assert stats["newUsers30d"] >= stats["newUsers7d"] >= stats["newUsers1d"]
 
     tasks = asyncio.run(
         admin_entities.get_admin_entity_tasks(
@@ -139,6 +149,16 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
     assert tasks.total == 1
     assert tasks.items[0].taskId == "task-2"
     assert tasks.items[0].userName == "李四"
+    assert isinstance(tasks.items[0].durationSeconds, int)
+    assert tasks.items[0].durationSeconds >= 0
+    assert tasks.meta is not None
+    windows = {item["taskType"]: item for item in tasks.meta["taskTypeWindows"]}
+    assert windows["office_action_reply"]["count1d"] == 0
+    assert windows["office_action_reply"]["count7d"] == 1
+    assert windows["office_action_reply"]["count30d"] == 1
+    assert windows["patent_analysis"]["count1d"] == 1
+    assert windows["patent_analysis"]["count7d"] == 1
+    assert windows["patent_analysis"]["count30d"] == 2
 
     detail = asyncio.run(admin_entities.get_admin_entity_task_detail(task_id="task-1", current_user=admin_user))
     assert detail.item["taskId"] == "task-1"

@@ -71,3 +71,34 @@ def test_authing_exchange_keeps_existing_name(monkeypatch, tmp_path):
     saved = storage.get_user_by_owner_id("authing:sub-2")
     assert saved is not None
     assert saved.name == "本地名称"
+
+
+def test_authing_exchange_keeps_existing_role_when_claim_missing(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    storage.upsert_authing_user(
+        User(
+            owner_id="authing:sub-3",
+            authing_sub="sub-3",
+            role="admin",
+            name="管理员",
+            email="u3@example.com",
+        )
+    )
+
+    monkeypatch.setattr(
+        auth_routes,
+        "_verify_authing_id_token",
+        lambda _token: {"sub": "sub-3", "name": "Authing 名称"},
+    )
+    monkeypatch.setattr(auth_routes, "_issue_token", lambda _owner_id: ("test-token", 0))
+
+    response = asyncio.run(
+        auth_routes.exchange_authing_token(
+            payload=auth_routes.AuthingTokenExchangeRequest(idToken="fake-id-token")
+        )
+    )
+    assert response.user.name == "管理员"
+
+    saved = storage.get_user_by_owner_id("authing:sub-3")
+    assert saved is not None
+    assert saved.role == "admin"

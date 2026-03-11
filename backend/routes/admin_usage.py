@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import calendar
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -102,24 +101,6 @@ def _resolve_time_window(range_type: RangeType, anchor: Optional[str]) -> Tuple[
     return str(target_year), start, end
 
 
-def _build_series_labels(range_type: RangeType, anchor: str) -> List[str]:
-    if range_type == DAY:
-        return [f"{hour:02d}:00" for hour in range(24)]
-    if range_type == MONTH:
-        year, month = map(int, anchor.split("-"))
-        days = calendar.monthrange(year, month)[1]
-        return [f"{day:02d}" for day in range(1, days + 1)]
-    return [f"{month:02d}" for month in range(1, 13)]
-
-
-def _resolve_bucket_label(range_type: RangeType, dt: datetime) -> str:
-    if range_type == DAY:
-        return f"{dt.hour:02d}:00"
-    if range_type == MONTH:
-        return f"{dt.day:02d}"
-    return f"{dt.month:02d}"
-
-
 def _load_rows(range_type: RangeType, anchor: Optional[str]) -> Tuple[str, datetime, datetime, List[Dict[str, Any]]]:
     normalized_anchor, start, end = _resolve_time_window(range_type, anchor)
     rows = task_manager.storage.list_task_llm_usage_by_last_usage_range(
@@ -206,117 +187,36 @@ async def get_admin_access(current_user: CurrentUser = Depends(_get_current_user
 async def get_admin_usage_dashboard(
     rangeType: Optional[str] = Query(default=DAY),
     anchor: Optional[str] = Query(default=None),
-    topN: int = Query(default=10, ge=1, le=50),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     ensure_admin_owner(current_user.user_id)
     normalized_range = _normalize_range_type(rangeType)
     normalized_anchor, start, end, rows = _load_rows(normalized_range, anchor)
-    labels = _build_series_labels(normalized_range, normalized_anchor)
-
-    trend_map: Dict[str, Dict[str, Any]] = {
-        label: {
-            "label": label,
-            "promptTokens": 0,
-            "completionTokens": 0,
-            "totalTokens": 0,
-            "estimatedCostCny": 0.0,
-        }
-        for label in labels
-    }
-    task_type_map: Dict[str, Dict[str, Any]] = {}
-    user_map: Dict[str, Dict[str, Any]] = {}
-    user_name_cache: Dict[str, Optional[str]] = {}
-    total_prompt = 0
-    total_completion = 0
+    owner_ids: set[str] = set()
     total_tokens = 0
-    total_reasoning = 0
     total_cost = 0.0
     price_missing = False
 
     for row in rows:
-        prompt_tokens = int(row.get("prompt_tokens") or 0)
-        completion_tokens = int(row.get("completion_tokens") or 0)
         row_total_tokens = int(row.get("total_tokens") or 0)
-        reasoning_tokens = int(row.get("reasoning_tokens") or 0)
         cost = float(row.get("estimated_cost_cny") or 0)
-        task_type = str(row.get("task_type") or "unknown")
-        owner_id = str(row.get("owner_id") or "")
-        user_name = _resolve_user_name(owner_id, user_name_cache)
-        status = str(row.get("task_status") or "")
-
-        total_prompt += prompt_tokens
-        total_completion += completion_tokens
+        owner_id = str(row.get("owner_id") or "").strip()
+        if owner_id:
+            owner_ids.add(owner_id)
         total_tokens += row_total_tokens
-        total_reasoning += reasoning_tokens
         total_cost += cost
         price_missing = price_missing or bool(row.get("price_missing"))
-
-        dt = _parse_datetime(row.get("last_usage_at"))
-        if dt:
-            label = _resolve_bucket_label(normalized_range, dt)
-            if label in trend_map:
-                trend_map[label]["promptTokens"] += prompt_tokens
-                trend_map[label]["completionTokens"] += completion_tokens
-                trend_map[label]["totalTokens"] += row_total_tokens
-                trend_map[label]["estimatedCostCny"] += cost
-
-        task_item = task_type_map.setdefault(
-            task_type,
-            {
-                "taskType": task_type,
-                "taskCount": 0,
-                "totalTokens": 0,
-                "estimatedCostCny": 0.0,
-            },
-        )
-        task_item["taskCount"] += 1
-        task_item["totalTokens"] += row_total_tokens
-        task_item["estimatedCostCny"] += cost
-
-        user_item = user_map.setdefault(
-            owner_id or "-",
-            {
-                "ownerId": owner_id or "-",
-                "userName": user_name,
-                "taskCount": 0,
-                "totalTokens": 0,
-                "estimatedCostCny": 0.0,
-                "priceMissing": False,
-                "latestTaskStatus": status,
-            },
-        )
-        if user_name and not user_item.get("userName"):
-            user_item["userName"] = user_name
-        user_item["taskCount"] += 1
-        user_item["totalTokens"] += row_total_tokens
-        user_item["estimatedCostCny"] += cost
-        user_item["priceMissing"] = user_item["priceMissing"] or bool(row.get("price_missing"))
-        if status:
-            user_item["latestTaskStatus"] = status
-
-    top_users = sorted(
-        user_map.values(),
-        key=lambda item: (int(item["totalTokens"]), float(item["estimatedCostCny"])),
-        reverse=True,
-    )[:topN]
 
     task_count = len(rows)
     overview = AdminUsageOverview(
         totalTasks=task_count,
-        totalUsers=len([owner for owner in user_map.keys() if owner and owner != "-"]),
-        totalPromptTokens=total_prompt,
-        totalCompletionTokens=total_completion,
+        totalUsers=len(owner_ids),
         totalTokens=total_tokens,
-        totalReasoningTokens=total_reasoning,
         totalEstimatedCostCny=round(total_cost, 6),
         avgTokensPerTask=round((total_tokens / task_count), 3) if task_count else 0.0,
         avgCostPerTaskCny=round((total_cost / task_count), 6) if task_count else 0.0,
         priceMissing=price_missing,
     )
-
-    trend = [trend_map[label] for label in labels]
-    by_task_type = sorted(task_type_map.values(), key=lambda item: int(item["totalTokens"]), reverse=True)
 
     return AdminUsageDashboardResponse(
         rangeType=normalized_range,
@@ -325,9 +225,6 @@ async def get_admin_usage_dashboard(
         endAt=end.isoformat(),
         currency=TOKEN_PRICING_CURRENCY,
         overview=overview,
-        trend=trend,
-        byTaskType=by_task_type,
-        topUsers=top_users,
         priceMissing=price_missing,
     )
 

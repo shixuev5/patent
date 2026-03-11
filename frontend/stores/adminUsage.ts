@@ -151,7 +151,6 @@ export const useAdminUsageStore = defineStore('admin-usage', {
         const path = withQuery('/api/admin/usage/dashboard', {
           rangeType,
           anchor,
-          topN: 10,
         })
         const response = await this._authorizedFetch(path)
         if (!response || !response.ok) return null

@@ -135,7 +135,6 @@ def test_admin_dashboard_and_table(monkeypatch, tmp_path):
         admin_usage.get_admin_usage_dashboard(
             rangeType="day",
             anchor=anchor,
-            topN=10,
             current_user=admin_user,
         )
     )
@@ -218,7 +217,6 @@ def test_admin_usage_forbidden_for_non_admin(monkeypatch, tmp_path):
             admin_usage.get_admin_usage_dashboard(
                 rangeType="day",
                 anchor=anchor,
-                topN=10,
                 current_user=non_admin,
             )
         )

@@ -875,6 +875,10 @@ class D1TaskStorage:
     ) -> Dict[str, Any]:
         where = ["1=1"]
         params: List[Any] = []
+        now = datetime.now()
+        cutoff_1d = (now - timedelta(days=1)).isoformat()
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
 
         if role:
             where.append("base.role = ?")
@@ -994,6 +998,48 @@ class D1TaskStorage:
             params + [page_size, offset],
         )
 
+        active_row = self._fetchone(
+            """
+            SELECT
+                COUNT(DISTINCT CASE WHEN created_at >= ? THEN owner_id END) AS active_1d,
+                COUNT(DISTINCT CASE WHEN created_at >= ? THEN owner_id END) AS active_7d,
+                COUNT(DISTINCT CASE WHEN created_at >= ? THEN owner_id END) AS active_30d
+            FROM tasks
+            WHERE deleted_at IS NULL
+              AND owner_id IS NOT NULL
+              AND TRIM(owner_id) <> ''
+            """,
+            [cutoff_1d, cutoff_7d, cutoff_30d],
+        )
+
+        new_row = self._fetchone(
+            """
+            WITH identity_events AS (
+                SELECT owner_id, created_at AS seen_at
+                FROM users
+                WHERE owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+                UNION ALL
+                SELECT owner_id, created_at AS seen_at
+                FROM tasks
+                WHERE deleted_at IS NULL
+                  AND owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+            ),
+            first_seen AS (
+                SELECT owner_id, MIN(seen_at) AS first_seen_at
+                FROM identity_events
+                GROUP BY owner_id
+            )
+            SELECT
+                SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END) AS new_1d,
+                SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END) AS new_7d,
+                SUM(CASE WHEN first_seen_at >= ? THEN 1 ELSE 0 END) AS new_30d
+            FROM first_seen
+            """,
+            [cutoff_1d, cutoff_7d, cutoff_30d],
+        )
+
         return {
             "total": int((total_row or {}).get("c") or 0),
             "items": [
@@ -1009,6 +1055,16 @@ class D1TaskStorage:
                 }
                 for row in rows
             ],
+            "meta": {
+                "userStats": {
+                    "activeUsers1d": int((active_row or {}).get("active_1d") or 0),
+                    "activeUsers7d": int((active_row or {}).get("active_7d") or 0),
+                    "activeUsers30d": int((active_row or {}).get("active_30d") or 0),
+                    "newUsers1d": int((new_row or {}).get("new_1d") or 0),
+                    "newUsers7d": int((new_row or {}).get("new_7d") or 0),
+                    "newUsers30d": int((new_row or {}).get("new_30d") or 0),
+                }
+            },
         }
 
     def list_admin_tasks(
@@ -1027,6 +1083,10 @@ class D1TaskStorage:
     ) -> Dict[str, Any]:
         where = ["t.deleted_at IS NULL"]
         params: List[Any] = []
+        now = datetime.now()
+        cutoff_1d = (now - timedelta(days=1)).isoformat()
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
 
         if user_name:
             where.append("u.name LIKE ?")
@@ -1095,6 +1155,45 @@ class D1TaskStorage:
             params + [page_size, offset],
         )
 
+        task_type_rows = self._fetchall(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(task_type), ''), 'unknown') AS task_type,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_1d,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_7d,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_30d
+            FROM tasks
+            WHERE deleted_at IS NULL
+            GROUP BY COALESCE(NULLIF(TRIM(task_type), ''), 'unknown')
+            ORDER BY count_30d DESC, task_type ASC
+            """,
+            [cutoff_1d, cutoff_7d, cutoff_30d],
+        )
+
+        def _parse_iso(value: Any) -> Optional[datetime]:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = f"{text[:-1]}+00:00"
+            try:
+                return datetime.fromisoformat(text)
+            except ValueError:
+                return None
+
+        def _calc_duration_seconds(created_at: Any, completed_at: Any) -> Optional[int]:
+            created_dt = _parse_iso(created_at)
+            if not created_dt:
+                return None
+            end_dt = _parse_iso(completed_at)
+            if not end_dt:
+                end_dt = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+            try:
+                seconds = int(end_dt.timestamp() - created_dt.timestamp())
+            except Exception:
+                return None
+            return max(0, seconds)
+
         return {
             "total": int((total_row or {}).get("c") or 0),
             "items": [
@@ -1105,12 +1204,24 @@ class D1TaskStorage:
                     "user_name": row.get("user_name"),
                     "task_type": row.get("task_type"),
                     "status": row.get("status"),
+                    "duration_seconds": _calc_duration_seconds(row.get("created_at"), row.get("completed_at")),
                     "created_at": row.get("created_at"),
                     "updated_at": row.get("updated_at"),
                     "completed_at": row.get("completed_at"),
                 }
                 for row in rows
             ],
+            "meta": {
+                "taskTypeWindows": [
+                    {
+                        "taskType": row.get("task_type"),
+                        "count1d": int(row.get("count_1d") or 0),
+                        "count7d": int(row.get("count_7d") or 0),
+                        "count30d": int(row.get("count_30d") or 0),
+                    }
+                    for row in task_type_rows
+                ]
+            },
         }
 
     def get_admin_task_detail(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -1299,7 +1410,10 @@ class D1TaskStorage:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_id) DO UPDATE SET
                 authing_sub = excluded.authing_sub,
-                role = excluded.role,
+                role = CASE
+                    WHEN excluded.role IS NULL OR TRIM(excluded.role) = '' THEN users.role
+                    ELSE excluded.role
+                END,
                 name = CASE
                     WHEN users.name IS NULL OR TRIM(users.name) = '' THEN excluded.name
                     ELSE users.name

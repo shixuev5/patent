@@ -449,6 +449,38 @@
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-slate-900">活跃用户统计（1天 / 7天 / 30天）</h3>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <article class="metric-card">
+            <p class="metric-label">活跃用户（1天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.activeUsers1d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">活跃用户（7天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.activeUsers7d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">活跃用户（30天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.activeUsers30d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">新增用户（1天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.newUsers1d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">新增用户（7天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.newUsers7d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">新增用户（30天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.newUsers30d) }}</p>
+          </article>
+          </div>
+        </section>
+
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
             <table class="min-w-full divide-y divide-slate-200 text-xs">
               <thead class="bg-slate-50 text-slate-600">
@@ -588,6 +620,41 @@
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-slate-900">任务类型统计（1天 / 7天 / 30天）</h3>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <article
+              v-for="item in taskTypeWindows"
+              :key="item.taskType"
+              class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm shadow-slate-100"
+            >
+              <p class="text-sm font-semibold text-slate-900">{{ formatTaskTypeLabel(item.taskType) }}</p>
+              <div class="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600">
+                <div>
+                  <p class="text-slate-500">1天</p>
+                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count1d) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">7天</p>
+                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count7d) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">30天</p>
+                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count30d) }}</p>
+                </div>
+              </div>
+            </article>
+            <article
+              v-if="!taskTypeWindows.length"
+              class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500 sm:col-span-2 xl:col-span-3"
+            >
+              暂无任务类型统计数据
+            </article>
+          </div>
+        </section>
+
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
             <table class="min-w-full divide-y divide-slate-200 text-xs">
               <thead class="bg-slate-50 text-slate-600">
@@ -597,6 +664,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold">用户</th>
                   <th class="px-2.5 py-2 text-left font-semibold">类型</th>
                   <th class="min-w-[5.5rem] px-2.5 py-2 text-left font-semibold">状态</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">任务耗时</th>
                   <th class="px-2.5 py-2 text-left font-semibold">创建日期</th>
                   <th class="px-2.5 py-2 text-left font-semibold">更新时间</th>
                   <th class="sticky right-0 z-10 min-w-[9rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
@@ -613,6 +681,7 @@
                   <td class="px-2.5 py-2">{{ row.userName || '未知用户' }}</td>
                   <td class="px-2.5 py-2">{{ formatTaskTypeLabel(row.taskType) }}</td>
                   <td class="px-2.5 py-2">{{ formatTaskStatusLabel(row.status) }}</td>
+                  <td class="px-2.5 py-2">{{ formatDuration(row.durationSeconds) }}</td>
                   <td class="px-2.5 py-2">{{ formatDateOnly(row.createdAt) }}</td>
                   <td class="px-2.5 py-2">{{ formatDateOnly(row.updatedAt || row.completedAt) }}</td>
                   <td class="sticky right-0 bg-white px-2.5 py-2">
@@ -636,7 +705,7 @@
                   </td>
                 </tr>
                 <tr v-if="!(entityTasks?.items?.length)">
-                  <td colspan="8" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无任务</td>
+                  <td colspan="9" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无任务</td>
                 </tr>
               </tbody>
             </table>
@@ -831,6 +900,18 @@ const systemLogDetail = computed(() => adminStore.systemLogDetail)
 const entityUsers = computed(() => adminStore.entityUsers)
 const entityTasks = computed(() => adminStore.entityTasks)
 const entityTaskDetail = computed(() => adminStore.entityTaskDetail)
+const userStats = computed(() => {
+  const stats = entityUsers.value?.meta?.userStats
+  return {
+    activeUsers1d: Number(stats?.activeUsers1d || 0),
+    activeUsers7d: Number(stats?.activeUsers7d || 0),
+    activeUsers30d: Number(stats?.activeUsers30d || 0),
+    newUsers1d: Number(stats?.newUsers1d || 0),
+    newUsers7d: Number(stats?.newUsers7d || 0),
+    newUsers30d: Number(stats?.newUsers30d || 0),
+  }
+})
+const taskTypeWindows = computed(() => entityTasks.value?.meta?.taskTypeWindows || [])
 const usagePrimaryLabel = computed(() => {
   if (scope.value === 'task') return '任务ID'
   if (scope.value === 'user') return '用户'
@@ -861,7 +942,22 @@ const formatDateOnly = (value: string | null | undefined) => {
   const normalized = text.includes('T') ? text : `${text}T00:00:00`
   const parsed = new Date(normalized)
   if (Number.isNaN(parsed.getTime())) return text.slice(0, 10)
-  return parsed.toISOString().slice(0, 10)
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const formatDuration = (value: number | null | undefined) => {
+  const total = Number(value)
+  if (!Number.isFinite(total) || total < 0) return '-'
+  const seconds = Math.floor(total)
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m`
+  return `${seconds}s`
 }
 const formatTaskTypeLabel = (value: string | null | undefined) => {
   const text = String(value || '').trim()
