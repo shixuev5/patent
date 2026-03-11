@@ -2,10 +2,9 @@
 任务管理路由
 """
 import asyncio
-import json
 import os
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
@@ -38,12 +37,8 @@ task_manager = get_pipeline_manager()
 RUNNING_TASKS: Dict[str, Event] = {}
 PATENT_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
 OAR_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
-LIVE_PROGRESS_CACHE: Dict[str, Dict[str, Any]] = {}
-LIVE_PROGRESS_LOCK = Lock()
 
 PROGRESS_WRITE_THROTTLE_SECONDS = 3.0
-PROGRESS_SSE_POLL_INTERVAL_SECONDS = 2.0
-PROGRESS_SSE_HEARTBEAT_SECONDS = 10.0
 
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
@@ -97,50 +92,6 @@ def _to_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _set_live_progress(
-    task_id: str,
-    *,
-    owner_id: str,
-    task_type: str,
-    status: str,
-    progress: int,
-    step: str = "",
-    pn: str = "",
-    error: Optional[str] = None,
-    download_url: Optional[str] = None,
-) -> None:
-    payload: Dict[str, Any] = {
-        "owner_id": owner_id,
-        "task_type": task_type,
-        "status": str(status or "processing").strip().lower() or "processing",
-        "progress": max(0, min(100, int(progress or 0))),
-        "step": str(step or ""),
-        "pn": str(pn or ""),
-        "updated_at": perf_counter(),
-    }
-    if error:
-        payload["error"] = str(error)
-    if download_url:
-        payload["downloadUrl"] = str(download_url)
-    with LIVE_PROGRESS_LOCK:
-        LIVE_PROGRESS_CACHE[task_id] = payload
-
-
-def _get_live_progress(task_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
-    with LIVE_PROGRESS_LOCK:
-        cached = LIVE_PROGRESS_CACHE.get(task_id)
-        if not cached:
-            return None
-        if str(cached.get("owner_id", "")).strip() != str(owner_id or "").strip():
-            return None
-        return dict(cached)
-
-
-def _clear_live_progress(task_id: str) -> None:
-    with LIVE_PROGRESS_LOCK:
-        LIVE_PROGRESS_CACHE.pop(task_id, None)
-
-
 def _should_persist_progress_update(
     *,
     previous_step: str,
@@ -154,36 +105,6 @@ def _should_persist_progress_update(
     if last_persist_at <= 0:
         return True
     return (now - last_persist_at) >= max(0.1, float(throttle_seconds))
-
-
-def _build_progress_data(
-    *,
-    task_id: str,
-    task_type: str,
-    progress: int,
-    step: str,
-    status: str,
-    pn: str,
-    error: Optional[str] = None,
-    download_url: Optional[str] = None,
-    heartbeat: bool = False,
-) -> Dict[str, Any]:
-    normalized_status = str(status or "processing").strip().lower() or "processing"
-    frontend_status = "error" if normalized_status in {"failed", "cancelled"} else normalized_status
-    payload: Dict[str, Any] = {
-        "taskType": task_type,
-        "progress": max(0, min(100, int(progress or 0))),
-        "step": str(step or ""),
-        "status": frontend_status,
-        "pn": str(pn or ""),
-    }
-    if heartbeat:
-        payload["heartbeat"] = True
-    if normalized_status == "completed":
-        payload["downloadUrl"] = download_url or f"/api/tasks/{task_id}/download"
-    elif normalized_status in {"failed", "cancelled", "error"}:
-        payload["error"] = str(error or "任务执行失败。")
-    return payload
 
 
 def _get_patent_checkpointer(task_id: str) -> InMemorySaver:
@@ -335,15 +256,6 @@ async def run_patent_analysis_task(
             payload={"pn": pn or None},
         )
         task_manager.update_progress(task_id, 5, "正在准备材料")
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.PATENT_ANALYSIS.value,
-            status="processing",
-            progress=5,
-            step="正在准备材料",
-            pn=str(pn or ""),
-        )
 
         loop = asyncio.get_event_loop()
         def run_workflow() -> Dict[str, Any]:
@@ -401,15 +313,6 @@ async def run_patent_analysis_task(
                             continue
                         if progress != last_progress or step_label != last_step:
                             resolved_pn = str(state_dict.get("resolved_pn") or pn or "")
-                            _set_live_progress(
-                                task_id,
-                                owner_id=owner_id,
-                                task_type=TaskType.PATENT_ANALYSIS.value,
-                                status="processing",
-                                progress=progress,
-                                step=step_label,
-                                pn=resolved_pn,
-                            )
                             now = perf_counter()
                             if _should_persist_progress_update(
                                 previous_step=last_step,
@@ -448,16 +351,6 @@ async def run_patent_analysis_task(
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="cancelled",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn=str(getattr(latest_task, "pn", "") or pn or ""),
-                error="任务已取消",
-            )
             task_logger.warning("任务已取消")
             emit_system_log(
                 category="task_execution",
@@ -474,16 +367,6 @@ async def run_patent_analysis_task(
         if status == "cancelled":
             task_manager.cancel_task(task_id, "任务已取消")
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="cancelled",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn=str(getattr(latest_task, "pn", "") or pn or ""),
-                error="任务已取消",
-            )
             task_logger.warning("任务已取消")
             emit_system_log(
                 category="task_execution",
@@ -504,16 +387,6 @@ async def run_patent_analysis_task(
             error_msg = first_error or "专利分析任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="failed",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn=str(getattr(latest_task, "pn", "") or pn or ""),
-                error=error_msg,
-            )
             task_logger.error(f"任务失败：{error_msg}")
             emit_system_log(
                 category="task_execution",
@@ -529,15 +402,6 @@ async def run_patent_analysis_task(
 
         if status == "completed":
             task_manager.update_progress(task_id, 95, "正在整理报告")
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="processing",
-                progress=95,
-                step="正在整理报告",
-                pn=str(pn or ""),
-            )
             output_pdf = str(result.get("final_output_pdf", "")).strip()
             if not output_pdf:
                 output_pdf = str((settings.OUTPUT_DIR / task_id) / "final.pdf")
@@ -557,16 +421,6 @@ async def run_patent_analysis_task(
                 error_msg = f"报告文件不存在或为空：{output_pdf}"
                 task_manager.fail_task(task_id, error_msg)
                 latest_task = task_manager.get_task(task_id)
-                _set_live_progress(
-                    task_id,
-                    owner_id=owner_id,
-                    task_type=TaskType.PATENT_ANALYSIS.value,
-                    status="failed",
-                    progress=int(getattr(latest_task, "progress", 95) or 95),
-                    step=str(getattr(latest_task, "current_step", "") or "正在整理报告"),
-                    pn=str(getattr(latest_task, "pn", "") or final_pn),
-                    error=error_msg,
-                )
                 task_logger.bind(stage="finalize_report").error(error_msg)
                 return
 
@@ -583,16 +437,6 @@ async def run_patent_analysis_task(
                     output_files["r2_key"] = r2_key
 
             task_manager.complete_task(task_id, output_files=output_files)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="completed",
-                progress=100,
-                step="已完成",
-                pn=final_pn,
-                download_url=f"/api/tasks/{task_id}/download",
-            )
             task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
             emit_system_log(
                 category="task_execution",
@@ -608,16 +452,6 @@ async def run_patent_analysis_task(
             error_msg = f"未知流程状态: {status}"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="failed",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn=str(getattr(latest_task, "pn", "") or pn or ""),
-                error=error_msg,
-            )
             task_logger.error(f"任务失败：{error_msg}")
             emit_system_log(
                 category="task_execution",
@@ -634,16 +468,6 @@ async def run_patent_analysis_task(
         task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
         latest_task = task_manager.get_task(task_id)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.PATENT_ANALYSIS.value,
-            status="cancelled",
-            progress=int(getattr(latest_task, "progress", 0) or 0),
-            step=str(getattr(latest_task, "current_step", "") or ""),
-            pn=str(getattr(latest_task, "pn", "") or pn or ""),
-            error="任务已取消",
-        )
         emit_system_log(
             category="task_execution",
             event_name="task_cancelled",
@@ -659,16 +483,6 @@ async def run_patent_analysis_task(
             task_logger.warning("任务已取消")
             task_manager.cancel_task(task_id, "任务已取消")
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.PATENT_ANALYSIS.value,
-                status="cancelled",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn=str(getattr(latest_task, "pn", "") or pn or ""),
-                error="任务已取消",
-            )
             emit_system_log(
                 category="task_execution",
                 event_name="task_cancelled",
@@ -682,16 +496,6 @@ async def run_patent_analysis_task(
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
         latest_task = task_manager.get_task(task_id)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.PATENT_ANALYSIS.value,
-            status="failed",
-            progress=int(getattr(latest_task, "progress", 0) or 0),
-            step=str(getattr(latest_task, "current_step", "") or ""),
-            pn=str(getattr(latest_task, "pn", "") or pn or ""),
-            error=str(exc),
-        )
         emit_system_log(
             category="task_execution",
             event_name="task_exception",
@@ -707,7 +511,6 @@ async def run_patent_analysis_task(
             usage_collector.mark_status(latest_task.status.value)
         persist_task_usage(task_manager.storage, usage_collector)
         PATENT_CHECKPOINTERS.pop(task_id, None)
-        _clear_live_progress(task_id)
 
 
 async def run_office_action_reply_task(
@@ -738,15 +541,6 @@ async def run_office_action_reply_task(
             payload={"input_file_count": len(input_files)},
         )
         task_manager.update_progress(task_id, 5, "正在准备材料")
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="processing",
-            progress=5,
-            step="正在准备材料",
-            pn="",
-        )
 
         loop = asyncio.get_event_loop()
 
@@ -809,15 +603,6 @@ async def run_office_action_reply_task(
                     if progress <= 0:
                         continue
                     if progress != last_progress or step_label != last_step:
-                        _set_live_progress(
-                            task_id,
-                            owner_id=owner_id,
-                            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-                            status="processing",
-                            progress=progress,
-                            step=step_label,
-                            pn="",
-                        )
                         now = perf_counter()
                         if _should_persist_progress_update(
                             previous_step=last_step,
@@ -853,16 +638,6 @@ async def run_office_action_reply_task(
         if cancel_event and cancel_event.is_set():
             task_manager.cancel_task(task_id, "任务已取消")
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
-                status="cancelled",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn="",
-                error="任务已取消",
-            )
             task_logger.warning("任务已取消")
             emit_system_log(
                 category="task_execution",
@@ -884,16 +659,6 @@ async def run_office_action_reply_task(
             error_msg = first_error or "审查意见答复任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
-                status="failed",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn="",
-                error=error_msg,
-            )
             task_logger.error(f"任务失败：{error_msg}")
             emit_system_log(
                 category="task_execution",
@@ -908,15 +673,6 @@ async def run_office_action_reply_task(
             return
 
         task_manager.update_progress(task_id, 95, "正在整理报告")
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="processing",
-            progress=95,
-            step="正在整理报告",
-            pn="",
-        )
 
         artifacts = _to_dict(result.get("final_report_artifacts"))
         output_dir = settings.OUTPUT_DIR / task_id
@@ -929,16 +685,6 @@ async def run_office_action_reply_task(
             error_msg = f"报告文件不存在或为空：{pdf_path}"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
-                status="failed",
-                progress=int(getattr(latest_task, "progress", 95) or 95),
-                step=str(getattr(latest_task, "current_step", "") or "正在整理报告"),
-                pn="",
-                error=error_msg,
-            )
             task_logger.bind(stage="finalize_report").error(error_msg)
             return
 
@@ -949,16 +695,6 @@ async def run_office_action_reply_task(
             output_files["json"] = json_path
 
         task_manager.complete_task(task_id, output_files=output_files)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="completed",
-            progress=100,
-            step="已完成",
-            pn="",
-            download_url=f"/api/tasks/{task_id}/download",
-        )
         task_logger.bind(stage="finalize_report").success(f"任务已完成：{pdf_path}")
         emit_system_log(
             category="task_execution",
@@ -975,16 +711,6 @@ async def run_office_action_reply_task(
         task_logger.warning("任务已取消")
         task_manager.cancel_task(task_id, "任务已取消")
         latest_task = task_manager.get_task(task_id)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="cancelled",
-            progress=int(getattr(latest_task, "progress", 0) or 0),
-            step=str(getattr(latest_task, "current_step", "") or ""),
-            pn="",
-            error="任务已取消",
-        )
         emit_system_log(
             category="task_execution",
             event_name="task_cancelled",
@@ -1000,16 +726,6 @@ async def run_office_action_reply_task(
         task_logger.error(error_msg)
         task_manager.fail_task(task_id, error_msg)
         latest_task = task_manager.get_task(task_id)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="failed",
-            progress=int(getattr(latest_task, "progress", 0) or 0),
-            step=str(getattr(latest_task, "current_step", "") or ""),
-            pn="",
-            error=error_msg,
-        )
         emit_system_log(
             category="task_execution",
             event_name="task_timeout",
@@ -1024,16 +740,6 @@ async def run_office_action_reply_task(
             task_logger.warning("任务已取消")
             task_manager.cancel_task(task_id, "任务已取消")
             latest_task = task_manager.get_task(task_id)
-            _set_live_progress(
-                task_id,
-                owner_id=owner_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
-                status="cancelled",
-                progress=int(getattr(latest_task, "progress", 0) or 0),
-                step=str(getattr(latest_task, "current_step", "") or ""),
-                pn="",
-                error="任务已取消",
-            )
             emit_system_log(
                 category="task_execution",
                 event_name="task_cancelled",
@@ -1047,16 +753,6 @@ async def run_office_action_reply_task(
         task_logger.exception(f"任务异常失败：{str(exc)}")
         task_manager.fail_task(task_id, str(exc))
         latest_task = task_manager.get_task(task_id)
-        _set_live_progress(
-            task_id,
-            owner_id=owner_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
-            status="failed",
-            progress=int(getattr(latest_task, "progress", 0) or 0),
-            step=str(getattr(latest_task, "current_step", "") or ""),
-            pn="",
-            error=str(exc),
-        )
         emit_system_log(
             category="task_execution",
             event_name="task_exception",
@@ -1072,7 +768,6 @@ async def run_office_action_reply_task(
             usage_collector.mark_status(latest_task.status.value)
         persist_task_usage(task_manager.storage, usage_collector)
         OAR_CHECKPOINTERS.pop(task_id, None)
-        _clear_live_progress(task_id)
 
 
 @router.get("/api/tasks")
@@ -1308,7 +1003,6 @@ async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_cur
 
     task_manager.delete_task(task_id)
     RUNNING_TASKS.pop(task_id, None)
-    _clear_live_progress(task_id)
     emit_system_log(
         category="task_execution",
         event_name="task_deleted",
@@ -1340,7 +1034,6 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
         if task_manager.delete_task(task.id):
             deleted += 1
         RUNNING_TASKS.pop(task.id, None)
-        _clear_live_progress(task.id)
 
     emit_system_log(
         category="task_execution",
@@ -1351,105 +1044,6 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
         payload={"deleted": deleted},
     )
     return {"deleted": deleted}
-
-
-@router.get("/api/tasks/{task_id}/progress")
-async def get_task_progress(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
-    task = _get_owned_task(task_id, current_user.user_id)
-    progress_logger = bind_task_logger(task_id, _task_type(task), pn=task.pn or "-", stage="progress_stream")
-
-    async def event_stream():
-        progress_logger.info("进度流连接已建立")
-        last_status = ""
-        last_progress = -1
-        last_step = ""
-        last_sent_at = 0.0
-
-        while True:
-            try:
-                cache_progress = _get_live_progress(task_id, current_user.user_id)
-                if cache_progress:
-                    current_status = str(cache_progress.get("status", "processing"))
-                    current_progress = int(cache_progress.get("progress", 0) or 0)
-                    current_step = str(cache_progress.get("step", "") or "")
-                    current_task_type = str(cache_progress.get("task_type", _task_type(task)))
-                    current_pn = str(cache_progress.get("pn", "") or "")
-                    current_error = str(cache_progress.get("error", "") or "")
-                    current_download = str(cache_progress.get("downloadUrl", "") or "")
-                else:
-                    current_task = task_manager.get_task(task_id)
-                    if not current_task or current_task.owner_id != current_user.user_id:
-                        payload = {"status": "error", "error": "任务不存在。"}
-                        yield f"data: {json.dumps(payload)}\\n\\n"
-                        break
-
-                    current_status = current_task.status.value
-                    current_progress = int(current_task.progress or 0)
-                    current_step = current_task.current_step or ""
-                    current_task_type = _task_type(current_task)
-                    current_pn = current_task.pn or ""
-                    current_error = current_task.error_message or ""
-                    current_download = f"/api/tasks/{task_id}/download" if current_status == "completed" else ""
-
-                now = perf_counter()
-                if (
-                    current_status != last_status
-                    or current_progress != last_progress
-                    or current_step != last_step
-                ):
-                    progress_data = _build_progress_data(
-                        task_id=task_id,
-                        task_type=current_task_type,
-                        progress=current_progress,
-                        step=current_step,
-                        status=current_status,
-                        pn=current_pn,
-                        error=current_error,
-                        download_url=current_download or None,
-                    )
-                    yield f"data: {json.dumps(progress_data)}\\n\\n"
-                    last_status = current_status
-                    last_progress = current_progress
-                    last_step = current_step
-                    last_sent_at = now
-                elif now - last_sent_at >= PROGRESS_SSE_HEARTBEAT_SECONDS:
-                    heartbeat_data = _build_progress_data(
-                        task_id=task_id,
-                        task_type=current_task_type,
-                        progress=current_progress,
-                        step=current_step,
-                        status=current_status,
-                        pn=current_pn,
-                        error=current_error,
-                        download_url=current_download or None,
-                        heartbeat=True,
-                    )
-                    yield f"data: {json.dumps(heartbeat_data)}\\n\\n"
-                    last_sent_at = now
-
-                if current_status in ["completed", "failed", "cancelled", "error"]:
-                    progress_logger.info(f"进度流结束，最终状态={current_status}")
-                    break
-
-                await asyncio.sleep(PROGRESS_SSE_POLL_INTERVAL_SECONDS)
-            except asyncio.CancelledError:
-                progress_logger.warning("进度流任务已取消")
-                break
-            except Exception as exc:
-                progress_logger.exception(f"进度流推送异常：{str(exc)}")
-                payload = {"status": "error", "error": str(exc)}
-                yield f"data: {json.dumps(payload)}\\n\\n"
-                break
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.get("/api/tasks/{task_id}/download")

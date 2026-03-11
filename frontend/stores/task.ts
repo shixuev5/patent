@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { useAuthStore } from '~/stores/auth'
-import type { CreateTaskInput, Task, TaskProgress, TaskType } from '~/types/task'
+import type { CreateTaskInput, Task, TaskType } from '~/types/task'
 import type { DailyPointsExceededDetail, UsageResponse } from '~/types/usage'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
@@ -11,7 +11,6 @@ const AUTH_MODE_KEY = 'patent_auth_mode'
 const GUEST_DEVICE_ID_KEY = 'patent_guest_device_id'
 const TASK_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_COMPLETED_CACHE_COUNT = 20
-const SSE_SIGNAL_SUPPRESS_POLL_MS = 8000
 const PROGRESS_POLL_INTERVAL_MS = 5000
 type AuthMode = 'guest' | 'authing'
 
@@ -91,9 +90,7 @@ export const useTaskStore = defineStore('tasks', {
     userId: '' as string,
     authMode: 'guest' as AuthMode,
     taskStorageKey: '' as string,
-    progressStreams: {} as Record<string, EventSource>,
     progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
-    progressSignalAt: {} as Record<string, number>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
     globalNotice: { type: 'info' as 'success' | 'error' | 'info', text: '' as string, show: false }, // 全局通知
     dailyUsage: null as UsageResponse | null,
@@ -139,9 +136,7 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     stopAllTracking() {
-      Object.keys(this.progressStreams).forEach((key) => this.stopProgressTracking(key))
       Object.keys(this.progressPollers).forEach((key) => this.stopProgressPolling(key))
-      this.progressSignalAt = {}
     },
 
     resetInMemoryTasks() {
@@ -723,7 +718,7 @@ export const useTaskStore = defineStore('tasks', {
           }
         }
 
-        await this.startProgressTracking(taskRef)
+        this.startProgressPolling(taskRef)
         return {
           ok: true,
           message: data?.message || '任务已创建，正在分析。',
@@ -735,63 +730,6 @@ export const useTaskStore = defineStore('tasks', {
         taskRef.updatedAt = Date.now()
         this.saveToStorage()
         return { ok: false, error: taskRef.error }
-      }
-    },
-
-    async startProgressTracking(task: Task) {
-      const config = useRuntimeConfig()
-      const taskRef = this.resolveTaskRef(task)
-      if (!taskRef.backendId || taskRef.status === 'completed' || taskRef.status === 'error') return
-
-      const authed = await this.ensureAuth()
-      if (!authed || !this.authToken) {
-        taskRef.status = 'error'
-        taskRef.error = '认证已过期，请重试。'
-        taskRef.updatedAt = Date.now()
-        this.saveToStorage()
-        return
-      }
-
-      const baseUrl = `${config.public.apiBaseUrl}/api/tasks/${taskRef.backendId}/progress`
-      const existing = this.progressStreams[taskRef.backendId]
-      if (existing) existing.close()
-      const eventSource = new EventSource(withTokenQuery(baseUrl, this.authToken))
-      this.progressStreams[taskRef.backendId] = eventSource
-      this.progressSignalAt[taskRef.backendId] = 0
-      this.startProgressPolling(taskRef)
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data: TaskProgress = JSON.parse(event.data)
-          if (taskRef.backendId) this.progressSignalAt[taskRef.backendId] = Date.now()
-          if (data.heartbeat) return
-          this.applyServerTaskSnapshot(taskRef, data)
-
-          if (taskRef.status === 'completed') {
-            taskRef.downloadUrl = data.downloadUrl
-            if (taskRef.backendId) this.stopProgressPolling(taskRef.backendId)
-            eventSource.close()
-            delete this.progressStreams[taskRef.backendId as string]
-          } else if (taskRef.status === 'error') {
-            taskRef.error = data.error || '任务执行失败。'
-            if (taskRef.backendId) this.stopProgressPolling(taskRef.backendId)
-            eventSource.close()
-            delete this.progressStreams[taskRef.backendId as string]
-          }
-
-          this.saveToStorage()
-        } catch (error) {
-          console.error('解析任务进度失败：', error)
-        }
-      }
-
-      eventSource.onerror = () => {
-        eventSource.close()
-        delete this.progressStreams[taskRef.backendId as string]
-        if (taskRef.backendId) this.startProgressPolling(taskRef)
-        setTimeout(() => {
-          if (taskRef.status === 'pending' || taskRef.status === 'processing') this.startProgressTracking(taskRef)
-        }, 3000)
       }
     },
 
@@ -811,17 +749,12 @@ export const useTaskStore = defineStore('tasks', {
           this.stopProgressPolling(backendId)
           return
         }
-        const lastSignalAt = this.progressSignalAt[backendId] || 0
-        if (lastSignalAt > 0 && Date.now() - lastSignalAt < SSE_SIGNAL_SUPPRESS_POLL_MS) {
-          return
-        }
         const ok = await this.fetchTaskSnapshot(currentTask)
         if (!ok) return
         const refreshedTask = this.resolveTaskRef(taskRef)
         const refreshedStatus: Task['status'] = refreshedTask.status
         if (refreshedStatus === 'completed' || refreshedStatus === 'error') {
           this.stopProgressPolling(backendId)
-          this.stopProgressTracking(backendId)
         }
       }
 
@@ -838,17 +771,6 @@ export const useTaskStore = defineStore('tasks', {
         clearInterval(timer)
         delete this.progressPollers[backendId]
       }
-      delete this.progressSignalAt[backendId]
-    },
-
-    stopProgressTracking(backendId?: string) {
-      if (!backendId) return
-      const existing = this.progressStreams[backendId]
-      if (existing) {
-        existing.close()
-        delete this.progressStreams[backendId]
-      }
-      delete this.progressSignalAt[backendId]
     },
 
     async deleteTask(taskId: string) {
@@ -878,7 +800,6 @@ export const useTaskStore = defineStore('tasks', {
           },
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
-        this.stopProgressTracking(task.backendId)
         this.stopProgressPolling(task.backendId)
         this.tasks.splice(index, 1)
         this.saveToStorage()
@@ -1000,7 +921,7 @@ export const useTaskStore = defineStore('tasks', {
       this.tasks.forEach((task) => {
         task.status = normalizeStatus(task.status)
         if ((task.status === 'pending' || task.status === 'processing') && task.backendId) {
-          this.startProgressTracking(task)
+          this.startProgressPolling(task)
         }
       })
     },

@@ -143,13 +143,13 @@ NUXT_PUBLIC_API_BASE_URL=https://your-production-api.com
 ### 支持的 API 端点
 
 - `POST /api/tasks` - 创建任务（支持 patentNumber 或 file）
-- `GET /api/tasks/:id/progress` - SSE 实时进度流
+- `GET /api/tasks/:id` - 查询任务快照（前端每 5 秒轮询）
 - `GET /api/tasks/:id/download` - 下载结果文件
 
 ## 开发注意事项
 
 1. **localStorage 仅在客户端可用**：使用 `process.client` 检查
-2. **SSE 连接自动重连**：断线后 3 秒自动重试
+2. **任务进度更新机制**：前端固定每 5 秒轮询任务快照
 3. **文件大小限制**：50MB，仅支持 PDF
 4. **任务状态持久化**：刷新页面后自动恢复
 
@@ -167,8 +167,8 @@ NUXT_PUBLIC_API_BASE_URL=https://your-production-api.com
 
 ### 任务进度不更新
 - 检查浏览器控制台网络请求
-- 确保 SSE 端点正常工作
-- 检查是否有代理阻止 SSE
+- 确保 `/api/tasks/:id` 轮询请求正常返回
+- 检查是否有代理或网关缓存了任务状态响应
 
 ## License
 
