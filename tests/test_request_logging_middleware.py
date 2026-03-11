@@ -17,7 +17,7 @@ class _MemoryStorage:
         return True
 
 
-def test_request_logging_middleware_records_request_and_header(tmp_path, monkeypatch):
+def test_request_logging_middleware_skips_success_get_request(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
@@ -36,11 +36,34 @@ def test_request_logging_middleware_records_request_and_header(tmp_path, monkeyp
     assert response.status_code == 200
     assert response.headers.get("X-Request-Id")
 
+    assert storage.rows == []
+
+
+def test_request_logging_middleware_records_success_post_request(tmp_path, monkeypatch):
+    storage = _MemoryStorage()
+    monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
+
+    app = FastAPI()
+    app.middleware("http")(system_logs.request_logging_middleware)
+
+    @app.post("/api/ping")
+    async def ping():
+        return {"ok": True}
+
+    client = TestClient(app)
+    response = client.post("/api/ping", json={"hello": "world"})
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-Id")
+
     assert len(storage.rows) >= 1
     row = storage.rows[-1]
     assert row["category"] == "user_action"
     assert row["event_name"] == "http_request"
     assert row["path"] == "/api/ping"
+    assert row["method"] == "POST"
     assert row["status_code"] == 200
 
 

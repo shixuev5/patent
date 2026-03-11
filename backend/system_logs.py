@@ -484,7 +484,12 @@ async def request_logging_middleware(request: Request, call_next):
             level = "WARNING"
 
         should_log = path.startswith("/api/")
-        if should_log:
+        is_success_get = (
+            method == "GET"
+            and error_text is None
+            and status_code < 400
+        )
+        if should_log and not is_success_get:
             emit_system_log(
                 category="user_action",
                 event_name="http_request",
