@@ -3558,7 +3558,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "requests" },
-    { name = "tqdm" },
     { name = "uvicorn" },
 ]
 
@@ -3576,7 +3575,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.10" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "requests", specifier = ">=2.32.5" },
-    { name = "tqdm", specifier = ">=4.67.1" },
     { name = "uvicorn", specifier = ">=0.40.0" },
 ]
 
