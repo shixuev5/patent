@@ -311,13 +311,15 @@ def emit_system_log(
     except Exception as exc:
         logger.warning(f"[系统日志] 追加文件失败：{exc}")
 
-    try:
-        logger.bind(system_event=True).log(
-            db_record["level"],
-            f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}",
-        )
-    except Exception:
-        logger.info(f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}")
+    # Keep system-event persistence, but avoid high-frequency success logs flooding stdout.
+    if not success or db_record["level"] in {"ERROR", "CRITICAL"}:
+        try:
+            logger.bind(system_event=True).log(
+                db_record["level"],
+                f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}",
+            )
+        except Exception:
+            logger.info(f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}")
 
     if SYSTEM_LOG_DB_ENABLED and _DB_PERSISTENCE_READY:
         try:
