@@ -8,7 +8,7 @@ from agents.common.rendering.report_render import render_markdown_to_pdf
 
 
 class ReportRenderer:
-    _HTML_TAG_RE = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+    _HTML_TAG_RE = re.compile(r"<\s*/?\s*(?:div|span|p|a|img|table|tbody|thead|tr|td|th|ul|li|b|strong|i|em|h[1-6]|br|hr)\b[^>]*>", re.IGNORECASE)
     _HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
     _SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?>.*?<\s*/\s*\1\s*>")
     _CODE_FENCE_OPEN_RE = re.compile(r"```[a-zA-Z0-9_-]*\n?")
@@ -172,29 +172,25 @@ class ReportRenderer:
                 analogy = self._safe_text(item.get("analogy"), "-")
                 context = self._safe_text(item.get("context_in_patent"), "-")
 
-                card_html = f"""
-<div style="border: 1px solid #dfe2e5; margin-bottom: 20px; page-break-inside: avoid; background-color: #fff;">
-    <div style="background-color: #f2f6f9; padding: 6px 8px; border-bottom: 1px solid #dfe2e5;">
-        <strong style="color: #2c3e50; font-size: 14px;">{term}</strong>
-    </div>
-
-    <div style="display: flex; flex-direction: row; border-bottom: 1px solid #dfe2e5;">
-        <div style="flex: 1; padding: 8px; border-right: 1px solid #dfe2e5;">
-            <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">专业定义</div>
-            <div>{self._indent_text(definition)}</div>
-        </div>
-        <div style="flex: 1; padding: 8px;">
-            <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">通俗理解</div>
-            <div>{self._indent_text(analogy)}</div>
-        </div>
-    </div>
-
-    <div style="padding: 6px 8px;">
-        <span style="font-size: 12px; font-weight: bold; ">本案应用：</span>
-        <span style="font-size: 12px;">{context}</span>
-    </div>
+                card_html = f"""<div style="border: 1px solid #dfe2e5; margin-bottom: 20px; page-break-inside: avoid; background-color: #fff;">
+<div style="background-color: #f2f6f9; padding: 6px 8px; border-bottom: 1px solid #dfe2e5;">
+<strong style="color: #2c3e50; font-size: 14px;">{term}</strong>
 </div>
-"""
+<div style="display: flex; flex-direction: row; border-bottom: 1px solid #dfe2e5;">
+<div style="flex: 1; padding: 8px; border-right: 1px solid #dfe2e5;">
+<div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">专业定义</div>
+<div>{self._indent_text(definition)}</div>
+</div>
+<div style="flex: 1; padding: 8px;">
+<div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">通俗理解</div>
+<div>{self._indent_text(analogy)}</div>
+</div>
+</div>
+<div style="padding: 6px 8px;">
+<span style="font-size: 12px; font-weight: bold; ">本案应用：</span>
+<span style="font-size: 12px;">{context}</span>
+</div>
+</div>"""
                 lines.append(card_html)
             lines.append("\n")
 
@@ -217,18 +213,16 @@ class ReportRenderer:
         if isinstance(features, list) and features:
             lines.append("### 关键技术特征表")
 
-            table_html = """
-<table>
-    <thead>
-        <tr>
-            <th style="width: 28px; text-align: center;">序号</th>
-            <th style="width: 20%;">特征名称</th>
-            <th style="width: 70px; text-align: center;">属性</th>
-            <th>详细定义</th>
-        </tr>
-    </thead>
-    <tbody>
-            """
+            table_html = """<table>
+<thead>
+<tr>
+<th style="width: 28px; text-align: center;">序号</th>
+<th style="width: 20%;">特征名称</th>
+<th style="width: 70px; text-align: center;">属性</th>
+<th>详细定义</th>
+</tr>
+</thead>
+<tbody>"""
             feature_idx = 0
             for feat in features:
                 if not isinstance(feat, dict):
@@ -252,17 +246,15 @@ class ReportRenderer:
                 else:
                     badge_text = "🔹 从权特征"
 
-                table_html += f"""
-        <tr>
-            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_idx}</td>
-            <td style="font-weight: bold;">{name}</td>
-            <td style="text-align: center;">{badge_text}</td>
-            <td>{desc}</td>
-        </tr>
-         <tr>
-            <td colspan="3">{rationale}</td>
-        </tr>
-                """
+                table_html += f"""<tr>
+<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_idx}</td>
+<td style="font-weight: bold;">{name}</td>
+<td style="text-align: center;">{badge_text}</td>
+<td>{desc}</td>
+</tr>
+<tr>
+<td colspan="3">{rationale}</td>
+</tr>"""
 
             table_html += "</tbody></table>\n"
             lines.append(table_html)
@@ -270,19 +262,17 @@ class ReportRenderer:
         append_numbered_section("技术效果")
         effects = data.get("technical_effects", [])
         if isinstance(effects, list) and effects:
-            table_html = """
-<table>
-    <thead>
-        <tr>
-            <th style="width: 28px; text-align: center;">序号</th>
-            <th>技术效果</th>
-            <th style="width: 60px; text-align: center;">TCS 评分</th>
-            <th style="width: 40%;">贡献特征</th>
-            <th style="width: 40px; text-align: center;">检索分块</th>
-        </tr>
-    </thead>
-    <tbody>
-            """
+            table_html = """<table>
+<thead>
+<tr>
+<th style="width: 28px; text-align: center;">序号</th>
+<th>技术效果</th>
+<th style="width: 60px; text-align: center;">TCS 评分</th>
+<th style="width: 40%;">贡献特征</th>
+<th style="width: 40px; text-align: center;">检索分块</th>
+</tr>
+</thead>
+<tbody>"""
 
             effect_idx = 0
             for eff in effects:
@@ -335,30 +325,25 @@ class ReportRenderer:
                 else:
                     evidence_styled = evidence_text
 
-                table_html += f"""
-        <tr>
-            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{effect_idx}</td>
-            <td style="font-weight: bold;">{desc}</td>
-            <td style="text-align: center;">{score_html}</td>
-            <td>{contrib_html}</td>
-            <td style="text-align: center;">{abc}</td>
-        </tr>
-                """
-
-                table_html += f"""
-        <tr>
-            <td colspan="4">
-                <div style="margin-bottom: 8px;">
-                    <span style="font-weight:bold; color:#2c3e50;">机理推演：</span>
-                    <span>{rationale}</span>
-                </div>
-                <div>
-                    <span style="font-weight:bold; color:#2c3e50;">验证证据：</span>
-                    <span>{evidence_styled}</span>
-                </div>
-            </td>
-        </tr>
-                """
+                table_html += f"""<tr>
+<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{effect_idx}</td>
+<td style="font-weight: bold;">{desc}</td>
+<td style="text-align: center;">{score_html}</td>
+<td>{contrib_html}</td>
+<td style="text-align: center;">{abc}</td>
+</tr>
+<tr>
+<td colspan="4">
+<div style="margin-bottom: 8px;">
+<span style="font-weight:bold; color:#2c3e50;">机理推演：</span>
+<span>{rationale}</span>
+</div>
+<div>
+<span style="font-weight:bold; color:#2c3e50;">验证证据：</span>
+<span>{evidence_styled}</span>
+</div>
+</td>
+</tr>"""
 
             table_html += "</tbody></table>\n"
             lines.append(table_html)
@@ -380,15 +365,12 @@ class ReportRenderer:
             parts = fig.get("parts_info", [])
 
             if img_paths:
-                image_html = "\n".join(
-                    [f'    <img src="{path}" alt="{img_title}">' for path in img_paths if path]
+                image_html = "\n".join([f'<img src="{path}" alt="{img_title}">' for path in img_paths if path]
                 )
-                figure_html = f"""
-<figure>
+                figure_html = f"""<figure>
 {image_html}
-    <figcaption>{img_title}</figcaption>
-</figure>
-"""
+<figcaption>{img_title}</figcaption>
+</figure>"""
                 lines.append(figure_html)
 
             if explanation:

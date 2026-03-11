@@ -55,7 +55,7 @@ class Settings:
     # --- 视觉处理配置 ---
     LABEL_COLOR = (0, 0, 255)
     # 统一视觉并发配置：在线 OCR 与附图视觉分析共用该值
-    VISION_MAX_WORKERS = max(1, int(os.getenv("VISION_MAX_WORKERS", "6")))
+    VISION_MAX_WORKERS = max(1, int(os.getenv("VISION_MAX_WORKERS", "4")))
 
     # --- 智慧芽 ---
     ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")

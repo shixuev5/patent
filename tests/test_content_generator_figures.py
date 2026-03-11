@@ -135,7 +135,7 @@ def test_figure_parallel_workers_uses_unified_setting(tmp_path: Path, monkeypatc
     )
     monkeypatch.setattr(
         "agents.patent_analysis.src.engines.generator.settings",
-        type("S", (), {"VISION_MAX_WORKERS": 6})(),
+        type("S", (), {"VISION_MAX_WORKERS": 4})(),
     )
 
     generator = ContentGenerator(
@@ -157,7 +157,7 @@ def test_figure_parallel_workers_uses_unified_setting(tmp_path: Path, monkeypatc
         cache_file=tmp_path / "cache_workers.json",
     )
 
-    assert generator.figure_parallel_workers == 6
+    assert generator.figure_parallel_workers == 4
 
 
 def test_generate_figures_analysis_keeps_input_order_when_parallel(tmp_path: Path, monkeypatch) -> None:

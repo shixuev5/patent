@@ -34,6 +34,7 @@ export interface TaskProgress {
   progress: number;
   step: string;
   status: string;
+  heartbeat?: boolean;
   pn?: string;
   downloadUrl?: string;
   error?: string;

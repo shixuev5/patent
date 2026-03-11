@@ -242,7 +242,7 @@ python -m agents.patent_analysis.main --upload-file /path/to/raw.pdf
 - `ZHIHUIYA_USERNAME` / `ZHIHUIYA_PASSWORD`：智慧芽下载
 - `OCR_ENGINE`：`local` / `online`（其他值自动回退 `local`）
 - `OCR_BASE_URL` / `OCR_API_KEY`：在线 OCR 模式
-- `VISION_MAX_WORKERS`：统一视觉并发（在线 OCR + 附图视觉分析），默认 `6`
+- `VISION_MAX_WORKERS`：统一视觉并发（在线 OCR + 附图视觉分析），默认 `4`
 - `LLM_*`：报告与检索策略生成
 - `APP_OUTPUT_DIR`：输出根目录
 

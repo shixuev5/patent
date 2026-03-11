@@ -64,9 +64,9 @@ def test_engine_fallback_to_local(monkeypatch, tmp_path: Path):
 
 def test_resolve_max_workers_uses_unified_setting(monkeypatch, tmp_path: Path):
     vision, _ = _build_processor(monkeypatch, tmp_path)
-    monkeypatch.setattr(vision.settings, "VISION_MAX_WORKERS", 6, raising=False)
+    monkeypatch.setattr(vision.settings, "VISION_MAX_WORKERS", 4, raising=False)
 
-    assert vision.VisualProcessor._resolve_max_workers(12) == 6
+    assert vision.VisualProcessor._resolve_max_workers(12) == 4
     assert vision.VisualProcessor._resolve_max_workers(2) == 2
 
 

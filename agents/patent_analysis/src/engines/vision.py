@@ -194,7 +194,7 @@ class VisualProcessor:
 
     @staticmethod
     def _resolve_max_workers(total_images: int) -> int:
-        configured = max(1, int(getattr(settings, "VISION_MAX_WORKERS", 6) or 6))
+        configured = max(1, int(getattr(settings, "VISION_MAX_WORKERS", 4) or 4))
         return min(configured, max(1, total_images))
 
     def _extract_target_filenames(self) -> Set[str]:
