@@ -58,7 +58,7 @@ class AccountProfileResponse(BaseModel):
 
 
 class AccountProfileUpdateRequest(BaseModel):
-    name: Optional[str] = None
+    name: str
     picture: Optional[str] = None
 
 
@@ -193,6 +193,7 @@ class AdminSystemLogItem(BaseModel):
     eventName: str
     level: str
     ownerId: Optional[str] = None
+    userName: Optional[str] = None
     taskId: Optional[str] = None
     taskType: Optional[str] = None
     requestId: Optional[str] = None

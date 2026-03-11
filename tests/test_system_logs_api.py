@@ -28,6 +28,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:admin-1",
             authing_sub="admin-1",
             role="admin",
+            name="管理员",
             raw_profile={},
         )
     )
@@ -36,6 +37,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:user-1",
             authing_sub="user-1",
             role="member",
+            name="日志用户",
             raw_profile={},
         )
     )
@@ -89,6 +91,7 @@ def test_admin_system_logs_api(monkeypatch, tmp_path):
             category="llm_call",
             eventName=None,
             ownerId=None,
+            userName="日志",
             taskId=None,
             requestId=None,
             traceId=None,
@@ -104,6 +107,7 @@ def test_admin_system_logs_api(monkeypatch, tmp_path):
     )
     assert listed.total == 1
     assert listed.items[0].logId == "log-1"
+    assert listed.items[0].userName == "日志用户"
 
     detail = asyncio.run(admin_logs.get_admin_system_log_detail(log_id="log-1", current_user=admin_user))
     assert detail.item.logId == "log-1"

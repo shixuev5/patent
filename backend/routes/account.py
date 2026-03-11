@@ -54,13 +54,30 @@ def _sanitize_profile_text(value) -> str | None:
     return text
 
 
-def _normalize_profile_name(value) -> str | None:
+def _normalize_profile_name(value, *, required: bool = False) -> str | None:
     text = _sanitize_profile_text(value)
     if text is None:
+        if required:
+            raise HTTPException(status_code=400, detail="显示名称不能为空。")
         return None
     if len(text) > 32:
         raise HTTPException(status_code=400, detail="显示名称不能超过 32 个字符。")
     return text
+
+
+def _is_name_taken(name: str, owner_id: str) -> bool:
+    storage = task_manager.storage
+    if not hasattr(storage, "get_user_by_name"):
+        return False
+    matched = storage.get_user_by_name(name)
+    if not matched:
+        return False
+    return str(matched.owner_id or "").strip() != str(owner_id or "").strip()
+
+
+def _ensure_name_unique(name: str, owner_id: str):
+    if _is_name_taken(name, owner_id):
+        raise HTTPException(status_code=409, detail="显示名称已被占用，请更换后重试。")
 
 
 def _normalize_profile_picture(value) -> str | None:
@@ -232,7 +249,7 @@ async def get_account_profile(current_user: CurrentUser = Depends(_get_current_u
     return AccountProfileResponse(
         ownerId=user.owner_id,
         authType="authing",
-        name=_sanitize_profile_text(user.name),
+        name=_normalize_profile_name(user.name),
         nickname=_sanitize_profile_text(user.nickname),
         email=_sanitize_profile_text(user.email),
         phone=_sanitize_profile_text(user.phone),
@@ -322,7 +339,8 @@ async def put_account_profile(
 ):
     existing = _ensure_auth_user_or_404(current_user.user_id)
     previous_picture = _sanitize_profile_text(existing.picture)
-    normalized_name = _normalize_profile_name(payload.name)
+    normalized_name = _normalize_profile_name(payload.name, required=True)
+    _ensure_name_unique(normalized_name, current_user.user_id)
     normalized_picture = _normalize_profile_picture(payload.picture)
     saved = task_manager.storage.update_user_profile(
         current_user.user_id,

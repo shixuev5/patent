@@ -53,6 +53,7 @@ def _to_item(row: Dict[str, Any]) -> AdminSystemLogItem:
         eventName=str(row.get("event_name") or ""),
         level=str(row.get("level") or "INFO"),
         ownerId=row.get("owner_id"),
+        userName=row.get("user_name"),
         taskId=row.get("task_id"),
         taskType=row.get("task_type"),
         requestId=row.get("request_id"),
@@ -101,6 +102,7 @@ async def get_admin_system_logs(
     category: Optional[str] = Query(default=None),
     eventName: Optional[str] = Query(default=None),
     ownerId: Optional[str] = Query(default=None),
+    userName: Optional[str] = Query(default=None),
     taskId: Optional[str] = Query(default=None),
     requestId: Optional[str] = Query(default=None),
     traceId: Optional[str] = Query(default=None),
@@ -110,7 +112,7 @@ async def get_admin_system_logs(
     dateTo: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
-    pageSize: int = Query(default=20, ge=1, le=200),
+    pageSize: int = Query(default=10, ge=1, le=200),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     ensure_admin_owner(current_user.user_id)
@@ -121,6 +123,7 @@ async def get_admin_system_logs(
             category=_norm_optional_text(category),
             event_name=_norm_optional_text(eventName),
             owner_id=_norm_optional_text(ownerId),
+            user_name=_norm_optional_text(userName),
             task_id=_norm_optional_text(taskId),
             request_id=_norm_optional_text(requestId),
             trace_id=_norm_optional_text(traceId),
@@ -156,6 +159,13 @@ async def get_admin_system_log_detail(
     row = task_manager.storage.get_system_log(log_id)
     if not row:
         raise HTTPException(status_code=404, detail="日志不存在。")
+    owner_id = _norm_optional_text(row.get("owner_id"))
+    if owner_id and not row.get("user_name") and hasattr(task_manager.storage, "get_user_by_owner_id"):
+        user = task_manager.storage.get_user_by_owner_id(owner_id)
+        if user:
+            user_name = str(getattr(user, "name", "") or "").strip()
+            if user_name:
+                row = {**row, "user_name": user_name}
 
     payload = resolve_payload_from_record(row)
     item = _to_item(row)

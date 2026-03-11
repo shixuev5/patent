@@ -136,10 +136,38 @@ def _row_models(row: Dict[str, Any]) -> List[str]:
     return []
 
 
-def _to_task_table_item(row: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_user_name(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "undefined"}:
+        return None
+    return text
+
+
+def _resolve_user_name(owner_id: str, cache: Dict[str, Optional[str]]) -> Optional[str]:
+    key = str(owner_id or "").strip()
+    if not key:
+        return None
+    if key in cache:
+        return cache[key]
+    name: Optional[str] = None
+    if hasattr(task_manager.storage, "get_user_by_owner_id"):
+        try:
+            user = task_manager.storage.get_user_by_owner_id(key)
+            if user:
+                name = _normalize_user_name(getattr(user, "name", None))
+        except Exception:
+            name = None
+    cache[key] = name
+    return name
+
+
+def _to_task_table_item(row: Dict[str, Any], user_name: Optional[str]) -> Dict[str, Any]:
     return {
         "taskId": row.get("task_id", ""),
         "ownerId": row.get("owner_id", ""),
+        "userName": user_name,
         "taskType": row.get("task_type", ""),
         "taskStatus": row.get("task_status", ""),
         "promptTokens": int(row.get("prompt_tokens") or 0),
@@ -198,6 +226,7 @@ async def get_admin_usage_dashboard(
     }
     task_type_map: Dict[str, Dict[str, Any]] = {}
     user_map: Dict[str, Dict[str, Any]] = {}
+    user_name_cache: Dict[str, Optional[str]] = {}
     total_prompt = 0
     total_completion = 0
     total_tokens = 0
@@ -213,6 +242,7 @@ async def get_admin_usage_dashboard(
         cost = float(row.get("estimated_cost_cny") or 0)
         task_type = str(row.get("task_type") or "unknown")
         owner_id = str(row.get("owner_id") or "")
+        user_name = _resolve_user_name(owner_id, user_name_cache)
         status = str(row.get("task_status") or "")
 
         total_prompt += prompt_tokens
@@ -248,6 +278,7 @@ async def get_admin_usage_dashboard(
             owner_id or "-",
             {
                 "ownerId": owner_id or "-",
+                "userName": user_name,
                 "taskCount": 0,
                 "totalTokens": 0,
                 "estimatedCostCny": 0.0,
@@ -255,6 +286,8 @@ async def get_admin_usage_dashboard(
                 "latestTaskStatus": status,
             },
         )
+        if user_name and not user_item.get("userName"):
+            user_item["userName"] = user_name
         user_item["taskCount"] += 1
         user_item["totalTokens"] += row_total_tokens
         user_item["estimatedCostCny"] += cost
@@ -309,7 +342,7 @@ async def get_admin_usage_table(
     status: Optional[str] = Query(default=None),
     model: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
-    pageSize: int = Query(default=20, ge=1, le=200),
+    pageSize: int = Query(default=10, ge=1, le=200),
     sortBy: Optional[str] = Query(default="lastUsageAt"),
     sortOrder: Optional[str] = Query(default="desc"),
     current_user: CurrentUser = Depends(_get_current_user),
@@ -325,10 +358,12 @@ async def get_admin_usage_table(
     normalized_task_type = str(taskType or "").strip().lower()
     normalized_status = str(status or "").strip().lower()
     normalized_model = str(model or "").strip().lower()
+    user_name_cache: Dict[str, Optional[str]] = {}
 
     filtered_task_items: List[Dict[str, Any]] = []
     for row in rows:
-        task_item = _to_task_table_item(row)
+        owner_id = str(row.get("owner_id") or "")
+        task_item = _to_task_table_item(row, _resolve_user_name(owner_id, user_name_cache))
         row_task_type = str(task_item["taskType"]).strip().lower()
         row_status = str(task_item["taskStatus"]).strip().lower()
         row_models = [str(item or "") for item in task_item["models"]]
@@ -346,7 +381,7 @@ async def get_admin_usage_table(
             haystack = " ".join(
                 [
                     str(task_item["taskId"]),
-                    str(task_item["ownerId"]),
+                    str(task_item.get("userName") or ""),
                     str(task_item["taskType"]),
                     str(task_item["taskStatus"]),
                     row_model_text,
@@ -385,6 +420,7 @@ async def get_admin_usage_table(
                 owner_id,
                 {
                     "ownerId": owner_id,
+                    "userName": item.get("userName"),
                     "taskCount": 0,
                     "promptTokens": 0,
                     "completionTokens": 0,
@@ -396,6 +432,8 @@ async def get_admin_usage_table(
                     "latestUsageAt": item.get("lastUsageAt"),
                 },
             )
+            if item.get("userName") and not target.get("userName"):
+                target["userName"] = item.get("userName")
             target["taskCount"] += 1
             target["promptTokens"] += int(item.get("promptTokens") or 0)
             target["completionTokens"] += int(item.get("completionTokens") or 0)

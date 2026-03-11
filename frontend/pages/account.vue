@@ -987,8 +987,10 @@ const onProfileAvatarChange = async (event: Event) => {
     })
     if (!uploadResponse.ok) throw new Error(await toApiError(uploadResponse))
     const uploaded = await uploadResponse.json() as AccountAvatarUploadResponse
+    const currentName = String(profile.value?.name || '').trim()
+    if (!currentName) throw new Error('请先设置显示名称后再更新头像。')
     await putProfile(token, {
-      name: String(profile.value?.name || '').trim() || null,
+      name: currentName,
       picture: uploaded.url,
     })
     resetDisplayNameDraft()
@@ -1139,6 +1141,12 @@ const saveDisplayName = async (nextName: string) => {
     resetDisplayNameDraft()
     return
   }
+  if (!nextName) {
+    profileSaveErrorMessage.value = '显示名称不能为空。'
+    editingDisplayName.value = false
+    resetDisplayNameDraft()
+    return
+  }
   const currentName = String(profile.value?.name || '').trim()
   if (nextName === currentName) {
     editingDisplayName.value = false
@@ -1150,7 +1158,7 @@ const saveDisplayName = async (nextName: string) => {
   try {
     const token = await getAuthToken()
     await putProfile(token, {
-      name: nextName || null,
+      name: nextName,
       picture: profile.value?.picture || null,
     })
     resetDisplayNameDraft()

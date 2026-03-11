@@ -79,12 +79,12 @@
 
             <label class="field">
               <span>关键词</span>
-              <input
-                v-model.trim="keyword"
-                type="text"
-                placeholder="taskId / ownerId / model"
-                class="field-input"
-              />
+                <input
+                  v-model.trim="keyword"
+                  type="text"
+                  placeholder="任务ID / 用户名称 / 模型"
+                  class="field-input"
+                />
             </label>
 
             <button
@@ -135,17 +135,22 @@
               <span>任务类型</span>
               <select v-model="taskTypeFilter" class="field-input">
                 <option value="">全部</option>
-                <option value="patent_analysis">patent_analysis</option>
-                <option value="office_action_reply">office_action_reply</option>
+                <option value="patent_analysis">专利分析</option>
+                <option value="office_action_reply">答复研判</option>
               </select>
             </label>
             <label class="field">
               <span>状态</span>
-              <input v-model.trim="statusFilter" type="text" placeholder="completed / failed" class="field-input" />
+              <select v-model="statusFilter" class="field-input">
+                <option value="">全部</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+              </select>
             </label>
             <label class="field">
               <span>模型</span>
-              <input v-model.trim="modelFilter" type="text" placeholder="qwen3.5-flash" class="field-input" />
+              <input v-model.trim="modelFilter" type="text" placeholder="例如：qwen3.5-flash" class="field-input" />
             </label>
             <button
               type="button"
@@ -161,7 +166,7 @@
             <table class="min-w-full divide-y divide-slate-200 text-xs">
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
-                  <th class="px-2.5 py-2 text-left font-semibold">主键</th>
+                  <th class="px-2.5 py-2 text-left font-semibold">{{ usagePrimaryLabel }}</th>
                   <th class="px-2.5 py-2 text-left font-semibold">任务/用户</th>
                   <th class="px-2.5 py-2 text-right font-semibold">Token</th>
                   <th class="px-2.5 py-2 text-right font-semibold">费用(CNY)</th>
@@ -171,14 +176,14 @@
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
                 <tr v-for="row in tableData?.items || []" :key="rowKey(row)">
-                  <td class="px-2.5 py-2 font-mono text-[11px]">{{ row.taskId || row.ownerId || 'all' }}</td>
+                  <td class="px-2.5 py-2 font-mono text-[11px]">{{ formatUsagePrimary(row) }}</td>
                   <td class="px-2.5 py-2">
                     <template v-if="scope === 'task'">
-                      <p>{{ row.ownerId }}</p>
-                      <p class="text-slate-500">{{ row.taskType }} · {{ row.taskStatus }}</p>
+                      <p>{{ row.userName || '未知用户' }}</p>
+                      <p class="text-slate-500">{{ formatTaskTypeLabel(row.taskType) }} · {{ formatTaskStatusLabel(row.taskStatus) }}</p>
                     </template>
                     <template v-else-if="scope === 'user'">
-                      <p>{{ row.ownerId }}</p>
+                      <p>{{ row.userName || '未知用户' }}</p>
                       <p class="text-slate-500">任务 {{ row.taskCount }}</p>
                     </template>
                     <template v-else>
@@ -189,7 +194,7 @@
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.totalTokens || 0) }}</td>
                   <td class="px-2.5 py-2 text-right">{{ formatCost(row.estimatedCostCny || 0) }}</td>
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.llmCallCount || 0) }}</td>
-                  <td class="px-2.5 py-2">{{ row.lastUsageAt || row.latestUsageAt || '-' }}</td>
+                  <td class="px-2.5 py-2">{{ formatDateOnly(row.lastUsageAt || row.latestUsageAt) }}</td>
                 </tr>
                 <tr v-if="!(tableData?.items?.length)">
                   <td colspan="6" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无数据</td>
@@ -235,10 +240,10 @@
               <span>分类</span>
               <select v-model="logCategory" class="field-input">
                 <option value="">全部</option>
-                <option value="user_action">user_action</option>
-                <option value="task_execution">task_execution</option>
-                <option value="external_api">external_api</option>
-                <option value="llm_call">llm_call</option>
+                <option value="user_action">用户行为</option>
+                <option value="task_execution">任务执行</option>
+                <option value="external_api">外部接口</option>
+                <option value="llm_call">LLM 调用</option>
               </select>
             </label>
             <label class="field">
@@ -253,27 +258,37 @@
 
           <div class="mt-3 grid gap-3 md:grid-cols-4 md:items-end">
             <label class="field">
-              <span>provider</span>
-              <input v-model.trim="logProvider" type="text" class="field-input" placeholder="llm / zhihuiya" />
+              <span>服务提供方</span>
+              <select v-model="logProvider" class="field-input">
+                <option value="">全部</option>
+                <option value="llm">LLM</option>
+                <option value="zhihuiya">智慧芽</option>
+                <option value="mineru">MinerU</option>
+                <option value="authing">Authing</option>
+                <option value="cloudflare">Cloudflare</option>
+                <option value="openalex">OpenAlex</option>
+                <option value="tavily">Tavily</option>
+                <option value="unknown">未知</option>
+              </select>
             </label>
             <label class="field">
-              <span>taskId</span>
-              <input v-model.trim="logTaskId" type="text" class="field-input" placeholder="task_id" />
+              <span>任务ID</span>
+              <input v-model.trim="logTaskId" type="text" class="field-input" placeholder="请输入任务ID" />
             </label>
             <label class="field">
-              <span>ownerId</span>
-              <input v-model.trim="logOwnerId" type="text" class="field-input" placeholder="authing:xxx" />
+              <span>用户</span>
+              <input v-model.trim="logUserName" type="text" class="field-input" placeholder="按用户名称检索" />
             </label>
             <label class="field">
-              <span>requestId</span>
-              <input v-model.trim="logRequestId" type="text" class="field-input" placeholder="request_id" />
+              <span>请求ID</span>
+              <input v-model.trim="logRequestId" type="text" class="field-input" placeholder="请输入请求ID" />
             </label>
           </div>
 
           <div class="mt-3 flex flex-wrap items-end gap-2">
             <label class="field min-w-[18rem]">
               <span>关键词</span>
-              <input v-model.trim="logKeyword" type="text" class="field-input" placeholder="event/message/path/provider" />
+              <input v-model.trim="logKeyword" type="text" class="field-input" placeholder="按事件/消息/路径/服务方检索" />
             </label>
             <button
               type="button"
@@ -314,25 +329,25 @@
                   <th class="px-2.5 py-2 text-left font-semibold">分类/事件</th>
                   <th class="px-2.5 py-2 text-left font-semibold">用户/任务</th>
                   <th class="px-2.5 py-2 text-left font-semibold">接口</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">状态</th>
+                  <th class="min-w-[4.5rem] px-2.5 py-2 text-right font-semibold">状态</th>
                   <th class="px-2.5 py-2 text-right font-semibold">耗时</th>
                   <th class="px-2.5 py-2 text-left font-semibold">摘要</th>
+                  <th class="sticky right-0 z-10 min-w-[5.5rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
                 <tr
                   v-for="row in systemLogs?.items || []"
                   :key="row.logId"
-                  class="cursor-pointer hover:bg-slate-50"
-                  @click="openLogDetail(row.logId)"
+                  class="hover:bg-slate-50"
                 >
-                  <td class="px-2.5 py-2 whitespace-nowrap">{{ row.timestamp }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateOnly(row.timestamp) }}</td>
                   <td class="px-2.5 py-2">
-                    <p class="font-semibold">{{ row.category }}</p>
-                    <p class="text-slate-500">{{ row.eventName }}</p>
+                    <p class="font-semibold">{{ formatLogCategory(row.category) }}</p>
+                    <p class="text-slate-500">{{ formatLogEvent(row.eventName) }}</p>
                   </td>
                   <td class="px-2.5 py-2">
-                    <p class="font-mono text-[11px]">{{ row.ownerId || '-' }}</p>
+                    <p>{{ row.userName || '未知用户' }}</p>
                     <p class="font-mono text-[11px] text-slate-500">{{ row.taskId || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2">
@@ -344,9 +359,19 @@
                   </td>
                   <td class="px-2.5 py-2 text-right">{{ row.durationMs ?? '-' }}</td>
                   <td class="px-2.5 py-2 max-w-[24rem] truncate">{{ row.message || '-' }}</td>
+                  <td class="sticky right-0 bg-white px-2.5 py-2">
+                    <button
+                      type="button"
+                      class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                      :disabled="loadingSystemLogDetail && detailLoadingLogId === row.logId"
+                      @click="openLogDetail(row.logId)"
+                    >
+                      {{ loadingSystemLogDetail && detailLoadingLogId === row.logId ? '加载中' : '查看' }}
+                    </button>
+                  </td>
                 </tr>
                 <tr v-if="!(systemLogs?.items?.length)">
-                  <td colspan="7" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无日志</td>
+                  <td colspan="8" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无日志</td>
                 </tr>
               </tbody>
             </table>
@@ -373,30 +398,33 @@
           </div>
         </section>
 
-        <section v-if="systemLogDetail" class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h3 class="text-sm font-semibold text-slate-900">日志详情：{{ systemLogDetail.item.logId }}</h3>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
-                @click="copyDetailPayload"
-              >
-                复制详情
-              </button>
-              <button
-                type="button"
-                class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
-                @click="closeLogDetail"
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-          <pre class="max-h-[28rem] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-5 text-slate-800">{{ systemLogDetailText }}</pre>
-        </section>
       </template>
     </template>
+
+    <div v-if="systemLogDetail" class="modal-overlay" @click="closeLogDetail">
+      <div class="modal-panel" @click.stop>
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="text-sm font-semibold text-slate-900">日志详情：{{ systemLogDetail.item.logId }}</h3>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
+              @click="copyDetailPayload"
+            >
+              复制详情
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 transition hover:bg-slate-50"
+              @click="closeLogDetail"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+        <pre class="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] leading-5 text-slate-800">{{ systemLogDetailText }}</pre>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -425,16 +453,59 @@ const logDateTo = ref(`${anchorDay.value}T23:59`)
 
 const usageCurrentPage = ref(1)
 const logCurrentPage = ref(1)
-const pageSize = 20
+const pageSize = 10
 
 const logCategory = ref('')
 const logProvider = ref('')
 const logSuccess = ref('')
 const logTaskId = ref('')
-const logOwnerId = ref('')
+const logUserName = ref('')
 const logRequestId = ref('')
 const logTraceId = ref('')
 const logKeyword = ref('')
+const detailLoadingLogId = ref('')
+
+const TASK_TYPE_LABELS: Record<string, string> = {
+  patent_analysis: '专利分析',
+  office_action_reply: '答复研判',
+}
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  pending: '待处理',
+  processing: '处理中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+  paused: '暂停',
+}
+
+const LOG_CATEGORY_LABELS: Record<string, string> = {
+  user_action: '用户行为',
+  task_execution: '任务执行',
+  external_api: '外部接口',
+  llm_call: 'LLM 调用',
+}
+
+const LOG_EVENT_LABELS: Record<string, string> = {
+  http_request: 'HTTP 请求',
+  requests_call: '外部请求',
+  requests_call_exception: '外部请求异常',
+  task_created: '任务创建',
+  task_started: '任务启动',
+  task_progress: '任务进度',
+  task_completed: '任务完成',
+  task_failed: '任务失败',
+  task_cancelled: '任务取消',
+  task_exception: '任务异常',
+  task_timeout: '任务超时',
+  task_download: '任务下载',
+  task_deleted: '任务删除',
+  task_bulk_deleted: '任务批量删除',
+  chat_completion_json: '文本模型调用(JSON)',
+  chat_completion_text: '文本模型调用',
+  vision_completion_text: '视觉模型调用',
+  vision_completion_json: '视觉模型调用(JSON)',
+}
 
 const loadingAccess = computed(() => adminStore.loadingAccess)
 const loadingDashboard = computed(() => adminStore.loadingDashboard)
@@ -448,6 +519,11 @@ const tableData = computed(() => adminStore.tableData)
 const systemLogSummary = computed(() => adminStore.systemLogSummary)
 const systemLogs = computed(() => adminStore.systemLogs)
 const systemLogDetail = computed(() => adminStore.systemLogDetail)
+const usagePrimaryLabel = computed(() => {
+  if (scope.value === 'task') return '任务ID'
+  if (scope.value === 'user') return '用户'
+  return '主键'
+})
 
 const activeAnchor = computed(() => {
   if (rangeType.value === 'day') return anchorDay.value
@@ -467,8 +543,41 @@ const formatPercent = (value: number) => {
   const numeric = Number(value || 0)
   return `${(numeric * 100).toFixed(2)}%`
 }
+const formatDateOnly = (value: string | null | undefined) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  const normalized = text.includes('T') ? text : `${text}T00:00:00`
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return text.slice(0, 10)
+  return parsed.toISOString().slice(0, 10)
+}
+const formatTaskTypeLabel = (value: string | null | undefined) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  return TASK_TYPE_LABELS[text] || text
+}
+const formatTaskStatusLabel = (value: string | null | undefined) => {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return '-'
+  return TASK_STATUS_LABELS[text] || text
+}
+const formatLogCategory = (value: string | null | undefined) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  return LOG_CATEGORY_LABELS[text] || text
+}
+const formatLogEvent = (value: string | null | undefined) => {
+  const text = String(value || '').trim()
+  if (!text) return '-'
+  return LOG_EVENT_LABELS[text] || text
+}
 const rowKey = (row: Record<string, any>) => {
   return row.taskId || row.ownerId || `all-${row.totalTokens || 0}-${row.estimatedCostCny || 0}`
+}
+const formatUsagePrimary = (row: Record<string, any>) => {
+  if (scope.value === 'task') return row.taskId || '-'
+  if (scope.value === 'user') return row.userName || '未知用户'
+  return 'all'
 }
 
 const refreshUsageDashboard = async () => {
@@ -497,7 +606,7 @@ const refreshUsageAll = async () => {
 const refreshSystemLogs = async () => {
   await adminStore.fetchSystemLogs({
     category: logCategory.value,
-    ownerId: logOwnerId.value,
+    userName: logUserName.value,
     taskId: logTaskId.value,
     requestId: logRequestId.value,
     traceId: logTraceId.value,
@@ -528,7 +637,12 @@ const onRangeTypeChange = () => {
 }
 
 const openLogDetail = async (logId: string) => {
-  await adminStore.fetchSystemLogDetail(logId)
+  detailLoadingLogId.value = logId
+  try {
+    await adminStore.fetchSystemLogDetail(logId)
+  } finally {
+    detailLoadingLogId.value = ''
+  }
 }
 
 const closeLogDetail = () => {
@@ -555,7 +669,7 @@ watch([scope, keyword, taskTypeFilter, statusFilter, modelFilter], () => {
   usageCurrentPage.value = 1
 })
 
-watch([logCategory, logProvider, logSuccess, logTaskId, logOwnerId, logRequestId, logTraceId, logKeyword], () => {
+watch([logCategory, logProvider, logSuccess, logTaskId, logUserName, logRequestId, logTraceId, logKeyword], () => {
   logCurrentPage.value = 1
 })
 
@@ -598,5 +712,13 @@ onMounted(async () => {
 
 .field-input {
   @apply rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100;
+}
+
+.modal-overlay {
+  @apply fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-3;
+}
+
+.modal-panel {
+  @apply w-full max-w-4xl rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl shadow-slate-900/20;
 }
 </style>

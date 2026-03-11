@@ -9,7 +9,7 @@ export interface AccountProfile {
 }
 
 export interface AccountProfileUpdateRequest {
-  name: string | null
+  name: string
   picture: string | null
 }
 

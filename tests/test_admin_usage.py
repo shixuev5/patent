@@ -28,6 +28,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:admin-1",
             authing_sub="admin-1",
             role="admin",
+            name="管理员",
             raw_profile={},
         )
     )
@@ -36,6 +37,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:user-1",
             authing_sub="user-1",
             role="member",
+            name="用户甲",
             raw_profile={},
         )
     )
@@ -44,6 +46,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:user-2",
             authing_sub="user-2",
             role="member",
+            name="用户乙",
             raw_profile={},
         )
     )
@@ -52,6 +55,7 @@ def _seed_users(storage: SQLiteTaskStorage):
             owner_id="authing:admin-by-role-field",
             authing_sub="admin-by-role-field",
             role="admin",
+            name="角色管理员",
             raw_profile={},
         )
     )
@@ -158,6 +162,26 @@ def test_admin_dashboard_and_table(monkeypatch, tmp_path):
     )
     assert task_table.total == 1
     assert task_table.items[0]["taskId"] == "task-1"
+    assert task_table.items[0]["userName"] == "用户甲"
+
+    task_table_by_name = asyncio.run(
+        admin_usage.get_admin_usage_table(
+            rangeType="day",
+            anchor=anchor,
+            scope="task",
+            q="用户乙",
+            taskType=None,
+            status=None,
+            model=None,
+            page=1,
+            pageSize=20,
+            sortBy="lastUsageAt",
+            sortOrder="desc",
+            current_user=admin_user,
+        )
+    )
+    assert task_table_by_name.total == 1
+    assert task_table_by_name.items[0]["taskId"] == "task-2"
 
     all_table = asyncio.run(
         admin_usage.get_admin_usage_table(

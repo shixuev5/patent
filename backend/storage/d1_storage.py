@@ -582,6 +582,7 @@ class D1TaskStorage:
             "event_name": row.get("event_name"),
             "level": row.get("level"),
             "owner_id": row.get("owner_id"),
+            "user_name": row.get("user_name"),
             "task_id": row.get("task_id"),
             "task_type": row.get("task_type"),
             "request_id": row.get("request_id"),
@@ -681,6 +682,7 @@ class D1TaskStorage:
         category: Optional[str] = None,
         event_name: Optional[str] = None,
         owner_id: Optional[str] = None,
+        user_name: Optional[str] = None,
         task_id: Optional[str] = None,
         request_id: Optional[str] = None,
         trace_id: Optional[str] = None,
@@ -690,60 +692,71 @@ class D1TaskStorage:
         date_to: Optional[str] = None,
         q: Optional[str] = None,
         page: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
     ) -> Dict[str, Any]:
         where = ["1=1"]
         params: List[Any] = []
 
         if category:
-            where.append("category = ?")
+            where.append("sl.category = ?")
             params.append(category)
         if event_name:
-            where.append("event_name = ?")
+            where.append("sl.event_name = ?")
             params.append(event_name)
         if owner_id:
-            where.append("owner_id = ?")
+            where.append("sl.owner_id = ?")
             params.append(owner_id)
+        if user_name:
+            where.append("u.name LIKE ?")
+            params.append(f"%{user_name}%")
         if task_id:
-            where.append("task_id = ?")
+            where.append("sl.task_id = ?")
             params.append(task_id)
         if request_id:
-            where.append("request_id = ?")
+            where.append("sl.request_id = ?")
             params.append(request_id)
         if trace_id:
-            where.append("trace_id = ?")
+            where.append("sl.trace_id = ?")
             params.append(trace_id)
         if provider:
-            where.append("provider = ?")
+            where.append("sl.provider = ?")
             params.append(provider)
         if success is not None:
-            where.append("success = ?")
+            where.append("sl.success = ?")
             params.append(1 if success else 0)
         if date_from:
-            where.append("timestamp >= ?")
+            where.append("sl.timestamp >= ?")
             params.append(date_from)
         if date_to:
-            where.append("timestamp <= ?")
+            where.append("sl.timestamp <= ?")
             params.append(date_to)
         if q:
             where.append(
-                "(category LIKE ? OR event_name LIKE ? OR owner_id LIKE ? OR task_id LIKE ? "
-                "OR request_id LIKE ? OR trace_id LIKE ? OR message LIKE ? OR path LIKE ? OR provider LIKE ?)"
+                "(sl.category LIKE ? OR sl.event_name LIKE ? OR sl.task_id LIKE ? "
+                "OR sl.request_id LIKE ? OR sl.trace_id LIKE ? OR sl.message LIKE ? OR sl.path LIKE ? "
+                "OR sl.provider LIKE ? OR u.name LIKE ?)"
             )
             wildcard = f"%{q}%"
             params.extend([wildcard] * 9)
 
         where_clause = " AND ".join(where)
         total_row = self._fetchone(
-            f"SELECT COUNT(*) AS c FROM system_logs WHERE {where_clause}",
+            f"""
+            SELECT COUNT(*) AS c
+            FROM system_logs sl
+            LEFT JOIN users u ON sl.owner_id = u.owner_id
+            WHERE {where_clause}
+            """,
             params,
         )
         offset = max(0, (page - 1) * page_size)
         rows = self._fetchall(
             f"""
-            SELECT * FROM system_logs
+            SELECT sl.*, u.name AS user_name
+            FROM system_logs sl
+            LEFT JOIN users u ON sl.owner_id = u.owner_id
             WHERE {where_clause}
-            ORDER BY timestamp DESC
+            ORDER BY sl.timestamp DESC
             LIMIT ? OFFSET ?
             """,
             params + [page_size, offset],
@@ -990,7 +1003,10 @@ class D1TaskStorage:
             ON CONFLICT(owner_id) DO UPDATE SET
                 authing_sub = excluded.authing_sub,
                 role = excluded.role,
-                name = excluded.name,
+                name = CASE
+                    WHEN users.name IS NULL OR TRIM(users.name) = '' THEN excluded.name
+                    ELSE users.name
+                END,
                 nickname = excluded.nickname,
                 email = excluded.email,
                 phone = excluded.phone,
@@ -1019,6 +1035,13 @@ class D1TaskStorage:
 
     def get_user_by_owner_id(self, owner_id: str) -> Optional[User]:
         row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
+        return self._row_to_user(row) if row else None
+
+    def get_user_by_name(self, name: str) -> Optional[User]:
+        normalized = str(name or "").strip()
+        if not normalized:
+            return None
+        row = self._fetchone("SELECT * FROM users WHERE name = ?", [normalized])
         return self._row_to_user(row) if row else None
 
     def update_user_profile(

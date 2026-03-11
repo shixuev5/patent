@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from backend.models import AccountMonthTargetUpsertRequest, AccountProfileUpdateRequest, CurrentUser
 from backend.routes import account
 from backend.storage import User
 from backend.storage.sqlite_storage import SQLiteTaskStorage
+from fastapi import HTTPException
 
 
 def _mount_storage(monkeypatch, tmp_path):
@@ -98,7 +101,7 @@ def test_put_account_profile_updates_name_and_picture(monkeypatch, tmp_path):
             name='旧名字',
             nickname='旧昵称',
             email='old@example.com',
-            picture='https://example.com/old.png',
+            picture='https://unit.test/api/account/profile/avatar/local/old.png',
         )
     )
 
@@ -106,15 +109,75 @@ def test_put_account_profile_updates_name_and_picture(monkeypatch, tmp_path):
         account.put_account_profile(
             payload=AccountProfileUpdateRequest(
                 name='新名字',
-                picture='https://example.com/new.png',
+                picture='https://unit.test/api/account/profile/avatar/local/new.png',
             ),
             current_user=user,
         )
     )
     assert updated.name == '新名字'
-    assert updated.picture == 'https://example.com/new.png'
+    assert updated.picture == 'https://unit.test/api/account/profile/avatar/local/new.png'
 
     fetched = storage.get_user_by_owner_id(user.user_id)
     assert fetched is not None
     assert fetched.name == '新名字'
-    assert fetched.picture == 'https://example.com/new.png'
+    assert fetched.picture == 'https://unit.test/api/account/profile/avatar/local/new.png'
+
+
+def test_put_account_profile_rejects_empty_name(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='authing:empty-name-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='empty-name-user',
+            name='旧名字',
+            email='empty@example.com',
+            picture='https://example.com/old.png',
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            account.put_account_profile(
+                payload=AccountProfileUpdateRequest(
+                    name='',
+                    picture='https://example.com/new.png',
+                ),
+                current_user=user,
+            )
+        )
+    assert exc_info.value.status_code == 400
+
+
+def test_put_account_profile_rejects_duplicate_name(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user_a = CurrentUser(user_id='authing:user-a')
+    user_b = CurrentUser(user_id='authing:user-b')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user_a.user_id,
+            authing_sub='user-a',
+            name='重复名',
+            email='a@example.com',
+        )
+    )
+    storage.upsert_authing_user(
+        User(
+            owner_id=user_b.user_id,
+            authing_sub='user-b',
+            name='原名称',
+            email='b@example.com',
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            account.put_account_profile(
+                payload=AccountProfileUpdateRequest(
+                    name='重复名',
+                    picture='https://example.com/new.png',
+                ),
+                current_user=user_b,
+            )
+        )
+    assert exc_info.value.status_code == 409

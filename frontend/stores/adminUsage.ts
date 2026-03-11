@@ -29,6 +29,7 @@ interface FetchSystemLogInput {
   category?: string
   eventName?: string
   ownerId?: string
+  userName?: string
   taskId?: string
   requestId?: string
   traceId?: string
@@ -134,7 +135,7 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           status: input.status,
           model: input.model,
           page: input.page ?? 1,
-          pageSize: input.pageSize ?? 20,
+          pageSize: input.pageSize ?? 10,
           sortBy: input.sortBy ?? 'lastUsageAt',
           sortOrder: input.sortOrder ?? 'desc',
         })
@@ -172,6 +173,7 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           category: input.category,
           eventName: input.eventName,
           ownerId: input.ownerId,
+          userName: input.userName,
           taskId: input.taskId,
           requestId: input.requestId,
           traceId: input.traceId,
@@ -181,7 +183,7 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           dateTo: input.dateTo,
           q: input.q,
           page: input.page ?? 1,
-          pageSize: input.pageSize ?? 20,
+          pageSize: input.pageSize ?? 10,
         })
         const response = await this._authorizedFetch(path)
         if (!response || !response.ok) return null

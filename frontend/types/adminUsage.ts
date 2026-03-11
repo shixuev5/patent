@@ -79,6 +79,7 @@ export interface AdminSystemLogItem {
   eventName: string
   level: string
   ownerId?: string | null
+  userName?: string | null
   taskId?: string | null
   taskType?: string | null
   requestId?: string | null

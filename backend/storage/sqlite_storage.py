@@ -542,6 +542,7 @@ class SQLiteTaskStorage:
             "event_name": row["event_name"],
             "level": row["level"],
             "owner_id": row["owner_id"],
+            "user_name": row["user_name"] if "user_name" in row.keys() else None,
             "task_id": row["task_id"],
             "task_type": row["task_type"],
             "request_id": row["request_id"],
@@ -644,6 +645,7 @@ class SQLiteTaskStorage:
         category: Optional[str] = None,
         event_name: Optional[str] = None,
         owner_id: Optional[str] = None,
+        user_name: Optional[str] = None,
         task_id: Optional[str] = None,
         request_id: Optional[str] = None,
         trace_id: Optional[str] = None,
@@ -653,45 +655,49 @@ class SQLiteTaskStorage:
         date_to: Optional[str] = None,
         q: Optional[str] = None,
         page: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
     ) -> Dict[str, Any]:
         where = ["1=1"]
         params: List[Any] = []
 
         if category:
-            where.append("category = ?")
+            where.append("sl.category = ?")
             params.append(category)
         if event_name:
-            where.append("event_name = ?")
+            where.append("sl.event_name = ?")
             params.append(event_name)
         if owner_id:
-            where.append("owner_id = ?")
+            where.append("sl.owner_id = ?")
             params.append(owner_id)
+        if user_name:
+            where.append("u.name LIKE ?")
+            params.append(f"%{user_name}%")
         if task_id:
-            where.append("task_id = ?")
+            where.append("sl.task_id = ?")
             params.append(task_id)
         if request_id:
-            where.append("request_id = ?")
+            where.append("sl.request_id = ?")
             params.append(request_id)
         if trace_id:
-            where.append("trace_id = ?")
+            where.append("sl.trace_id = ?")
             params.append(trace_id)
         if provider:
-            where.append("provider = ?")
+            where.append("sl.provider = ?")
             params.append(provider)
         if success is not None:
-            where.append("success = ?")
+            where.append("sl.success = ?")
             params.append(1 if success else 0)
         if date_from:
-            where.append("timestamp >= ?")
+            where.append("sl.timestamp >= ?")
             params.append(date_from)
         if date_to:
-            where.append("timestamp <= ?")
+            where.append("sl.timestamp <= ?")
             params.append(date_to)
         if q:
             where.append(
-                "(category LIKE ? OR event_name LIKE ? OR owner_id LIKE ? OR task_id LIKE ? "
-                "OR request_id LIKE ? OR trace_id LIKE ? OR message LIKE ? OR path LIKE ? OR provider LIKE ?)"
+                "(sl.category LIKE ? OR sl.event_name LIKE ? OR sl.task_id LIKE ? "
+                "OR sl.request_id LIKE ? OR sl.trace_id LIKE ? OR sl.message LIKE ? OR sl.path LIKE ? "
+                "OR sl.provider LIKE ? OR u.name LIKE ?)"
             )
             wildcard = f"%{q}%"
             params.extend([wildcard] * 9)
@@ -700,14 +706,21 @@ class SQLiteTaskStorage:
         offset = max(0, (page - 1) * page_size)
         with self._get_connection() as conn:
             total_row = conn.execute(
-                f"SELECT COUNT(*) AS c FROM system_logs WHERE {base_where}",
+                f"""
+                SELECT COUNT(*) AS c
+                FROM system_logs sl
+                LEFT JOIN users u ON sl.owner_id = u.owner_id
+                WHERE {base_where}
+                """,
                 params,
             ).fetchone()
             rows = conn.execute(
                 f"""
-                SELECT * FROM system_logs
+                SELECT sl.*, u.name AS user_name
+                FROM system_logs sl
+                LEFT JOIN users u ON sl.owner_id = u.owner_id
                 WHERE {base_where}
-                ORDER BY timestamp DESC
+                ORDER BY sl.timestamp DESC
                 LIMIT ? OFFSET ?
                 """,
                 params + [page_size, offset],
@@ -965,16 +978,19 @@ class SQLiteTaskStorage:
                 INSERT INTO users (
                     owner_id, authing_sub, role, name, nickname, email, phone, picture,
                     raw_profile, created_at, updated_at, last_login_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(owner_id) DO UPDATE SET
-                    authing_sub = excluded.authing_sub,
-                    role = excluded.role,
-                    name = excluded.name,
-                    nickname = excluded.nickname,
-                    email = excluded.email,
-                    phone = excluded.phone,
-                    picture = excluded.picture,
-                    raw_profile = excluded.raw_profile,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_id) DO UPDATE SET
+                authing_sub = excluded.authing_sub,
+                role = excluded.role,
+                name = CASE
+                    WHEN users.name IS NULL OR TRIM(users.name) = '' THEN excluded.name
+                    ELSE users.name
+                END,
+                nickname = excluded.nickname,
+                email = excluded.email,
+                phone = excluded.phone,
+                picture = excluded.picture,
+                raw_profile = excluded.raw_profile,
                     updated_at = excluded.updated_at,
                     last_login_at = excluded.last_login_at
                 """,
@@ -1007,6 +1023,17 @@ class SQLiteTaskStorage:
             row = conn.execute(
                 "SELECT * FROM users WHERE owner_id = ?",
                 (owner_id,),
+            ).fetchone()
+        return self._row_to_user(row) if row else None
+
+    def get_user_by_name(self, name: str) -> Optional[User]:
+        normalized = str(name or "").strip()
+        if not normalized:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE name = ?",
+                (normalized,),
             ).fetchone()
         return self._row_to_user(row) if row else None
 
