@@ -59,6 +59,7 @@ _STORAGE_LOCK = threading.Lock()
 _REQUESTS_PATCHED = False
 _ORIGINAL_SESSION_REQUEST = None
 _STORAGE_REF = None
+_DB_PERSISTENCE_READY = True
 _CLEANUP_TASK: Optional[asyncio.Task] = None
 
 
@@ -138,14 +139,21 @@ def _provider_from_host(host: str) -> str:
     return host_text
 
 
-def _get_storage():
+def configure_system_log_storage(storage: Any) -> None:
+    """Inject a ready storage backend for system-log DB persistence."""
     global _STORAGE_REF
-    if _STORAGE_REF is None:
-        with _STORAGE_LOCK:
-            if _STORAGE_REF is None:
-                from backend.storage import get_pipeline_manager
+    with _STORAGE_LOCK:
+        _STORAGE_REF = storage
 
-                _STORAGE_REF = get_pipeline_manager().storage
+
+def set_system_log_db_persistence_ready(ready: bool) -> None:
+    """Gate DB persistence to avoid bootstrap-time circular dependency."""
+    global _DB_PERSISTENCE_READY
+    _DB_PERSISTENCE_READY = bool(ready)
+
+
+def _get_storage():
+    # Storage is explicitly injected by app startup; no lazy reverse lookup.
     return _STORAGE_REF
 
 
@@ -311,7 +319,7 @@ def emit_system_log(
     except Exception:
         logger.info(f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}")
 
-    if SYSTEM_LOG_DB_ENABLED:
+    if SYSTEM_LOG_DB_ENABLED and _DB_PERSISTENCE_READY:
         try:
             storage = _get_storage()
             if hasattr(storage, "insert_system_log"):
@@ -561,6 +569,9 @@ async def stop_system_log_cleanup_loop() -> None:
 
 
 def initialize_system_logging() -> None:
+    # During bootstrap, only keep file logging enabled. DB persistence is enabled
+    # explicitly after storage initialization to avoid circular initialization.
+    set_system_log_db_persistence_ready(False)
     instrument_requests()
     SYSTEM_LOG_DIR.mkdir(parents=True, exist_ok=True)
     SYSTEM_LOG_PAYLOAD_DIR.mkdir(parents=True, exist_ok=True)

@@ -48,3 +48,32 @@ def test_requests_instrumentation_logs_outbound_calls(tmp_path, monkeypatch):
     assert row["status_code"] == 200
     payload_text = row.get("payload_inline_json") or ""
     assert "token=abc" not in payload_text
+
+
+def test_system_log_db_persistence_is_gated_until_ready(tmp_path, monkeypatch):
+    storage = _MemoryStorage()
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_DB_ENABLED", True)
+    monkeypatch.setattr(system_logs, "_REQUESTS_PATCHED", False)
+    monkeypatch.setattr(system_logs, "_ORIGINAL_SESSION_REQUEST", None)
+    monkeypatch.setattr(system_logs, "instrument_requests", lambda: None)
+
+    system_logs.initialize_system_logging()
+    system_logs.configure_system_log_storage(storage)
+    system_logs.emit_system_log(
+        category="system",
+        event_name="before_ready",
+        success=True,
+    )
+    assert storage.rows == []
+
+    system_logs.set_system_log_db_persistence_ready(True)
+    system_logs.emit_system_log(
+        category="system",
+        event_name="after_ready",
+        success=True,
+    )
+    assert len(storage.rows) == 1
+    assert storage.rows[0]["event_name"] == "after_ready"

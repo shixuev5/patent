@@ -12,6 +12,11 @@ from loguru import logger
 
 _storage_instance: Optional[Any] = None
 _storage_lock = threading.Lock()
+_storage_init_local = threading.local()
+
+
+class StorageInitializationInProgressError(RuntimeError):
+    """Raised when task storage is re-entered during initialization."""
 
 
 def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
@@ -25,37 +30,50 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
         Task storage instance
     """
     global _storage_instance
+    if _storage_instance is not None:
+        return _storage_instance
+
+    # Prevent same-thread re-entrancy (e.g. outbound request logging during D1 bootstrap).
+    if bool(getattr(_storage_init_local, "in_progress", False)):
+        raise StorageInitializationInProgressError(
+            "Task storage initialization in progress"
+        )
+
     if _storage_instance is None:
         with _storage_lock:
             if _storage_instance is None:
-                backend = os.getenv("TASK_STORAGE_BACKEND", "sqlite").strip().lower()
-                logger.info(f"初始化任务存储后端：{backend}")
+                _storage_init_local.in_progress = True
+                try:
+                    backend = os.getenv("TASK_STORAGE_BACKEND", "sqlite").strip().lower()
+                    logger.info(f"初始化任务存储后端：{backend}")
 
-                if backend == "d1":
-                    from .d1_storage import D1TaskStorage
+                    if backend == "d1":
+                        from .d1_storage import D1TaskStorage
 
-                    account_id = os.getenv("D1_ACCOUNT_ID", "").strip()
-                    database_id = os.getenv("D1_DATABASE_ID", "").strip()
-                    api_token = os.getenv("D1_API_TOKEN", "").strip()
-                    api_base_url = os.getenv(
-                        "D1_API_BASE_URL",
-                        "https://api.cloudflare.com/client/v4",
-                    ).strip()
-                    _storage_instance = D1TaskStorage(
-                        account_id=account_id,
-                        database_id=database_id,
-                        api_token=api_token,
-                        api_base_url=api_base_url,
-                    )
-                elif backend in {"", "sqlite"}:
-                    from .sqlite_storage import SQLiteTaskStorage
+                        account_id = os.getenv("D1_ACCOUNT_ID", "").strip()
+                        database_id = os.getenv("D1_DATABASE_ID", "").strip()
+                        api_token = os.getenv("D1_API_TOKEN", "").strip()
+                        api_base_url = os.getenv(
+                            "D1_API_BASE_URL",
+                            "https://api.cloudflare.com/client/v4",
+                        ).strip()
+                        _storage_instance = D1TaskStorage(
+                            account_id=account_id,
+                            database_id=database_id,
+                            api_token=api_token,
+                            api_base_url=api_base_url,
+                        )
+                    elif backend in {"", "sqlite"}:
+                        from .sqlite_storage import SQLiteTaskStorage
 
-                    _storage_instance = SQLiteTaskStorage(db_path)
-                else:
-                    raise ValueError(
-                        f"Unsupported TASK_STORAGE_BACKEND={backend}. "
-                        "Use `sqlite` or `d1`."
-                    )
+                        _storage_instance = SQLiteTaskStorage(db_path)
+                    else:
+                        raise ValueError(
+                            f"Unsupported TASK_STORAGE_BACKEND={backend}. "
+                            "Use `sqlite` or `d1`."
+                        )
+                finally:
+                    _storage_init_local.in_progress = False
     return _storage_instance
 
 

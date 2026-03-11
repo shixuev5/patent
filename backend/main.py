@@ -11,8 +11,10 @@ from config import settings
 from backend.logging_setup import setup_logging_utc8
 from backend.system_logs import (
     cleanup_expired_system_logs,
+    configure_system_log_storage,
     initialize_system_logging,
     request_logging_middleware,
+    set_system_log_db_persistence_ready,
     start_system_log_cleanup_loop,
     stop_system_log_cleanup_loop,
 )
@@ -38,6 +40,11 @@ async def lifespan(app: FastAPI):
     settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
     settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    from backend.storage import get_pipeline_manager
+
+    storage = get_pipeline_manager().storage
+    configure_system_log_storage(storage)
+    set_system_log_db_persistence_ready(True)
     cleanup_expired_system_logs()
     start_system_log_cleanup_loop()
     yield
