@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import agents.common.utils.llm as llm_module
 from agents.common.utils.llm import LLMService
 from backend import system_logs
@@ -53,9 +55,49 @@ class _FakeClient:
         self.chat = _FakeChat(self.completions)
 
 
+class _RetryableError(RuntimeError):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _FlakyCompletions:
+    def __init__(self, failures: list[Exception], content: str):
+        self._failures = list(failures)
+        self._content = content
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._failures:
+            raise self._failures.pop(0)
+        message = SimpleNamespace(
+            content=self._content,
+            reasoning_content="reasoning text",
+        )
+        choice = SimpleNamespace(message=message)
+        usage = SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            total_tokens=150,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=10),
+        )
+        return SimpleNamespace(
+            id="resp-1",
+            choices=[choice],
+            usage=usage,
+        )
+
+
+class _FlakyClient:
+    def __init__(self, failures: list[Exception], content: str):
+        self.completions = _FlakyCompletions(failures=failures, content=content)
+        self.chat = _FakeChat(self.completions)
+
+
 def _assert_thinking_payload(call_kwargs):
     assert call_kwargs["extra_body"]["enable_thinking"] is True
-    assert call_kwargs["extra_body"]["thinking_budget"] == 8192
+    assert call_kwargs["extra_body"]["thinking_budget"] == LLMService._THINKING_BUDGET
 
 
 def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
@@ -149,3 +191,52 @@ def test_vision_multi_image_json_uses_thinking_budget(tmp_path, monkeypatch):
 
     assert result == {"ok": True}
     _assert_thinking_payload(vision_client.completions.calls[-1])
+
+
+def test_invoke_text_json_retries_on_retryable_error(monkeypatch):
+    monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
+    sleep_calls = []
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    service = LLMService(api_key="test", base_url="https://example.com")
+    text_client = _FlakyClient(
+        failures=[
+            _RetryableError("Too many requests. throttled due to capacity limits", 503),
+            _RetryableError("ServiceUnavailable"),
+        ],
+        content='{"answer":"ok"}',
+    )
+    service.text_client = text_client
+
+    result = service.invoke_text_json(
+        messages=[{"role": "user", "content": "hello"}],
+        task_kind="core_summary_generation",
+        model_override="qwen3.5-flash",
+    )
+
+    assert result == {"answer": "ok"}
+    assert len(text_client.completions.calls) == 3
+    assert sleep_calls == [1.0, 2.0]
+
+
+def test_invoke_text_json_no_retry_for_non_retryable_error(monkeypatch):
+    monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
+    sleep_calls = []
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    service = LLMService(api_key="test", base_url="https://example.com")
+    text_client = _FlakyClient(
+        failures=[RuntimeError("invalid api key")],
+        content='{"answer":"ok"}',
+    )
+    service.text_client = text_client
+
+    with pytest.raises(RuntimeError, match="invalid api key"):
+        service.invoke_text_json(
+            messages=[{"role": "user", "content": "hello"}],
+            task_kind="core_summary_generation",
+            model_override="qwen3.5-flash",
+        )
+
+    assert len(text_client.completions.calls) == 1
+    assert sleep_calls == []

@@ -2,7 +2,7 @@
 import base64
 import json
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 
 from openai import OpenAI
 from loguru import logger
@@ -16,6 +16,21 @@ class LLMService:
     """统一的 LLM 服务类，提供文本和视觉模型的调用接口"""
 
     _THINKING_BUDGET = 4096
+    _MAX_RETRY_ATTEMPTS = 3
+    _RETRY_BASE_DELAY_SECONDS = 1.0
+    _RETRY_MAX_DELAY_SECONDS = 8.0
+    _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+    _RETRYABLE_ERROR_MARKERS = (
+        "too many requests",
+        "throttle",
+        "throttl",
+        "rate limit",
+        "serviceunavailable",
+        "service unavailable",
+        "internalerror.algo",
+        "capacity limits",
+        "temporarily unavailable",
+    )
 
     _TASK_POLICY_MAP: Dict[str, Dict[str, Any]] = {
         "patent_structuring_extract": {"tier": "default", "thinking": True},
@@ -33,7 +48,7 @@ class LLMService:
         "oar_common_knowledge_verification": {"tier": "large", "thinking": True},
         "oar_topup_search_verification": {"tier": "large", "thinking": True},
         "vision_ocr_correction": {"tier": "default", "thinking": True},
-        "vision_single_figure_explain": {"tier": "large", "thinking": True},
+        "vision_single_figure_explain": {"tier": "default", "thinking": True},
         "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},
     }
 
@@ -227,6 +242,84 @@ class LLMService:
             "thinking_budget": cls._THINKING_BUDGET,
         }
 
+    @classmethod
+    def _extract_status_code(cls, exc: Exception) -> Optional[int]:
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+
+        response = getattr(exc, "response", None)
+        response_status_code = getattr(response, "status_code", None)
+        if isinstance(response_status_code, int):
+            return response_status_code
+        return None
+
+    @classmethod
+    def _is_retryable_error(cls, exc: Exception) -> bool:
+        status_code = cls._extract_status_code(exc)
+        if status_code in cls._RETRYABLE_STATUS_CODES:
+            return True
+
+        message = str(exc or "").lower()
+        if not message:
+            return False
+        return any(marker in message for marker in cls._RETRYABLE_ERROR_MARKERS)
+
+    @classmethod
+    def _retry_delay_seconds(cls, attempt: int) -> float:
+        delay = cls._RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1))
+        return min(cls._RETRY_MAX_DELAY_SECONDS, delay)
+
+    def _call_with_retry(
+        self,
+        *,
+        fn: Callable[[], Any],
+        model: str,
+        task_kind: str,
+        event_name_prefix: str,
+        task_context: Dict[str, Optional[str]],
+    ) -> Any:
+        max_attempts = max(1, int(self._MAX_RETRY_ATTEMPTS))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                if not self._is_retryable_error(exc) or attempt >= max_attempts:
+                    raise
+
+                status_code = self._extract_status_code(exc)
+                delay_seconds = self._retry_delay_seconds(attempt)
+                logger.warning(
+                    "[LLM] 可重试错误，准备重试："
+                    f"{json.dumps({'task_kind': task_kind, 'model': model, 'attempt': attempt, 'max_attempts': max_attempts, 'delay_seconds': delay_seconds, 'status_code': status_code, 'error': str(exc)}, ensure_ascii=False)}"
+                )
+                emit_system_log(
+                    category="llm_call",
+                    event_name=f"{event_name_prefix}_retry",
+                    level="WARNING",
+                    owner_id=task_context.get("owner_id"),
+                    task_id=task_context.get("task_id"),
+                    task_type=task_context.get("task_type"),
+                    provider="llm",
+                    success=False,
+                    duration_ms=0,
+                    message=f"检测到可重试错误，{delay_seconds:.1f}s 后重试",
+                    payload={
+                        "request": {
+                            "task_kind": task_kind,
+                            "model": model,
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                        },
+                        "error": {
+                            "type": type(exc).__name__,
+                            "status_code": status_code,
+                            "message": str(exc),
+                        },
+                    },
+                )
+                time.sleep(delay_seconds)
+
     def invoke_text_json(
         self,
         messages: List[Dict[str, str]],
@@ -298,15 +391,22 @@ class LLMService:
         )
 
         start = time.perf_counter()
+        task_context = self._current_task_log_context()
         try:
-            response = self.text_client.chat.completions.create(
+            response = self._call_with_retry(
+                fn=lambda: self.text_client.chat.completions.create(
+                    model=chosen_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                    extra_body=self._build_thinking_extra_body(thinking),
+                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                ),
                 model=chosen_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-                extra_body=self._build_thinking_extra_body(thinking),
-                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                task_kind=policy["task_kind"],
+                event_name_prefix="chat_completion_json",
+                task_context=task_context,
             )
 
             content = response.choices[0].message.content
@@ -468,21 +568,27 @@ class LLMService:
         try:
             img_url = self._to_data_url(image_path)
 
-            response = self.vlm_client.chat.completions.create(
+            response = self._call_with_retry(
+                fn=lambda: self.vlm_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": img_url}},
+                                {"type": "text", "text": user_prompt},
+                            ],
+                        },
+                    ],
+                    extra_body=self._build_thinking_extra_body(thinking),
+                    temperature=temperature,
+                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                ),
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": img_url}},
-                            {"type": "text", "text": user_prompt},
-                        ],
-                    },
-                ],
-                extra_body=self._build_thinking_extra_body(thinking),
-                temperature=temperature,
-                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                task_kind=policy["task_kind"],
+                event_name_prefix="analyze_image_with_thinking",
+                task_context=task_context,
             )
             content = response.choices[0].message.content or ""
             reasoning_text = self._extract_reasoning_text(response)
@@ -661,15 +767,21 @@ class LLMService:
                 )
             content.append({"type": "text", "text": user_prompt})
 
-            response = self.vlm_client.chat.completions.create(
+            response = self._call_with_retry(
+                fn=lambda: self.vlm_client.chat.completions.create(
+                    model=chosen_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": content},
+                    ],
+                    extra_body=self._build_thinking_extra_body(thinking),
+                    temperature=temperature,
+                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                ),
                 model=chosen_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": content},
-                ],
-                extra_body=self._build_thinking_extra_body(thinking),
-                temperature=temperature,
-                timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+                task_kind=policy["task_kind"],
+                event_name_prefix="invoke_vision_images_json",
+                task_context=task_context,
             )
 
             raw_content = response.choices[0].message.content or ""

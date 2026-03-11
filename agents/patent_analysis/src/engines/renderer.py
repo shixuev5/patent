@@ -1,3 +1,4 @@
+import html
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -7,8 +8,14 @@ from agents.common.rendering.report_render import render_markdown_to_pdf
 
 
 class ReportRenderer:
+    _HTML_TAG_RE = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+    _HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
+    _SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?>.*?<\s*/\s*\1\s*>")
+    _CODE_FENCE_OPEN_RE = re.compile(r"```[a-zA-Z0-9_-]*\n?")
+
     def __init__(self, patent_data: Dict[str, Any]):
         self.patent_data = patent_data
+        self._sanitized_html_fragments_count = 0
 
     def _indent_text(self, text: str) -> str:
         """
@@ -32,6 +39,40 @@ class ReportRenderer:
         # 将 **text** 替换为 <strong>text</strong>，re.DOTALL 允许跨行匹配
         return re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', str(text), flags=re.DOTALL)
 
+    def _sanitize_llm_text(self, value: Any) -> str:
+        """清理 LLM 产物中的代码围栏与 HTML 标签，避免破坏 Markdown 结构。"""
+        text = str(value or "")
+        if not text:
+            return ""
+
+        text = html.unescape(text)
+        text, removed_script_style = self._SCRIPT_STYLE_RE.subn("", text)
+        text, removed_comments = self._HTML_COMMENT_RE.subn("", text)
+        text, removed_fence_open = self._CODE_FENCE_OPEN_RE.subn("", text)
+        text, removed_fence_tail = re.subn(r"```", "", text)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text, removed_tags = self._HTML_TAG_RE.subn("", text)
+
+        lines = [line.strip() for line in text.splitlines()]
+        text = "\n".join(lines)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = text.strip()
+
+        self._sanitized_html_fragments_count += (
+            removed_script_style
+            + removed_comments
+            + removed_fence_open
+            + removed_fence_tail
+            + removed_tags
+        )
+        return text
+
+    def _safe_text(self, value: Any, default: str = "") -> str:
+        cleaned = self._sanitize_llm_text(value)
+        if cleaned:
+            return cleaned
+        return default
+
     def render(
         self,
         report_data: Dict[str, Any],
@@ -44,6 +85,7 @@ class ReportRenderer:
         主入口：组装分析报告和检索策略，生成 MD 和 PDF
         """
         logger.info("开始渲染报告内容")
+        self._sanitized_html_fragments_count = 0
 
         parts = []
 
@@ -64,6 +106,10 @@ class ReportRenderer:
             parts.append(self._render_search_section(search_data))
 
         full_md_content = "\n".join(parts)
+        if self._sanitized_html_fragments_count > 0:
+            logger.warning(
+                f"报告渲染阶段清理了 {self._sanitized_html_fragments_count} 处 HTML/代码围栏片段"
+            )
 
         # 4. 写入 .md 文件
         try:
@@ -85,44 +131,47 @@ class ReportRenderer:
         顺序：AI标题 -> 摘要 -> 主图 -> 技术问题 -> 技术手段(含特征) -> 技术效果 -> 图解说明
         """
         lines = []
-
-        # --- 1. AI 标题 ---
-        title = data.get("ai_title", "未命名专利分析报告")
+        title = self._safe_text(data.get("ai_title"), "未命名专利分析报告")
         lines.append(f"# {title}\n")
 
-        # --- 2. 摘要 ---
         lines.append("## 摘要")
-        abstract = data.get("ai_abstract", "暂无摘要")
+        abstract = self._safe_text(data.get("ai_abstract"), "暂无摘要")
         lines.append(f"{self._indent_text(abstract)}\n")
 
-        # --- 3. 主图 ---
-        # 检查主图是否存在
-        main_fig = data.get("abstract_figure")
+        main_fig = str(data.get("abstract_figure") or "").strip()
         if main_fig:
             lines.append(f"![Main Figure]({main_fig})\n")
 
-        # --- 4. 技术领域 ---
-        lines.append("## 1. 技术领域")
-        domain = data.get("technical_field", "未提取到技术领域")
+        section_no = 1
+
+        def append_numbered_section(title_text: str) -> None:
+            nonlocal section_no
+            lines.append(f"## {section_no}. {title_text}")
+            section_no += 1
+
+        append_numbered_section("技术领域")
+        domain = self._safe_text(data.get("technical_field"), "未提取到技术领域")
         lines.append(f"{self._indent_text(domain)}\n")
 
-        # --- 5. 技术问题 ---
-        lines.append("## 2. 现有技术问题")
-        problem = data.get("technical_problem", "未提取到技术问题")
+        append_numbered_section("现有技术问题")
+        problem = self._safe_text(data.get("technical_problem"), "未提取到技术问题")
         lines.append(f"{self._indent_text(problem)}\n")
 
-        # --- 6. 背景知识百科 ---
         bg_knowledge = data.get("background_knowledge", [])
-        if bg_knowledge:
-            lines.append("## 3. 核心概念百科")
-            lines.append("> 💡 *阅读提示：以下是本案涉及的关键术语解释，旨在辅助非本领域人员理解技术方案。*\n")
-            
+        if isinstance(bg_knowledge, list) and bg_knowledge:
+            append_numbered_section("核心概念百科")
+            lines.append(
+                "> 💡 *阅读提示：以下是本案涉及的关键术语解释，旨在辅助非本领域人员理解技术方案。*\n"
+            )
+
             for item in bg_knowledge:
-                term = item.get("term", "未命名术语")
-                definition = item.get("definition", "")
-                analogy = item.get("analogy", "")
-                context = item.get("context_in_patent", "")
-                
+                if not isinstance(item, dict):
+                    continue
+                term = self._safe_text(item.get("term"), "未命名术语")
+                definition = self._safe_text(item.get("definition"), "-")
+                analogy = self._safe_text(item.get("analogy"), "-")
+                context = self._safe_text(item.get("context_in_patent"), "-")
+
                 card_html = f"""
 <div style="border: 1px solid #dfe2e5; margin-bottom: 20px; page-break-inside: avoid; background-color: #fff;">
     <div style="background-color: #f2f6f9; padding: 6px 8px; border-bottom: 1px solid #dfe2e5;">
@@ -149,37 +198,25 @@ class ReportRenderer:
                 lines.append(card_html)
             lines.append("\n")
 
-        # --- 7 技术方案 ---
-        lines.append("## 4. 技术方案概要")
-
-        # 优先展示保护主题，作为方案的定性描述
-        subject_matter = data.get("claim_subject_matter")
+        append_numbered_section("技术方案概要")
+        subject_matter = self._safe_text(data.get("claim_subject_matter"))
         if subject_matter:
-            # 使用引用块或加粗形式，使其在视觉上区别于正文
             lines.append(f"> **🛡️ 保护主题**：{subject_matter}\n")
 
-        scheme = data.get("technical_scheme", "未提取到技术方案")
-
-        # 只在技术方案是一整段话时才进行缩进
+        scheme = self._safe_text(data.get("technical_scheme"), "未提取到技术方案")
         if "\n" not in scheme:
             scheme = self._indent_text(scheme)
-
         lines.append(f"{scheme}\n")
 
-        # --- 8. 技术手段 (Technical Means) ---
-        lines.append("## 5. 核心技术手段")
-        means = data.get("technical_means", "未提取到技术手段")
+        append_numbered_section("核心技术手段")
+        means = self._safe_text(data.get("technical_means"), "未提取到技术手段")
         lines.append(f"{self._indent_text(means)}\n")
 
-        # 8.1 技术特征列表
         features = data.get("technical_features", [])
-        
         feature_name_map = {}
-        
-        if features:
+        if isinstance(features, list) and features:
             lines.append("### 关键技术特征表")
 
-            # HTML 表格头
             table_html = """
 <table>
     <thead>
@@ -192,14 +229,18 @@ class ReportRenderer:
     </thead>
     <tbody>
             """
-            for idx, feat in enumerate(features, 1):
-                name = feat.get("name", "-")
-                
-                # 存入映射表，方便技术效果中的贡献特征映射
-                feature_name_map[name.strip()] = idx
-                
-                desc = self._md_bold_to_html(feat.get("description", "").replace("\n", "<br>")) 
-                rationale = self._md_bold_to_html(feat.get("rationale", "").replace("\n", "<br>")) 
+            feature_idx = 0
+            for feat in features:
+                if not isinstance(feat, dict):
+                    continue
+                feature_idx += 1
+                name = self._safe_text(feat.get("name"), "-")
+                feature_name_map[name.strip()] = feature_idx
+
+                desc_raw = self._safe_text(feat.get("description"))
+                rationale_raw = self._safe_text(feat.get("rationale"))
+                desc = self._md_bold_to_html(desc_raw.replace("\n", "<br>"))
+                rationale = self._md_bold_to_html(rationale_raw.replace("\n", "<br>"))
 
                 is_distinguishing = feat.get("is_distinguishing", False)
                 source = str(feat.get("claim_source", "")).lower()
@@ -209,13 +250,11 @@ class ReportRenderer:
                 elif "independent" in source:
                     badge_text = "⚪ 前序特征"
                 else:
-                    # 只要不是区别特征，且来源不是 independent，即为从权特征
                     badge_text = "🔹 从权特征"
 
-                # Row 1: 序号使用 rowspan="2" 消除留白
                 table_html += f"""
         <tr>
-            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{idx}</td>
+            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_idx}</td>
             <td style="font-weight: bold;">{name}</td>
             <td style="text-align: center;">{badge_text}</td>
             <td>{desc}</td>
@@ -228,11 +267,9 @@ class ReportRenderer:
             table_html += "</tbody></table>\n"
             lines.append(table_html)
 
-        # --- 9. 技术效果 (Technical Effects) ---
-        lines.append("## 6. 技术效果")
+        append_numbered_section("技术效果")
         effects = data.get("technical_effects", [])
-        
-        if effects:
+        if isinstance(effects, list) and effects:
             table_html = """
 <table>
     <thead>
@@ -247,11 +284,14 @@ class ReportRenderer:
     <tbody>
             """
 
-            for idx, eff in enumerate(effects, 1):
-                desc = eff.get("effect", "未命名效果")
-                score = eff.get("tcs_score", 0)
+            effect_idx = 0
+            for eff in effects:
+                if not isinstance(eff, dict):
+                    continue
+                effect_idx += 1
+                desc = self._safe_text(eff.get("effect"), "未命名效果")
+                score = int(eff.get("tcs_score", 0) or 0)
 
-                # 评分样式
                 if score >= 5:
                     score_html = f"<span style='color: #dc3545;'>🔴 {score}</span>"
                     abc = "Block B"
@@ -265,30 +305,29 @@ class ReportRenderer:
                     score_html = f"<span style='color: #6c757d;'>⚪ {score}</span>"
                     abc = "Block A"
 
-                # 贡献特征：处理为无序列表 <ul>
                 contributors = eff.get("contributing_features", [])
                 if isinstance(contributors, list) and contributors:
                     formatted_items = []
                     for c in contributors:
-                        c_clean = str(c).strip()
-                        # 【修改点 1】尝试查找序号并追加
+                        c_clean = self._safe_text(c).strip()
+                        if not c_clean:
+                            continue
                         feat_idx = feature_name_map.get(c_clean)
                         if feat_idx:
                             formatted_items.append(f"{c_clean} [{feat_idx}]")
                         else:
                             formatted_items.append(c_clean)
-                            
-                    # 使用 <ul><li> 结构，避免数字混淆
-                    list_items = "".join([f"<li>{item}</li>" for item in formatted_items])
-                    contrib_html = f"<ul style='margin: 0;'>{list_items}</ul>"
+                    if formatted_items:
+                        list_items = "".join([f"<li>{item}</li>" for item in formatted_items])
+                        contrib_html = f"<ul style='margin: 0;'>{list_items}</ul>"
+                    else:
+                        contrib_html = "-"
                 else:
-                    contrib_html = str(contributors) if contributors else "-"
+                    contrib_html = "-"
 
-                 # 使用正则替换 Markdown 加粗语法，因为 HTML 表格内 MD 不会自动解析
-                rationale = self._md_bold_to_html(eff.get("rationale", ""))
-                
-                raw_evidence = eff.get("evidence", "")
-                # 对证据也进行加粗转换，防止证据里有强调语法失效
+                rationale_raw = self._safe_text(eff.get("rationale"))
+                rationale = self._md_bold_to_html(rationale_raw)
+                raw_evidence = self._safe_text(eff.get("evidence"))
                 evidence_text = self._md_bold_to_html(raw_evidence)
 
                 if "仅声称" in raw_evidence or "无实施例" in raw_evidence:
@@ -296,10 +335,9 @@ class ReportRenderer:
                 else:
                     evidence_styled = evidence_text
 
-                # Row 1: 效果 | 评分 | 贡献特征(列表) | 检索分级
                 table_html += f"""
         <tr>
-            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{idx}</td>
+            <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{effect_idx}</td>
             <td style="font-weight: bold;">{desc}</td>
             <td style="text-align: center;">{score_html}</td>
             <td>{contrib_html}</td>
@@ -307,7 +345,6 @@ class ReportRenderer:
         </tr>
                 """
 
-                # Row 2: 详情行 (机理 -> 证据)
                 table_html += f"""
         <tr>
             <td colspan="4">
@@ -328,17 +365,18 @@ class ReportRenderer:
         else:
             lines.append("> *未提取到明确的技术效果或评分数据。*\n")
 
-        # --- 10. 图解说明 (Figure Explanations) ---
-        lines.append("## 7. 图解说明")
+        append_numbered_section("图解说明")
         figures = data.get("figure_explanations", [])
-
-        if not figures:
+        if not isinstance(figures, list) or not figures:
             lines.append("暂无图片分析。\n")
+            return "\n".join(lines)
 
         for fig in figures:
+            if not isinstance(fig, dict):
+                continue
             img_paths = fig.get("image_paths") or []
-            img_title = fig.get("image_title", "图片")
-            explanation = fig.get("image_explanation", "")
+            img_title = self._safe_text(fig.get("image_title"), "图片")
+            explanation = self._safe_text(fig.get("image_explanation"))
             parts = fig.get("parts_info", [])
 
             if img_paths:
@@ -354,23 +392,23 @@ class ReportRenderer:
                 lines.append(figure_html)
 
             if explanation:
-                lines.append(
-                    f"\n**【智能解说】**\n\n{self._indent_text(explanation)}\n"
-                )
+                lines.append(f"\n**【智能解说】**\n\n{self._indent_text(explanation)}\n")
 
-            if parts:
+            if isinstance(parts, list) and parts:
                 lines.append("\n**【可见部件清单】**\n")
                 lines.append("| 标号 | 名称 | 功能/作用 | 空间连接 |")
                 lines.append("| :---: | :--- | :--- | :--- |")
                 for p in parts:
-                    pid = p.get("id", "-")
-                    pname = p.get("name", "-")
-                    pfunc = p.get("function", "-")
-                    pspatial = p.get("spatial_connections", "-")
+                    if not isinstance(p, dict):
+                        continue
+                    pid = self._safe_text(p.get("id"), "-") or "-"
+                    pname = self._safe_text(p.get("name"), "-") or "-"
+                    pfunc = self._safe_text(p.get("function"), "-") or "-"
+                    pspatial = self._safe_text(p.get("spatial_connections"), "-") or "-"
                     lines.append(f"| {pid} | {pname} | {pfunc} | {pspatial} |")
                 lines.append("\n")
 
-            lines.append("\n---\n")  # 分隔线
+            lines.append("\n---\n")
 
         return "\n".join(lines)
 
@@ -388,7 +426,7 @@ class ReportRenderer:
         lines.append("> 附图中除必需的词语外，不应当含有其他注释。")
 
         # 仅展示最终可执行结论，不展示中间复核过程
-        consistency_text = check_results.get("consistency")
+        consistency_text = self._safe_text(check_results.get("consistency"))
         lines.append("## 2. 最终结论")
         if consistency_text:
             lines.append(f"{consistency_text}\n")
@@ -408,9 +446,9 @@ class ReportRenderer:
         # --- 1. 基础信息与时间截点 ---
         # 获取著录项目信息
         biblio = self.patent_data.get("bibliographic_data", {})
-        title = biblio.get("invention_title", "未知标题")
-        app_date = biblio.get("application_date", "未知")
-        prio_date = biblio.get("priority_date")  # 获取优先权日
+        title = self._safe_text(biblio.get("invention_title"), "未知标题")
+        app_date = self._safe_text(biblio.get("application_date"), "未知")
+        prio_date = self._safe_text(biblio.get("priority_date"))  # 获取优先权日
         applicants_raw = biblio.get("applicants", [])
         inventors_raw = biblio.get("inventors", [])
 
@@ -419,9 +457,9 @@ class ReportRenderer:
             for item in applicants_raw:
                 name = ""
                 if isinstance(item, dict):
-                    name = str(item.get("name", "")).strip()
+                    name = self._safe_text(item.get("name")).strip()
                 elif item is not None:
-                    name = str(item).strip()
+                    name = self._safe_text(item).strip()
                 if name:
                     applicant_names.append(name)
 
@@ -430,7 +468,7 @@ class ReportRenderer:
             for item in inventors_raw:
                 if item is None:
                     continue
-                name = str(item).strip()
+                name = self._safe_text(item).strip()
                 if name:
                     inventor_names.append(name)
 
@@ -465,6 +503,8 @@ class ReportRenderer:
         # 获取数据源
         matrix = data.get("search_matrix", [])
         semantic = data.get("semantic_strategy", {})
+        if not isinstance(semantic, dict):
+            semantic = {}
 
         # --- 2. 检索要素表 (包含分类号) ---
         lines.append("## 2. 检索要素表")
@@ -491,12 +531,14 @@ class ReportRenderer:
             lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
             for item in matrix:
-                concept = item.get("element_name", "-").replace("|", "\\|")
+                if not isinstance(item, dict):
+                    continue
+                concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
                 role_key = item.get("element_role", "Other")
 
                 block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
 
-                e_type_raw = item.get("element_type", "")
+                e_type_raw = self._safe_text(item.get("element_type"))
                 e_type_display = type_mapping.get(e_type_raw, e_type_raw)
 
                 # 在概念名下方添加小字体属性标签，不单独增加 element_type 列
@@ -509,6 +551,34 @@ class ReportRenderer:
                 en_list = item.get("keywords_en", [])
                 ref_list = item.get("ipc_cpc_ref", [])
 
+                if isinstance(zh_list, list):
+                    zh_cleaned = []
+                    for value in zh_list:
+                        cleaned = self._safe_text(value)
+                        if cleaned:
+                            zh_cleaned.append(cleaned)
+                    zh_list = zh_cleaned
+                else:
+                    zh_list = []
+                if isinstance(en_list, list):
+                    en_cleaned = []
+                    for value in en_list:
+                        cleaned = self._safe_text(value)
+                        if cleaned:
+                            en_cleaned.append(cleaned)
+                    en_list = en_cleaned
+                else:
+                    en_list = []
+                if isinstance(ref_list, list):
+                    ref_cleaned = []
+                    for value in ref_list:
+                        cleaned = self._safe_text(value)
+                        if cleaned:
+                            ref_cleaned.append(cleaned)
+                    ref_list = ref_cleaned
+                else:
+                    ref_list = []
+
                 zh_str = ", ".join(zh_list) if zh_list else "-"
                 en_str = ", ".join(en_list) if en_list else "-"
                 class_str = "<br>".join(ref_list) if ref_list else "-"
@@ -519,9 +589,16 @@ class ReportRenderer:
             lines.append("> 未生成检索要素表。\n")
 
         # --- 3. 语义检索策略 ---
-        lines.append(f"## 3. {semantic.get('name')}\n")
-        lines.append(f"> **策略逻辑**: {semantic.get('description')}\n")
-        lines.append(f"```text\n{semantic.get('content')}\n```\n")
+        semantic_name = self._safe_text(semantic.get("name"), "语义检索")
+        semantic_desc = self._safe_text(
+            semantic.get("description"),
+            "基于核心技术手段的自然语言高密度提炼，用于快速召回 X 类/ Y 类文献。",
+        )
+        semantic_content = self._safe_text(semantic.get("content"))
+
+        lines.append(f"## 3. {semantic_name}\n")
+        lines.append(f"> **策略逻辑**: {semantic_desc}\n")
+        lines.append(f"```text\n{semantic_content}\n```\n")
             
         return "\n".join(lines)
 
