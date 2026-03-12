@@ -204,6 +204,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { useAdminUsageStore } from '~/stores/adminUsage'
+import { cachedGetJson } from '~/utils/apiClient'
 
 const route = useRoute()
 const config = useRuntimeConfig()
@@ -251,9 +252,12 @@ const navClass = (active: boolean) => {
 
 const fetchHealthStats = async () => {
   try {
-    const response = await fetch(`${config.public.apiBaseUrl}/api/health`)
-    if (!response.ok) throw new Error(`status: ${response.status}`)
-    const data = await response.json()
+    const data = await cachedGetJson<any>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/health',
+      queryKey: ['public', 'health'],
+      staleTime: 60 * 1000,
+    })
     serviceStatus.value = typeof data?.status === 'string' ? data.status : null
     serviceVersion.value = data?.version ?? null
   } catch (error) {

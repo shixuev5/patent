@@ -1397,17 +1397,23 @@ class SQLiteTaskStorage:
             ON CONFLICT(owner_id) DO UPDATE SET
                 authing_sub = excluded.authing_sub,
                 role = CASE
-                    WHEN excluded.role IS NULL OR TRIM(excluded.role) = '' THEN users.role
-                    ELSE excluded.role
+                    WHEN users.role IS NULL OR TRIM(users.role) = '' THEN excluded.role
+                    ELSE users.role
                 END,
                 name = CASE
                     WHEN users.name IS NULL OR TRIM(users.name) = '' THEN excluded.name
                     ELSE users.name
                 END,
-                nickname = excluded.nickname,
+                nickname = CASE
+                    WHEN users.nickname IS NULL OR TRIM(users.nickname) = '' THEN excluded.nickname
+                    ELSE users.nickname
+                END,
                 email = excluded.email,
                 phone = excluded.phone,
-                picture = excluded.picture,
+                picture = CASE
+                    WHEN users.picture IS NULL OR TRIM(users.picture) = '' THEN excluded.picture
+                    ELSE users.picture
+                END,
                 raw_profile = excluded.raw_profile,
                     updated_at = excluded.updated_at,
                     last_login_at = excluded.last_login_at

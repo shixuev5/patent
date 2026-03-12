@@ -389,6 +389,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
+import { cachedGetJson, invalidateQueries, requestRaw, setCachedQueryData } from '~/utils/apiClient'
 import type {
   AccountAvatarUploadResponse,
   AccountDashboard,
@@ -886,6 +887,18 @@ const getAuthToken = async (): Promise<string> => {
   return taskStore.authToken
 }
 
+const getAuthScopeKey = (): string => `${taskStore.authMode}:${taskStore.userId || 'anonymous'}`
+const getAccountProfileQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'profile']
+const getAccountDashboardQueryKey = (year: number, month: number): readonly unknown[] => [
+  'api',
+  getAuthScopeKey(),
+  'account',
+  'dashboard',
+  year,
+  month,
+]
+const getUsageQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'usage', 'all']
+
 const toApiError = async (response: Response): Promise<string> => {
   try {
     return await taskStore.parseApiError(response)
@@ -929,10 +942,12 @@ const focusDisplayNameEditor = () => {
 }
 
 const putProfile = async (token: string, payload: AccountProfileUpdateRequest): Promise<AccountProfile> => {
-  const response = await fetch(`${config.public.apiBaseUrl}/api/account/profile`, {
+  const response = await requestRaw({
+    baseUrl: config.public.apiBaseUrl,
+    path: '/api/account/profile',
     method: 'PUT',
+    token,
     headers: {
-      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -940,6 +955,8 @@ const putProfile = async (token: string, payload: AccountProfileUpdateRequest): 
   if (!response.ok) throw new Error(await toApiError(response))
   const nextProfile = await response.json() as AccountProfile
   profile.value = nextProfile
+  setCachedQueryData(getAccountProfileQueryKey(), nextProfile)
+  await invalidateQueries(['api', getAuthScopeKey(), 'account'])
   syncAuthUserProfile(nextProfile)
   return nextProfile
 }
@@ -978,11 +995,11 @@ const onProfileAvatarChange = async (event: Event) => {
     const token = await getAuthToken()
     const formData = new FormData()
     formData.append('file', selected)
-    const uploadResponse = await fetch(`${config.public.apiBaseUrl}/api/account/profile/avatar`, {
+    const uploadResponse = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/profile/avatar',
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      token,
       body: formData,
     })
     if (!uploadResponse.ok) throw new Error(await toApiError(uploadResponse))
@@ -1053,37 +1070,43 @@ const syncAuthUserProfile = (nextProfile: AccountProfile) => {
 }
 
 const fetchProfile = async (token: string) => {
-  const response = await fetch(`${config.public.apiBaseUrl}/api/account/profile`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+  const nextProfile = await cachedGetJson<AccountProfile>({
+    baseUrl: config.public.apiBaseUrl,
+    path: '/api/account/profile',
+    token,
+    queryKey: getAccountProfileQueryKey(),
+    staleTime: 30 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
   })
-  if (!response.ok) throw new Error(await toApiError(response))
-  profile.value = await response.json()
+  profile.value = nextProfile
   if (!editingDisplayName.value) resetDisplayNameDraft()
 }
 
 const fetchDashboard = async (token: string) => {
   const { year, month } = parsedYearMonth.value
-  const response = await fetch(`${config.public.apiBaseUrl}/api/account/dashboard?year=${year}&month=${month}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+  const nextDashboard = await cachedGetJson<AccountDashboard>({
+    baseUrl: config.public.apiBaseUrl,
+    path: `/api/account/dashboard?year=${year}&month=${month}`,
+    token,
+    queryKey: getAccountDashboardQueryKey(year, month),
+    staleTime: 20 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
   })
-  if (!response.ok) throw new Error(await toApiError(response))
-  dashboard.value = await response.json()
+  dashboard.value = nextDashboard
   monthTargetInput.value = String(Math.max(0, Number(dashboard.value.monthTarget || 0)))
 }
 
 const fetchUsage = async (token: string) => {
   try {
-    const response = await fetch(`${config.public.apiBaseUrl}/api/usage`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const usage = await cachedGetJson<UsageResponse>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/usage',
+      token,
+      queryKey: getUsageQueryKey(),
+      staleTime: 10 * 1000,
+      gcTime: 30 * 60 * 1000,
     })
-    if (!response.ok) return
-    taskStore.dailyUsage = await response.json() as UsageResponse
+    taskStore.dailyUsage = usage
     if ((taskStore.dailyUsage?.remainingPoints || 0) > 0) taskStore.clearPointLimitNotice()
   } catch (error) {
     console.error('加载积分信息失败：', error)
@@ -1107,10 +1130,12 @@ const saveMonthTarget = async () => {
   try {
     const token = await getAuthToken()
     const { year, month } = parsedYearMonth.value
-    const response = await fetch(`${config.public.apiBaseUrl}/api/account/month-target`, {
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/month-target',
       method: 'PUT',
+      token,
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -1120,6 +1145,8 @@ const saveMonthTarget = async () => {
       }),
     })
     if (!response.ok) throw new Error(await toApiError(response))
+    await invalidateQueries(['api', getAuthScopeKey(), 'account'])
+    await invalidateQueries(['api', getAuthScopeKey(), 'usage'])
     await fetchDashboard(token)
   } catch (error) {
     targetErrorMessage.value = error instanceof Error ? error.message : '保存目标失败。'

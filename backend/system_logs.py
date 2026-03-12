@@ -379,29 +379,30 @@ def instrument_requests() -> None:
                 response = _ORIGINAL_SESSION_REQUEST(session, method, url, *args, **kwargs)
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
                 response_size = int(response.headers.get("content-length") or 0)
-                emit_system_log(
-                    category="external_api",
-                    event_name="requests_call",
-                    level="INFO" if response.ok else "WARNING",
-                    method=str(method or "").upper(),
-                    path=parsed.path or "/",
-                    status_code=int(response.status_code),
-                    duration_ms=duration_ms,
-                    provider=provider,
-                    target_host=host or None,
-                    success=bool(response.ok),
-                    message=f"{method} {sanitized_url}",
-                    payload={
-                        "request_url": sanitized_url,
-                        "request": request_payload,
-                        "response": {
-                            "status_code": int(response.status_code),
-                            "reason": response.reason,
-                            "ok": bool(response.ok),
-                            "response_size": response_size,
+                if not response.ok:
+                    emit_system_log(
+                        category="external_api",
+                        event_name="requests_call",
+                        level="WARNING",
+                        method=str(method or "").upper(),
+                        path=parsed.path or "/",
+                        status_code=int(response.status_code),
+                        duration_ms=duration_ms,
+                        provider=provider,
+                        target_host=host or None,
+                        success=False,
+                        message=f"{method} {sanitized_url}",
+                        payload={
+                            "request_url": sanitized_url,
+                            "request": request_payload,
+                            "response": {
+                                "status_code": int(response.status_code),
+                                "reason": response.reason,
+                                "ok": bool(response.ok),
+                                "response_size": response_size,
+                            },
                         },
-                    },
-                )
+                    )
                 return response
             except Exception as exc:
                 duration_ms = int((time.perf_counter() - started_at) * 1000)

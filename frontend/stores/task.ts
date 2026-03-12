@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { useAuthStore } from '~/stores/auth'
+import { cachedGetJson, invalidateQueries, requestRaw } from '~/utils/apiClient'
 import type { CreateTaskInput, Task, TaskType } from '~/types/task'
 import type { DailyPointsExceededDetail, UsageResponse } from '~/types/usage'
 
@@ -127,6 +128,19 @@ export const useTaskStore = defineStore('tasks', {
   },
 
   actions: {
+    getAuthScopeKey(): string {
+      return `${this.authMode}:${this.userId || 'anonymous'}`
+    },
+
+    async invalidateTaskAndUsageQueries() {
+      const authScope = this.getAuthScopeKey()
+      await Promise.all([
+        invalidateQueries(['api', authScope, 'tasks']),
+        invalidateQueries(['api', authScope, 'task_snapshot']),
+        invalidateQueries(['api', authScope, 'usage']),
+      ])
+    },
+
     resolveTaskRef(task: Task): Task {
       return this.tasks.find((t) => t.id === task.id) || task
     },
@@ -210,13 +224,15 @@ export const useTaskStore = defineStore('tasks', {
 
     async fetchServerTasks(): Promise<Task[] | null> {
       const config = useRuntimeConfig()
-      const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
-        headers: {
-          Authorization: `Bearer ${this.authToken}`,
-        },
+      const authScope = this.getAuthScopeKey()
+      const data = await cachedGetJson<any>({
+        baseUrl: config.public.apiBaseUrl,
+        path: '/api/tasks',
+        token: this.authToken,
+        queryKey: ['api', authScope, 'tasks', 'list'],
+        staleTime: 10 * 1000,
+        gcTime: 30 * 60 * 1000,
       })
-      if (!response.ok) return null
-      const data = await response.json()
       if (!Array.isArray(data?.tasks)) return []
       return data.tasks.map((item: any) => toTaskFromServer(item))
     },
@@ -249,14 +265,17 @@ export const useTaskStore = defineStore('tasks', {
       if (!authed || !this.authToken) return false
 
       const config = useRuntimeConfig()
+      const authScope = this.getAuthScopeKey()
       try {
-        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks/${taskRef.backendId}`, {
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
+        const data = await cachedGetJson<any>({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/tasks/${taskRef.backendId}`,
+          token: this.authToken,
+          queryKey: ['api', authScope, 'task_snapshot', taskRef.backendId],
+          staleTime: 0,
+          gcTime: 5 * 60 * 1000,
+          persist: false,
         })
-        if (!response.ok) return false
-        const data = await response.json()
         this.applyServerTaskSnapshot(taskRef, data)
         this.saveToStorage()
         return true
@@ -329,7 +348,9 @@ export const useTaskStore = defineStore('tasks', {
       const config = useRuntimeConfig()
       const deviceId = this.ensureGuestDeviceId()
       try {
-        const response = await fetch(`${config.public.apiBaseUrl}/api/auth/guest`, {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/auth/guest',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -350,7 +371,9 @@ export const useTaskStore = defineStore('tasks', {
     async exchangeAuthingAuth(idToken: string): Promise<boolean> {
       const config = useRuntimeConfig()
       try {
-        const response = await fetch(`${config.public.apiBaseUrl}/api/auth/authing`, {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/auth/authing',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -561,15 +584,17 @@ export const useTaskStore = defineStore('tasks', {
       const authed = await this.ensureAuth()
       if (!authed || !this.authToken) return null
       const query = taskType ? `?taskType=${encodeURIComponent(taskType)}` : ''
+      const authScope = this.getAuthScopeKey()
 
       try {
-        const response = await fetch(`${config.public.apiBaseUrl}/api/usage${query}`, {
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
+        const usage = await cachedGetJson<UsageResponse>({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/usage${query}`,
+          token: this.authToken,
+          queryKey: ['api', authScope, 'usage', taskType || 'all'],
+          staleTime: 10 * 1000,
+          gcTime: 30 * 60 * 1000,
         })
-        if (!response.ok) return null
-        const usage = await response.json() as UsageResponse
         this.dailyUsage = usage
 
         if (taskType && usage.canCreateRequestedTask === false) {
@@ -661,11 +686,11 @@ export const useTaskStore = defineStore('tasks', {
           input.comparisonDocs?.forEach((doc) => formData.append('comparisonDocs', doc))
         }
 
-        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/tasks',
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
+          token: this.authToken,
           body: formData,
         })
         if (!response.ok) {
@@ -695,6 +720,7 @@ export const useTaskStore = defineStore('tasks', {
         taskRef.currentStep = taskRef.status === 'completed' ? '已复用历史报告' : '处理中'
         taskRef.updatedAt = Date.now()
         this.saveToStorage()
+        await this.invalidateTaskAndUsageQueries()
         await this.fetchUsage(input.taskType)
 
         if (taskRef.status === 'completed') {
@@ -793,16 +819,17 @@ export const useTaskStore = defineStore('tasks', {
 
       try {
         const config = useRuntimeConfig()
-        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks/${task.backendId}`, {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/tasks/${task.backendId}`,
           method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
+          token: this.authToken,
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
         this.stopProgressPolling(task.backendId)
         this.tasks.splice(index, 1)
         this.saveToStorage()
+        await this.invalidateTaskAndUsageQueries()
       } catch (error) {
         console.error('删除任务失败：', error)
         task.error = error instanceof Error ? error.message : '删除失败，请重试。'
@@ -820,15 +847,16 @@ export const useTaskStore = defineStore('tasks', {
 
       try {
         const config = useRuntimeConfig()
-        const response = await fetch(`${config.public.apiBaseUrl}/api/tasks`, {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/tasks',
           method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${this.authToken}`,
-          },
+          token: this.authToken,
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
         this.stopAllTracking()
         this.tasks = []
+        await this.invalidateTaskAndUsageQueries()
         if (process.client) {
           const storageKey = this.getCurrentTaskStorageKey()
           if (storageKey) localStorage.removeItem(storageKey)

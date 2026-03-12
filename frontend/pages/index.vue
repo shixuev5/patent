@@ -119,6 +119,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { cachedGetJson } from '~/utils/apiClient'
 
 const config = useRuntimeConfig()
 
@@ -166,9 +167,12 @@ const phaseCards = [
 
 const fetchHealthStats = async () => {
   try {
-    const response = await fetch(`${config.public.apiBaseUrl}/api/health`)
-    if (!response.ok) throw new Error(`status: ${response.status}`)
-    const data = await response.json()
+    const data = await cachedGetJson<any>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/health',
+      queryKey: ['public', 'health'],
+      staleTime: 60 * 1000,
+    })
     analyzedPatentCount.value = Number(data?.statistics?.completed_patents ?? data?.statistics?.by_status?.completed ?? 0)
   } catch (error) {
     if (analyzedPatentCount.value === null) analyzedPatentCount.value = 0

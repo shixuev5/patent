@@ -157,3 +157,30 @@ def test_extract_agency_removes_code_and_splits_agents() -> None:
 
 def test_split_people_keeps_english_full_name() -> None:
     assert RuleBasedExtractor._split_people("John Smith") == ["John Smith"]
+
+
+def test_extract_brief_description_full_marker_list_sample() -> None:
+    md = """
+# 附图说明
+[0023] 图1为本发明的立体图；
+[0024] 图2为本发明的侧面剖视图；
+[0025] 图3为本发明的等轴立体示意图；
+[0026] 图4为本发明床体的侧面剖视图；
+[0027] 图5为本发明床体的半剖图；
+[0028] 图6为本发明远红外理疗仪机用治疗床的放大示意图；
+[0029] 图7为本发明散热风扇的俯视图；
+[0030] 图8为本发明散热风扇的立体图；
+[0031] 图9为本发明床垫的结构示意图；
+[0032] 图10为本发明电致变色凸面镜的结构示意图；
+[0033] 图11为本发明远红外发生器的爆炸图。
+[0034] 图中标记：1、床体；2、侧面板；3、角度调整电机；4、远红外发生器；5、散热风扇；6、移动电机；7、底板；8、固定杆；9、移动气缸；10、固定块；11、滑轮；12、限制轨；13、丝杆；14、限制箱；101、床垫；102、驱动轴；103、从动齿轮；104、主动齿轮；106、透明柔性薄层；107、变色层；108、透明支撑层；109、电流变液；110、凸透件；111、电致变色凸面镜；112、压电片；113、第一玻璃或塑胶基材层；114、第一透明导电层；115、电致变色层；116、电解质层；117、离子储存层；118、第二透明导电层；119、第二玻璃或塑胶基材层；120、透明基板；201、侧面光源；301、保护壳；401、散热块。
+# 具体实施方式
+"""
+    captions = RuleBasedExtractor._extract_figure_captions(md)
+    brief = RuleBasedExtractor._extract_brief_description(md)
+
+    assert len(captions) == 11
+    assert brief is not None
+    items = [item for item in brief.split("、") if item.strip()]
+    assert len(items) == 36
+    assert "401-散热块" in items

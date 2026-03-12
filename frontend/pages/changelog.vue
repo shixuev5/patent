@@ -47,6 +47,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { ChangelogApiResponse, ChangelogCategory, ChangelogRelease } from '~/types/changelog'
+import { cachedGetJson } from '~/utils/apiClient'
 
 const config = useRuntimeConfig()
 const serviceVersion = ref<string | null>(null)
@@ -69,9 +70,12 @@ const typeClass: Record<ChangelogCategory, string> = {
 
 const fetchHealthVersion = async () => {
   try {
-    const response = await fetch(`${config.public.apiBaseUrl}/api/health`)
-    if (!response.ok) throw new Error(`status: ${response.status}`)
-    const data = await response.json()
+    const data = await cachedGetJson<{ version?: string | null }>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/health',
+      queryKey: ['public', 'health'],
+      staleTime: 60 * 1000,
+    })
     serviceVersion.value = data?.version ?? null
   } catch (error) {
     console.error('Failed to fetch health version:', error)
@@ -80,9 +84,12 @@ const fetchHealthVersion = async () => {
 
 const fetchChangelog = async () => {
   try {
-    const response = await fetch(`${config.public.apiBaseUrl}/api/changelog`)
-    if (!response.ok) throw new Error(`status: ${response.status}`)
-    const data = (await response.json()) as Partial<ChangelogApiResponse>
+    const data = await cachedGetJson<Partial<ChangelogApiResponse>>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/changelog',
+      queryKey: ['public', 'changelog'],
+      staleTime: 5 * 60 * 1000,
+    })
     releases.value = Array.isArray(data.releases) ? data.releases : []
   } catch (error) {
     releases.value = []

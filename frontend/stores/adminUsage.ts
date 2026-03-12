@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { useTaskStore } from '~/stores/task'
+import { cachedGetJson } from '~/utils/apiClient'
 import type {
   AdminAccessResponse,
   AdminEntityTaskDetailResponse,
@@ -103,16 +104,23 @@ export const useAdminUsageStore = defineStore('admin-usage', {
   }),
 
   actions: {
-    async _authorizedFetch(path: string): Promise<Response | null> {
+    async _authorizedGetJson<T>(
+      path: string,
+      queryKeyTail: readonly unknown[],
+      staleTime: number = 30 * 1000,
+    ): Promise<T | null> {
       const taskStore = useTaskStore()
       const config = useRuntimeConfig()
       const authed = await taskStore.ensureAuth()
       if (!authed || !taskStore.authToken) return null
+      const authScope = `${taskStore.authMode}:${taskStore.userId || 'anonymous'}`
       try {
-        return await fetch(`${config.public.apiBaseUrl}${path}`, {
-          headers: {
-            Authorization: `Bearer ${taskStore.authToken}`,
-          },
+        return await cachedGetJson<T>({
+          baseUrl: config.public.apiBaseUrl,
+          path,
+          token: taskStore.authToken,
+          queryKey: ['api', authScope, ...queryKeyTail],
+          staleTime,
         })
       } catch (_error) {
         return null
@@ -126,13 +134,16 @@ export const useAdminUsageStore = defineStore('admin-usage', {
       this.loadingAccess = true
       accessInflight = (async () => {
         try {
-          const response = await this._authorizedFetch('/api/admin/access')
-          if (!response || !response.ok) {
+          const data = await this._authorizedGetJson<AdminAccessResponse>(
+            '/api/admin/access',
+            ['admin', 'access'],
+            15 * 1000,
+          )
+          if (!data) {
             this.isAdmin = false
             this.checkedAccess = true
             return false
           }
-          const data = await response.json() as AdminAccessResponse
           this.isAdmin = !!data?.isAdmin
           this.checkedAccess = true
           return this.isAdmin
@@ -152,9 +163,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           rangeType,
           anchor,
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminUsageDashboardResponse
+        const data = await this._authorizedGetJson<AdminUsageDashboardResponse>(
+          path,
+          ['admin', 'usage', 'dashboard', rangeType, anchor || ''],
+          30 * 1000,
+        )
+        if (!data) return null
         this.dashboard = data
         return data
       } finally {
@@ -178,9 +192,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           sortBy: input.sortBy ?? 'lastUsageAt',
           sortOrder: input.sortOrder ?? 'desc',
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminUsageTableResponse
+        const data = await this._authorizedGetJson<AdminUsageTableResponse>(
+          path,
+          ['admin', 'usage', 'table', path],
+          20 * 1000,
+        )
+        if (!data) return null
         this.tableData = data
         return data
       } finally {
@@ -195,9 +212,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           dateFrom,
           dateTo,
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminSystemLogSummaryResponse
+        const data = await this._authorizedGetJson<AdminSystemLogSummaryResponse>(
+          path,
+          ['admin', 'logs', 'summary', dateFrom || '', dateTo || ''],
+          20 * 1000,
+        )
+        if (!data) return null
         this.systemLogSummary = data
         return data
       } finally {
@@ -224,9 +244,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           page: input.page ?? 1,
           pageSize: input.pageSize ?? 10,
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminSystemLogListResponse
+        const data = await this._authorizedGetJson<AdminSystemLogListResponse>(
+          path,
+          ['admin', 'logs', 'list', path],
+          10 * 1000,
+        )
+        if (!data) return null
         this.systemLogs = data
         return data
       } finally {
@@ -237,9 +260,13 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     async fetchSystemLogDetail(logId: string): Promise<AdminSystemLogDetailResponse | null> {
       this.loadingSystemLogDetail = true
       try {
-        const response = await this._authorizedFetch(`/api/admin/logs/${encodeURIComponent(logId)}`)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminSystemLogDetailResponse
+        const path = `/api/admin/logs/${encodeURIComponent(logId)}`
+        const data = await this._authorizedGetJson<AdminSystemLogDetailResponse>(
+          path,
+          ['admin', 'logs', 'detail', logId],
+          10 * 1000,
+        )
+        if (!data) return null
         this.systemLogDetail = data
         return data
       } finally {
@@ -262,9 +289,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           sortBy: input.sortBy ?? 'taskCount',
           sortOrder: input.sortOrder ?? 'desc',
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminEntityUserListResponse
+        const data = await this._authorizedGetJson<AdminEntityUserListResponse>(
+          path,
+          ['admin', 'entities', 'users', path],
+          20 * 1000,
+        )
+        if (!data) return null
         this.entityUsers = data
         return data
       } finally {
@@ -287,9 +317,12 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           sortBy: input.sortBy ?? 'updatedAt',
           sortOrder: input.sortOrder ?? 'desc',
         })
-        const response = await this._authorizedFetch(path)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminEntityTaskListResponse
+        const data = await this._authorizedGetJson<AdminEntityTaskListResponse>(
+          path,
+          ['admin', 'entities', 'tasks', path],
+          10 * 1000,
+        )
+        if (!data) return null
         this.entityTasks = data
         return data
       } finally {
@@ -300,9 +333,13 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     async fetchEntityTaskDetail(taskId: string): Promise<AdminEntityTaskDetailResponse | null> {
       this.loadingEntityTaskDetail = true
       try {
-        const response = await this._authorizedFetch(`/api/admin/entities/tasks/${encodeURIComponent(taskId)}`)
-        if (!response || !response.ok) return null
-        const data = await response.json() as AdminEntityTaskDetailResponse
+        const path = `/api/admin/entities/tasks/${encodeURIComponent(taskId)}`
+        const data = await this._authorizedGetJson<AdminEntityTaskDetailResponse>(
+          path,
+          ['admin', 'entities', 'task_detail', taskId],
+          10 * 1000,
+        )
+        if (!data) return null
         this.entityTaskDetail = data
         return data
       } finally {
