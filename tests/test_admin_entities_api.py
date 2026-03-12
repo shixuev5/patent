@@ -120,16 +120,23 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
     )
     assert users.total >= 1
     assert users.items[0].userName == "张三"
-    assert users.meta is not None
-    stats = users.meta["userStats"]
+    assert users.meta is None
+
+    user_stats = asyncio.run(
+        admin_entities.get_admin_entity_user_stats(
+            current_user=admin_user,
+        )
+    ).userStats
+    assert user_stats["totalUsers"] == 4
+    assert user_stats["registeredUsers"] == 3
+    stats = user_stats
     assert stats["activeUsers1d"] == 1
     assert stats["activeUsers7d"] == 2
     assert stats["activeUsers30d"] == 3
     assert 2 <= stats["newUsers1d"] <= 3
     assert stats["newUsers7d"] >= stats["newUsers1d"]
     assert stats["newUsers30d"] >= stats["newUsers7d"]
-    assert stats["newUsers30d"] >= 4
-    assert stats["newUsers30d"] >= stats["newUsers7d"] >= stats["newUsers1d"]
+    assert stats["newUsers30d"] == 4
 
     tasks = asyncio.run(
         admin_entities.get_admin_entity_tasks(
@@ -151,8 +158,14 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
     assert tasks.items[0].userName == "李四"
     assert isinstance(tasks.items[0].durationSeconds, int)
     assert tasks.items[0].durationSeconds >= 0
-    assert tasks.meta is not None
-    windows = {item["taskType"]: item for item in tasks.meta["taskTypeWindows"]}
+    assert tasks.meta is None
+
+    task_stats = asyncio.run(
+        admin_entities.get_admin_entity_task_stats(
+            current_user=admin_user,
+        )
+    )
+    windows = {item["taskType"]: item for item in task_stats.taskTypeWindows}
     assert windows["office_action_reply"]["count1d"] == 0
     assert windows["office_action_reply"]["count7d"] == 1
     assert windows["office_action_reply"]["count30d"] == 1
@@ -180,7 +193,7 @@ def test_admin_entities_forbidden(monkeypatch, tmp_path):
                 role=None,
                 page=1,
                 pageSize=10,
-                sortBy="updatedAt",
+                sortBy="latestTaskAt",
                 sortOrder="desc",
                 current_user=non_admin,
             )

@@ -1,5 +1,6 @@
 export type UsageRangeType = 'day' | 'month' | 'year'
 export type UsageScopeType = 'task' | 'user' | 'all'
+export type UsageEntityType = 'task' | 'user' | 'all'
 
 export interface AdminAccessResponse {
   isAdmin: boolean
@@ -34,8 +35,57 @@ export interface AdminUsageTableResponse {
   pageSize: number
   total: number
   priceMissing: boolean
-  items: Record<string, any>[]
+  summary: AdminUsageSummary
+  items: AdminUsageTableItem[]
 }
+
+export interface AdminUsageSummary {
+  totalTasks: number
+  totalUsers: number
+  totalTokens: number
+  totalEstimatedCostCny: number
+  totalLlmCallCount: number
+  avgTokensPerEntity: number
+  avgCostPerEntityCny: number
+  entityType: UsageEntityType
+  priceMissing: boolean
+}
+
+export interface AdminUsageTaskRow {
+  taskId: string
+  ownerId: string
+  userName?: string | null
+  taskType: string
+  taskStatus: string
+  totalTokens: number
+  llmCallCount: number
+  estimatedCostCny: number
+  priceMissing: boolean
+  models: string[]
+  lastUsageAt?: string | null
+}
+
+export interface AdminUsageUserRow {
+  ownerId: string
+  userName?: string | null
+  taskCount: number
+  totalTokens: number
+  llmCallCount: number
+  estimatedCostCny: number
+  priceMissing: boolean
+  latestUsageAt?: string | null
+}
+
+export interface AdminUsageAllRow {
+  taskCount: number
+  userCount: number
+  totalTokens: number
+  llmCallCount: number
+  estimatedCostCny: number
+  priceMissing: boolean
+}
+
+export type AdminUsageTableItem = AdminUsageTaskRow | AdminUsageUserRow | AdminUsageAllRow
 
 export interface AdminSystemLogSummaryResponse {
   totalLogs: number
@@ -101,15 +151,19 @@ export interface AdminEntityUserListResponse {
   pageSize: number
   total: number
   items: AdminEntityUserItem[]
-  meta?: {
-    userStats?: {
-      activeUsers1d: number
-      activeUsers7d: number
-      activeUsers30d: number
-      newUsers1d: number
-      newUsers7d: number
-      newUsers30d: number
-    }
+  meta?: Record<string, any>
+}
+
+export interface AdminEntityUserStatsResponse {
+  userStats: {
+    totalUsers: number
+    registeredUsers: number
+    activeUsers1d: number
+    activeUsers7d: number
+    activeUsers30d: number
+    newUsers1d: number
+    newUsers7d: number
+    newUsers30d: number
   }
 }
 
@@ -131,14 +185,16 @@ export interface AdminEntityTaskListResponse {
   pageSize: number
   total: number
   items: AdminEntityTaskItem[]
-  meta?: {
-    taskTypeWindows?: Array<{
-      taskType: string
-      count1d: number
-      count7d: number
-      count30d: number
-    }>
-  }
+  meta?: Record<string, any>
+}
+
+export interface AdminEntityTaskStatsResponse {
+  taskTypeWindows: Array<{
+    taskType: string
+    count1d: number
+    count7d: number
+    count30d: number
+  }>
 }
 
 export interface AdminEntityTaskDetailResponse {

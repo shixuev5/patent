@@ -403,9 +403,7 @@ class ReportRenderer:
         
         lines.append("## 1. 审查依据")
         lines.append("**《中华人民共和国专利法实施细则》第二十一条：**")
-        lines.append("> 发明或者实用新型的几幅附图应当按照“图1，图2，……”顺序编号排列。")
         lines.append("> 发明或者实用新型说明书文字部分中未提及的附图标记不得在附图中出现，附图中未出现的附图标记不得在说明书文字部分中提及。申请文件中表示同一组成部分的附图标记应当一致。")
-        lines.append("> 附图中除必需的词语外，不应当含有其他注释。")
 
         # 仅展示最终可执行结论，不展示中间复核过程
         consistency_text = self._safe_text(check_results.get("consistency"))

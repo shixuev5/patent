@@ -160,6 +160,18 @@ class AdminUsageDashboardResponse(BaseModel):
     priceMissing: bool
 
 
+class AdminUsageSummary(BaseModel):
+    totalTasks: int
+    totalUsers: int
+    totalTokens: int
+    totalEstimatedCostCny: float
+    totalLlmCallCount: int
+    avgTokensPerEntity: float
+    avgCostPerEntityCny: float
+    entityType: Literal["task", "user", "all"]
+    priceMissing: bool
+
+
 class AdminUsageTableResponse(BaseModel):
     scope: Literal["task", "user", "all"]
     rangeType: Literal["day", "month", "year"]
@@ -169,6 +181,7 @@ class AdminUsageTableResponse(BaseModel):
     pageSize: int
     total: int
     priceMissing: bool
+    summary: AdminUsageSummary
     items: List[Dict[str, Any]]
 
 
@@ -236,6 +249,10 @@ class AdminEntityUserListResponse(BaseModel):
     meta: Optional[Dict[str, Any]] = None
 
 
+class AdminEntityUserStatsResponse(BaseModel):
+    userStats: Dict[str, Any]
+
+
 class AdminEntityTaskItem(BaseModel):
     taskId: str
     title: Optional[str] = None
@@ -255,6 +272,10 @@ class AdminEntityTaskListResponse(BaseModel):
     total: int
     items: List[AdminEntityTaskItem]
     meta: Optional[Dict[str, Any]] = None
+
+
+class AdminEntityTaskStatsResponse(BaseModel):
+    taskTypeWindows: List[Dict[str, Any]]
 
 
 class AdminEntityTaskDetailResponse(BaseModel):

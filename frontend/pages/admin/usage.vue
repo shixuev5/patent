@@ -61,7 +61,29 @@
 
       <template v-if="activeTab === 'usage'">
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 md:grid-cols-[auto_auto_auto_auto_auto_auto] md:items-end">
+          <div class="mb-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="rounded-xl px-3 py-2 text-sm font-semibold transition"
+              :class="usageScope === 'user' ? 'bg-cyan-700 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+              @click="usageScope = 'user'"
+            >
+              用户消耗统计
+            </button>
+            <button
+              type="button"
+              class="rounded-xl px-3 py-2 text-sm font-semibold transition"
+              :class="usageScope === 'task' ? 'bg-cyan-700 text-white' : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+              @click="usageScope = 'task'"
+            >
+              任务明细流水
+            </button>
+          </div>
+
+          <div
+            v-if="usageScope === 'user'"
+            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(9rem,1fr)_minmax(16rem,2fr)_auto] 2xl:items-end"
+          >
             <label class="field">
               <span>时间范围</span>
               <select v-model="rangeType" class="field-input" @change="onRangeTypeChange">
@@ -70,7 +92,6 @@
                 <option value="year">按年</option>
               </select>
             </label>
-
             <label v-if="rangeType === 'day'" class="field">
               <span>锚点日期</span>
               <input v-model="anchorDay" type="date" class="field-input" />
@@ -83,70 +104,49 @@
               <span>锚点年份</span>
               <input v-model.number="anchorYear" type="number" min="2020" max="2100" class="field-input" />
             </label>
-
-            <label class="field">
-              <span>表格范围</span>
-              <select v-model="scope" class="field-input">
-                <option value="task">按任务</option>
-                <option value="user">按用户</option>
-                <option value="all">全局汇总</option>
-              </select>
-            </label>
-
             <label class="field">
               <span>关键词</span>
-                <input
-                  v-model.trim="keyword"
-                  type="text"
-                  placeholder="任务ID / 用户名称 / 模型"
-                  class="field-input"
-                />
+              <input
+                v-model.trim="keyword"
+                type="text"
+                placeholder="用户ID / 用户名称"
+                class="field-input"
+              />
             </label>
-
             <button
               type="button"
-              class="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800"
-              :disabled="loadingDashboard || loadingTable"
+              class="query-btn query-action"
+              :disabled="loadingTable"
               @click="refreshUsageAll"
             >
-              {{ loadingDashboard || loadingTable ? '刷新中...' : '刷新统计' }}
+              {{ loadingTable ? '查询中...' : '查询' }}
             </button>
           </div>
 
-          <p v-if="dashboard?.priceMissing || tableData?.priceMissing" class="mt-3 text-xs text-amber-700">
-            存在未配置单价的模型，相关费用按 0 估算。
-          </p>
-        </section>
-
-        <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <article class="metric-card">
-            <p class="metric-label">总任务数</p>
-            <p class="metric-value">{{ dashboard?.overview.totalTasks ?? 0 }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">总用户数</p>
-            <p class="metric-value">{{ dashboard?.overview.totalUsers ?? 0 }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">总 Token</p>
-            <p class="metric-value">{{ formatNumber(dashboard?.overview.totalTokens ?? 0) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">总费用（{{ dashboard?.currency || 'CNY' }}）</p>
-            <p class="metric-value">{{ formatCost(dashboard?.overview.totalEstimatedCostCny ?? 0) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">平均 Token/任务</p>
-            <p class="metric-value">{{ formatNumber(dashboard?.overview.avgTokensPerTask ?? 0) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">平均费用/任务</p>
-            <p class="metric-value">{{ formatCost(dashboard?.overview.avgCostPerTaskCny ?? 0) }}</p>
-          </article>
-        </section>
-
-        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="mb-3 flex flex-wrap items-end gap-2">
+          <div
+            v-else
+            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(9rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(12rem,1fr)_minmax(14rem,1.5fr)_auto] 2xl:items-end"
+          >
+            <label class="field">
+              <span>时间范围</span>
+              <select v-model="rangeType" class="field-input" @change="onRangeTypeChange">
+                <option value="day">按天</option>
+                <option value="month">按月</option>
+                <option value="year">按年</option>
+              </select>
+            </label>
+            <label v-if="rangeType === 'day'" class="field">
+              <span>锚点日期</span>
+              <input v-model="anchorDay" type="date" class="field-input" />
+            </label>
+            <label v-else-if="rangeType === 'month'" class="field">
+              <span>锚点月份</span>
+              <input v-model="anchorMonth" type="month" class="field-input" />
+            </label>
+            <label v-else class="field">
+              <span>锚点年份</span>
+              <input v-model.number="anchorYear" type="number" min="2020" max="2100" class="field-input" />
+            </label>
             <label class="field">
               <span>任务类型</span>
               <select v-model="taskTypeFilter" class="field-input">
@@ -168,52 +168,134 @@
               <span>模型</span>
               <input v-model.trim="modelFilter" type="text" placeholder="例如：qwen3.5-flash" class="field-input" />
             </label>
+            <label class="field">
+              <span>关键词</span>
+              <input
+                v-model.trim="keyword"
+                type="text"
+                placeholder="任务ID / 用户ID / 用户名称"
+                class="field-input"
+              />
+            </label>
             <button
               type="button"
-              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              class="query-btn query-action"
               :disabled="loadingTable"
-              @click="refreshUsageTable"
+              @click="refreshUsageAll"
             >
-              {{ loadingTable ? '加载中...' : '检索表格' }}
+              {{ loadingTable ? '查询中...' : '查询' }}
             </button>
           </div>
+          <p v-if="tableData?.priceMissing" class="mt-3 text-xs text-amber-700">
+            存在未配置单价的模型，相关费用按 0 估算。
+          </p>
+        </section>
 
+        <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <article class="metric-card">
+            <p class="metric-label">总任务数</p>
+            <p class="metric-value">{{ usageSummary.totalTasks }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">总用户数</p>
+            <p class="metric-value">{{ usageSummary.totalUsers }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">总 Token</p>
+            <p class="metric-value">{{ formatNumber(usageSummary.totalTokens) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">总费用（{{ tableData?.currency || 'CNY' }}）</p>
+            <p class="metric-value">{{ formatCost(usageSummary.totalEstimatedCostCny) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">{{ usageScope === 'user' ? '平均 Token/用户' : '平均 Token/任务' }}</p>
+            <p class="metric-value">{{ formatNumber(usageSummary.avgTokensPerEntity) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">{{ usageScope === 'user' ? '平均费用/用户' : '平均费用/任务' }}</p>
+            <p class="metric-value">{{ formatCost(usageSummary.avgCostPerEntityCny) }}</p>
+          </article>
+        </section>
+
+        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
-            <table class="min-w-full divide-y divide-slate-200 text-xs">
+            <table class="admin-table-fixed min-w-[66rem] divide-y divide-slate-200 text-xs">
+              <colgroup v-if="usageScope === 'user'">
+                <col class="w-[11rem]" />
+                <col class="w-[8rem]" />
+                <col class="w-[7rem]" />
+                <col class="w-[7.5rem]" />
+                <col class="w-[7rem]" />
+                <col class="w-[7.5rem]" />
+                <col class="w-[9.5rem]" />
+              </colgroup>
+              <colgroup v-else>
+                <col class="w-[8.5rem]" />
+                <col class="w-[6rem]" />
+                <col class="w-[6.5rem]" />
+                <col class="w-[6.5rem]" />
+                <col class="w-[10.5rem]" />
+                <col class="w-[7rem]" />
+                <col class="w-[7.5rem]" />
+                <col class="w-[9.5rem]" />
+              </colgroup>
               <thead class="bg-slate-50 text-slate-600">
-                <tr>
-                  <th class="px-2.5 py-2 text-left font-semibold">{{ usagePrimaryLabel }}</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">任务/用户</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">Token</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">费用(CNY)</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">调用数</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">时间</th>
+                <tr v-if="usageScope === 'user'">
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户ID(ownerId)</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户名称</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">发起任务总数</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">总消耗Token</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">总调用次数</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">总费用(CNY)</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">最近使用时间</th>
+                </tr>
+                <tr v-else>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务ID</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">所属用户</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务类型</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">使用模型</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">消耗Token</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">费用(CNY)</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">完成时间</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
-                <tr v-for="row in tableData?.items || []" :key="rowKey(row)">
-                  <td class="px-2.5 py-2 font-mono text-[11px]">{{ formatUsagePrimary(row) }}</td>
-                  <td class="px-2.5 py-2">
-                    <template v-if="scope === 'task'">
-                      <p>{{ row.userName || '未知用户' }}</p>
-                      <p class="text-slate-500">{{ formatTaskTypeLabel(row.taskType) }} · {{ formatTaskStatusLabel(row.taskStatus) }}</p>
-                    </template>
-                    <template v-else-if="scope === 'user'">
-                      <p>{{ row.userName || '未知用户' }}</p>
-                      <p class="text-slate-500">任务 {{ row.taskCount }}</p>
-                    </template>
-                    <template v-else>
-                      <p>全局汇总</p>
-                      <p class="text-slate-500">任务 {{ row.taskCount }} · 用户 {{ row.userCount }}</p>
-                    </template>
-                  </td>
-                  <td class="px-2.5 py-2 text-right">{{ formatNumber(row.totalTokens || 0) }}</td>
-                  <td class="px-2.5 py-2 text-right">{{ formatCost(row.estimatedCostCny || 0) }}</td>
-                  <td class="px-2.5 py-2 text-right">{{ formatNumber(row.llmCallCount || 0) }}</td>
-                  <td class="px-2.5 py-2">{{ formatDateOnly(row.lastUsageAt || row.latestUsageAt) }}</td>
+                <tr v-for="row in usageItems" :key="rowKey(row)">
+                  <template v-if="usageScope === 'user'">
+                    <td class="px-2.5 py-2 font-mono text-[11px]">
+                      <p class="truncate">{{ row.ownerId || '-' }}</p>
+                    </td>
+                    <td class="px-2.5 py-2">
+                      <p class="truncate">{{ row.userName || '未知用户' }}</p>
+                    </td>
+                    <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
+                    <td class="px-2.5 py-2 text-right">{{ formatNumber(row.totalTokens || 0) }}</td>
+                    <td class="px-2.5 py-2 text-right">{{ formatNumber(row.llmCallCount || 0) }}</td>
+                    <td class="px-2.5 py-2 text-right">{{ formatCost(row.estimatedCostCny || 0) }}</td>
+                    <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.latestUsageAt) }}</td>
+                  </template>
+                  <template v-else>
+                    <td class="px-2.5 py-2 font-mono text-[11px]">
+                      <p class="truncate">{{ row.taskId || '-' }}</p>
+                    </td>
+                    <td class="px-2.5 py-2">
+                      <p class="truncate">{{ row.userName || '未知用户' }}</p>
+                      <p class="truncate text-slate-500">{{ row.ownerId || '-' }}</p>
+                    </td>
+                    <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskTypeLabel(row.taskType) }}</td>
+                    <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.taskStatus) }}</td>
+                    <td class="px-2.5 py-2">
+                      <p class="truncate">{{ row.models?.length ? row.models.join(', ') : '-' }}</p>
+                    </td>
+                    <td class="px-2.5 py-2 text-right">{{ formatNumber(row.totalTokens || 0) }}</td>
+                    <td class="px-2.5 py-2 text-right">{{ formatCost(row.estimatedCostCny || 0) }}</td>
+                    <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.lastUsageAt) }}</td>
+                  </template>
                 </tr>
-                <tr v-if="!(tableData?.items?.length)">
-                  <td colspan="6" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无数据</td>
+                <tr v-if="!usageItems.length">
+                  <td :colspan="usageScope === 'task' ? 8 : 7" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无数据</td>
                 </tr>
               </tbody>
             </table>
@@ -223,7 +305,7 @@
             <button
               type="button"
               class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
-              :disabled="scope === 'all' || usageCurrentPage <= 1 || loadingTable"
+              :disabled="usageCurrentPage <= 1 || loadingTable"
               @click="usageCurrentPage -= 1; refreshUsageTable()"
             >
               上一页
@@ -232,7 +314,7 @@
             <button
               type="button"
               class="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 transition hover:bg-slate-50 disabled:opacity-40"
-              :disabled="scope === 'all' || ((tableData?.items?.length || 0) < pageSize) || loadingTable"
+              :disabled="(usageItems.length < pageSize) || loadingTable"
               @click="usageCurrentPage += 1; refreshUsageTable()"
             >
               下一页
@@ -272,7 +354,7 @@
             </label>
           </div>
 
-          <div class="mt-3 grid gap-3 md:grid-cols-4 md:items-end">
+          <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(18rem,1.5fr)_auto] 2xl:items-end">
             <label class="field">
               <span>服务提供方</span>
               <select v-model="logProvider" class="field-input">
@@ -299,20 +381,17 @@
               <span>请求ID</span>
               <input v-model.trim="logRequestId" type="text" class="field-input" placeholder="请输入请求ID" />
             </label>
-          </div>
-
-          <div class="mt-3 flex flex-wrap items-end gap-2">
-            <label class="field min-w-[18rem]">
+            <label class="field">
               <span>关键词</span>
               <input v-model.trim="logKeyword" type="text" class="field-input" placeholder="按事件/消息/路径/服务方检索" />
             </label>
             <button
               type="button"
-              class="rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800"
+              class="query-btn query-action"
               :disabled="loadingSystemLogs || loadingSystemSummary"
               @click="refreshSystemLogsAll"
             >
-              {{ loadingSystemLogs || loadingSystemSummary ? '检索中...' : '检索日志' }}
+              {{ loadingSystemLogs || loadingSystemSummary ? '查询中...' : '查询' }}
             </button>
           </div>
         </section>
@@ -338,17 +417,27 @@
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
-            <table class="min-w-full divide-y divide-slate-200 text-xs">
+            <table class="admin-log-table min-w-[82rem] divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col class="w-[11rem]" />
+                <col class="w-[10rem]" />
+                <col class="w-[11rem]" />
+                <col class="w-[28rem]" />
+                <col class="w-[5.5rem]" />
+                <col class="w-[5.5rem]" />
+                <col class="w-[18rem]" />
+                <col class="w-[6.5rem]" />
+              </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
-                  <th class="px-2.5 py-2 text-left font-semibold">时间</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">分类/事件</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">用户/任务</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">接口</th>
-                  <th class="min-w-[4.5rem] px-2.5 py-2 text-right font-semibold">状态</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">耗时</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">摘要</th>
-                  <th class="sticky right-0 z-10 min-w-[5.5rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">时间</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">分类/事件</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户/任务</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">接口</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">耗时</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">摘要</th>
+                  <th class="sticky right-0 z-10 border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -357,7 +446,7 @@
                   :key="row.logId"
                   class="hover:bg-slate-50"
                 >
-                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateOnly(row.timestamp) }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.timestamp) }}</td>
                   <td class="px-2.5 py-2">
                     <p class="font-semibold">{{ formatLogCategory(row.category) }}</p>
                     <p class="text-slate-500">{{ formatLogEvent(row.eventName) }}</p>
@@ -367,15 +456,17 @@
                     <p class="font-mono text-[11px] text-slate-500">{{ row.taskId || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2">
-                    <p>{{ row.method || '-' }} {{ row.path || '-' }}</p>
-                    <p class="text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
+                    <p class="max-w-[26rem] truncate">{{ row.method || '-' }} {{ row.path || '-' }}</p>
+                    <p class="max-w-[26rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2 text-right">
                     <span :class="row.success ? 'text-emerald-700' : 'text-rose-700'">{{ row.success ? '成功' : '失败' }}</span>
                   </td>
                   <td class="px-2.5 py-2 text-right">{{ row.durationMs ?? '-' }}</td>
-                  <td class="px-2.5 py-2 max-w-[24rem] truncate">{{ row.message || '-' }}</td>
-                  <td class="sticky right-0 bg-white px-2.5 py-2">
+                  <td class="px-2.5 py-2">
+                    <p class="max-w-[18rem] truncate">{{ row.message || '-' }}</p>
+                  </td>
+                  <td class="sticky right-0 border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
                     <button
                       type="button"
                       class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
@@ -417,17 +508,27 @@
       </template>
 
       <template v-else-if="activeTab === 'users'">
+        <section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <article class="metric-card">
+            <p class="metric-label">总用户数</p>
+            <p class="metric-value">{{ formatNumber(userStats.totalUsers) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">注册用户数</p>
+            <p class="metric-value">{{ formatNumber(userStats.registeredUsers) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">新增用户数（7天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.newUsers7d) }}</p>
+          </article>
+          <article class="metric-card">
+            <p class="metric-label">活跃用户数（近30天）</p>
+            <p class="metric-value">{{ formatNumber(userStats.activeUsers30d) }}</p>
+          </article>
+        </section>
+
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 md:grid-cols-[minmax(16rem,2fr)_minmax(10rem,1fr)_auto] md:items-end">
-            <label class="field">
-              <span>关键词</span>
-              <input
-                v-model.trim="entityUserKeyword"
-                type="text"
-                class="field-input"
-                placeholder="按用户名称或邮箱检索"
-              />
-            </label>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(10rem,1fr)_minmax(18rem,2fr)_auto] xl:items-end">
             <label class="field">
               <span>角色</span>
               <select v-model="entityUserRole" class="field-input">
@@ -437,60 +538,47 @@
                 <option value="guest">访客</option>
               </select>
             </label>
+            <label class="field">
+              <span>关键词</span>
+              <input
+                v-model.trim="entityUserKeyword"
+                type="text"
+                class="field-input"
+                placeholder="按用户名称或邮箱检索"
+              />
+            </label>
             <button
               type="button"
-              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              class="query-btn query-action"
               :disabled="loadingEntityUsers"
               @click="refreshEntityUsersAll"
             >
-              {{ loadingEntityUsers ? '加载中...' : '检索用户' }}
+              {{ loadingEntityUsers ? '查询中...' : '查询' }}
             </button>
           </div>
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-slate-900">活跃用户统计（1天 / 7天 / 30天）</h3>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <article class="metric-card">
-            <p class="metric-label">活跃用户（1天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.activeUsers1d) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">活跃用户（7天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.activeUsers7d) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">活跃用户（30天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.activeUsers30d) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">新增用户（1天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.newUsers1d) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">新增用户（7天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.newUsers7d) }}</p>
-          </article>
-          <article class="metric-card">
-            <p class="metric-label">新增用户（30天）</p>
-            <p class="metric-value">{{ formatNumber(userStats.newUsers30d) }}</p>
-          </article>
-          </div>
-        </section>
-
-        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
-            <table class="min-w-full divide-y divide-slate-200 text-xs">
+            <table class="admin-table-fixed min-w-[72rem] divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col class="w-[8rem]" />
+                <col class="w-[8rem]" />
+                <col class="w-[4rem]" />
+                <col class="w-[4rem]" />
+                <col class="w-[10rem]" />
+                <col class="w-[10rem]" />
+                <col class="w-[10.5rem]" />
+              </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
-                  <th class="px-2.5 py-2 text-left font-semibold">用户</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">邮箱</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">角色</th>
-                  <th class="px-2.5 py-2 text-right font-semibold">任务数</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">最近任务时间</th>
-                  <th class="sticky right-0 z-10 min-w-[9rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">邮箱</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">角色</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">任务数</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">最近任务时间</th>
+                  <th class="sticky right-0 z-10 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -500,14 +588,17 @@
                   class="hover:bg-slate-50"
                 >
                   <td class="px-2.5 py-2">
-                    <p>{{ row.userName || '未命名用户' }}</p>
+                    <p class="truncate">{{ row.userName || '未命名用户' }}</p>
                   </td>
-                  <td class="px-2.5 py-2">{{ row.email || '-' }}</td>
-                  <td class="px-2.5 py-2">{{ formatUserRoleLabel(row.role) }}</td>
+                  <td class="px-2.5 py-2">
+                    <p class="truncate">{{ row.email || '-' }}</p>
+                  </td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatUserRoleLabel(row.role) }}</td>
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
-                  <td class="px-2.5 py-2">{{ formatDateOnly(row.latestTaskAt || row.createdAt) }}</td>
-                  <td class="sticky right-0 bg-white px-2.5 py-2">
-                    <div class="flex items-center gap-2">
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.latestTaskAt || row.createdAt) }}</td>
+                  <td class="sticky right-0 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
+                    <div class="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
@@ -528,7 +619,7 @@
                   </td>
                 </tr>
                 <tr v-if="!(entityUsers?.items?.length)">
-                  <td colspan="6" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无用户</td>
+                  <td colspan="7" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无用户</td>
                 </tr>
               </tbody>
             </table>
@@ -557,28 +648,50 @@
       </template>
 
       <template v-else-if="activeTab === 'tasks'">
+        <section>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <article
+              v-for="item in taskTypeWindows"
+              :key="item.taskType"
+              class="metric-card"
+            >
+              <p class="metric-label">{{ formatTaskTypeLabel(item.taskType) }}</p>
+              <div class="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600">
+                <div>
+                  <p class="text-slate-500">1天</p>
+                  <p class="mt-1 text-xl font-semibold text-slate-900">{{ formatNumber(item.count1d) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">7天</p>
+                  <p class="mt-1 text-xl font-semibold text-slate-900">{{ formatNumber(item.count7d) }}</p>
+                </div>
+                <div>
+                  <p class="text-slate-500">30天</p>
+                  <p class="mt-1 text-xl font-semibold text-slate-900">{{ formatNumber(item.count30d) }}</p>
+                </div>
+              </div>
+            </article>
+            <article
+              v-if="!taskTypeWindows.length"
+              class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500 sm:col-span-2 xl:col-span-3"
+            >
+              暂无任务类型统计数据
+            </article>
+          </div>
+        </section>
+
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 md:grid-cols-4 md:items-end">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(8rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(12rem,1fr)_minmax(16rem,1.5fr)_auto] 2xl:items-end">
             <label class="field">
-              <span>关键词</span>
-              <input
-                v-model.trim="entityTaskKeyword"
-                type="text"
-                class="field-input"
-                placeholder="按任务ID、标题或PN检索"
-              />
+              <span>开始日期</span>
+              <input v-model="entityTaskDateFrom" type="date" class="field-input" />
             </label>
             <label class="field">
-              <span>用户</span>
-              <input
-                v-model.trim="entityTaskUserName"
-                type="text"
-                class="field-input"
-                placeholder="请输入用户名称"
-              />
+              <span>结束日期</span>
+              <input v-model="entityTaskDateTo" type="date" class="field-input" />
             </label>
             <label class="field">
-              <span>任务类型</span>
+              <span>类型</span>
               <select v-model="entityTaskType" class="field-input">
                 <option value="">全部</option>
                 <option value="patent_analysis">专利分析</option>
@@ -597,77 +710,58 @@
                 <option value="paused">暂停</option>
               </select>
             </label>
-          </div>
-
-          <div class="mt-3 flex flex-wrap items-end gap-3">
             <label class="field">
-              <span>开始日期</span>
-              <input v-model="entityTaskDateFrom" type="date" class="field-input" />
+              <span>用户</span>
+              <input
+                v-model.trim="entityTaskUserName"
+                type="text"
+                class="field-input"
+                placeholder="请输入用户名称"
+              />
             </label>
             <label class="field">
-              <span>结束日期</span>
-              <input v-model="entityTaskDateTo" type="date" class="field-input" />
+              <span>关键词</span>
+              <input
+                v-model.trim="entityTaskKeyword"
+                type="text"
+                class="field-input"
+                placeholder="按任务ID、标题或PN检索"
+              />
             </label>
             <button
               type="button"
-              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              class="query-btn query-action"
               :disabled="loadingEntityTasks"
               @click="refreshEntityTasksAll"
             >
-              {{ loadingEntityTasks ? '加载中...' : '检索任务' }}
+              {{ loadingEntityTasks ? '查询中...' : '查询' }}
             </button>
           </div>
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-slate-900">任务类型统计（1天 / 7天 / 30天）</h3>
-          </div>
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <article
-              v-for="item in taskTypeWindows"
-              :key="item.taskType"
-              class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm shadow-slate-100"
-            >
-              <p class="text-sm font-semibold text-slate-900">{{ formatTaskTypeLabel(item.taskType) }}</p>
-              <div class="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600">
-                <div>
-                  <p class="text-slate-500">1天</p>
-                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count1d) }}</p>
-                </div>
-                <div>
-                  <p class="text-slate-500">7天</p>
-                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count7d) }}</p>
-                </div>
-                <div>
-                  <p class="text-slate-500">30天</p>
-                  <p class="mt-1 text-base font-semibold text-slate-900">{{ formatNumber(item.count30d) }}</p>
-                </div>
-              </div>
-            </article>
-            <article
-              v-if="!taskTypeWindows.length"
-              class="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500 sm:col-span-2 xl:col-span-3"
-            >
-              暂无任务类型统计数据
-            </article>
-          </div>
-        </section>
-
-        <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
           <div class="overflow-x-auto rounded-xl border border-slate-200">
-            <table class="min-w-full divide-y divide-slate-200 text-xs">
+            <table class="admin-table-fixed min-w-[72rem] divide-y divide-slate-200 text-xs">
+              <colgroup>
+                <col class="w-[4rem]" />
+                <col class="w-[6rem]" />
+                <col class="w-[8rem]" />
+                <col class="w-[6rem]" />
+                <col class="w-[4rem]" />
+                <col class="w-[4rem]" />
+                <col class="w-[6rem]" />
+                <col class="w-[10.5rem]" />
+              </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
-                  <th class="px-2.5 py-2 text-left font-semibold">任务ID</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">任务名称</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">用户</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">类型</th>
-                  <th class="min-w-[5.5rem] px-2.5 py-2 text-left font-semibold">状态</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">任务耗时</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">创建日期</th>
-                  <th class="px-2.5 py-2 text-left font-semibold">更新时间</th>
-                  <th class="sticky right-0 z-10 min-w-[9rem] bg-slate-50 px-2.5 py-2 text-left font-semibold">操作</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务ID</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务名称</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">类型</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务耗时</th>
+                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
+                  <th class="sticky right-0 z-10 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -676,15 +770,20 @@
                   :key="row.taskId"
                   class="hover:bg-slate-50"
                 >
-                  <td class="px-2.5 py-2 font-mono text-[11px]">{{ row.taskId }}</td>
-                  <td class="px-2.5 py-2">{{ row.title || '-' }}</td>
-                  <td class="px-2.5 py-2">{{ row.userName || '未知用户' }}</td>
-                  <td class="px-2.5 py-2">{{ formatTaskTypeLabel(row.taskType) }}</td>
-                  <td class="px-2.5 py-2">{{ formatTaskStatusLabel(row.status) }}</td>
-                  <td class="px-2.5 py-2">{{ formatDuration(row.durationSeconds) }}</td>
-                  <td class="px-2.5 py-2">{{ formatDateOnly(row.createdAt) }}</td>
-                  <td class="px-2.5 py-2">{{ formatDateOnly(row.updatedAt || row.completedAt) }}</td>
-                  <td class="sticky right-0 bg-white px-2.5 py-2">
+                  <td class="px-2.5 py-2 font-mono text-[11px]">
+                    <p class="truncate">{{ row.taskId }}</p>
+                  </td>
+                  <td class="px-2.5 py-2">
+                    <p class="truncate">{{ row.title || '-' }}</p>
+                  </td>
+                  <td class="px-2.5 py-2">
+                    <p class="truncate">{{ row.userName || '未知用户' }}</p>
+                  </td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskTypeLabel(row.taskType) }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.status) }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDuration(row.durationSeconds) }}</td>
+                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
+                  <td class="sticky right-0 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
                     <div class="flex items-center gap-2">
                       <button
                         type="button"
@@ -705,7 +804,7 @@
                   </td>
                 </tr>
                 <tr v-if="!(entityTasks?.items?.length)">
-                  <td colspan="9" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无任务</td>
+                  <td colspan="8" class="px-2.5 py-8 text-center text-slate-500">当前筛选条件下暂无任务</td>
                 </tr>
               </tbody>
             </table>
@@ -789,25 +888,41 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAdminUsageStore } from '~/stores/adminUsage'
-import type { UsageRangeType, UsageScopeType } from '~/types/adminUsage'
+import type {
+  AdminUsageSummary,
+  AdminUsageTaskRow,
+  AdminUsageUserRow,
+  UsageRangeType,
+  UsageScopeType,
+} from '~/types/adminUsage'
 
 const adminStore = useAdminUsageStore()
 
 const activeTab = ref<'usage' | 'logs' | 'users' | 'tasks'>('usage')
 
 const rangeType = ref<UsageRangeType>('day')
-const scope = ref<UsageScopeType>('task')
+const usageScope = ref<'user' | 'task'>('user')
 const keyword = ref('')
 const taskTypeFilter = ref('')
 const statusFilter = ref('')
 const modelFilter = ref('')
 
 const now = new Date()
+const formatDateInput = (value: Date) => {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 const anchorDay = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`)
 const anchorMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
 const anchorYear = ref(now.getFullYear())
 const logDateFrom = ref(`${anchorDay.value}T00:00`)
 const logDateTo = ref(`${anchorDay.value}T23:59`)
+const defaultTaskDateTo = formatDateInput(now)
+const defaultTaskDateFromDate = new Date(now)
+defaultTaskDateFromDate.setDate(defaultTaskDateFromDate.getDate() - 6)
+const defaultTaskDateFrom = formatDateInput(defaultTaskDateFromDate)
 
 const usageCurrentPage = ref(1)
 const logCurrentPage = ref(1)
@@ -831,8 +946,8 @@ const entityTaskKeyword = ref('')
 const entityTaskUserName = ref('')
 const entityTaskType = ref('')
 const entityTaskStatus = ref('')
-const entityTaskDateFrom = ref('')
-const entityTaskDateTo = ref('')
+const entityTaskDateFrom = ref(defaultTaskDateFrom)
+const entityTaskDateTo = ref(defaultTaskDateTo)
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   patent_analysis: '专利分析',
@@ -882,8 +997,19 @@ const USER_ROLE_LABELS: Record<string, string> = {
   guest: '访客',
 }
 
+const EMPTY_USAGE_SUMMARY: AdminUsageSummary = {
+  totalTasks: 0,
+  totalUsers: 0,
+  totalTokens: 0,
+  totalEstimatedCostCny: 0,
+  totalLlmCallCount: 0,
+  avgTokensPerEntity: 0,
+  avgCostPerEntityCny: 0,
+  entityType: 'task',
+  priceMissing: false,
+}
+
 const loadingAccess = computed(() => adminStore.loadingAccess)
-const loadingDashboard = computed(() => adminStore.loadingDashboard)
 const loadingTable = computed(() => adminStore.loadingTable)
 const loadingSystemLogs = computed(() => adminStore.loadingSystemLogs)
 const loadingSystemSummary = computed(() => adminStore.loadingSystemSummary)
@@ -892,17 +1018,20 @@ const loadingEntityUsers = computed(() => adminStore.loadingEntityUsers)
 const loadingEntityTasks = computed(() => adminStore.loadingEntityTasks)
 const loadingEntityTaskDetail = computed(() => adminStore.loadingEntityTaskDetail)
 const isAdmin = computed(() => adminStore.isAdmin)
-const dashboard = computed(() => adminStore.dashboard)
 const tableData = computed(() => adminStore.tableData)
 const systemLogSummary = computed(() => adminStore.systemLogSummary)
 const systemLogs = computed(() => adminStore.systemLogs)
 const systemLogDetail = computed(() => adminStore.systemLogDetail)
 const entityUsers = computed(() => adminStore.entityUsers)
+const entityUserStatsData = computed(() => adminStore.entityUserStats)
 const entityTasks = computed(() => adminStore.entityTasks)
+const entityTaskStatsData = computed(() => adminStore.entityTaskStats)
 const entityTaskDetail = computed(() => adminStore.entityTaskDetail)
 const userStats = computed(() => {
-  const stats = entityUsers.value?.meta?.userStats
+  const stats = entityUserStatsData.value?.userStats
   return {
+    totalUsers: Number(stats?.totalUsers || 0),
+    registeredUsers: Number(stats?.registeredUsers || 0),
     activeUsers1d: Number(stats?.activeUsers1d || 0),
     activeUsers7d: Number(stats?.activeUsers7d || 0),
     activeUsers30d: Number(stats?.activeUsers30d || 0),
@@ -911,12 +1040,14 @@ const userStats = computed(() => {
     newUsers30d: Number(stats?.newUsers30d || 0),
   }
 })
-const taskTypeWindows = computed(() => entityTasks.value?.meta?.taskTypeWindows || [])
-const usagePrimaryLabel = computed(() => {
-  if (scope.value === 'task') return '任务ID'
-  if (scope.value === 'user') return '用户'
-  return '主键'
+const taskTypeWindows = computed(() => entityTaskStatsData.value?.taskTypeWindows || [])
+const usageSummary = computed(() => tableData.value?.summary || {
+  ...EMPTY_USAGE_SUMMARY,
+  entityType: usageScope.value,
 })
+const usageItems = computed<Array<AdminUsageTaskRow | AdminUsageUserRow>>(
+  () => (tableData.value?.items || []) as Array<AdminUsageTaskRow | AdminUsageUserRow>
+)
 
 const activeAnchor = computed(() => {
   if (rangeType.value === 'day') return anchorDay.value
@@ -936,16 +1067,19 @@ const formatPercent = (value: number) => {
   const numeric = Number(value || 0)
   return `${(numeric * 100).toFixed(2)}%`
 }
-const formatDateOnly = (value: string | null | undefined) => {
+const formatDateTime = (value: string | null | undefined) => {
   const text = String(value || '').trim()
   if (!text) return '-'
   const normalized = text.includes('T') ? text : `${text}T00:00:00`
   const parsed = new Date(normalized)
-  if (Number.isNaN(parsed.getTime())) return text.slice(0, 10)
+  if (Number.isNaN(parsed.getTime())) return text.slice(0, 19).replace('T', ' ')
   const year = parsed.getFullYear()
   const month = String(parsed.getMonth() + 1).padStart(2, '0')
   const day = String(parsed.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  const hours = String(parsed.getHours()).padStart(2, '0')
+  const minutes = String(parsed.getMinutes()).padStart(2, '0')
+  const seconds = String(parsed.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
 const formatDuration = (value: number | null | undefined) => {
   const total = Number(value)
@@ -984,36 +1118,30 @@ const formatUserRoleLabel = (value: string | null | undefined) => {
   if (!text) return '-'
   return USER_ROLE_LABELS[text] || text
 }
-const rowKey = (row: Record<string, any>) => {
-  return row.taskId || row.ownerId || `all-${row.totalTokens || 0}-${row.estimatedCostCny || 0}`
-}
-const formatUsagePrimary = (row: Record<string, any>) => {
-  if (scope.value === 'task') return row.taskId || '-'
-  if (scope.value === 'user') return row.userName || '未知用户'
-  return 'all'
+const rowKey = (row: AdminUsageTaskRow | AdminUsageUserRow) => {
+  if ('taskId' in row) return row.taskId || '-'
+  return row.ownerId || '-'
 }
 
-const refreshUsageDashboard = async () => {
-  await adminStore.fetchDashboard(rangeType.value, activeAnchor.value)
-}
 const refreshUsageTable = async () => {
+  const scope = usageScope.value as UsageScopeType
   await adminStore.fetchTable({
     rangeType: rangeType.value,
     anchor: activeAnchor.value,
-    scope: scope.value,
+    scope,
     q: keyword.value,
     taskType: taskTypeFilter.value,
     status: statusFilter.value,
     model: modelFilter.value,
     page: usageCurrentPage.value,
     pageSize,
-    sortBy: scope.value === 'task' ? 'lastUsageAt' : scope.value === 'user' ? 'totalTokens' : 'taskCount',
+    sortBy: scope === 'task' ? 'lastUsageAt' : 'totalTokens',
     sortOrder: 'desc',
   })
 }
 const refreshUsageAll = async () => {
   usageCurrentPage.value = 1
-  await Promise.all([refreshUsageDashboard(), refreshUsageTable()])
+  await refreshUsageTable()
 }
 
 const refreshSystemLogs = async () => {
@@ -1056,6 +1184,10 @@ const refreshEntityUsers = async () => {
   })
 }
 
+const refreshEntityUserStats = async () => {
+  await adminStore.fetchEntityUserStats()
+}
+
 const refreshEntityUsersAll = async () => {
   entityUserCurrentPage.value = 1
   await refreshEntityUsers()
@@ -1071,9 +1203,13 @@ const refreshEntityTasks = async () => {
     dateTo: entityTaskDateTo.value ? new Date(`${entityTaskDateTo.value}T23:59:59`).toISOString() : undefined,
     page: entityTaskCurrentPage.value,
     pageSize,
-    sortBy: 'updatedAt',
+    sortBy: 'createdAt',
     sortOrder: 'desc',
   })
+}
+
+const refreshEntityTaskStats = async () => {
+  await adminStore.fetchEntityTaskStats()
 }
 
 const refreshEntityTasksAll = async () => {
@@ -1156,9 +1292,9 @@ const openLogsByUser = async (userName: string | null | undefined) => {
 const openTasksByUser = async (userName: string | null | undefined) => {
   const text = String(userName || '').trim()
   if (!text) return
-  activeTab.value = 'tasks'
   entityTaskUserName.value = text
   entityTaskCurrentPage.value = 1
+  activeTab.value = 'tasks'
   await refreshEntityTasks()
 }
 
@@ -1171,7 +1307,19 @@ const openLogsByTask = async (taskId: string) => {
   await refreshSystemLogsAll()
 }
 
-watch([scope, keyword, taskTypeFilter, statusFilter, modelFilter], () => {
+watch(usageScope, async () => {
+  if (usageScope.value === 'user') {
+    taskTypeFilter.value = ''
+    statusFilter.value = ''
+    modelFilter.value = ''
+  }
+  usageCurrentPage.value = 1
+  if (activeTab.value === 'usage') {
+    await refreshUsageTable()
+  }
+})
+
+watch([keyword, taskTypeFilter, statusFilter, modelFilter], () => {
   usageCurrentPage.value = 1
 })
 
@@ -1189,7 +1337,7 @@ watch([entityTaskKeyword, entityTaskUserName, entityTaskType, entityTaskStatus, 
 
 watch(activeTab, async (value) => {
   if (value === 'usage') {
-    if (!dashboard.value || !tableData.value) {
+    if (!tableData.value) {
       await refreshUsageAll()
     }
     return
@@ -1201,13 +1349,27 @@ watch(activeTab, async (value) => {
     return
   }
   if (value === 'users') {
+    const jobs: Promise<unknown>[] = []
     if (!entityUsers.value) {
-      await refreshEntityUsersAll()
+      jobs.push(refreshEntityUsersAll())
+    }
+    if (!entityUserStatsData.value) {
+      jobs.push(refreshEntityUserStats())
+    }
+    if (jobs.length) {
+      await Promise.all(jobs)
     }
     return
   }
+  const jobs: Promise<unknown>[] = []
   if (!entityTasks.value) {
-    await refreshEntityTasksAll()
+    jobs.push(refreshEntityTasksAll())
+  }
+  if (!entityTaskStatsData.value) {
+    jobs.push(refreshEntityTaskStats())
+  }
+  if (jobs.length) {
+    await Promise.all(jobs)
   }
 })
 
@@ -1215,11 +1377,18 @@ onMounted(async () => {
   await adminStore.fetchAccess(false)
   if (!adminStore.isAdmin) return
   await refreshUsageAll()
-  await refreshSystemLogsAll()
 })
 </script>
 
 <style scoped>
+.admin-table-fixed {
+  table-layout: fixed;
+}
+
+.admin-log-table {
+  table-layout: fixed;
+}
+
 .metric-card {
   @apply rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-100;
 }
@@ -1238,6 +1407,14 @@ onMounted(async () => {
 
 .field-input {
   @apply rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100;
+}
+
+.query-btn {
+  @apply inline-flex h-10 min-w-[8.5rem] items-center justify-center rounded-xl bg-cyan-700 px-6 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-60;
+}
+
+.query-action {
+  @apply w-full justify-self-start self-end sm:w-auto;
 }
 
 .modal-overlay {

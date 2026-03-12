@@ -15,6 +15,7 @@ from backend.models import (
     AdminAccessResponse,
     AdminUsageDashboardResponse,
     AdminUsageOverview,
+    AdminUsageSummary,
     AdminUsageTableResponse,
 )
 from backend.models import CurrentUser
@@ -178,6 +179,17 @@ def _sort_items(items: List[Dict[str, Any]], sort_by: str, sort_order: str) -> L
         return items
 
 
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
 @router.get("/api/admin/access", response_model=AdminAccessResponse)
 async def get_admin_access(current_user: CurrentUser = Depends(_get_current_user)):
     return AdminAccessResponse(isAdmin=is_admin_owner(current_user.user_id))
@@ -246,142 +258,91 @@ async def get_admin_usage_table(
 ):
     ensure_admin_owner(current_user.user_id)
     normalized_range = _normalize_range_type(rangeType)
-    normalized_anchor, _, _, rows = _load_rows(normalized_range, anchor)
+    normalized_anchor, start, end = _resolve_time_window(normalized_range, anchor)
     normalized_scope = str(scope or TASK).strip().lower()
     if normalized_scope not in {TASK, USER, ALL}:
         normalized_scope = TASK
 
-    normalized_q = str(q or "").strip().lower()
-    normalized_task_type = str(taskType or "").strip().lower()
-    normalized_status = str(status or "").strip().lower()
-    normalized_model = str(model or "").strip().lower()
-    user_name_cache: Dict[str, Optional[str]] = {}
+    result = task_manager.storage.list_admin_usage_table(
+        start_iso=start.isoformat(),
+        end_iso=end.isoformat(),
+        scope=normalized_scope,
+        q=str(q or "").strip() or None,
+        task_type=str(taskType or "").strip() or None,
+        task_status=str(status or "").strip() or None,
+        model=str(model or "").strip() or None,
+        page=page,
+        page_size=pageSize,
+        sort_by=sortBy or ("lastUsageAt" if normalized_scope == TASK else "totalTokens"),
+        sort_order=sortOrder or "desc",
+    )
 
-    filtered_task_items: List[Dict[str, Any]] = []
-    for row in rows:
-        owner_id = str(row.get("owner_id") or "")
-        task_item = _to_task_table_item(row, _resolve_user_name(owner_id, user_name_cache))
-        row_task_type = str(task_item["taskType"]).strip().lower()
-        row_status = str(task_item["taskStatus"]).strip().lower()
-        row_models = [str(item or "") for item in task_item["models"]]
-        row_models_lower = [item.lower() for item in row_models]
-        row_model_text = " ".join(row_models).lower()
+    summary_raw = result.get("summary") or {}
+    summary = AdminUsageSummary(
+        totalTasks=int(summary_raw.get("total_tasks") or 0),
+        totalUsers=int(summary_raw.get("total_users") or 0),
+        totalTokens=int(summary_raw.get("total_tokens") or 0),
+        totalEstimatedCostCny=round(float(summary_raw.get("total_estimated_cost_cny") or 0), 6),
+        totalLlmCallCount=int(summary_raw.get("total_llm_call_count") or 0),
+        avgTokensPerEntity=round(float(summary_raw.get("avg_tokens_per_entity") or 0), 3),
+        avgCostPerEntityCny=round(float(summary_raw.get("avg_cost_per_entity_cny") or 0), 6),
+        entityType=str(summary_raw.get("entity_type") or normalized_scope),
+        priceMissing=_to_bool(summary_raw.get("price_missing")),
+    )
 
-        if normalized_task_type and row_task_type != normalized_task_type:
-            continue
-        if normalized_status and row_status != normalized_status:
-            continue
-        if normalized_model and normalized_model not in row_models_lower:
-            continue
-
-        if normalized_q:
-            haystack = " ".join(
-                [
-                    str(task_item["taskId"]),
-                    str(task_item.get("userName") or ""),
-                    str(task_item["taskType"]),
-                    str(task_item["taskStatus"]),
-                    row_model_text,
-                ]
-            ).lower()
-            if normalized_q not in haystack:
-                continue
-
-        filtered_task_items.append(task_item)
-
-    price_missing = any(bool(item.get("priceMissing")) for item in filtered_task_items)
-
-    if normalized_scope == TASK:
-        sortable = _sort_items(filtered_task_items, sortBy or "lastUsageAt", sortOrder or "desc")
-        total = len(sortable)
-        start = (page - 1) * pageSize
-        end = start + pageSize
-        items = sortable[start:end]
-        return AdminUsageTableResponse(
-            scope=TASK,
-            rangeType=normalized_range,
-            anchor=normalized_anchor,
-            currency=TOKEN_PRICING_CURRENCY,
-            page=page,
-            pageSize=pageSize,
-            total=total,
-            priceMissing=price_missing,
-            items=items,
-        )
-
-    if normalized_scope == USER:
-        user_map: Dict[str, Dict[str, Any]] = {}
-        for item in filtered_task_items:
-            owner_id = str(item.get("ownerId") or "-")
-            target = user_map.setdefault(
-                owner_id,
+    items: List[Dict[str, Any]] = []
+    for row in list(result.get("items") or []):
+        if normalized_scope == TASK:
+            items.append(
                 {
-                    "ownerId": owner_id,
-                    "userName": item.get("userName"),
-                    "taskCount": 0,
-                    "promptTokens": 0,
-                    "completionTokens": 0,
-                    "totalTokens": 0,
-                    "reasoningTokens": 0,
-                    "llmCallCount": 0,
-                    "estimatedCostCny": 0.0,
-                    "priceMissing": False,
-                    "latestUsageAt": item.get("lastUsageAt"),
-                },
+                    "taskId": str(row.get("task_id") or ""),
+                    "ownerId": str(row.get("owner_id") or "-"),
+                    "userName": _normalize_user_name(row.get("user_name")),
+                    "taskType": str(row.get("task_type") or ""),
+                    "taskStatus": str(row.get("task_status") or ""),
+                    "totalTokens": int(row.get("total_tokens") or 0),
+                    "llmCallCount": int(row.get("llm_call_count") or 0),
+                    "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
+                    "priceMissing": _to_bool(row.get("price_missing")),
+                    "models": list(row.get("models") or []),
+                    "lastUsageAt": row.get("last_usage_at"),
+                }
             )
-            if item.get("userName") and not target.get("userName"):
-                target["userName"] = item.get("userName")
-            target["taskCount"] += 1
-            target["promptTokens"] += int(item.get("promptTokens") or 0)
-            target["completionTokens"] += int(item.get("completionTokens") or 0)
-            target["totalTokens"] += int(item.get("totalTokens") or 0)
-            target["reasoningTokens"] += int(item.get("reasoningTokens") or 0)
-            target["llmCallCount"] += int(item.get("llmCallCount") or 0)
-            target["estimatedCostCny"] += float(item.get("estimatedCostCny") or 0)
-            target["priceMissing"] = target["priceMissing"] or bool(item.get("priceMissing"))
-            latest = _parse_datetime(target.get("latestUsageAt"))
-            candidate = _parse_datetime(item.get("lastUsageAt"))
-            if candidate and (not latest or candidate > latest):
-                target["latestUsageAt"] = item.get("lastUsageAt")
-
-        user_items = list(user_map.values())
-        sortable = _sort_items(user_items, sortBy or "totalTokens", sortOrder or "desc")
-        total = len(sortable)
-        start = (page - 1) * pageSize
-        end = start + pageSize
-        items = sortable[start:end]
-        return AdminUsageTableResponse(
-            scope=USER,
-            rangeType=normalized_range,
-            anchor=normalized_anchor,
-            currency=TOKEN_PRICING_CURRENCY,
-            page=page,
-            pageSize=pageSize,
-            total=total,
-            priceMissing=any(bool(item.get("priceMissing")) for item in user_items),
-            items=items,
+            continue
+        if normalized_scope == USER:
+            items.append(
+                {
+                    "ownerId": str(row.get("owner_id") or "-"),
+                    "userName": _normalize_user_name(row.get("user_name")),
+                    "taskCount": int(row.get("task_count") or 0),
+                    "totalTokens": int(row.get("total_tokens") or 0),
+                    "llmCallCount": int(row.get("llm_call_count") or 0),
+                    "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
+                    "priceMissing": _to_bool(row.get("price_missing")),
+                    "latestUsageAt": row.get("latest_usage_at"),
+                }
+            )
+            continue
+        items.append(
+            {
+                "taskCount": int(row.get("task_count") or 0),
+                "userCount": int(row.get("user_count") or 0),
+                "totalTokens": int(row.get("total_tokens") or 0),
+                "llmCallCount": int(row.get("llm_call_count") or 0),
+                "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
+                "priceMissing": _to_bool(row.get("price_missing")),
+            }
         )
 
-    all_summary = {
-        "taskCount": len(filtered_task_items),
-        "userCount": len({str(item.get("ownerId") or "-") for item in filtered_task_items}),
-        "promptTokens": sum(int(item.get("promptTokens") or 0) for item in filtered_task_items),
-        "completionTokens": sum(int(item.get("completionTokens") or 0) for item in filtered_task_items),
-        "totalTokens": sum(int(item.get("totalTokens") or 0) for item in filtered_task_items),
-        "reasoningTokens": sum(int(item.get("reasoningTokens") or 0) for item in filtered_task_items),
-        "llmCallCount": sum(int(item.get("llmCallCount") or 0) for item in filtered_task_items),
-        "estimatedCostCny": round(sum(float(item.get("estimatedCostCny") or 0) for item in filtered_task_items), 6),
-        "priceMissing": price_missing,
-    }
-    items: List[Dict[str, Any]] = [all_summary] if filtered_task_items else []
     return AdminUsageTableResponse(
-        scope=ALL,
+        scope=normalized_scope,
         rangeType=normalized_range,
         anchor=normalized_anchor,
         currency=TOKEN_PRICING_CURRENCY,
-        page=1,
-        pageSize=1,
-        total=len(items),
-        priceMissing=price_missing,
+        page=page if normalized_scope != ALL else 1,
+        pageSize=pageSize if normalized_scope != ALL else 1,
+        total=int(result.get("total") or 0),
+        priceMissing=_to_bool(result.get("price_missing")),
+        summary=summary,
         items=items,
     )

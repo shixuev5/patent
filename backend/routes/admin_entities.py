@@ -11,11 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.admin_auth import ensure_admin_owner
 from backend.auth import _get_current_user
 from backend.models import (
+    AdminEntityTaskStatsResponse,
     AdminEntityTaskDetailResponse,
     AdminEntityTaskItem,
     AdminEntityTaskListResponse,
     AdminEntityUserItem,
     AdminEntityUserListResponse,
+    AdminEntityUserStatsResponse,
     CurrentUser,
 )
 from backend.storage import get_pipeline_manager
@@ -23,6 +25,19 @@ from backend.storage import get_pipeline_manager
 
 router = APIRouter()
 task_manager = get_pipeline_manager()
+
+DEFAULT_USER_STATS = {
+    "totalUsers": 0,
+    "registeredUsers": 0,
+    "activeUsers1d": 0,
+    "activeUsers7d": 0,
+    "activeUsers30d": 0,
+    "newUsers1d": 0,
+    "newUsers7d": 0,
+    "newUsers30d": 0,
+}
+
+DEFAULT_TASK_TYPE_WINDOWS: list[dict[str, Any]] = []
 
 
 def _norm_optional_text(value: Any) -> Optional[str]:
@@ -55,7 +70,7 @@ def _map_user_sort_by(value: Optional[str]) -> str:
 
 
 def _map_task_sort_by(value: Optional[str]) -> str:
-    raw = str(value or "updatedAt").strip()
+    raw = str(value or "createdAt").strip()
     mapping = {
         "taskId": "task_id",
         "title": "title",
@@ -110,22 +125,7 @@ async def get_admin_entity_users(
     ensure_admin_owner(current_user.user_id)
 
     if not hasattr(task_manager.storage, "list_admin_users"):
-        return AdminEntityUserListResponse(
-            page=page,
-            pageSize=pageSize,
-            total=0,
-            items=[],
-            meta={
-                "userStats": {
-                    "activeUsers1d": 0,
-                    "activeUsers7d": 0,
-                    "activeUsers30d": 0,
-                    "newUsers1d": 0,
-                    "newUsers7d": 0,
-                    "newUsers30d": 0,
-                }
-            },
-        )
+        return AdminEntityUserListResponse(page=page, pageSize=pageSize, total=0, items=[], meta=None)
 
     result = task_manager.storage.list_admin_users(
         q=_norm_optional_text(q),
@@ -136,23 +136,30 @@ async def get_admin_entity_users(
         sort_order=_norm_sort_order(sortOrder),
     )
     rows = result.get("items") or []
-    meta = result.get("meta") or {
-        "userStats": {
-            "activeUsers1d": 0,
-            "activeUsers7d": 0,
-            "activeUsers30d": 0,
-            "newUsers1d": 0,
-            "newUsers7d": 0,
-            "newUsers30d": 0,
-        }
-    }
     return AdminEntityUserListResponse(
         page=page,
         pageSize=pageSize,
         total=int(result.get("total") or 0),
         items=[_to_user_item(row) for row in rows],
-        meta=meta,
+        meta=result.get("meta"),
     )
+
+
+@router.get("/api/admin/entities/users/stats", response_model=AdminEntityUserStatsResponse)
+async def get_admin_entity_user_stats(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    ensure_admin_owner(current_user.user_id)
+
+    if not hasattr(task_manager.storage, "summarize_admin_users"):
+        return AdminEntityUserStatsResponse(userStats=DEFAULT_USER_STATS)
+
+    result = task_manager.storage.summarize_admin_users()
+    user_stats = result.get("userStats") if isinstance(result, dict) else None
+    if not isinstance(user_stats, dict):
+        user_stats = {}
+    merged = {**DEFAULT_USER_STATS, **user_stats}
+    return AdminEntityUserStatsResponse(userStats=merged)
 
 
 @router.get("/api/admin/entities/tasks", response_model=AdminEntityTaskListResponse)
@@ -165,20 +172,14 @@ async def get_admin_entity_tasks(
     dateTo: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     pageSize: int = Query(default=10, ge=1, le=200),
-    sortBy: Optional[str] = Query(default="updatedAt"),
+    sortBy: Optional[str] = Query(default="createdAt"),
     sortOrder: Optional[str] = Query(default="desc"),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     ensure_admin_owner(current_user.user_id)
 
     if not hasattr(task_manager.storage, "list_admin_tasks"):
-        return AdminEntityTaskListResponse(
-            page=page,
-            pageSize=pageSize,
-            total=0,
-            items=[],
-            meta={"taskTypeWindows": []},
-        )
+        return AdminEntityTaskListResponse(page=page, pageSize=pageSize, total=0, items=[], meta=None)
 
     result = task_manager.storage.list_admin_tasks(
         q=_norm_optional_text(q),
@@ -193,14 +194,29 @@ async def get_admin_entity_tasks(
         sort_order=_norm_sort_order(sortOrder),
     )
     rows = result.get("items") or []
-    meta = result.get("meta") or {"taskTypeWindows": []}
     return AdminEntityTaskListResponse(
         page=page,
         pageSize=pageSize,
         total=int(result.get("total") or 0),
         items=[_to_task_item(row) for row in rows],
-        meta=meta,
+        meta=result.get("meta"),
     )
+
+
+@router.get("/api/admin/entities/tasks/stats", response_model=AdminEntityTaskStatsResponse)
+async def get_admin_entity_task_stats(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    ensure_admin_owner(current_user.user_id)
+
+    if not hasattr(task_manager.storage, "summarize_admin_tasks"):
+        return AdminEntityTaskStatsResponse(taskTypeWindows=DEFAULT_TASK_TYPE_WINDOWS)
+
+    result = task_manager.storage.summarize_admin_tasks()
+    task_type_windows = result.get("taskTypeWindows") if isinstance(result, dict) else None
+    if not isinstance(task_type_windows, list):
+        task_type_windows = DEFAULT_TASK_TYPE_WINDOWS
+    return AdminEntityTaskStatsResponse(taskTypeWindows=task_type_windows)
 
 
 @router.get("/api/admin/entities/tasks/{task_id}", response_model=AdminEntityTaskDetailResponse)

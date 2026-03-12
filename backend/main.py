@@ -11,6 +11,7 @@ from config import settings
 from backend.logging_setup import setup_logging_utc8
 from backend.system_logs import (
     cleanup_expired_system_logs,
+    cleanup_system_logs_by_policy_once,
     configure_system_log_storage,
     initialize_system_logging,
     request_logging_middleware,
@@ -46,6 +47,15 @@ async def lifespan(app: FastAPI):
     configure_system_log_storage(storage)
     set_system_log_db_persistence_ready(True)
     cleanup_expired_system_logs()
+    cleanup_summary = cleanup_system_logs_by_policy_once()
+    if cleanup_summary.get("executed"):
+        from loguru import logger
+
+        logger.info(
+            "[系统日志] 已执行一次性策略清理："
+            f"deleted_db={cleanup_summary.get('deleted_db', 0)}, "
+            f"deleted_payload_files={cleanup_summary.get('deleted_payload_files', 0)}"
+        )
     start_system_log_cleanup_loop()
     yield
     # 关闭时的清理操作（如果需要）

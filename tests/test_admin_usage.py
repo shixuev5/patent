@@ -52,6 +52,15 @@ def _seed_users(storage: SQLiteTaskStorage):
     )
     storage.upsert_authing_user(
         User(
+            owner_id="authing:user-3",
+            authing_sub="user-3",
+            role="member",
+            name="用户甲",
+            raw_profile={},
+        )
+    )
+    storage.upsert_authing_user(
+        User(
             owner_id="authing:admin-by-role-field",
             authing_sub="admin-by-role-field",
             role="admin",
@@ -201,6 +210,114 @@ def test_admin_dashboard_and_table(monkeypatch, tmp_path):
     assert all_table.scope == "all"
     assert all_table.total == 1
     assert all_table.items[0]["taskCount"] == 2
+    assert all_table.summary.totalTasks == 2
+    assert all_table.summary.totalUsers == 2
+
+
+def test_admin_user_scope_aggregation_and_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+    _seed_usage_rows(storage)
+
+    now_iso = datetime.now().isoformat()
+    storage.upsert_task_llm_usage(
+        {
+            "task_id": "task-3",
+            "owner_id": "authing:user-1",
+            "task_type": "patent_analysis",
+            "task_status": "completed",
+            "prompt_tokens": 10,
+            "completion_tokens": 40,
+            "total_tokens": 50,
+            "reasoning_tokens": 0,
+            "llm_call_count": 3,
+            "estimated_cost_cny": 0.2,
+            "price_missing": False,
+            "model_breakdown_json": {"qwen3.5-flash": {"totalTokens": 50}},
+            "first_usage_at": now_iso,
+            "last_usage_at": now_iso,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+    )
+    storage.upsert_task_llm_usage(
+        {
+            "task_id": "task-4",
+            "owner_id": "authing:user-3",
+            "task_type": "patent_analysis",
+            "task_status": "completed",
+            "prompt_tokens": 20,
+            "completion_tokens": 50,
+            "total_tokens": 70,
+            "reasoning_tokens": 0,
+            "llm_call_count": 1,
+            "estimated_cost_cny": 0.1,
+            "price_missing": False,
+            "model_breakdown_json": {"qwen3.5-flash": {"totalTokens": 70}},
+            "first_usage_at": now_iso,
+            "last_usage_at": now_iso,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+    )
+
+    anchor = datetime.now().date().isoformat()
+    admin_user = CurrentUser(user_id="authing:admin-1")
+
+    user_table = asyncio.run(
+        admin_usage.get_admin_usage_table(
+            rangeType="day",
+            anchor=anchor,
+            scope="user",
+            q=None,
+            taskType=None,
+            status=None,
+            model=None,
+            page=1,
+            pageSize=20,
+            sortBy="totalTokens",
+            sortOrder="desc",
+            current_user=admin_user,
+        )
+    )
+    assert user_table.scope == "user"
+    assert user_table.total == 3
+    assert user_table.summary.totalTasks == 4
+    assert user_table.summary.totalUsers == 3
+    assert user_table.summary.totalTokens == 420
+    assert user_table.summary.entityType == "user"
+
+    user1_row = next(item for item in user_table.items if item["ownerId"] == "authing:user-1")
+    assert user1_row["taskCount"] == 2
+    assert user1_row["totalTokens"] == 250
+    assert user1_row["llmCallCount"] == 5
+    assert user1_row["estimatedCostCny"] == pytest.approx(0.6)
+
+    same_name_rows = [item for item in user_table.items if item["userName"] == "用户甲"]
+    assert len(same_name_rows) == 2
+    assert {item["ownerId"] for item in same_name_rows} == {"authing:user-1", "authing:user-3"}
+
+    searched_table = asyncio.run(
+        admin_usage.get_admin_usage_table(
+            rangeType="day",
+            anchor=anchor,
+            scope="user",
+            q="authing:user-1",
+            taskType=None,
+            status=None,
+            model=None,
+            page=1,
+            pageSize=20,
+            sortBy="totalTokens",
+            sortOrder="desc",
+            current_user=admin_user,
+        )
+    )
+    assert searched_table.total == 1
+    assert searched_table.items[0]["ownerId"] == "authing:user-1"
+    assert searched_table.summary.totalTasks == 4
+    assert searched_table.summary.totalUsers == 3
 
 
 def test_admin_usage_forbidden_for_non_admin(monkeypatch, tmp_path):

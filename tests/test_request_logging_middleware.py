@@ -67,7 +67,7 @@ def test_request_logging_middleware_records_success_post_request(tmp_path, monke
     assert row["status_code"] == 200
 
 
-def test_request_logging_middleware_records_exception(tmp_path, monkeypatch):
+def test_request_logging_middleware_skips_get_exception(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
@@ -84,10 +84,31 @@ def test_request_logging_middleware_records_exception(tmp_path, monkeypatch):
     client = TestClient(app, raise_server_exceptions=False)
     response = client.get("/api/error")
     assert response.status_code == 500
+    assert storage.rows == []
+
+
+def test_request_logging_middleware_records_post_exception(tmp_path, monkeypatch):
+    storage = _MemoryStorage()
+    monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
+
+    app = FastAPI()
+    app.middleware("http")(system_logs.request_logging_middleware)
+
+    @app.post("/api/error")
+    async def raise_error():
+        raise RuntimeError("boom")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/error", json={"hello": "world"})
+    assert response.status_code == 500
 
     assert len(storage.rows) >= 1
     row = storage.rows[-1]
     assert row["category"] == "user_action"
     assert row["event_name"] == "http_request"
     assert row["path"] == "/api/error"
+    assert row["method"] == "POST"
     assert row["success"] == 0

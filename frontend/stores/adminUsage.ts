@@ -5,7 +5,9 @@ import type {
   AdminAccessResponse,
   AdminEntityTaskDetailResponse,
   AdminEntityTaskListResponse,
+  AdminEntityTaskStatsResponse,
   AdminEntityUserListResponse,
+  AdminEntityUserStatsResponse,
   AdminSystemLogDetailResponse,
   AdminSystemLogListResponse,
   AdminSystemLogSummaryResponse,
@@ -91,7 +93,9 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     loadingSystemLogDetail: false,
     loadingSystemSummary: false,
     loadingEntityUsers: false,
+    loadingEntityUserStats: false,
     loadingEntityTasks: false,
+    loadingEntityTaskStats: false,
     loadingEntityTaskDetail: false,
     dashboard: null as AdminUsageDashboardResponse | null,
     tableData: null as AdminUsageTableResponse | null,
@@ -99,7 +103,9 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     systemLogs: null as AdminSystemLogListResponse | null,
     systemLogDetail: null as AdminSystemLogDetailResponse | null,
     entityUsers: null as AdminEntityUserListResponse | null,
+    entityUserStats: null as AdminEntityUserStatsResponse | null,
     entityTasks: null as AdminEntityTaskListResponse | null,
+    entityTaskStats: null as AdminEntityTaskStatsResponse | null,
     entityTaskDetail: null as AdminEntityTaskDetailResponse | null,
   }),
 
@@ -302,6 +308,23 @@ export const useAdminUsageStore = defineStore('admin-usage', {
       }
     },
 
+    async fetchEntityUserStats(): Promise<AdminEntityUserStatsResponse | null> {
+      this.loadingEntityUserStats = true
+      try {
+        const path = '/api/admin/entities/users/stats'
+        const data = await this._authorizedGetJson<AdminEntityUserStatsResponse>(
+          path,
+          ['admin', 'entities', 'users', 'stats'],
+          60 * 1000,
+        )
+        if (!data) return null
+        this.entityUserStats = data
+        return data
+      } finally {
+        this.loadingEntityUserStats = false
+      }
+    },
+
     async fetchEntityTasks(input: FetchEntityTasksInput): Promise<AdminEntityTaskListResponse | null> {
       this.loadingEntityTasks = true
       try {
@@ -314,7 +337,7 @@ export const useAdminUsageStore = defineStore('admin-usage', {
           dateTo: input.dateTo,
           page: input.page ?? 1,
           pageSize: input.pageSize ?? 10,
-          sortBy: input.sortBy ?? 'updatedAt',
+          sortBy: input.sortBy ?? 'createdAt',
           sortOrder: input.sortOrder ?? 'desc',
         })
         const data = await this._authorizedGetJson<AdminEntityTaskListResponse>(
@@ -327,6 +350,23 @@ export const useAdminUsageStore = defineStore('admin-usage', {
         return data
       } finally {
         this.loadingEntityTasks = false
+      }
+    },
+
+    async fetchEntityTaskStats(): Promise<AdminEntityTaskStatsResponse | null> {
+      this.loadingEntityTaskStats = true
+      try {
+        const path = '/api/admin/entities/tasks/stats'
+        const data = await this._authorizedGetJson<AdminEntityTaskStatsResponse>(
+          path,
+          ['admin', 'entities', 'tasks', 'stats'],
+          60 * 1000,
+        )
+        if (!data) return null
+        this.entityTaskStats = data
+        return data
+      } finally {
+        this.loadingEntityTaskStats = false
       }
     },
 

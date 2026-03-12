@@ -4,7 +4,7 @@ Cloudflare D1 task storage layer.
 
 import json
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 from loguru import logger
@@ -197,6 +197,10 @@ class D1TaskStorage:
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_task_type ON tasks(task_type);
+    CREATE INDEX IF NOT EXISTS idx_tasks_deleted_created_at ON tasks(deleted_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_tasks_deleted_owner_id ON tasks(deleted_at, owner_id);
     CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
     CREATE INDEX IF NOT EXISTS idx_users_authing_sub ON users(authing_sub);
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -574,6 +578,302 @@ class D1TaskStorage:
         )
         return [self._row_to_task_llm_usage(row) for row in rows]
 
+    @staticmethod
+    def _normalize_usage_scope(scope: str) -> Literal["task", "user", "all"]:
+        text = str(scope or "task").strip().lower()
+        if text in {"task", "user", "all"}:
+            return text  # type: ignore[return-value]
+        return "task"
+
+    def list_admin_usage_table(
+        self,
+        *,
+        start_iso: str,
+        end_iso: str,
+        scope: str = "task",
+        q: Optional[str] = None,
+        task_type: Optional[str] = None,
+        task_status: Optional[str] = None,
+        model: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 10,
+        sort_by: str = "lastUsageAt",
+        sort_order: str = "desc",
+    ) -> Dict[str, Any]:
+        normalized_scope = self._normalize_usage_scope(scope)
+        direction = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
+        owner_expr = "CASE WHEN tu.owner_id IS NULL OR TRIM(tu.owner_id) = '' THEN '-' ELSE tu.owner_id END"
+
+        base_where = [
+            "tu.last_usage_at IS NOT NULL",
+            "tu.last_usage_at >= ?",
+            "tu.last_usage_at < ?",
+        ]
+        base_params: List[Any] = [start_iso, end_iso]
+
+        normalized_task_type = str(task_type or "").strip().lower()
+        if normalized_task_type:
+            base_where.append("LOWER(COALESCE(tu.task_type, '')) = ?")
+            base_params.append(normalized_task_type)
+
+        normalized_task_status = str(task_status or "").strip().lower()
+        if normalized_task_status:
+            base_where.append("LOWER(COALESCE(tu.task_status, '')) = ?")
+            base_params.append(normalized_task_status)
+
+        normalized_model = str(model or "").strip().lower()
+        if normalized_model:
+            base_where.append(
+                "EXISTS (SELECT 1 FROM json_each(COALESCE(tu.model_breakdown_json, '{}')) jm WHERE LOWER(CAST(jm.key AS TEXT)) = ?)"
+            )
+            base_params.append(normalized_model)
+
+        base_where_clause = " AND ".join(base_where)
+        summary_row = self._fetchone(
+            f"""
+            SELECT
+                COUNT(*) AS total_tasks,
+                COUNT(DISTINCT {owner_expr}) AS total_users,
+                COALESCE(SUM(tu.total_tokens), 0) AS total_tokens,
+                COALESCE(SUM(tu.llm_call_count), 0) AS total_llm_call_count,
+                COALESCE(SUM(tu.estimated_cost_cny), 0) AS total_estimated_cost_cny,
+                MAX(CASE WHEN tu.price_missing = 1 THEN 1 ELSE 0 END) AS price_missing
+            FROM task_llm_usage tu
+            WHERE {base_where_clause}
+            """,
+            base_params,
+        ) or {}
+
+        total_tasks = int(summary_row.get("total_tasks") or 0)
+        total_users = int(summary_row.get("total_users") or 0)
+        total_tokens = int(summary_row.get("total_tokens") or 0)
+        total_llm_call_count = int(summary_row.get("total_llm_call_count") or 0)
+        total_estimated_cost_cny = float(summary_row.get("total_estimated_cost_cny") or 0.0)
+        price_missing = bool(int(summary_row.get("price_missing") or 0))
+
+        entity_count = total_users if normalized_scope == "user" else total_tasks
+        summary = {
+            "total_tasks": total_tasks,
+            "total_users": total_users,
+            "total_tokens": total_tokens,
+            "total_llm_call_count": total_llm_call_count,
+            "total_estimated_cost_cny": round(total_estimated_cost_cny, 6),
+            "avg_tokens_per_entity": round((total_tokens / entity_count), 3) if entity_count else 0.0,
+            "avg_cost_per_entity_cny": round((total_estimated_cost_cny / entity_count), 6) if entity_count else 0.0,
+            "entity_type": normalized_scope,
+            "price_missing": price_missing,
+        }
+
+        if normalized_scope == "all":
+            items = []
+            if total_tasks:
+                items = [
+                    {
+                        "task_count": total_tasks,
+                        "user_count": total_users,
+                        "total_tokens": total_tokens,
+                        "llm_call_count": total_llm_call_count,
+                        "estimated_cost_cny": round(total_estimated_cost_cny, 6),
+                        "price_missing": price_missing,
+                    }
+                ]
+            return {
+                "total": len(items),
+                "price_missing": price_missing,
+                "summary": {
+                    **summary,
+                    "entity_type": "all",
+                },
+                "items": items,
+            }
+
+        normalized_q = str(q or "").strip()
+        q_where_clause = ""
+        q_params: List[Any] = []
+        if normalized_q:
+            wildcard = f"%{normalized_q}%"
+            if normalized_scope == "user":
+                q_where_clause = "WHERE (g.owner_id LIKE ? OR COALESCE(g.user_name, '') LIKE ?)"
+                q_params.extend([wildcard, wildcard])
+            else:
+                q_where_clause = (
+                    f" AND (tu.task_id LIKE ? OR {owner_expr} LIKE ? OR COALESCE(u.name, '') LIKE ? "
+                    "OR COALESCE(tu.task_type, '') LIKE ? OR COALESCE(tu.task_status, '') LIKE ? "
+                    "OR COALESCE(tu.model_breakdown_json, '') LIKE ?)"
+                )
+                q_params.extend([wildcard, wildcard, wildcard, wildcard, wildcard, wildcard])
+
+        offset = max(0, (page - 1) * page_size)
+        if normalized_scope == "user":
+            safe_sort_map = {
+                "ownerId": "g.owner_id",
+                "userName": "COALESCE(g.user_name, '')",
+                "taskCount": "g.task_count",
+                "totalTokens": "g.total_tokens",
+                "llmCallCount": "g.llm_call_count",
+                "estimatedCostCny": "g.estimated_cost_cny",
+                "latestUsageAt": "COALESCE(g.latest_usage_at, '')",
+            }
+            safe_sort = safe_sort_map.get(sort_by, "g.total_tokens")
+            total_row = self._fetchone(
+                f"""
+                WITH filtered AS (
+                    SELECT
+                        {owner_expr} AS owner_id,
+                        u.name AS user_name,
+                        tu.total_tokens AS total_tokens,
+                        tu.llm_call_count AS llm_call_count,
+                        tu.estimated_cost_cny AS estimated_cost_cny,
+                        tu.price_missing AS price_missing,
+                        tu.last_usage_at AS last_usage_at
+                    FROM task_llm_usage tu
+                    LEFT JOIN users u ON tu.owner_id = u.owner_id
+                    WHERE {base_where_clause}
+                ),
+                grouped AS (
+                    SELECT
+                        f.owner_id AS owner_id,
+                        MAX(f.user_name) AS user_name,
+                        COUNT(*) AS task_count,
+                        COALESCE(SUM(f.total_tokens), 0) AS total_tokens,
+                        COALESCE(SUM(f.llm_call_count), 0) AS llm_call_count,
+                        COALESCE(SUM(f.estimated_cost_cny), 0) AS estimated_cost_cny,
+                        MAX(CASE WHEN f.price_missing = 1 THEN 1 ELSE 0 END) AS price_missing,
+                        MAX(f.last_usage_at) AS latest_usage_at
+                    FROM filtered f
+                    GROUP BY f.owner_id
+                )
+                SELECT COUNT(*) AS c
+                FROM grouped g
+                {q_where_clause}
+                """,
+                base_params + q_params,
+            ) or {}
+            rows = self._fetchall(
+                f"""
+                WITH filtered AS (
+                    SELECT
+                        {owner_expr} AS owner_id,
+                        u.name AS user_name,
+                        tu.total_tokens AS total_tokens,
+                        tu.llm_call_count AS llm_call_count,
+                        tu.estimated_cost_cny AS estimated_cost_cny,
+                        tu.price_missing AS price_missing,
+                        tu.last_usage_at AS last_usage_at
+                    FROM task_llm_usage tu
+                    LEFT JOIN users u ON tu.owner_id = u.owner_id
+                    WHERE {base_where_clause}
+                ),
+                grouped AS (
+                    SELECT
+                        f.owner_id AS owner_id,
+                        MAX(f.user_name) AS user_name,
+                        COUNT(*) AS task_count,
+                        COALESCE(SUM(f.total_tokens), 0) AS total_tokens,
+                        COALESCE(SUM(f.llm_call_count), 0) AS llm_call_count,
+                        COALESCE(SUM(f.estimated_cost_cny), 0) AS estimated_cost_cny,
+                        MAX(CASE WHEN f.price_missing = 1 THEN 1 ELSE 0 END) AS price_missing,
+                        MAX(f.last_usage_at) AS latest_usage_at
+                    FROM filtered f
+                    GROUP BY f.owner_id
+                )
+                SELECT *
+                FROM grouped g
+                {q_where_clause}
+                ORDER BY {safe_sort} {direction}, g.owner_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                base_params + q_params + [page_size, offset],
+            )
+            return {
+                "total": int(total_row.get("c") or 0),
+                "price_missing": price_missing,
+                "summary": summary,
+                "items": [
+                    {
+                        "owner_id": row.get("owner_id"),
+                        "user_name": row.get("user_name"),
+                        "task_count": int(row.get("task_count") or 0),
+                        "total_tokens": int(row.get("total_tokens") or 0),
+                        "llm_call_count": int(row.get("llm_call_count") or 0),
+                        "estimated_cost_cny": round(float(row.get("estimated_cost_cny") or 0), 6),
+                        "price_missing": bool(int(row.get("price_missing") or 0)),
+                        "latest_usage_at": row.get("latest_usage_at"),
+                    }
+                    for row in rows
+                ],
+            }
+
+        safe_sort_map = {
+            "taskId": "tu.task_id",
+            "ownerId": owner_expr,
+            "userName": "COALESCE(u.name, '')",
+            "taskType": "COALESCE(tu.task_type, '')",
+            "taskStatus": "COALESCE(tu.task_status, '')",
+            "totalTokens": "tu.total_tokens",
+            "estimatedCostCny": "tu.estimated_cost_cny",
+            "llmCallCount": "tu.llm_call_count",
+            "lastUsageAt": "COALESCE(tu.last_usage_at, '')",
+        }
+        safe_sort = safe_sort_map.get(sort_by, "COALESCE(tu.last_usage_at, '')")
+        total_row = self._fetchone(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM task_llm_usage tu
+            LEFT JOIN users u ON tu.owner_id = u.owner_id
+            WHERE {base_where_clause}{q_where_clause}
+            """,
+            base_params + q_params,
+        ) or {}
+        rows = self._fetchall(
+            f"""
+            SELECT
+                tu.task_id AS task_id,
+                {owner_expr} AS owner_id,
+                u.name AS user_name,
+                tu.task_type AS task_type,
+                tu.task_status AS task_status,
+                tu.total_tokens AS total_tokens,
+                tu.llm_call_count AS llm_call_count,
+                tu.estimated_cost_cny AS estimated_cost_cny,
+                tu.price_missing AS price_missing,
+                tu.model_breakdown_json AS model_breakdown_json,
+                tu.last_usage_at AS last_usage_at
+            FROM task_llm_usage tu
+            LEFT JOIN users u ON tu.owner_id = u.owner_id
+            WHERE {base_where_clause}{q_where_clause}
+            ORDER BY {safe_sort} {direction}, tu.task_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            base_params + q_params + [page_size, offset],
+        )
+
+        task_items: List[Dict[str, Any]] = []
+        for row in rows:
+            model_breakdown = self._parse_metadata(row.get("model_breakdown_json"))
+            models = [str(key) for key in model_breakdown.keys()] if isinstance(model_breakdown, dict) else []
+            task_items.append(
+                {
+                    "task_id": row.get("task_id"),
+                    "owner_id": row.get("owner_id"),
+                    "user_name": row.get("user_name"),
+                    "task_type": row.get("task_type") or "",
+                    "task_status": row.get("task_status") or "",
+                    "total_tokens": int(row.get("total_tokens") or 0),
+                    "llm_call_count": int(row.get("llm_call_count") or 0),
+                    "estimated_cost_cny": round(float(row.get("estimated_cost_cny") or 0), 6),
+                    "price_missing": bool(int(row.get("price_missing") or 0)),
+                    "models": models,
+                    "last_usage_at": row.get("last_usage_at"),
+                }
+            )
+        return {
+            "total": int(total_row.get("c") or 0),
+            "price_missing": price_missing,
+            "summary": summary,
+            "items": task_items,
+        }
+
     def _row_to_system_log(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "log_id": row.get("log_id"),
@@ -826,6 +1126,30 @@ class D1TaskStorage:
         )
         return self._changed_rows(result)
 
+    def list_system_log_payload_paths_for_policy_cleanup(self) -> List[str]:
+        policy_where = (
+            "(category = 'user_action' AND UPPER(COALESCE(method, '')) = 'GET') "
+            "OR (category != 'llm_call' AND category != 'user_action' AND success = 1)"
+        )
+        rows = self._fetchall(
+            f"""
+            SELECT payload_file_path
+            FROM system_logs
+            WHERE ({policy_where})
+              AND payload_file_path IS NOT NULL
+              AND payload_file_path != ''
+            """
+        )
+        return [str(row.get("payload_file_path") or "").strip() for row in rows if str(row.get("payload_file_path") or "").strip()]
+
+    def cleanup_system_logs_by_policy(self) -> int:
+        policy_where = (
+            "(category = 'user_action' AND UPPER(COALESCE(method, '')) = 'GET') "
+            "OR (category != 'llm_call' AND category != 'user_action' AND success = 1)"
+        )
+        result = self._request(f"DELETE FROM system_logs WHERE {policy_where}")
+        return self._changed_rows(result)
+
     def list_tasks(
         self,
         status: Optional[TaskStatus] = None,
@@ -875,10 +1199,6 @@ class D1TaskStorage:
     ) -> Dict[str, Any]:
         where = ["1=1"]
         params: List[Any] = []
-        now = datetime.now()
-        cutoff_1d = (now - timedelta(days=1)).isoformat()
-        cutoff_7d = (now - timedelta(days=7)).isoformat()
-        cutoff_30d = (now - timedelta(days=30)).isoformat()
 
         if role:
             where.append("base.role = ?")
@@ -995,9 +1315,55 @@ class D1TaskStorage:
             ORDER BY {safe_sort} {direction}, base.owner_id ASC
             LIMIT ? OFFSET ?
             """,
-            params + [page_size, offset],
-        )
+                params + [page_size, offset],
+            )
 
+        return {
+            "total": int((total_row or {}).get("c") or 0),
+            "items": [
+                {
+                    "owner_id": row.get("owner_id"),
+                    "user_name": row.get("user_name"),
+                    "email": row.get("email"),
+                    "role": row.get("role"),
+                    "last_login_at": row.get("last_login_at"),
+                    "created_at": row.get("created_at"),
+                    "task_count": int(row.get("task_count") or 0),
+                    "latest_task_at": row.get("latest_task_at"),
+                }
+                for row in rows
+            ],
+        }
+
+    def summarize_admin_users(self) -> Dict[str, Any]:
+        now = datetime.now()
+        cutoff_1d = (now - timedelta(days=1)).isoformat()
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        overview_row = self._fetchone(
+            """
+            WITH all_identities AS (
+                SELECT owner_id
+                FROM users
+                WHERE owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+                UNION
+                SELECT owner_id
+                FROM tasks
+                WHERE deleted_at IS NULL
+                  AND owner_id IS NOT NULL
+                  AND TRIM(owner_id) <> ''
+            )
+            SELECT
+                (SELECT COUNT(*) FROM all_identities) AS total_users,
+                (
+                    SELECT COUNT(*)
+                    FROM users
+                    WHERE owner_id IS NOT NULL
+                      AND TRIM(owner_id) <> ''
+                ) AS registered_users
+            """,
+        )
         active_row = self._fetchone(
             """
             SELECT
@@ -1011,7 +1377,6 @@ class D1TaskStorage:
             """,
             [cutoff_1d, cutoff_7d, cutoff_30d],
         )
-
         new_row = self._fetchone(
             """
             WITH identity_events AS (
@@ -1039,32 +1404,17 @@ class D1TaskStorage:
             """,
             [cutoff_1d, cutoff_7d, cutoff_30d],
         )
-
         return {
-            "total": int((total_row or {}).get("c") or 0),
-            "items": [
-                {
-                    "owner_id": row.get("owner_id"),
-                    "user_name": row.get("user_name"),
-                    "email": row.get("email"),
-                    "role": row.get("role"),
-                    "last_login_at": row.get("last_login_at"),
-                    "created_at": row.get("created_at"),
-                    "task_count": int(row.get("task_count") or 0),
-                    "latest_task_at": row.get("latest_task_at"),
-                }
-                for row in rows
-            ],
-            "meta": {
-                "userStats": {
-                    "activeUsers1d": int((active_row or {}).get("active_1d") or 0),
-                    "activeUsers7d": int((active_row or {}).get("active_7d") or 0),
-                    "activeUsers30d": int((active_row or {}).get("active_30d") or 0),
-                    "newUsers1d": int((new_row or {}).get("new_1d") or 0),
-                    "newUsers7d": int((new_row or {}).get("new_7d") or 0),
-                    "newUsers30d": int((new_row or {}).get("new_30d") or 0),
-                }
-            },
+            "userStats": {
+                "totalUsers": int((overview_row or {}).get("total_users") or 0),
+                "registeredUsers": int((overview_row or {}).get("registered_users") or 0),
+                "activeUsers1d": int((active_row or {}).get("active_1d") or 0),
+                "activeUsers7d": int((active_row or {}).get("active_7d") or 0),
+                "activeUsers30d": int((active_row or {}).get("active_30d") or 0),
+                "newUsers1d": int((new_row or {}).get("new_1d") or 0),
+                "newUsers7d": int((new_row or {}).get("new_7d") or 0),
+                "newUsers30d": int((new_row or {}).get("new_30d") or 0),
+            }
         }
 
     def list_admin_tasks(
@@ -1078,15 +1428,11 @@ class D1TaskStorage:
         date_to: Optional[str] = None,
         page: int = 1,
         page_size: int = 10,
-        sort_by: str = "updated_at",
+        sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> Dict[str, Any]:
         where = ["t.deleted_at IS NULL"]
         params: List[Any] = []
-        now = datetime.now()
-        cutoff_1d = (now - timedelta(days=1)).isoformat()
-        cutoff_7d = (now - timedelta(days=7)).isoformat()
-        cutoff_30d = (now - timedelta(days=30)).isoformat()
 
         if user_name:
             where.append("u.name LIKE ?")
@@ -1121,7 +1467,7 @@ class D1TaskStorage:
             "updated_at": "COALESCE(t.updated_at, '')",
             "completed_at": "COALESCE(t.completed_at, '')",
         }
-        safe_sort = safe_sort_map.get(sort_by, "COALESCE(t.updated_at, '')")
+        safe_sort = safe_sort_map.get(sort_by, "COALESCE(t.created_at, '')")
         direction = "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
         offset = max(0, (page - 1) * page_size)
 
@@ -1153,21 +1499,6 @@ class D1TaskStorage:
             LIMIT ? OFFSET ?
             """,
             params + [page_size, offset],
-        )
-
-        task_type_rows = self._fetchall(
-            """
-            SELECT
-                COALESCE(NULLIF(TRIM(task_type), ''), 'unknown') AS task_type,
-                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_1d,
-                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_7d,
-                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_30d
-            FROM tasks
-            WHERE deleted_at IS NULL
-            GROUP BY COALESCE(NULLIF(TRIM(task_type), ''), 'unknown')
-            ORDER BY count_30d DESC, task_type ASC
-            """,
-            [cutoff_1d, cutoff_7d, cutoff_30d],
         )
 
         def _parse_iso(value: Any) -> Optional[datetime]:
@@ -1211,17 +1542,37 @@ class D1TaskStorage:
                 }
                 for row in rows
             ],
-            "meta": {
-                "taskTypeWindows": [
-                    {
-                        "taskType": row.get("task_type"),
-                        "count1d": int(row.get("count_1d") or 0),
-                        "count7d": int(row.get("count_7d") or 0),
-                        "count30d": int(row.get("count_30d") or 0),
-                    }
-                    for row in task_type_rows
-                ]
-            },
+        }
+
+    def summarize_admin_tasks(self) -> Dict[str, Any]:
+        now = datetime.now()
+        cutoff_1d = (now - timedelta(days=1)).isoformat()
+        cutoff_7d = (now - timedelta(days=7)).isoformat()
+        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        task_type_rows = self._fetchall(
+            """
+            SELECT
+                COALESCE(NULLIF(TRIM(task_type), ''), 'unknown') AS task_type,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_1d,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_7d,
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS count_30d
+            FROM tasks
+            WHERE deleted_at IS NULL
+            GROUP BY COALESCE(NULLIF(TRIM(task_type), ''), 'unknown')
+            ORDER BY count_30d DESC, task_type ASC
+            """,
+            [cutoff_1d, cutoff_7d, cutoff_30d],
+        )
+        return {
+            "taskTypeWindows": [
+                {
+                    "taskType": row.get("task_type"),
+                    "count1d": int(row.get("count_1d") or 0),
+                    "count7d": int(row.get("count_7d") or 0),
+                    "count30d": int(row.get("count_30d") or 0),
+                }
+                for row in task_type_rows
+            ]
         }
 
     def get_admin_task_detail(self, task_id: str) -> Optional[Dict[str, Any]]:

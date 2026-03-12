@@ -33,6 +33,7 @@ SYSTEM_LOG_DB_ENABLED = str(os.getenv("SYSTEM_LOG_DB_ENABLED", "true")).strip().
 SYSTEM_LOG_DIR = settings.DATA_DIR / "logs"
 SYSTEM_LOG_FILE = SYSTEM_LOG_DIR / "system_events.log"
 SYSTEM_LOG_PAYLOAD_DIR = SYSTEM_LOG_DIR / "payloads"
+SYSTEM_LOG_POLICY_CLEANUP_MARKER_FILE = SYSTEM_LOG_DIR / ".system_log_policy_cleanup_v1.done"
 REDACTED_VALUE = "***REDACTED***"
 
 
@@ -250,6 +251,16 @@ def _append_system_log_file(record: Dict[str, Any]) -> None:
             handle.write("\n")
 
 
+def _should_persist_system_log(*, category: str, method: Optional[str], success: bool) -> bool:
+    category_text = str(category or "").strip().lower() or "system"
+    method_text = str(method or "").strip().upper()
+    if category_text == "llm_call":
+        return True
+    if category_text == "user_action":
+        return method_text != "GET"
+    return not bool(success)
+
+
 def emit_system_log(
     *,
     category: str,
@@ -273,6 +284,15 @@ def emit_system_log(
     now = datetime.now().isoformat()
     log_id = uuid.uuid4().hex
     context = get_request_context()
+    resolved_category = str(category or "").strip() or "system"
+    resolved_method = str(method or context.get("method") or "").strip() or None
+
+    if not _should_persist_system_log(
+        category=resolved_category,
+        method=resolved_method,
+        success=bool(success),
+    ):
+        return log_id
 
     safe_payload = redact_sensitive(payload or {})
     payload_record = _persist_payload(safe_payload, log_id, now)
@@ -280,7 +300,7 @@ def emit_system_log(
     db_record: Dict[str, Any] = {
         "log_id": log_id,
         "timestamp": now,
-        "category": str(category or "").strip() or "system",
+        "category": resolved_category,
         "event_name": str(event_name or "").strip() or "event",
         "level": str(level or "INFO").strip().upper(),
         "owner_id": str(owner_id or context.get("owner_id") or "").strip() or None,
@@ -288,7 +308,7 @@ def emit_system_log(
         "task_type": str(task_type or context.get("task_type") or "").strip() or None,
         "request_id": str(request_id or context.get("request_id") or "").strip() or None,
         "trace_id": str(trace_id or context.get("trace_id") or "").strip() or None,
-        "method": str(method or context.get("method") or "").strip() or None,
+        "method": resolved_method,
         "path": str(path or context.get("path") or "").strip() or None,
         "status_code": int(status_code) if status_code is not None else None,
         "duration_ms": int(duration_ms) if duration_ms is not None else None,
@@ -484,13 +504,8 @@ async def request_logging_middleware(request: Request, call_next):
         elif status_code >= 400:
             level = "WARNING"
 
-        should_log = path.startswith("/api/")
-        is_success_get = (
-            method == "GET"
-            and error_text is None
-            and status_code < 400
-        )
-        if should_log and not is_success_get:
+        should_log = path.startswith("/api/") and method != "GET"
+        if should_log:
             emit_system_log(
                 category="user_action",
                 event_name="http_request",
@@ -546,6 +561,62 @@ def cleanup_expired_system_logs(retention_days: Optional[int] = None) -> Dict[st
                 continue
 
     return {"deleted_db": deleted_db, "deleted_payload_files": deleted_files}
+
+
+def cleanup_system_logs_by_policy() -> Dict[str, int]:
+    deleted_db = 0
+    payload_paths: list[str] = []
+    storage = None
+    try:
+        storage = _get_storage()
+    except Exception:
+        storage = None
+
+    if storage and hasattr(storage, "cleanup_system_logs_by_policy"):
+        try:
+            with internal_log_write_context():
+                if hasattr(storage, "list_system_log_payload_paths_for_policy_cleanup"):
+                    payload_paths = [
+                        str(item).strip()
+                        for item in (storage.list_system_log_payload_paths_for_policy_cleanup() or [])
+                        if str(item).strip()
+                    ]
+                deleted_db = int(storage.cleanup_system_logs_by_policy() or 0)
+        except Exception as exc:
+            logger.warning(f"[系统日志] 策略清理数据库失败：{exc}")
+
+    deleted_files = 0
+    for payload_file_path in sorted(set(payload_paths)):
+        path = Path(payload_file_path)
+        try:
+            if path.exists() and path.is_file():
+                path.unlink(missing_ok=True)
+                deleted_files += 1
+        except Exception:
+            continue
+
+    return {"deleted_db": deleted_db, "deleted_payload_files": deleted_files}
+
+
+def cleanup_system_logs_by_policy_once() -> Dict[str, Any]:
+    marker = SYSTEM_LOG_POLICY_CLEANUP_MARKER_FILE
+    if marker.exists():
+        return {
+            "executed": False,
+            "deleted_db": 0,
+            "deleted_payload_files": 0,
+            "marker_path": str(marker),
+        }
+
+    summary = cleanup_system_logs_by_policy()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(datetime.now().isoformat(), encoding="utf-8")
+    return {
+        "executed": True,
+        "deleted_db": int(summary.get("deleted_db") or 0),
+        "deleted_payload_files": int(summary.get("deleted_payload_files") or 0),
+        "marker_path": str(marker),
+    }
 
 
 async def _cleanup_loop() -> None:
