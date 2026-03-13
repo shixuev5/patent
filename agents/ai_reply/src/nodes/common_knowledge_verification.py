@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from loguru import logger
 
+from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import (
@@ -18,6 +19,7 @@ from agents.ai_reply.src.retrieval_utils import (
 )
 from agents.ai_reply.src.state import EvidenceAssessment
 from agents.ai_reply.src.utils import get_node_cache
+from config import settings
 
 
 class CommonKnowledgeVerificationNode:
@@ -35,7 +37,7 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v5",
+                "verify_common_knowledge_v6",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -73,6 +75,8 @@ class CommonKnowledgeVerificationNode:
         prepared = self._to_dict(prepared_materials)
         claims = self._extract_claims(prepared)
         priority_date = self._extract_priority_date(prepared)
+        local_retriever = self._build_local_retriever(prepared)
+        local_doc_ids = self._extract_comparison_doc_ids(prepared)
 
         assessments: List[Dict[str, Any]] = []
         for dispute in common_knowledge_disputes:
@@ -86,15 +90,73 @@ class CommonKnowledgeVerificationNode:
             if not external_evidence:
                 logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
 
+            flat_queries = self._flatten_queries(queries_by_engine)
+            local_candidates, local_trace = self._search_local_candidates(
+                flat_queries=flat_queries,
+                local_doc_ids=local_doc_ids,
+                local_retriever=local_retriever,
+            )
+            external_candidates = self._to_external_candidates(external_evidence)
+            merged_candidates = self._rerank_candidates(
+                candidates=local_candidates + external_candidates,
+                flat_queries=flat_queries,
+                top_k=settings.LOCAL_RETRIEVAL_RERANK_K,
+            )
+            card_bundle = self._build_compact_cards(
+                candidates=merged_candidates,
+                local_retriever=local_retriever,
+                context_k=settings.LOCAL_RETRIEVAL_CONTEXT_K,
+                max_context_chars=settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS,
+                max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+            )
+
             assessment = self._verify_single_dispute(
                 dispute=dispute,
                 claim_text=claim_text,
                 queries_by_engine=queries_by_engine,
                 priority_date=priority_date,
-                external_evidence=external_evidence,
+                evidence_cards=card_bundle.get("cards", []),
                 retrieval_engines=retrieval_engines,
                 retrieval_meta=retrieval_meta,
+                local_retrieval_trace=self._merge_local_retrieval_trace(
+                    local_trace=local_trace,
+                    card_trace=card_bundle.get("trace", {}),
+                    flat_queries=flat_queries,
+                    local_doc_ids=local_doc_ids,
+                ),
             )
+
+            first_assessment = self._to_dict(assessment.get("assessment", {}))
+            first_verdict = str(first_assessment.get("verdict", "")).strip()
+            try:
+                first_confidence = float(first_assessment.get("confidence", 0.0) or 0.0)
+            except Exception:
+                first_confidence = 0.0
+            if first_verdict == "INCONCLUSIVE" or first_confidence < 0.6:
+                expanded_bundle = self._build_compact_cards(
+                    candidates=merged_candidates,
+                    local_retriever=local_retriever,
+                    context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
+                    max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
+                    max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+                )
+                expanded_cards = expanded_bundle.get("cards", [])
+                if len(expanded_cards) > len(card_bundle.get("cards", [])):
+                    assessment = self._verify_single_dispute(
+                        dispute=dispute,
+                        claim_text=claim_text,
+                        queries_by_engine=queries_by_engine,
+                        priority_date=priority_date,
+                        evidence_cards=expanded_cards,
+                        retrieval_engines=retrieval_engines,
+                        retrieval_meta=retrieval_meta,
+                        local_retrieval_trace=self._merge_local_retrieval_trace(
+                            local_trace=local_trace,
+                            card_trace=expanded_bundle.get("trace", {}),
+                            flat_queries=flat_queries,
+                            local_doc_ids=local_doc_ids,
+                        ),
+                    )
             assessments.append(assessment)
 
         return assessments
@@ -209,6 +271,225 @@ class CommonKnowledgeVerificationNode:
             per_engine_limit=2,
         )
 
+    def _build_local_retriever(self, prepared_materials: Dict[str, Any]) -> LocalEvidenceRetriever | None:
+        local_meta = self._to_dict(prepared_materials.get("local_retrieval", {}))
+        if not local_meta or not bool(local_meta.get("enabled", False)):
+            return None
+        index_path = str(local_meta.get("index_path", "")).strip()
+        if not index_path:
+            return None
+        return LocalEvidenceRetriever(
+            db_path=index_path,
+            chunk_chars=int(local_meta.get("chunk_chars") or settings.LOCAL_RETRIEVAL_CHUNK_CHARS),
+            chunk_overlap=int(local_meta.get("chunk_overlap") or settings.LOCAL_RETRIEVAL_CHUNK_OVERLAP),
+        )
+
+    def _extract_comparison_doc_ids(self, prepared_materials: Dict[str, Any]) -> List[str]:
+        doc_ids: List[str] = []
+        for item in prepared_materials.get("comparison_documents", []) or []:
+            doc = self._to_dict(item)
+            doc_id = str(doc.get("document_id", "")).strip()
+            if doc_id and doc_id not in doc_ids:
+                doc_ids.append(doc_id)
+        return doc_ids
+
+    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
+        flat: List[str] = []
+        for engine_queries in (queries_by_engine or {}).values():
+            for query in engine_queries or []:
+                value = str(query).strip()
+                if value and value not in flat:
+                    flat.append(value)
+        return flat
+
+    def _search_local_candidates(
+        self,
+        flat_queries: List[str],
+        local_doc_ids: List[str],
+        local_retriever: LocalEvidenceRetriever | None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        if not local_retriever:
+            return [], {
+                "enabled": False,
+                "fallback": "no_local_retriever",
+                "queries": flat_queries,
+                "doc_filters": local_doc_ids,
+                "hit_chunks": [],
+            }
+
+        candidates: List[Dict[str, Any]] = []
+        for query in flat_queries[:4]:
+            candidates.extend(
+                local_retriever.search(
+                    query=query,
+                    intent="common_knowledge",
+                    doc_filters=local_doc_ids,
+                    top_k=settings.LOCAL_RETRIEVAL_CANDIDATE_K,
+                )
+            )
+
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in candidates:
+            chunk_id = str(item.get("chunk_id", "")).strip()
+            if not chunk_id:
+                continue
+            current = deduped.get(chunk_id)
+            if not current or float(item.get("score", 0.0)) > float(current.get("score", 0.0)):
+                deduped[chunk_id] = item
+        sorted_items = sorted(
+            deduped.values(),
+            key=lambda x: float(x.get("score", 0.0)),
+            reverse=True,
+        )[: settings.LOCAL_RETRIEVAL_CANDIDATE_K]
+        return sorted_items, {
+            "enabled": True,
+            "fallback": "",
+            "queries": flat_queries,
+            "doc_filters": local_doc_ids,
+            "hit_chunks": [item.get("chunk_id") for item in sorted_items if item.get("chunk_id")],
+        }
+
+    def _to_external_candidates(self, external_evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        for item in external_evidence or []:
+            evidence = self._to_dict(item)
+            doc_id = str(evidence.get("doc_id", "")).strip()
+            snippet = str(evidence.get("snippet", "")).strip()
+            if not doc_id or not snippet:
+                continue
+            candidates.append(
+                {
+                    "candidate_id": doc_id,
+                    "chunk_id": "",
+                    "doc_id": doc_id,
+                    "source_type": str(evidence.get("source_type", "")).strip() or "external_document",
+                    "section_type": "external",
+                    "location": str(evidence.get("published", "")).strip() or "external",
+                    "text": snippet,
+                    "source_url": str(evidence.get("url", "")).strip(),
+                    "source_title": str(evidence.get("title", "")).strip(),
+                    "score": 0.4,
+                    "match_terms": [],
+                }
+            )
+        return candidates
+
+    def _rerank_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        flat_queries: List[str],
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        terms: List[str] = []
+        for query in flat_queries:
+            for token in re.split(r"[\s,，。；;:：、（）()\[\]{}]+", str(query)):
+                value = token.strip()
+                if len(value) >= 2 and value not in terms:
+                    terms.append(value)
+
+        scored: List[Dict[str, Any]] = []
+        for item in candidates or []:
+            row = self._to_dict(item)
+            text = str(row.get("text", "")).strip()
+            if not text:
+                continue
+            hit_count = sum(1 for term in terms[:20] if term in text)
+            coverage = hit_count / float(max(1, min(20, len(terms))))
+            base_score = float(row.get("score", 0.0) or 0.0)
+            row["score"] = round(base_score + coverage * 0.35, 6)
+            row["match_terms"] = [term for term in terms[:20] if term in text][:6]
+            scored.append(row)
+
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in sorted(scored, key=lambda x: float(x.get("score", 0.0)), reverse=True):
+            candidate_id = str(item.get("candidate_id", "")).strip() or str(item.get("chunk_id", "")).strip() or str(item.get("doc_id", "")).strip()
+            if not candidate_id or candidate_id in deduped:
+                continue
+            deduped[candidate_id] = item
+            if len(deduped) >= max(1, int(top_k)):
+                break
+        return list(deduped.values())
+
+    def _build_compact_cards(
+        self,
+        candidates: List[Dict[str, Any]],
+        local_retriever: LocalEvidenceRetriever | None,
+        context_k: int,
+        max_context_chars: int,
+        max_quote_chars: int,
+    ) -> Dict[str, Any]:
+        if local_retriever:
+            return local_retriever.build_evidence_cards(
+                candidates=candidates,
+                context_k=context_k,
+                max_context_chars=max_context_chars,
+                max_quote_chars=max_quote_chars,
+                read_window=1,
+            )
+
+        cards: List[Dict[str, Any]] = []
+        selected: List[str] = []
+        dropped: List[str] = []
+        total_chars = 0
+        for item in sorted(candidates or [], key=lambda x: float(x.get("score", 0.0)), reverse=True):
+            candidate_id = str(item.get("candidate_id", "")).strip() or str(item.get("doc_id", "")).strip()
+            quote = re.sub(r"\s+", " ", str(item.get("text", "")).strip())
+            if len(quote) > max_quote_chars:
+                quote = quote[: max_quote_chars - 3].rstrip() + "..."
+            if not quote:
+                continue
+            if cards and total_chars + len(quote) > max_context_chars:
+                dropped.append(candidate_id)
+                continue
+            cards.append(
+                {
+                    "candidate_id": candidate_id,
+                    "chunk_id": None,
+                    "doc_id": str(item.get("doc_id", "")).strip(),
+                    "quote": quote,
+                    "location": str(item.get("location", "")).strip(),
+                    "analysis": f"命中关键词：{', '.join(item.get('match_terms', [])[:3])}" if item.get("match_terms") else "",
+                    "source_url": str(item.get("source_url", "")).strip() or None,
+                    "source_title": str(item.get("source_title", "")).strip() or None,
+                    "source_type": str(item.get("source_type", "")).strip() or None,
+                    "score": float(item.get("score", 0.0)),
+                }
+            )
+            selected.append(candidate_id)
+            total_chars += len(quote)
+            if len(cards) >= context_k:
+                break
+        return {
+            "cards": cards,
+            "trace": {
+                "selected_candidates": selected,
+                "dropped_candidates": dropped,
+                "context_chars": total_chars,
+                "context_k": context_k,
+                "max_context_chars": max_context_chars,
+                "max_quote_chars": max_quote_chars,
+            },
+        }
+
+    def _merge_local_retrieval_trace(
+        self,
+        local_trace: Dict[str, Any],
+        card_trace: Dict[str, Any],
+        flat_queries: List[str],
+        local_doc_ids: List[str],
+    ) -> Dict[str, Any]:
+        merged = {
+            "enabled": bool(local_trace.get("enabled", False)),
+            "fallback": str(local_trace.get("fallback", "")).strip(),
+            "queries": flat_queries,
+            "doc_filters": local_doc_ids,
+            "hit_chunks": local_trace.get("hit_chunks", []),
+            "selected_cards": card_trace.get("selected_candidates", []),
+            "dropped_cards": card_trace.get("dropped_candidates", []),
+            "context_chars": int(card_trace.get("context_chars", 0) or 0),
+        }
+        return merged
+
     def _build_system_prompt(self) -> str:
         return """你是资深的专利审查与复审专家AI，当前任务是基于外部证据或模型知识，核查“审查员将某技术特征认定为公知常识/常规技术手段”的逻辑争议，并判断申请人的反驳是否成立。
 
@@ -264,7 +545,7 @@ class CommonKnowledgeVerificationNode:
 
     def _build_prefix_messages(
         self,
-        external_evidence: List[Dict[str, Any]],
+        evidence_cards: List[Dict[str, Any]],
         priority_date: Optional[str],
     ) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = [
@@ -277,22 +558,24 @@ class CommonKnowledgeVerificationNode:
                 "content": f"时间边界：请以 {priority_date}（含）之前可公开获得的技术知识为准。",
             })
 
-        if not external_evidence:
+        if not evidence_cards:
             messages.append({
                 "role": "user",
-                "content": "当前未检索到有效外部证据。可使用模型通用知识进行低置信度分析；若仍不确定输出 INCONCLUSIVE。",
+                "content": "当前未检索到有效证据卡。可使用模型通用知识进行低置信度分析；若仍不确定输出 INCONCLUSIVE。",
             })
             return messages
 
-        for item in external_evidence:
+        for item in evidence_cards:
+            item_dict = self._to_dict(item)
             messages.append({
                 "role": "user",
                 "content": (
-                    f"外部证据 {item['doc_id']} ({item.get('source_type', 'external')})\n"
-                    f"标题: {item.get('title', '')}\n"
-                    f"链接: {item.get('url', '')}\n"
-                    f"时间: {item.get('published', '')}\n"
-                    f"摘要: {item.get('snippet', '')[:700]}"
+                    f"证据卡 {item_dict.get('doc_id', '')} ({item_dict.get('source_type', 'evidence')})\n"
+                    f"位置: {item_dict.get('location', '')}\n"
+                    f"标题: {item_dict.get('source_title', '')}\n"
+                    f"链接: {item_dict.get('source_url', '')}\n"
+                    f"引用: {item_dict.get('quote', '')}\n"
+                    f"说明: {item_dict.get('analysis', '')}"
                 ),
             })
 
@@ -304,19 +587,16 @@ class CommonKnowledgeVerificationNode:
         claim_text: str,
         queries_by_engine: Dict[str, List[str]],
         priority_date: Optional[str],
-        external_evidence: List[Dict[str, Any]],
+        evidence_cards: List[Dict[str, Any]],
         retrieval_engines: List[str],
         retrieval_meta: Dict[str, Any],
+        local_retrieval_trace: Dict[str, Any],
     ) -> Dict[str, Any]:
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
 
-        prefix_messages = self._build_prefix_messages(external_evidence, priority_date)
-        flat_queries = []
-        for engine_queries in queries_by_engine.values():
-            for query in engine_queries:
-                if query not in flat_queries:
-                    flat_queries.append(query)
+        prefix_messages = self._build_prefix_messages(evidence_cards, priority_date)
+        flat_queries = self._flatten_queries(queries_by_engine)
         dispute_prompt = f"""请核查以下逻辑争议项：
 dispute_id: {dispute.get("dispute_id", "")}
 claim_ids: {json.dumps(self._normalize_claim_ids(dispute.get("claim_ids", [])), ensure_ascii=False)}
@@ -329,12 +609,12 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
 """
         messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]
 
-        external_doc_ids = {str(item.get("doc_id", "")).strip() for item in external_evidence if item.get("doc_id")}
+        external_doc_ids = {str(item.get("doc_id", "")).strip() for item in evidence_cards if item.get("doc_id")}
         allowed_doc_ids = set(external_doc_ids)
         allowed_doc_ids.add("MODEL")
         external_doc_map = {
-            str(item.get("doc_id", "")).strip(): item
-            for item in external_evidence
+            str(item.get("doc_id", "")).strip(): self._to_dict(item)
+            for item in evidence_cards
             if item.get("doc_id")
         }
 
@@ -366,6 +646,7 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             "trace": {
                 "used_doc_ids": used_doc_ids,
                 "missing_doc_ids": [],
+                "local_retrieval": local_retrieval_trace,
                 "retrieval": build_trace_retrieval(queries_by_engine, retrieval_engines, retrieval_meta),
             },
         }
@@ -417,8 +698,18 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
                 "quote": str(evidence.get("quote", "")).strip(),
                 "location": str(evidence.get("location", "")).strip(),
                 "analysis": str(evidence.get("analysis", "")).strip(),
-                "source_url": str(evidence.get("source_url") or source_item.get("url") or "").strip() or None,
-                "source_title": str(evidence.get("source_title") or source_item.get("title") or "").strip() or None,
+                "source_url": str(
+                    evidence.get("source_url")
+                    or source_item.get("source_url")
+                    or source_item.get("url")
+                    or ""
+                ).strip() or None,
+                "source_title": str(
+                    evidence.get("source_title")
+                    or source_item.get("source_title")
+                    or source_item.get("title")
+                    or ""
+                ).strip() or None,
                 "source_type": str(evidence.get("source_type") or source_item.get("source_type") or "").strip() or None,
             })
 

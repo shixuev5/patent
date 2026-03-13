@@ -4,10 +4,14 @@
 """
 
 import re
+import json
+from pathlib import Path
 from typing import Any, Dict, List
 from loguru import logger
+from agents.common.retrieval import LocalEvidenceRetriever
 from agents.ai_reply.src.state import WorkflowState
 from agents.ai_reply.src.utils import get_node_cache
+from config import settings
 
 
 class DataPreparationNode:
@@ -29,7 +33,7 @@ class DataPreparationNode:
             cache = get_node_cache(self.config, "data_preparation")
 
             prepared_materials = cache.run_step(
-                "prepare_materials",
+                "prepare_materials_v2",
                 self._prepare_materials,
                 self._state_get(state, "office_action"),
                 self._state_get(state, "parsed_files", []),
@@ -111,10 +115,85 @@ class DataPreparationNode:
             },
             "claims": {
                 "content": claims_content
-            }
+            },
+            "local_retrieval": {},
         }
 
+        prepared_materials["local_retrieval"] = self._build_local_retrieval_meta(prepared_materials)
         return prepared_materials
+
+    def _build_local_retrieval_meta(self, prepared_materials: Dict[str, Any]) -> Dict[str, Any]:
+        if not settings.LOCAL_RETRIEVAL_ENABLED:
+            return {
+                "enabled": False,
+                "reason": "LOCAL_RETRIEVAL_ENABLED=false",
+            }
+
+        if settings.LOCAL_RETRIEVAL_BACKEND != "sqlite_fts5":
+            return {
+                "enabled": False,
+                "reason": f"unsupported backend: {settings.LOCAL_RETRIEVAL_BACKEND}",
+            }
+
+        documents = self._build_local_retrieval_documents(prepared_materials)
+        if not documents:
+            return {
+                "enabled": False,
+                "reason": "no retrievable documents",
+            }
+
+        cache_dir = Path(getattr(self.config, "cache_dir", ".cache"))
+        index_path = cache_dir / "local_retrieval.db"
+        retriever = LocalEvidenceRetriever(
+            db_path=str(index_path),
+            chunk_chars=settings.LOCAL_RETRIEVAL_CHUNK_CHARS,
+            chunk_overlap=settings.LOCAL_RETRIEVAL_CHUNK_OVERLAP,
+        )
+        meta = retriever.build_index(documents)
+        meta["documents"] = [
+            {
+                "doc_id": str(item.get("doc_id", "")).strip(),
+                "source_type": str(item.get("source_type", "")).strip(),
+            }
+            for item in documents
+        ]
+        return meta
+
+    def _build_local_retrieval_documents(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, str]]:
+        documents: List[Dict[str, str]] = []
+
+        for doc in prepared_materials.get("comparison_documents", []) or []:
+            item = self._to_dict(doc)
+            doc_id = str(item.get("document_id", "")).strip()
+            title = str(item.get("document_number", "")).strip()
+            if not doc_id:
+                continue
+            content = self._extract_doc_content(item)
+            if not content:
+                continue
+            documents.append(
+                {
+                    "doc_id": doc_id,
+                    "title": title,
+                    "source_type": "comparison_document",
+                    "content": content,
+                }
+            )
+
+        original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
+        original_data = self._to_dict(original_patent.get("data", {}))
+        original_desc = self._extract_patent_description_text(original_data)
+        original_number = str(original_patent.get("application_number", "")).strip()
+        if original_desc and original_number:
+            documents.append(
+                {
+                    "doc_id": "ORIGINAL_PATENT",
+                    "title": original_number,
+                    "source_type": "original_patent",
+                    "content": original_desc,
+                }
+            )
+        return documents
 
     def _build_patent_data_map(self, search_results) -> Dict[str, Dict[str, Any]]:
         """将 patent_retrieval 的新格式列表拍平成 map。"""
@@ -214,6 +293,35 @@ class DataPreparationNode:
             if parsed.get("file_type") == file_type:
                 return parsed.get("content", "")
         return ""
+
+    def _extract_doc_content(self, doc: Dict[str, Any]) -> str:
+        is_patent = bool(doc.get("is_patent", False))
+        data = doc.get("data")
+        if is_patent:
+            return self._extract_patent_description_text(self._to_dict(data))
+        if isinstance(data, str):
+            return data.strip()
+        if isinstance(data, dict):
+            return json.dumps(data, ensure_ascii=False)
+        return ""
+
+    def _extract_patent_description_text(self, data: Dict[str, Any]) -> str:
+        data_dict = self._to_dict(data)
+        description = self._to_dict(data_dict.get("description", {}))
+        detailed = str(description.get("detailed_description", "")).strip()
+        if detailed:
+            return detailed
+        abstract = str(data_dict.get("abstract", "")).strip()
+        claims = data_dict.get("claims", [])
+        claim_texts: List[str] = []
+        if isinstance(claims, list):
+            for item in claims[:20]:
+                claim = self._to_dict(item)
+                text = str(claim.get("claim_text", "")).strip()
+                if text:
+                    claim_texts.append(text)
+        merged = "\n".join([part for part in [abstract, "\n".join(claim_texts)] if part])
+        return merged.strip()
 
     def _state_get(self, state, key: str, default=None):
         if isinstance(state, dict):

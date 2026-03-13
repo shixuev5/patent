@@ -74,6 +74,17 @@ class Settings:
     # --- 外部检索/下载超时 ---
     RETRIEVAL_REQUEST_TIMEOUT_SECONDS = int(os.getenv("RETRIEVAL_REQUEST_TIMEOUT_SECONDS", "30"))
     DOWNLOAD_REQUEST_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_REQUEST_TIMEOUT_SECONDS", "60"))
+
+    # --- 通用本地检索（可复用于 ai_reply / patent_analysis）---
+    LOCAL_RETRIEVAL_ENABLED = os.getenv("LOCAL_RETRIEVAL_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    LOCAL_RETRIEVAL_BACKEND = os.getenv("LOCAL_RETRIEVAL_BACKEND", "sqlite_fts5").strip() or "sqlite_fts5"
+    LOCAL_RETRIEVAL_CHUNK_CHARS = max(200, int(os.getenv("LOCAL_RETRIEVAL_CHUNK_CHARS", "600")))
+    LOCAL_RETRIEVAL_CHUNK_OVERLAP = max(0, int(os.getenv("LOCAL_RETRIEVAL_CHUNK_OVERLAP", "120")))
+    LOCAL_RETRIEVAL_CANDIDATE_K = max(4, int(os.getenv("LOCAL_RETRIEVAL_CANDIDATE_K", "24")))
+    LOCAL_RETRIEVAL_RERANK_K = max(2, int(os.getenv("LOCAL_RETRIEVAL_RERANK_K", "8")))
+    LOCAL_RETRIEVAL_CONTEXT_K = max(1, int(os.getenv("LOCAL_RETRIEVAL_CONTEXT_K", "6")))
+    LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS = max(400, int(os.getenv("LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS", "2200")))
+    LOCAL_RETRIEVAL_MAX_QUOTE_CHARS = max(80, int(os.getenv("LOCAL_RETRIEVAL_MAX_QUOTE_CHARS", "180")))
     
     # --- PaddleOCR ---
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")  

@@ -101,6 +101,10 @@ class EvidenceAssessmentTrace(BaseModel):
     """事实核查追踪信息"""
     used_doc_ids: List[str] = Field(default_factory=list, description="本次核查使用的对比文件编号")
     missing_doc_ids: List[str] = Field(default_factory=list, description="缺失或无有效内容的对比文件编号")
+    local_retrieval: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="本地检索追踪信息：queries/doc_filters/hit_chunks/selected_cards 等",
+    )
     retrieval: Dict[str, RetrievalEngineTrace] = Field(
         default_factory=dict,
         description="按检索引擎维度记录查询条件、过滤规则与结果摘要",
@@ -193,6 +197,10 @@ class PreparedMaterials(BaseModel):
     office_action: PreparedOfficeAction = Field(default_factory=PreparedOfficeAction)
     response: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
     claims: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
+    local_retrieval: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="任务级本地检索元信息（索引路径、版本、参数等）",
+    )
 
 
 class WorkflowState(BaseModel):

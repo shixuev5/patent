@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Set, Tuple
 
 from loguru import logger
 
+from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import (
@@ -19,6 +20,7 @@ from agents.ai_reply.src.retrieval_utils import (
 )
 from agents.ai_reply.src.state import Dispute, EvidenceAssessment
 from agents.ai_reply.src.utils import get_node_cache
+from config import settings
 
 
 class TopupSearchVerificationNode:
@@ -41,7 +43,7 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v6",
+                "verify_topup_v7",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
@@ -75,11 +77,18 @@ class TopupSearchVerificationNode:
         claims = self._extract_claims(prepared)
         comparison_docs = self._build_comparison_docs(prepared)
         priority_date = self._extract_priority_date(prepared)
+        local_retriever = self._build_local_retriever(prepared)
 
         disputes =[]
         assessments =[]
         for task in tasks:
-            dispute, assessment = self._evaluate_task(task, claims, comparison_docs, priority_date)
+            dispute, assessment = self._evaluate_task(
+                task=task,
+                claims=claims,
+                comparison_docs=comparison_docs,
+                priority_date=priority_date,
+                local_retriever=local_retriever,
+            )
             disputes.append(dispute)
             assessments.append(assessment)
 
@@ -94,6 +103,7 @@ class TopupSearchVerificationNode:
         claims: List[Dict[str, Any]],
         comparison_docs: Dict[str, Dict[str, Any]],
         priority_date: str,
+        local_retriever: LocalEvidenceRetriever | None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         task_id = str(task.get("task_id", "")).strip() or "New_FX"
         claim_ids = self._normalize_claim_ids(task.get("claim_ids", [])) or ["1"]
@@ -101,7 +111,12 @@ class TopupSearchVerificationNode:
         dispute_id = f"TOPUP_{task_id}"
         claim_text = self._get_claim_text(claim_ids, claims)
 
-        local_evidence = self._scan_comparison_docs(feature_text, comparison_docs)
+        local_evidence, local_retrieval_trace = self._search_local_evidence(
+            feature_text=feature_text,
+            claim_text=claim_text,
+            comparison_docs=comparison_docs,
+            local_retriever=local_retriever,
+        )
         external_queries = self._build_engine_queries(task, claim_text, feature_text, priority_date)
         external_candidates, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
             queries=external_queries,
@@ -162,6 +177,7 @@ class TopupSearchVerificationNode:
             "trace": {
                 "used_doc_ids": parsed["used_doc_ids"],
                 "missing_doc_ids":[],
+                "local_retrieval": local_retrieval_trace,
                 "retrieval": build_trace_retrieval(external_queries, retrieval_engines, retrieval_meta),
             },
         }
@@ -424,55 +440,113 @@ feature_text: {feature_text}
             "used_doc_ids": used_doc_ids,
         }
 
-    def _scan_comparison_docs(self, feature_text: str, comparison_docs: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # 专利常用停用词过滤，提取真正具有技术含义的关键词
-        stop_words = {"一种", "方法", "系统", "装置", "包括", "用于", "实现", "步骤", "所述", "其特征在于", "连接", "设置", "具有", "能够"}
-        
-        raw_tokens =[token.strip() for token in re.split(r"[\s,，。；;:：、（）()\[\]{}]+", feature_text)]
-        meaningful_tokens =[
-            t for t in raw_tokens 
-            if len(t) >= 2 and t not in stop_words and not t.isdigit()
-        ]
-        
-        # 优先使用有意义的词，如果都被过滤则降级使用原始拆分词
-        tokens = meaningful_tokens[:8] if meaningful_tokens else [t for t in raw_tokens if len(t) >= 2][:8]
-        
-        evidence_items: List[Dict[str, Any]] =[]
+    def _build_local_retriever(self, prepared_materials: Dict[str, Any]) -> LocalEvidenceRetriever | None:
+        local_meta = self._to_dict(prepared_materials.get("local_retrieval", {}))
+        if not local_meta or not bool(local_meta.get("enabled", False)):
+            return None
+        index_path = str(local_meta.get("index_path", "")).strip()
+        if not index_path:
+            return None
+        return LocalEvidenceRetriever(
+            db_path=index_path,
+            chunk_chars=int(local_meta.get("chunk_chars") or settings.LOCAL_RETRIEVAL_CHUNK_CHARS),
+            chunk_overlap=int(local_meta.get("chunk_overlap") or settings.LOCAL_RETRIEVAL_CHUNK_OVERLAP),
+        )
 
-        for doc_id, doc in comparison_docs.items():
-            content = str(doc.get("content", ""))
-            if not content:
+    def _search_local_evidence(
+        self,
+        feature_text: str,
+        claim_text: str,
+        comparison_docs: Dict[str, Dict[str, Any]],
+        local_retriever: LocalEvidenceRetriever | None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        doc_filters = [doc_id for doc_id in comparison_docs.keys()]
+        queries = normalize_query_list(
+            [
+                feature_text,
+                f"{feature_text} {claim_text[:120]}",
+            ],
+            limit=2,
+        )
+
+        if not local_retriever:
+            return [], {
+                "enabled": False,
+                "fallback": "no_local_retriever",
+                "queries": queries,
+                "doc_filters": doc_filters,
+                "hit_chunks": [],
+                "selected_cards": [],
+            }
+
+        candidates: List[Dict[str, Any]] = []
+        for query in queries:
+            hits = local_retriever.search(
+                query=query,
+                intent="fact_verification",
+                doc_filters=doc_filters,
+                top_k=settings.LOCAL_RETRIEVAL_CANDIDATE_K,
+            )
+            candidates.extend(hits)
+
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in candidates:
+            chunk_id = str(item.get("chunk_id", "")).strip()
+            if not chunk_id:
                 continue
+            existing = deduped.get(chunk_id)
+            if not existing or float(item.get("score", 0.0)) > float(existing.get("score", 0.0)):
+                deduped[chunk_id] = item
 
-            first_hit = ""
-            for token in tokens:
-                if token and token in content:
-                    first_hit = token
-                    break
-            if not first_hit:
-                continue
+        reranked = sorted(
+            deduped.values(),
+            key=lambda x: float(x.get("score", 0.0)),
+            reverse=True,
+        )[: settings.LOCAL_RETRIEVAL_RERANK_K]
 
-            evidence_items.append({
-                "doc_id": doc_id,
-                "quote": self._extract_snippet(content, first_hit),
-                "location": doc.get("location", ""),
-                "analysis": "",
-                "source_url": None,
-                "source_title": doc.get("title", ""),
-                "source_type": "comparison_document",
-            })
-            if len(evidence_items) >= 6:
-                break
+        card_bundle = local_retriever.build_evidence_cards(
+            candidates=reranked,
+            context_k=settings.LOCAL_RETRIEVAL_CONTEXT_K,
+            max_context_chars=settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS,
+            max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+            read_window=1,
+        )
+        cards = card_bundle.get("cards", [])
+        evidence_items: List[Dict[str, Any]] = []
+        for card in cards:
+            evidence_items.append(
+                {
+                    "doc_id": str(card.get("doc_id", "")).strip(),
+                    "quote": str(card.get("quote", "")).strip(),
+                    "location": str(card.get("location", "")).strip(),
+                    "analysis": str(card.get("analysis", "")).strip(),
+                    "source_url": str(card.get("source_url", "")).strip() or None,
+                    "source_title": str(card.get("source_title", "")).strip() or None,
+                    "source_type": "comparison_document",
+                }
+            )
 
-        return evidence_items
+        if not evidence_items:
+            return [], {
+                "enabled": True,
+                "fallback": "no_local_hits",
+                "queries": queries,
+                "doc_filters": doc_filters,
+                "hit_chunks": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
+                "selected_cards": [],
+            }
 
-    def _extract_snippet(self, content: str, token: str) -> str:
-        index = content.find(token)
-        if index < 0:
-            return content[:240]
-        start = max(index - 90, 0)
-        end = min(index + 160, len(content))
-        return content[start:end].strip()
+        trace = {
+            "enabled": True,
+            "fallback": "",
+            "queries": queries,
+            "doc_filters": doc_filters,
+            "hit_chunks": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
+            "selected_cards": card_bundle.get("trace", {}).get("selected_candidates", []),
+            "dropped_cards": card_bundle.get("trace", {}).get("dropped_candidates", []),
+            "context_chars": card_bundle.get("trace", {}).get("context_chars", 0),
+        }
+        return evidence_items, trace
 
     def _to_external_evidence_items(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         evidence: List[Dict[str, Any]] =[]
