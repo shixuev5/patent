@@ -257,6 +257,7 @@ class SQLiteTaskStorage:
                 "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
                 (TaskType.PATENT_ANALYSIS.value,),
             )
+            self._backfill_terminal_completed_at(conn)
             self._drop_legacy_raw_pdf_path_column(conn)
             conn.execute("DROP INDEX IF EXISTS idx_steps_task_id")
             conn.execute("DROP TABLE IF EXISTS task_steps")
@@ -274,6 +275,23 @@ class SQLiteTaskStorage:
 
         conn.execute("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
         logger.info("已删除历史字段 tasks.raw_pdf_path")
+
+    def _backfill_terminal_completed_at(self, conn: sqlite3.Connection):
+        cursor = conn.execute(
+            """
+            UPDATE tasks
+            SET completed_at = CASE
+                WHEN TRIM(COALESCE(updated_at, '')) <> '' THEN updated_at
+                WHEN TRIM(COALESCE(created_at, '')) <> '' THEN created_at
+                ELSE completed_at
+            END
+            WHERE status IN ('failed', 'cancelled')
+              AND (completed_at IS NULL OR TRIM(completed_at) = '')
+            """
+        )
+        changed = int(cursor.rowcount or 0)
+        if changed > 0:
+            logger.info(f"已回填历史终态任务 completed_at：{changed} 条")
 
     @contextmanager
     def _get_connection(self):

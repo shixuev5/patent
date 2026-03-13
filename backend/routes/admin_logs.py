@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -23,6 +26,7 @@ from backend.system_logs import resolve_payload_from_record
 
 router = APIRouter()
 task_manager = get_pipeline_manager()
+APP_TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
 
 
 def _norm_optional_text(value: Any) -> Optional[str]:
@@ -32,6 +36,21 @@ def _norm_optional_text(value: Any) -> Optional[str]:
         text = value.strip()
         return text or None
     return None
+
+
+def _norm_optional_datetime(value: Any) -> Optional[str]:
+    text = _norm_optional_text(value)
+    if not text:
+        return None
+    candidate = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except Exception:
+        return text
+    if parsed.tzinfo is None:
+        return parsed.isoformat(timespec="seconds")
+    local_dt = parsed.astimezone(APP_TZ).replace(tzinfo=None)
+    return local_dt.isoformat(timespec="seconds")
 
 
 def _to_bool(value: Optional[str]) -> Optional[bool]:
@@ -79,8 +98,8 @@ async def get_admin_system_log_summary(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     ensure_admin_owner(current_user.user_id)
-    normalized_date_from = _norm_optional_text(dateFrom)
-    normalized_date_to = _norm_optional_text(dateTo)
+    normalized_date_from = _norm_optional_datetime(dateFrom)
+    normalized_date_to = _norm_optional_datetime(dateTo)
     if hasattr(task_manager.storage, "summarize_system_logs"):
         summary = task_manager.storage.summarize_system_logs(
             date_from=normalized_date_from,
@@ -129,8 +148,8 @@ async def get_admin_system_logs(
             trace_id=_norm_optional_text(traceId),
             provider=_norm_optional_text(provider),
             success=success_value,
-            date_from=_norm_optional_text(dateFrom),
-            date_to=_norm_optional_text(dateTo),
+            date_from=_norm_optional_datetime(dateFrom),
+            date_to=_norm_optional_datetime(dateTo),
             q=_norm_optional_text(q),
             page=page,
             page_size=pageSize,

@@ -3,6 +3,7 @@ import re
 import os
 import threading
 import base64
+import json
 from typing import List, Dict, Optional, Any
 from loguru import logger
 from config import settings
@@ -10,13 +11,59 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 
 
-def rsa_encrypt(message: str, public_key_pem: str) -> str:
+def _to_public_key_pem(public_key_text: str) -> str:
+    """将智慧芽返回的公钥文本规范化为 PEM 格式。"""
+    text = (public_key_text or "").strip()
+    if not text:
+        raise ValueError("public key is empty")
+
+    # 某些网关会返回 JSON 包裹的 key，先尝试解包
+    if text.startswith("{") or text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for field in ("publicKey", "public_key", "key"):
+                    value = parsed.get(field)
+                    if isinstance(value, str) and value.strip():
+                        text = value.strip()
+                        break
+                else:
+                    data_value = parsed.get("data")
+                    if isinstance(data_value, str) and data_value.strip():
+                        text = data_value.strip()
+        except Exception:
+            # JSON 解析失败时按原始文本继续兜底处理
+            pass
+
+    # 将字符串中的转义换行恢复成真实换行
+    text = text.replace("\\r", "").replace("\\n", "\n").strip()
+
+    if "BEGIN PUBLIC KEY" in text and "END PUBLIC KEY" in text:
+        match = re.search(
+            r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----",
+            text,
+            flags=re.S,
+        )
+        if match:
+            return match.group(0).strip()
+        return text
+
+    # 兜底：按 base64 key body 封装为 PEM
+    body = re.sub(r"\s+", "", text)
+    if not body:
+        raise ValueError("public key body is empty")
+    wrapped = "\n".join(body[i : i + 64] for i in range(0, len(body), 64))
+    return f"-----BEGIN PUBLIC KEY-----\n{wrapped}\n-----END PUBLIC KEY-----"
+
+
+def rsa_encrypt(message: str, public_key_text: str) -> str:
     """
     使用 RSA 公钥加密字符串 (PKCS1_v1_5 填充)
     对应前端 JSEncrypt 逻辑
     """
     try:
-        key = RSA.importKey(public_key_pem)
+        public_key_pem = _to_public_key_pem(public_key_text)
+        key = RSA.import_key(public_key_pem)
         cipher = PKCS1_v1_5.new(key)
         ciphertext = cipher.encrypt(message.encode('utf-8'))
         return base64.b64encode(ciphertext).decode('utf-8')
@@ -48,22 +95,32 @@ class ZhihuiyaClient(BaseSearchClient):
         with self._login_lock:
             if self.token: return
 
-            # 1. 获取公钥
-            try:
-                pk_resp = self.session.get(
-                    "https://passport.zhihuiya.com/public/request_public_key",
-                    timeout=self.request_timeout,
+            # 1. 获取公钥 + 格式校验 + 加密（失败重试一次）
+            encrypted_password = ""
+            last_error: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    pk_resp = self.session.get(
+                        "https://passport.zhihuiya.com/public/request_public_key",
+                        timeout=self.request_timeout,
+                    )
+                    pk_resp.raise_for_status()
+                    encrypted_password = rsa_encrypt(
+                        settings.ZHIHUIYA_PASSWORD, pk_resp.text
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        f"[智慧芽] 公钥获取/加密失败（第 {attempt + 1} 次）：{e}"
+                    )
+            if not encrypted_password:
+                logger.error(f"[智慧芽] 获取公钥失败：{last_error}")
+                raise RuntimeError(
+                    f"获取公钥并加密密码失败（已重试）：{last_error}"
                 )
-                pk_resp.raise_for_status()
-                public_key = pk_resp.text
-            except Exception as e:
-                logger.error(f"[智慧芽] 获取公钥失败：{e}")
-                raise
 
-            # 2. 加密密码
-            encrypted_password = rsa_encrypt(settings.ZHIHUIYA_PASSWORD, public_key)
-
-            # 3. 登录获取 Token
+            # 2. 登录获取 Token
             payload = {
                 "username": settings.ZHIHUIYA_USERNAME,
                 "password": encrypted_password,
@@ -83,7 +140,7 @@ class ZhihuiyaClient(BaseSearchClient):
                 self.headers["Authorization"] = f"Bearer {self.token}"
                 logger.success("[智慧芽] 登录成功。")
 
-                # 4. 登录成功后，初始化查询字段配置
+                # 3. 登录成功后，初始化查询字段配置
                 self._configure_search_settings()
             except Exception as e:
                 logger.error(f"[智慧芽] 登录失败：{e}")

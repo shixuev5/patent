@@ -315,6 +315,7 @@ class D1TaskStorage:
             "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
             [TaskType.PATENT_ANALYSIS.value],
         )
+        self._backfill_terminal_completed_at()
         self._drop_legacy_raw_pdf_path_column()
         for statement in self.DROP_LEGACY_SQL.split(";"):
             sql = statement.strip()
@@ -328,6 +329,23 @@ class D1TaskStorage:
 
         self._request("ALTER TABLE tasks DROP COLUMN raw_pdf_path")
         logger.info("D1 已删除历史字段 tasks.raw_pdf_path")
+
+    def _backfill_terminal_completed_at(self):
+        result = self._request(
+            """
+            UPDATE tasks
+            SET completed_at = CASE
+                WHEN TRIM(COALESCE(updated_at, '')) <> '' THEN updated_at
+                WHEN TRIM(COALESCE(created_at, '')) <> '' THEN created_at
+                ELSE completed_at
+            END
+            WHERE status IN ('failed', 'cancelled')
+              AND (completed_at IS NULL OR TRIM(completed_at) = '')
+            """
+        )
+        changed = self._changed_rows(result)
+        if changed > 0:
+            logger.info(f"D1 已回填历史终态任务 completed_at：{changed} 条")
 
     def _get_existing_columns(self, table_name: str) -> set[str]:
         rows = self._fetchall(f"PRAGMA table_info({table_name})")

@@ -128,23 +128,37 @@ class PipelineTaskManager:
             logger.info(f"任务已完成：{task_id}")
         return success
 
+    def _resolve_terminal_completed_at(self, task_id: str, now: datetime) -> str:
+        """终态时间以首次写入为准，避免重复失败/取消覆盖。"""
+        task = self.storage.get_task(task_id)
+        completed_at = getattr(task, "completed_at", None) if task else None
+        if not completed_at:
+            return now.isoformat()
+        if hasattr(completed_at, "isoformat"):
+            return completed_at.isoformat()
+        return str(completed_at)
+
     def fail_task(self, task_id: str, error_message: str) -> bool:
+        now = datetime.now()
         success = self.storage.update_task(
             task_id,
             status=TaskStatus.FAILED.value,
             error_message=error_message,
-            updated_at=datetime.now().isoformat(),
+            completed_at=self._resolve_terminal_completed_at(task_id, now),
+            updated_at=now.isoformat(),
         )
         if success:
             logger.error(f"任务失败：{task_id} - {error_message}")
         return success
 
     def cancel_task(self, task_id: str, error_message: str = "任务已取消") -> bool:
+        now = datetime.now()
         success = self.storage.update_task(
             task_id,
             status=TaskStatus.CANCELLED.value,
             error_message=error_message,
-            updated_at=datetime.now().isoformat(),
+            completed_at=self._resolve_terminal_completed_at(task_id, now),
+            updated_at=now.isoformat(),
         )
         if success:
             logger.info(f"任务已取消：{task_id} - {error_message}")

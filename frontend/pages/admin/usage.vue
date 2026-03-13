@@ -255,7 +255,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务ID</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">所属用户</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务类型</th>
-                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-center font-semibold whitespace-nowrap">状态</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">使用模型</th>
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">消耗Token</th>
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">费用(CNY)</th>
@@ -286,7 +286,9 @@
                       <p class="truncate text-slate-500">{{ row.ownerId || '-' }}</p>
                     </td>
                     <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskTypeLabel(row.taskType) }}</td>
-                    <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.taskStatus) }}</td>
+                    <td class="px-2.5 py-2 text-center whitespace-nowrap">
+                      <span :class="String(row.taskStatus || '').toLowerCase() === 'failed' ? 'text-rose-600' : ''">{{ formatTaskStatusLabel(row.taskStatus) }}</span>
+                    </td>
                     <td class="px-2.5 py-2">
                       <p class="truncate">{{ row.models?.length ? row.models.join(', ') : '-' }}</p>
                     </td>
@@ -346,7 +348,7 @@
               </select>
             </label>
             <label class="field">
-              <span>结果</span>
+              <span>状态</span>
               <select v-model="logSuccess" class="field-input">
                 <option value="">全部</option>
                 <option value="true">成功</option>
@@ -420,14 +422,14 @@
           <div class="overflow-x-auto rounded-xl border border-slate-200">
             <table class="admin-log-table min-w-[82rem] divide-y divide-slate-200 text-xs">
               <colgroup>
-              <col class="w-[11rem]" />
-              <col class="w-[10rem]" />
-              <col class="w-[11rem]" />
-              <col class="w-[22rem]" />
-              <col class="w-[5.5rem]" />
-              <col class="w-[5.5rem]" />
-              <col class="w-[18rem]" />
-                <col class="w-[6.5rem]" />
+                <col class="w-[10rem]" />
+                <col class="w-[8rem]" />
+                <col class="w-[8rem]" />
+                <col class="w-[18rem]" />
+                <col class="w-[5rem]" />
+                <col class="w-[5rem]" />
+                <col class="w-[18rem]" />
+                <col class="w-[5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -435,7 +437,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">分类/事件</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户/任务</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">接口</th>
-                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-center font-semibold whitespace-nowrap">状态</th>
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">耗时(秒)</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">摘要</th>
                   <th class="sticky right-0 z-10 border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
@@ -457,15 +459,15 @@
                     <p class="font-mono text-[11px] text-slate-500">{{ row.taskId || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2">
-                    <p class="max-w-[20rem] truncate">{{ formatLogInterface(row) }}</p>
-                    <p class="max-w-[20rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
+                    <p class="max-w-[16rem] truncate">{{ formatLogInterface(row) }}</p>
+                    <p class="max-w-[16rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
                   </td>
-                  <td class="px-2.5 py-2 text-right">
+                  <td class="px-2.5 py-2 text-center">
                     <span :class="row.success ? 'text-emerald-700' : 'text-rose-700'">{{ row.success ? '成功' : '失败' }}</span>
                   </td>
                   <td class="px-2.5 py-2 text-right">{{ formatLogDurationSeconds(row.durationMs) }}</td>
                   <td class="px-2.5 py-2">
-                    <p class="max-w-[18rem] truncate">{{ row.message || '-' }}</p>
+                    <p class="max-w-[16rem] truncate">{{ row.message || '-' }}</p>
                   </td>
                   <td class="sticky right-0 border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
                     <button
@@ -569,7 +571,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[10rem]" />
                 <col class="w-[10rem]" />
-                <col class="w-[5.75rem] sm:w-[6.5rem]" />
+                <col class="w-[4rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -579,7 +581,7 @@
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">任务数</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">最近任务时间</th>
-                  <th class="sticky right-0 z-10 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-100/90 px-1.5 py-2 text-left font-semibold whitespace-nowrap sm:w-[6.5rem] sm:min-w-[6.5rem]">操作</th>
+                  <th class="sticky right-0 z-10 border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -598,7 +600,7 @@
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.latestTaskAt || row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-50/90 px-1.5 py-2 sm:w-[6.5rem] sm:min-w-[6.5rem]">
+                  <td class="sticky right-0 w-[4.75rem] min-w-[4.75rem] border-l border-slate-200 bg-slate-50/90 px-1 py-2 sm:w-[5.75rem] sm:min-w-[5.75rem]">
                     <div class="flex flex-nowrap items-center gap-1">
                       <button
                         type="button"
@@ -752,7 +754,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[4rem]" />
                 <col class="w-[6rem]" />
-                <col class="w-[5.75rem] sm:w-[6.5rem]" />
+                <col class="w-[4rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -760,10 +762,10 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务名称</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">类型</th>
-                  <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
+                  <th class="px-2.5 py-2 text-center font-semibold whitespace-nowrap">状态</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务耗时</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
-                  <th class="sticky right-0 z-10 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-100/90 px-1.5 py-2 text-left font-semibold whitespace-nowrap sm:w-[6.5rem] sm:min-w-[6.5rem]">操作</th>
+                  <th class="sticky right-0 z-10 border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -782,10 +784,12 @@
                     <p class="truncate">{{ row.userName || '未知用户' }}</p>
                   </td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskTypeLabel(row.taskType) }}</td>
-                  <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.status) }}</td>
+                  <td class="px-2.5 py-2 text-center whitespace-nowrap">
+                    <span :class="String(row.status || '').toLowerCase() === 'failed' ? 'text-rose-600' : ''">{{ formatTaskStatusLabel(row.status) }}</span>
+                  </td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDuration(row.durationSeconds) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-50/90 px-1.5 py-2 sm:w-[6.5rem] sm:min-w-[6.5rem]">
+                  <td class="sticky right-0 w-[4.75rem] min-w-[4.75rem] border-l border-slate-200 bg-slate-50/90 px-1 py-2 sm:w-[5.75rem] sm:min-w-[5.75rem]">
                     <div class="flex flex-nowrap items-center gap-1">
                       <button
                         type="button"
@@ -934,7 +938,7 @@ const pageSize = 10
 
 const logCategory = ref('')
 const logProvider = ref('')
-const logSuccess = ref('')
+const logSuccess = ref('false')
 const logTaskId = ref('')
 const logUserName = ref('')
 const logRequestId = ref('')
@@ -1084,6 +1088,14 @@ const formatDateTime = (value: string | null | undefined) => {
   const seconds = String(parsed.getSeconds()).padStart(2, '0')
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
 }
+const toLocalDateTimeFilter = (value: string | null | undefined): string | undefined => {
+  const text = String(value || '').trim()
+  if (!text) return undefined
+  // datetime-local 通常是 YYYY-MM-DDTHH:mm，这里统一补全为本地无时区格式
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) return `${text}:00`
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(text)) return text
+  return text
+}
 const formatDuration = (value: number | null | undefined) => {
   const total = Number(value)
   if (!Number.isFinite(total) || total < 0) return '-'
@@ -1170,8 +1182,8 @@ const refreshSystemLogs = async () => {
     traceId: logTraceId.value,
     provider: logProvider.value,
     success: logSuccess.value,
-    dateFrom: logDateFrom.value ? new Date(logDateFrom.value).toISOString() : undefined,
-    dateTo: logDateTo.value ? new Date(logDateTo.value).toISOString() : undefined,
+    dateFrom: toLocalDateTimeFilter(logDateFrom.value),
+    dateTo: toLocalDateTimeFilter(logDateTo.value),
     q: logKeyword.value,
     page: logCurrentPage.value,
     pageSize,
@@ -1180,8 +1192,8 @@ const refreshSystemLogs = async () => {
 
 const refreshSystemSummary = async () => {
   await adminStore.fetchSystemLogSummary(
-    logDateFrom.value ? new Date(logDateFrom.value).toISOString() : undefined,
-    logDateTo.value ? new Date(logDateTo.value).toISOString() : undefined,
+    toLocalDateTimeFilter(logDateFrom.value),
+    toLocalDateTimeFilter(logDateTo.value),
   )
 }
 
@@ -1216,8 +1228,8 @@ const refreshEntityTasks = async () => {
     userName: entityTaskUserName.value,
     taskType: entityTaskType.value,
     status: entityTaskStatus.value,
-    dateFrom: entityTaskDateFrom.value ? new Date(`${entityTaskDateFrom.value}T00:00:00`).toISOString() : undefined,
-    dateTo: entityTaskDateTo.value ? new Date(`${entityTaskDateTo.value}T23:59:59`).toISOString() : undefined,
+    dateFrom: entityTaskDateFrom.value ? `${entityTaskDateFrom.value}T00:00:00` : undefined,
+    dateTo: entityTaskDateTo.value ? `${entityTaskDateTo.value}T23:59:59` : undefined,
     page: entityTaskCurrentPage.value,
     pageSize,
     sortBy: 'createdAt',
@@ -1431,11 +1443,11 @@ onMounted(async () => {
 }
 
 .query-action {
-  @apply w-auto justify-self-start self-end;
+  @apply w-full justify-self-stretch self-end sm:w-auto sm:justify-self-start;
 }
 
 .table-action-btn {
-  @apply inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded-md border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50;
+  @apply rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50;
 }
 
 .modal-overlay {
