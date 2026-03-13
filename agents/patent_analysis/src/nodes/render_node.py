@@ -17,18 +17,16 @@ class RenderNode(BaseNode):
         paths, path_objs = ensure_pipeline_paths(state)
 
         patent_data = item_get(state, "patent_data", None)
-        check_result = item_get(state, "check_result", None)
         report_json = item_get(state, "report_json", None)
         search_json = item_get(state, "search_json", None)
 
-        if not patent_data or check_result is None or not report_json or not search_json:
+        if not patent_data or not report_json or not search_json:
             raise RuntimeError("render 阶段缺少必要输入")
 
         logger.info("渲染 Markdown/PDF 报告")
         renderer = ReportRenderer(patent_data)
         renderer.render(
             report_data=report_json,
-            check_result=check_result,
             search_data=search_json,
             md_path=path_objs["final_md"],
             pdf_path=path_objs["final_pdf"],

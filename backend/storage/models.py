@@ -20,6 +20,7 @@ class TaskStatus(str, Enum):
 class TaskType(str, Enum):
     PATENT_ANALYSIS = "patent_analysis"
     OFFICE_ACTION_REPLY = "office_action_reply"
+    AI_REVIEW = "ai_review"
 
 
 @dataclass

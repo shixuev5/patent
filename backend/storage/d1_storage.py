@@ -30,6 +30,10 @@ class D1TaskStorage:
             ("deleted_at", "deleted_at TEXT"),
             ("metadata", "metadata TEXT"),
         ],
+        "patent_analyses": [
+            ("first_completed_at", "first_completed_at TEXT NOT NULL"),
+            ("sha256", "sha256 TEXT"),
+        ],
         "users": [
             ("owner_id", "owner_id TEXT PRIMARY KEY"),
             ("authing_sub", "authing_sub TEXT NOT NULL UNIQUE"),
@@ -119,7 +123,8 @@ class D1TaskStorage:
 
     CREATE TABLE IF NOT EXISTS patent_analyses (
         pn TEXT PRIMARY KEY,
-        first_completed_at TEXT NOT NULL
+        first_completed_at TEXT NOT NULL,
+        sha256 TEXT
     );
 
     CREATE TABLE IF NOT EXISTS users (
@@ -300,6 +305,9 @@ class D1TaskStorage:
             for column_name, ddl in required_columns:
                 if column_name not in existing_columns:
                     self._request(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+        patent_analysis_columns = self._get_existing_columns("patent_analyses")
+        if "sha256" in patent_analysis_columns:
+            self._request("CREATE INDEX IF NOT EXISTS idx_patent_analyses_sha256 ON patent_analyses(sha256)")
         user_columns = self._get_existing_columns("users")
         if "role" in user_columns:
             self._request("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)")
@@ -1707,20 +1715,58 @@ class D1TaskStorage:
             "completed_patents": completed_patents,
         }
 
-    def record_patent_analysis(self, pn: Optional[str]) -> bool:
+    def record_patent_analysis(self, pn: Optional[str], sha256: Optional[str] = None) -> bool:
         if not pn:
             return False
         normalized = pn.strip().upper()
         if not normalized:
             return False
+        normalized_sha256 = str(sha256 or "").strip().lower() or None
         self._request(
             """
-            INSERT OR IGNORE INTO patent_analyses (pn, first_completed_at)
-            VALUES (?, ?)
+            INSERT INTO patent_analyses (pn, first_completed_at, sha256)
+            VALUES (?, ?, ?)
+            ON CONFLICT(pn) DO UPDATE SET
+                sha256 = CASE
+                    WHEN excluded.sha256 IS NOT NULL AND TRIM(excluded.sha256) <> '' THEN excluded.sha256
+                    ELSE patent_analyses.sha256
+                END
             """,
-            [normalized, datetime.now().isoformat()],
+            [normalized, datetime.now().isoformat(), normalized_sha256],
         )
         return True
+
+    def get_patent_analysis_by_pn(self, pn: Optional[str]) -> Optional[Dict[str, Any]]:
+        normalized = str(pn or "").strip().upper()
+        if not normalized:
+            return None
+        row = self._fetchone(
+            "SELECT pn, first_completed_at, sha256 FROM patent_analyses WHERE pn = ?",
+            [normalized],
+        )
+        if not row:
+            return None
+        return {
+            "pn": str(row.get("pn") or ""),
+            "first_completed_at": str(row.get("first_completed_at") or ""),
+            "sha256": str(row.get("sha256") or "").strip() or None,
+        }
+
+    def get_patent_analysis_by_sha256(self, sha256: Optional[str]) -> Optional[Dict[str, Any]]:
+        normalized = str(sha256 or "").strip().lower()
+        if not normalized:
+            return None
+        row = self._fetchone(
+            "SELECT pn, first_completed_at, sha256 FROM patent_analyses WHERE sha256 = ?",
+            [normalized],
+        )
+        if not row:
+            return None
+        return {
+            "pn": str(row.get("pn") or ""),
+            "first_completed_at": str(row.get("first_completed_at") or ""),
+            "sha256": str(row.get("sha256") or "").strip() or None,
+        }
 
     def cleanup_old_tasks(self, days: int = 365, dry_run: bool = False) -> int:
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()

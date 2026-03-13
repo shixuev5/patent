@@ -2,7 +2,10 @@
 任务管理路由
 """
 import asyncio
+import hashlib
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 from time import perf_counter
@@ -11,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from config import settings
+from config import VERSION, settings
 from backend.auth import _get_current_user
 from backend.log_context import bind_task_logger, task_log_context
 from backend.system_logs import emit_system_log
@@ -36,12 +39,14 @@ task_manager = get_pipeline_manager()
 
 RUNNING_TASKS: Dict[str, Event] = {}
 PATENT_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
+AI_REVIEW_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
 OAR_CHECKPOINTERS: Dict[str, InMemorySaver] = {}
 
 PROGRESS_WRITE_THROTTLE_SECONDS = 3.0
 
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
+    TaskType.AI_REVIEW.value,
     TaskType.OFFICE_ACTION_REPLY.value,
 }
 
@@ -69,14 +74,24 @@ PATENT_NODE_LABELS = {
     "vision": "视觉处理",
     "vision_extract": "视觉提取",
     "vision_annotate": "视觉标注",
-    "check": "形式缺陷检查",
     "generate": "报告内容生成",
     "generate_core": "生成报告核心内容",
     "generate_figures": "生成图解说明",
-    "check_generate_join": "汇总检查结果",
     "search_matrix": "生成检索要素",
     "search_semantic": "生成语义检索",
     "search_join": "汇总检索策略",
+    "render": "渲染报告",
+    "handle_error": "处理异常",
+}
+
+AI_REVIEW_NODE_LABELS = {
+    "hydrate": "加载复用数据",
+    "download": "下载专利文档",
+    "parse": "解析 PDF 文件",
+    "transform": "专利结构化转换",
+    "extract": "知识提取",
+    "vision_extract": "视觉提取",
+    "check": "AI 审查",
     "render": "渲染报告",
     "handle_error": "处理异常",
 }
@@ -120,6 +135,14 @@ def _get_oar_checkpointer(task_id: str) -> InMemorySaver:
     if checkpointer is None:
         checkpointer = InMemorySaver()
         OAR_CHECKPOINTERS[task_id] = checkpointer
+    return checkpointer
+
+
+def _get_ai_review_checkpointer(task_id: str) -> InMemorySaver:
+    checkpointer = AI_REVIEW_CHECKPOINTERS.get(task_id)
+    if checkpointer is None:
+        checkpointer = InMemorySaver()
+        AI_REVIEW_CHECKPOINTERS[task_id] = checkpointer
     return checkpointer
 
 
@@ -211,6 +234,131 @@ def _cleanup_upload_only(task: Any):
         _cleanup_path(path)
 
 
+def _compute_file_sha256(file_path: Optional[str]) -> Optional[str]:
+    path = Path(str(file_path or "").strip())
+    if not path.exists() or not path.is_file():
+        return None
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_json(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _iso_now() -> str:
+    return datetime.now().isoformat()
+
+
+def _build_analysis_json_payload(
+    *,
+    resolved_pn: str,
+    task_id: str,
+    input_sha256: Optional[str],
+    report_core_json: Optional[Dict[str, Any]],
+    report_json: Optional[Dict[str, Any]],
+    search_json: Optional[Dict[str, Any]],
+    parts_db: Optional[Dict[str, Any]],
+    image_parts: Optional[Dict[str, Any]],
+    output_pdf: Optional[str],
+    output_md: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "metadata": {
+            "schema_version": "analysis.v1",
+            "created_at": _iso_now(),
+            "app_version": str(VERSION),
+            "task_type": TaskType.PATENT_ANALYSIS.value,
+            "task_id": task_id,
+            "resolved_pn": resolved_pn,
+            "input_sha256": str(input_sha256 or "").strip() or None,
+        },
+        "report_core": report_core_json or {},
+        "report": report_json or {},
+        "search_strategy": search_json or {},
+        "parts": parts_db or {},
+        "image_parts": image_parts or {},
+        "artifact_refs": {
+            "pdf": str(output_pdf or "").strip() or None,
+            "md": str(output_md or "").strip() or None,
+        },
+    }
+
+
+def _build_ai_review_json_payload(
+    *,
+    resolved_pn: str,
+    task_id: str,
+    input_sha256: Optional[str],
+    check_result: Optional[Dict[str, Any]],
+    output_pdf: Optional[str],
+    output_md: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "metadata": {
+            "schema_version": "ai_review.v1",
+            "created_at": _iso_now(),
+            "task_type": TaskType.AI_REVIEW.value,
+            "task_id": task_id,
+            "resolved_pn": resolved_pn,
+            "input_sha256": str(input_sha256 or "").strip() or None,
+        },
+        "check_result": check_result or {},
+        "artifact_refs": {
+            "pdf": str(output_pdf or "").strip() or None,
+            "md": str(output_md or "").strip() or None,
+        },
+    }
+
+
+def _get_cached_analysis_payload(
+    *,
+    pn: Optional[str],
+    input_sha256: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    storage = task_manager.storage
+    r2_storage = _build_r2_storage()
+    if not r2_storage.enabled:
+        return None
+
+    resolved_pn = str(pn or "").strip().upper() or None
+    if not resolved_pn and input_sha256 and hasattr(storage, "get_patent_analysis_by_sha256"):
+        try:
+            row = storage.get_patent_analysis_by_sha256(input_sha256)
+        except Exception:
+            row = None
+        if isinstance(row, dict):
+            resolved_pn = str(row.get("pn") or "").strip().upper() or None
+
+    if not resolved_pn:
+        return None
+
+    analysis_key = r2_storage.build_analysis_json_key(resolved_pn)
+    analysis_bytes = r2_storage.get_bytes(analysis_key)
+    if not analysis_bytes:
+        return None
+
+    try:
+        payload = json.loads(analysis_bytes.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
 def _best_effort_fail_task(task_id: str, message: str):
     try:
         task_manager.fail_task(task_id, message)
@@ -231,6 +379,7 @@ async def run_patent_analysis_task(
     task_id: str,
     pn: Optional[str],
     upload_file_path: Optional[str] = None,
+    input_sha256: Optional[str] = None,
     cancel_event: Optional[Event] = None,
 ):
     """后台执行专利分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
@@ -245,6 +394,42 @@ async def run_patent_analysis_task(
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
+        r2_storage = _build_r2_storage()
+
+        cached_analysis_payload = _get_cached_analysis_payload(pn=pn, input_sha256=input_sha256)
+        if cached_analysis_payload:
+            metadata = cached_analysis_payload.get("metadata", {})
+            resolved_pn = str(metadata.get("resolved_pn") or pn or "").strip().upper()
+            if resolved_pn and r2_storage.enabled:
+                pdf_key = r2_storage.build_patent_pdf_key(resolved_pn)
+                has_pdf = await asyncio.to_thread(r2_storage.key_exists, pdf_key)
+                if has_pdf:
+                    output_files = {
+                        "pn": resolved_pn,
+                        "r2_key": pdf_key,
+                        "analysis_r2_key": r2_storage.build_analysis_json_key(resolved_pn),
+                    }
+                    task_manager.complete_task(task_id, output_files=output_files)
+                    if resolved_pn and resolved_pn != (pn or ""):
+                        task_manager.storage.update_task(task_id, pn=resolved_pn)
+                    if hasattr(task_manager.storage, "record_patent_analysis"):
+                        try:
+                            task_manager.storage.record_patent_analysis(resolved_pn, input_sha256)
+                        except TypeError:
+                            task_manager.storage.record_patent_analysis(resolved_pn)
+                    task_logger.bind(stage="reuse").success(f"命中 R2 复用：{resolved_pn}")
+                    emit_system_log(
+                        category="task_execution",
+                        event_name="task_completed",
+                        owner_id=owner_id,
+                        task_id=task_id,
+                        task_type=TaskType.PATENT_ANALYSIS.value,
+                        success=True,
+                        message="命中历史分析结果，直接复用",
+                        payload={"pn": resolved_pn, "reuse": True},
+                    )
+                    return
+
         emit_system_log(
             category="task_execution",
             event_name="task_started",
@@ -258,6 +443,7 @@ async def run_patent_analysis_task(
         task_manager.update_progress(task_id, 5, "正在准备材料")
 
         loop = asyncio.get_event_loop()
+
         def run_workflow() -> Dict[str, Any]:
             workflow_start = perf_counter()
             from agents.patent_analysis.main import create_workflow, build_runtime_config
@@ -405,6 +591,9 @@ async def run_patent_analysis_task(
             output_pdf = str(result.get("final_output_pdf", "")).strip()
             if not output_pdf:
                 output_pdf = str((settings.OUTPUT_DIR / task_id) / "final.pdf")
+            output_md = str(result.get("final_output_md", "")).strip()
+            if not output_md:
+                output_md = str((settings.OUTPUT_DIR / task_id) / "final.md")
 
             pipeline_pn = str(result.get("resolved_pn", "")).strip()
             final_pn = pipeline_pn or (pn or "") or task_id
@@ -413,6 +602,7 @@ async def run_patent_analysis_task(
 
             output_files = {
                 "pdf": output_pdf,
+                "md": output_md,
                 "pn": final_pn,
             }
 
@@ -424,19 +614,65 @@ async def run_patent_analysis_task(
                 task_logger.bind(stage="finalize_report").error(error_msg)
                 return
 
-            r2_storage = _build_r2_storage()
+            output_dir = settings.OUTPUT_DIR / task_id
+            analysis_json_path = output_dir / "analysis.json"
+            patent_json_path = output_dir / "patent.json"
+            patent_json_payload = _load_json(patent_json_path) or {}
+
+            analysis_payload = _build_analysis_json_payload(
+                resolved_pn=final_pn,
+                task_id=task_id,
+                input_sha256=input_sha256,
+                report_core_json=_to_dict(result.get("report_core_json")),
+                report_json=_to_dict(result.get("report_json")),
+                search_json=_to_dict(result.get("search_json")),
+                parts_db=_to_dict(result.get("parts_db")),
+                image_parts=_to_dict(result.get("image_parts")),
+                output_pdf=output_pdf,
+                output_md=output_md,
+            )
+            analysis_json_path.write_text(
+                json.dumps(analysis_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            output_files["json"] = str(analysis_json_path)
+
             if r2_storage.enabled:
-                r2_key = r2_storage.build_patent_pdf_key(final_pn)
-                stored_in_r2 = await asyncio.to_thread(
+                pdf_key = r2_storage.build_patent_pdf_key(final_pn)
+                stored_pdf = await asyncio.to_thread(
                     r2_storage.put_bytes,
-                    r2_key,
+                    pdf_key,
                     pdf_bytes,
                     "application/pdf",
                 )
-                if stored_in_r2:
-                    output_files["r2_key"] = r2_key
+                analysis_key = r2_storage.build_analysis_json_key(final_pn)
+                stored_analysis = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    analysis_key,
+                    json.dumps(analysis_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    "application/json",
+                )
+                patent_key = r2_storage.build_patent_json_key(final_pn)
+                stored_patent = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    patent_key,
+                    json.dumps(patent_json_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    "application/json",
+                )
+
+                if stored_pdf:
+                    output_files["r2_key"] = pdf_key
+                if stored_analysis:
+                    output_files["analysis_r2_key"] = analysis_key
+                if stored_patent:
+                    output_files["patent_r2_key"] = patent_key
 
             task_manager.complete_task(task_id, output_files=output_files)
+            if hasattr(task_manager.storage, "record_patent_analysis"):
+                try:
+                    task_manager.storage.record_patent_analysis(final_pn, input_sha256)
+                except TypeError:
+                    task_manager.storage.record_patent_analysis(final_pn)
             task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
             emit_system_log(
                 category="task_execution",
@@ -511,6 +747,312 @@ async def run_patent_analysis_task(
             usage_collector.mark_status(latest_task.status.value)
         persist_task_usage(task_manager.storage, usage_collector)
         PATENT_CHECKPOINTERS.pop(task_id, None)
+
+
+async def run_ai_review_task(
+    task_id: str,
+    pn: Optional[str],
+    upload_file_path: Optional[str] = None,
+    input_sha256: Optional[str] = None,
+    cancel_event: Optional[Event] = None,
+):
+    task_logger = bind_task_logger(task_id, TaskType.AI_REVIEW.value, pn=pn, stage="run_ai_review_task")
+    task_snapshot = task_manager.get_task(task_id)
+    owner_id = getattr(task_snapshot, "owner_id", "") or ""
+    usage_collector = create_task_usage_collector(
+        task_id=task_id,
+        owner_id=owner_id,
+        task_type=TaskType.AI_REVIEW.value,
+    )
+    try:
+        task_logger.info("开始处理任务")
+        task_manager.start_task(task_id)
+        emit_system_log(
+            category="task_execution",
+            event_name="task_started",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.AI_REVIEW.value,
+            success=True,
+            message="AI 审查任务开始执行",
+            payload={"pn": pn or None},
+        )
+        task_manager.update_progress(task_id, 5, "正在准备材料")
+
+        cached_analysis_payload = _get_cached_analysis_payload(pn=pn, input_sha256=input_sha256)
+        loop = asyncio.get_event_loop()
+
+        def run_workflow() -> Dict[str, Any]:
+            workflow_start = perf_counter()
+            from agents.ai_review.main import build_runtime_config, create_workflow
+            from agents.ai_review.src.state import WorkflowConfig, WorkflowState
+
+            output_dir = settings.OUTPUT_DIR / task_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            config = WorkflowConfig(
+                cache_dir=str(output_dir / ".cache"),
+                pdf_parser=os.getenv("PDF_PARSER", "local"),
+                cancel_event=cancel_event,
+                enable_checkpoint=True,
+                checkpoint_ns="ai_review",
+                checkpointer=_get_ai_review_checkpointer(task_id),
+            )
+            initial_state = WorkflowState(
+                pn=str(pn or "").strip(),
+                upload_file_path=upload_file_path,
+                output_dir=str(output_dir),
+                task_id=task_id,
+                cached_analysis=cached_analysis_payload,
+                current_node="start",
+                status="pending",
+                progress=0.0,
+            )
+
+            workflow = create_workflow(config)
+            runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
+            last_state: Dict[str, Any] = _to_dict(initial_state)
+            try:
+                with task_log_context(task_id, TaskType.AI_REVIEW.value, pn=pn or "-"), task_usage_collection(usage_collector):
+                    last_progress = -1
+                    last_step = ""
+                    last_persist_at = 0.0
+                    for state_value in workflow.stream(initial_state, config=runtime_config, stream_mode="values"):
+                        if cancel_event and cancel_event.is_set():
+                            raise RuntimeError("任务已取消")
+                        state_dict = _to_dict(state_value)
+                        if not state_dict:
+                            continue
+                        last_state = state_dict
+                        node_name = str(state_dict.get("current_node", "")).strip()
+                        if not node_name or node_name == "start":
+                            continue
+                        step_label = AI_REVIEW_NODE_LABELS.get(node_name, "处理中")
+                        progress_raw = state_dict.get("progress")
+                        try:
+                            progress = int(float(progress_raw))
+                        except Exception:
+                            continue
+                        progress = max(0, min(95, progress))
+                        if progress <= 0:
+                            continue
+                        if progress != last_progress or step_label != last_step:
+                            now = perf_counter()
+                            if _should_persist_progress_update(
+                                previous_step=last_step,
+                                next_step=step_label,
+                                last_persist_at=last_persist_at,
+                                now=now,
+                            ):
+                                task_manager.update_progress(task_id, progress, step_label)
+                                emit_system_log(
+                                    category="task_execution",
+                                    event_name="task_progress",
+                                    owner_id=owner_id,
+                                    task_id=task_id,
+                                    task_type=TaskType.AI_REVIEW.value,
+                                    success=True,
+                                    message=f"progress={progress} step={step_label}",
+                                    payload={
+                                        "progress": progress,
+                                        "step": step_label,
+                                        "node": node_name,
+                                    },
+                                )
+                                last_persist_at = now
+                            last_progress = progress
+                            last_step = step_label
+                return last_state
+            finally:
+                workflow_elapsed = perf_counter() - workflow_start
+                status = str(last_state.get("status", "unknown")).strip().lower()
+                task_logger.info(
+                    f"ai_review workflow 总耗时: {workflow_elapsed:.3f}s status={status}"
+                )
+
+        result = await loop.run_in_executor(None, run_workflow)
+
+        if cancel_event and cancel_event.is_set():
+            task_manager.cancel_task(task_id, "任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REVIEW.value,
+                success=False,
+                message="任务已取消",
+            )
+            return
+
+        status = str(result.get("status", "failed")).strip().lower()
+        if status == "cancelled":
+            task_manager.cancel_task(task_id, "任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REVIEW.value,
+                success=False,
+                message="流程返回 cancelled",
+            )
+            return
+
+        if status == "failed":
+            errors = result.get("errors") or []
+            first_error = ""
+            if isinstance(errors, list) and errors:
+                first_error = str(_to_dict(errors[0]).get("error_message", "")).strip()
+            error_msg = first_error or "AI 审查任务执行失败"
+            task_manager.fail_task(task_id, error_msg)
+            emit_system_log(
+                category="task_execution",
+                event_name="task_failed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REVIEW.value,
+                success=False,
+                message=error_msg,
+                payload={"status": status},
+            )
+            return
+
+        if status == "completed":
+            task_manager.update_progress(task_id, 95, "正在整理报告")
+            output_pdf = str(result.get("final_output_pdf", "")).strip()
+            if not output_pdf:
+                output_pdf = str((settings.OUTPUT_DIR / task_id) / "final.pdf")
+            output_md = str(result.get("final_output_md", "")).strip()
+            if not output_md:
+                output_md = str((settings.OUTPUT_DIR / task_id) / "final.md")
+
+            pipeline_pn = str(result.get("resolved_pn", "")).strip()
+            final_pn = pipeline_pn or (pn or "") or task_id
+            if final_pn and final_pn != (pn or ""):
+                task_manager.storage.update_task(task_id, pn=final_pn)
+
+            pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
+            if not pdf_bytes:
+                error_msg = f"报告文件不存在或为空：{output_pdf}"
+                task_manager.fail_task(task_id, error_msg)
+                task_logger.bind(stage="finalize_report").error(error_msg)
+                return
+
+            output_dir = settings.OUTPUT_DIR / task_id
+            ai_review_json_path = output_dir / "ai_review.json"
+            ai_review_payload = _build_ai_review_json_payload(
+                resolved_pn=final_pn,
+                task_id=task_id,
+                input_sha256=input_sha256,
+                check_result=_to_dict(result.get("check_result")),
+                output_pdf=output_pdf,
+                output_md=output_md,
+            )
+            ai_review_json_path.write_text(
+                json.dumps(ai_review_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            output_files = {
+                "pdf": output_pdf,
+                "md": output_md,
+                "json": str(ai_review_json_path),
+                "pn": final_pn,
+            }
+
+            r2_storage = _build_r2_storage()
+            if r2_storage.enabled:
+                ai_review_pdf_key = r2_storage.build_ai_review_pdf_key(final_pn)
+                ai_review_json_key = r2_storage.build_ai_review_json_key(final_pn)
+                stored_pdf = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    ai_review_pdf_key,
+                    pdf_bytes,
+                    "application/pdf",
+                )
+                stored_json = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    ai_review_json_key,
+                    json.dumps(ai_review_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                    "application/json",
+                )
+                if stored_pdf:
+                    output_files["r2_key"] = ai_review_pdf_key
+                if stored_json:
+                    output_files["ai_review_r2_key"] = ai_review_json_key
+
+            task_manager.complete_task(task_id, output_files=output_files)
+            task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_completed",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REVIEW.value,
+                success=True,
+                message="任务执行完成",
+                payload={"output_pdf": output_pdf, "pn": final_pn},
+            )
+            return
+
+        error_msg = f"未知流程状态: {status}"
+        task_manager.fail_task(task_id, error_msg)
+        emit_system_log(
+            category="task_execution",
+            event_name="task_failed",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.AI_REVIEW.value,
+            success=False,
+            message=error_msg,
+            payload={"status": status},
+        )
+
+    except asyncio.CancelledError:
+        task_logger.warning("任务已取消")
+        task_manager.cancel_task(task_id, "任务已取消")
+        emit_system_log(
+            category="task_execution",
+            event_name="task_cancelled",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.AI_REVIEW.value,
+            success=False,
+            message="任务被 asyncio 取消",
+        )
+        raise
+    except Exception as exc:
+        if cancel_event and cancel_event.is_set():
+            task_logger.warning("任务已取消")
+            task_manager.cancel_task(task_id, "任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REVIEW.value,
+                success=False,
+                message="异常分支检测到任务已取消",
+            )
+            return
+        task_logger.exception(f"任务异常失败：{str(exc)}")
+        task_manager.fail_task(task_id, str(exc))
+        emit_system_log(
+            category="task_execution",
+            event_name="task_exception",
+            owner_id=owner_id,
+            task_id=task_id,
+            task_type=TaskType.AI_REVIEW.value,
+            success=False,
+            message=str(exc),
+        )
+    finally:
+        latest_task = task_manager.get_task(task_id)
+        if latest_task:
+            usage_collector.mark_status(latest_task.status.value)
+        persist_task_usage(task_manager.storage, usage_collector)
+        AI_REVIEW_CHECKPOINTERS.pop(task_id, None)
 
 
 async def run_office_action_reply_task(
@@ -794,7 +1336,7 @@ async def create_task(
     task_type = _normalize_task_type(taskType)
     _enforce_daily_quota(current_user.user_id, task_type=task_type)
 
-    if task_type == TaskType.PATENT_ANALYSIS.value:
+    if task_type in {TaskType.PATENT_ANALYSIS.value, TaskType.AI_REVIEW.value}:
         if not patentNumber and not file:
             raise HTTPException(status_code=400, detail="必须提供专利号或上传 PDF 文件。")
 
@@ -816,7 +1358,7 @@ async def create_task(
             task_id=task.id,
             task_type=task_type,
             success=True,
-            message="创建专利分析任务",
+            message="创建专利分析任务" if task_type == TaskType.PATENT_ANALYSIS.value else "创建 AI 审查任务",
             payload={
                 "pn": pn,
                 "has_upload_file": bool(file),
@@ -825,14 +1367,17 @@ async def create_task(
 
         task_metadata: Dict[str, Any] = {"task_type": task_type, "input_files": []}
         upload_file_path: Optional[str] = None
+        upload_sha256: Optional[str] = None
         try:
             if file:
                 upload_file_path = await _save_upload_file(task.id, file, "patent", "source")
+                upload_sha256 = _compute_file_sha256(upload_file_path)
                 task_metadata["input_files"].append(
                     {
                         "file_type": "patent_pdf",
                         "original_name": file.filename or "upload.pdf",
                         "stored_path": upload_file_path,
+                        "sha256": upload_sha256,
                     }
                 )
                 task_manager.storage.update_task(
@@ -844,20 +1389,32 @@ async def create_task(
 
             cancel_event = Event()
             RUNNING_TASKS[task.id] = cancel_event
-            pipeline_task = asyncio.create_task(
-                run_patent_analysis_task(
-                    task.id,
-                    pn,
-                    upload_file_path,
-                    cancel_event=cancel_event,
+            if task_type == TaskType.PATENT_ANALYSIS.value:
+                pipeline_task = asyncio.create_task(
+                    run_patent_analysis_task(
+                        task.id,
+                        pn,
+                        upload_file_path,
+                        input_sha256=upload_sha256,
+                        cancel_event=cancel_event,
+                    )
                 )
-            )
+            else:
+                pipeline_task = asyncio.create_task(
+                    run_ai_review_task(
+                        task.id,
+                        pn,
+                        upload_file_path,
+                        input_sha256=upload_sha256,
+                        cancel_event=cancel_event,
+                    )
+                )
             pipeline_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
 
             return TaskResponse(
                 taskId=task.id,
                 status="pending",
-                message="任务已创建并开始处理。",
+                message="任务已创建并开始处理。" if task_type == TaskType.PATENT_ANALYSIS.value else "AI 审查任务已创建并开始处理。",
             )
         except HTTPException as exc:
             _best_effort_fail_task(task.id, f"任务创建失败：{exc.detail}")
@@ -1003,6 +1560,9 @@ async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_cur
 
     task_manager.delete_task(task_id)
     RUNNING_TASKS.pop(task_id, None)
+    PATENT_CHECKPOINTERS.pop(task_id, None)
+    AI_REVIEW_CHECKPOINTERS.pop(task_id, None)
+    OAR_CHECKPOINTERS.pop(task_id, None)
     emit_system_log(
         category="task_execution",
         event_name="task_deleted",
@@ -1034,6 +1594,9 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
         if task_manager.delete_task(task.id):
             deleted += 1
         RUNNING_TASKS.pop(task.id, None)
+        PATENT_CHECKPOINTERS.pop(task.id, None)
+        AI_REVIEW_CHECKPOINTERS.pop(task.id, None)
+        OAR_CHECKPOINTERS.pop(task.id, None)
 
     emit_system_log(
         category="task_execution",
@@ -1058,35 +1621,36 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
 
     if task_type == TaskType.OFFICE_ACTION_REPLY.value:
         filename = f"审查意见答复报告_{task_id}.pdf"
+    elif task_type == TaskType.AI_REVIEW.value:
+        filename = f"AI 审查报告_{task.pn or task_id}.pdf"
     else:
         filename = f"专利分析报告_{task.pn or task_id}.pdf"
 
-    if task_type == TaskType.PATENT_ANALYSIS.value:
-        r2_key = output_files.get("r2_key")
-        r2_storage = _build_r2_storage()
-        if r2_key and r2_storage.enabled:
-            r2_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_key)
-            if r2_pdf:
-                from io import BytesIO
-                from urllib.parse import quote
+    r2_key = output_files.get("r2_key")
+    r2_storage = _build_r2_storage()
+    if r2_key and r2_storage.enabled:
+        r2_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_key)
+        if r2_pdf:
+            from io import BytesIO
+            from urllib.parse import quote
 
-                emit_system_log(
-                    category="task_execution",
-                    event_name="task_download",
-                    owner_id=current_user.user_id,
-                    task_id=task_id,
-                    task_type=task_type,
-                    success=True,
-                    message="下载任务报告（R2）",
-                    payload={"filename": filename},
-                )
-                return StreamingResponse(
-                    BytesIO(r2_pdf),
-                    media_type="application/pdf",
-                    headers={
-                        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-                    },
-                )
+            emit_system_log(
+                category="task_execution",
+                event_name="task_download",
+                owner_id=current_user.user_id,
+                task_id=task_id,
+                task_type=task_type,
+                success=True,
+                message="下载任务报告（R2）",
+                payload={"filename": filename},
+            )
+            return StreamingResponse(
+                BytesIO(r2_pdf),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+                },
+            )
 
     pdf_path_str = output_files.get("pdf")
     if pdf_path_str:

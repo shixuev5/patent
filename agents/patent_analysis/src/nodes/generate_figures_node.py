@@ -38,7 +38,11 @@ class GenerateFiguresNode(BaseNode):
 
         if path_objs["report_json"].exists():
             logger.info("加载已有完整报告 JSON")
-            report_json = read_json(path_objs["report_json"])
+            loaded_payload = read_json(path_objs["report_json"])
+            if isinstance(loaded_payload, dict) and isinstance(loaded_payload.get("report"), dict):
+                report_json = loaded_payload.get("report")
+            else:
+                report_json = loaded_payload
         else:
             logger.info("生成附图讲解并合并报告 JSON")
             cache_file = get_node_cache_file(self.config.cache_dir, self.node_name)

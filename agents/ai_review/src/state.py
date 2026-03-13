@@ -61,16 +61,14 @@ class WorkflowState(BaseModel):
     )
     resolved_pn: str = Field("", description="最终用于产物命名的专利号")
 
+    cached_analysis: Optional[Dict[str, Any]] = Field(None, description="缓存分析数据（R2）")
+    reuse_hit: bool = Field(False, description="是否命中复用")
+
     patent_data: Optional[Dict[str, Any]] = Field(None, description="结构化专利数据")
     parts_db: Optional[Dict[str, Any]] = Field(None, description="知识部件库")
     image_parts: Optional[Dict[str, Any]] = Field(None, description="图像部件映射")
     image_labels: Optional[Dict[str, Any]] = Field(None, description="图像标注中间结果")
     check_result: Optional[Dict[str, Any]] = Field(None, description="AI 审查结果")
-    report_core_json: Optional[Dict[str, Any]] = Field(None, description="报告核心JSON")
-    report_json: Optional[Dict[str, Any]] = Field(None, description="报告JSON")
-    search_matrix: Optional[List[Dict[str, Any]]] = Field(None, description="检索矩阵中间结果")
-    search_semantic_strategy: Optional[Dict[str, Any]] = Field(None, description="语义检索中间结果")
-    search_json: Optional[Dict[str, Any]] = Field(None, description="检索策略JSON")
 
     final_output_pdf: str = Field("", description="最终PDF路径")
     final_output_md: str = Field("", description="最终Markdown路径")
@@ -89,5 +87,5 @@ class WorkflowConfig(BaseModel):
     pdf_parser: str = Field("local", description="PDF解析器")
     cancel_event: Any = Field(default=None, description="取消事件")
     enable_checkpoint: bool = Field(False, description="是否启用 LangGraph checkpoint")
-    checkpoint_ns: str = Field("patent_analysis", description="checkpoint 命名空间")
+    checkpoint_ns: str = Field("ai_review", description="checkpoint 命名空间")
     checkpointer: Any = Field(default=None, description="自定义 checkpoint saver")

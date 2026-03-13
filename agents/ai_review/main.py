@@ -1,5 +1,5 @@
 """
-专利分析 Agent 入口（LangGraph）
+AI 审查 Agent 入口（LangGraph）
 """
 
 from __future__ import annotations
@@ -11,32 +11,19 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict
 
-from langgraph.graph import END, StateGraph
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, StateGraph
 from langgraph.types import RetryPolicy
 from loguru import logger
 
+from agents.ai_review.src.nodes import HydrateNode, RenderNode
+from agents.ai_review.src.state import WorkflowConfig, WorkflowState
+from agents.patent_analysis.src.edges import handle_error
+from agents.patent_analysis.src.nodes import CheckNode, DownloadNode, ExtractNode, ParseNode, TransformNode, VisionExtractNode
+from agents.patent_analysis.src.workflow_utils import item_get
 from backend.log_context import bind_task_logger, task_log_context
 from backend.logging_setup import setup_logging_utc8
 from config import settings
-
-from agents.patent_analysis.src.edges import handle_error
-from agents.patent_analysis.src.nodes import (
-    DownloadNode,
-    ExtractNode,
-    GenerateCoreNode,
-    GenerateFiguresNode,
-    ParseNode,
-    RenderNode,
-    SearchJoinNode,
-    SearchMatrixNode,
-    SearchSemanticNode,
-    TransformNode,
-    VisionAnnotateNode,
-    VisionExtractNode,
-)
-from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
-from agents.patent_analysis.src.workflow_utils import item_get
 
 
 def create_workflow(config: WorkflowConfig | None = None):
@@ -46,21 +33,17 @@ def create_workflow(config: WorkflowConfig | None = None):
     workflow = StateGraph(WorkflowState)
     retry_policy = RetryPolicy(max_attempts=config.max_retries)
 
+    workflow.add_node("hydrate", HydrateNode(config), retry_policy=retry_policy)
     workflow.add_node("download", DownloadNode(config), retry_policy=retry_policy)
     workflow.add_node("parse", ParseNode(config), retry_policy=retry_policy)
     workflow.add_node("transform", TransformNode(config), retry_policy=retry_policy)
     workflow.add_node("extract", ExtractNode(config), retry_policy=retry_policy)
     workflow.add_node("vision_extract", VisionExtractNode(config), retry_policy=retry_policy)
-    workflow.add_node("vision_annotate", VisionAnnotateNode(config), retry_policy=retry_policy)
-    workflow.add_node("generate_core", GenerateCoreNode(config), retry_policy=retry_policy)
-    workflow.add_node("generate_figures", GenerateFiguresNode(config), retry_policy=retry_policy)
-    workflow.add_node("search_matrix", SearchMatrixNode(config), retry_policy=retry_policy)
-    workflow.add_node("search_semantic", SearchSemanticNode(config), retry_policy=retry_policy)
-    workflow.add_node("search_join", SearchJoinNode(config), retry_policy=retry_policy)
+    workflow.add_node("check", CheckNode(config), retry_policy=retry_policy)
     workflow.add_node("render", RenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
 
-    workflow.set_entry_point("download")
+    workflow.set_entry_point("hydrate")
 
     def create_router(next_node: str):
         def router(state: Any) -> str:
@@ -71,18 +54,20 @@ def create_workflow(config: WorkflowConfig | None = None):
 
         return router
 
-    def route_from_vision_extract(state: Any):
+    def route_from_hydrate(state: Any) -> str:
         status = str(item_get(state, "status", "pending") or "pending").lower()
         if status in {"failed", "cancelled"}:
             return "failed"
-        return ["generate_core", "vision_annotate"]
+        reuse_hit = bool(item_get(state, "reuse_hit", False))
+        if reuse_hit:
+            return "check"
+        return "download"
 
-    def route_from_generate_figures(state: Any):
-        status = str(item_get(state, "status", "pending") or "pending").lower()
-        if status in {"failed", "cancelled"}:
-            return "failed"
-        return ["search_matrix", "search_semantic"]
-
+    workflow.add_conditional_edges(
+        "hydrate",
+        route_from_hydrate,
+        {"failed": "handle_error", "check": "check", "download": "download"},
+    )
     workflow.add_conditional_edges(
         "download",
         create_router("parse"),
@@ -105,24 +90,11 @@ def create_workflow(config: WorkflowConfig | None = None):
     )
     workflow.add_conditional_edges(
         "vision_extract",
-        route_from_vision_extract,
-        {
-            "failed": "handle_error",
-            "generate_core": "generate_core",
-            "vision_annotate": "vision_annotate",
-        },
+        create_router("check"),
+        {"failed": "handle_error", "check": "check"},
     )
-
-    workflow.add_edge("generate_core", "generate_figures")
-    workflow.add_edge("vision_annotate", "generate_figures")
     workflow.add_conditional_edges(
-        "generate_figures",
-        route_from_generate_figures,
-        {"failed": "handle_error", "search_matrix": "search_matrix", "search_semantic": "search_semantic"},
-    )
-    workflow.add_edge(["search_matrix", "search_semantic"], "search_join")
-    workflow.add_conditional_edges(
-        "search_join",
+        "check",
         create_router("render"),
         {"failed": "handle_error", "render": "render"},
     )
@@ -142,11 +114,11 @@ def create_workflow(config: WorkflowConfig | None = None):
     return workflow.compile()
 
 
-def build_runtime_config(task_id: str, checkpoint_ns: str = "patent_analysis") -> Dict[str, Dict[str, str]]:
+def build_runtime_config(task_id: str, checkpoint_ns: str = "ai_review") -> Dict[str, Dict[str, str]]:
     return {
         "configurable": {
-            "thread_id": str(task_id).strip() or "patent-task",
-            "checkpoint_ns": str(checkpoint_ns).strip() or "patent_analysis",
+            "thread_id": str(task_id).strip() or "ai-review-task",
+            "checkpoint_ns": str(checkpoint_ns).strip() or "ai_review",
         }
     }
 
@@ -171,7 +143,7 @@ def _to_dict(value: Any) -> Dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="专利分析 LangGraph 流程")
+    parser = argparse.ArgumentParser(description="AI 审查 LangGraph 流程")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pn", help="单个专利号")
     group.add_argument("--upload-file", help="上传的专利 PDF 路径")
@@ -191,7 +163,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(str(output_dir / "logs"))
-    task_logger = bind_task_logger(task_id, "patent_analysis", pn=pn or "-", stage="main")
+    task_logger = bind_task_logger(task_id, "ai_review", pn=pn or "-", stage="main")
     task_logger.info(f"任务ID: {task_id}")
     task_logger.info(f"输出目录: {output_dir}")
 
@@ -218,18 +190,18 @@ def main() -> int:
     task_logger.info("开始执行工作流")
     workflow_start = perf_counter()
     try:
-        with task_log_context(task_id, "patent_analysis", pn=pn or "-"):
+        with task_log_context(task_id, "ai_review", pn=pn or "-"):
             result = workflow.invoke(
                 initial_state,
                 config=build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns),
             )
-    except Exception as exc:  # pragma: no cover - runtime safeguard
+    except Exception as exc:  # pragma: no cover
         task_logger.error(f"工作流执行异常: {exc}")
         task_logger.exception("异常堆栈")
         return 1
     finally:
         workflow_elapsed = perf_counter() - workflow_start
-        task_logger.info(f"专利分析工作流总耗时: {workflow_elapsed:.3f}s")
+        task_logger.info(f"AI 审查工作流总耗时: {workflow_elapsed:.3f}s")
 
     result_dict = _to_dict(result)
     status = str(result_dict.get("status", "failed") or "failed").lower()
@@ -249,7 +221,6 @@ def main() -> int:
     task_logger.success("工作流执行成功")
     task_logger.info(f"最终专利号: {resolved_pn or pn or '-'}")
     task_logger.info(f"输出文件: {output_pdf}")
-
     return 0
 
 

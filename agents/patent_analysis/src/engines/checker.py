@@ -4,7 +4,7 @@ from loguru import logger
 
 
 class FormalExaminer:
-    """专利形式缺陷审查器"""
+    """专利 AI 审查器"""
 
     def __init__(self, parts_db: Dict[str, Any], image_parts: Dict[str, List[str]]):
         """
@@ -40,7 +40,7 @@ class FormalExaminer:
 
     def check(self) -> Dict[str, Any]:
         """执行规则检查并返回旧版结构"""
-        logger.info("开始执行形式缺陷检查（规则版）")
+        logger.info("开始执行 AI 审查（规则版）")
         missing_in_images, undefined_in_text = self._collect_consistency_issues()
         consistency = self._build_consistency_markdown(missing_in_images, undefined_in_text)
         return {"consistency": consistency}
@@ -52,7 +52,7 @@ class FormalExaminer:
 
     def _build_consistency_markdown(self, missing_in_images: List[str], undefined_in_text: List[str]) -> str:
         if not missing_in_images and not undefined_in_text:
-            return "✅ **检查通过**：说明书文字部分与附图标记完全对应，未发现形式缺陷。"
+            return "✅ **检查通过**：说明书文字部分与附图标记完全对应，未发现审查问题。"
 
         lines: List[str] =["经一致性比对，发现说明书文字与附图标记存在以下不对应情况：\n"]
 

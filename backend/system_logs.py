@@ -33,7 +33,6 @@ SYSTEM_LOG_DB_ENABLED = str(os.getenv("SYSTEM_LOG_DB_ENABLED", "true")).strip().
 SYSTEM_LOG_DIR = settings.DATA_DIR / "logs"
 SYSTEM_LOG_FILE = SYSTEM_LOG_DIR / "system_events.log"
 SYSTEM_LOG_PAYLOAD_DIR = SYSTEM_LOG_DIR / "payloads"
-SYSTEM_LOG_POLICY_CLEANUP_MARKER_FILE = SYSTEM_LOG_DIR / ".system_log_policy_cleanup_v1.done"
 REDACTED_VALUE = "***REDACTED***"
 
 
@@ -598,27 +597,6 @@ def cleanup_system_logs_by_policy() -> Dict[str, int]:
             continue
 
     return {"deleted_db": deleted_db, "deleted_payload_files": deleted_files}
-
-
-def cleanup_system_logs_by_policy_once() -> Dict[str, Any]:
-    marker = SYSTEM_LOG_POLICY_CLEANUP_MARKER_FILE
-    if marker.exists():
-        return {
-            "executed": False,
-            "deleted_db": 0,
-            "deleted_payload_files": 0,
-            "marker_path": str(marker),
-        }
-
-    summary = cleanup_system_logs_by_policy()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(datetime.now().isoformat(), encoding="utf-8")
-    return {
-        "executed": True,
-        "deleted_db": int(summary.get("deleted_db") or 0),
-        "deleted_payload_files": int(summary.get("deleted_payload_files") or 0),
-        "marker_path": str(marker),
-    }
 
 
 async def _cleanup_loop() -> None:

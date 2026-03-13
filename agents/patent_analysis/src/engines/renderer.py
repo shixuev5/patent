@@ -76,7 +76,6 @@ class ReportRenderer:
     def render(
         self,
         report_data: Dict[str, Any],
-        check_result: Optional[Dict[str, Any]],
         search_data: Optional[Dict[str, Any]],
         md_path: Path,
         pdf_path: Path,
@@ -93,13 +92,7 @@ class ReportRenderer:
         if report_data:
             parts.append(self._render_analysis_section(report_data))
 
-        # 2. 形式缺陷审查报告
-        if check_result:
-            # 强制分页
-            parts.append("\n<div style='page-break-before: always;'></div>\n")
-            parts.append(self._render_formal_check_section(check_result))
-
-        # 3. 渲染检索策略部分
+        # 2. 渲染检索策略部分
         if search_data:
             # 添加分页符，确保检索策略从新页面开始
             parts.append("\n<div style='page-break-before: always;'></div>\n")
@@ -394,16 +387,17 @@ class ReportRenderer:
 
         return "\n".join(lines)
 
-    def _render_formal_check_section(self, check_results: Dict[str, Any]) -> str:
+    def _render_ai_review_section(self, check_results: Dict[str, Any]) -> str:
         """
-        渲染独立章节：形式缺陷检查报告
+        渲染独立章节：AI 审查报告
         """
         lines = []
-        lines.append("# 形式缺陷审查报告\n")
+        lines.append("# AI 审查报告\n")
         
         lines.append("## 1. 审查依据")
         lines.append("**《中华人民共和国专利法实施细则》第二十一条：**")
         lines.append("> 发明或者实用新型说明书文字部分中未提及的附图标记不得在附图中出现，附图中未出现的附图标记不得在说明书文字部分中提及。申请文件中表示同一组成部分的附图标记应当一致。")
+        lines.append("> 附图中除必需的词语外，不应当含有其他注释。")
 
         # 仅展示最终可执行结论，不展示中间复核过程
         consistency_text = self._safe_text(check_results.get("consistency"))

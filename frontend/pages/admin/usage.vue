@@ -151,8 +151,9 @@
               <span>任务类型</span>
               <select v-model="taskTypeFilter" class="field-input">
                 <option value="">全部</option>
-                <option value="patent_analysis">专利分析</option>
-                <option value="office_action_reply">答复研判</option>
+                <option value="patent_analysis">AI 分析</option>
+                <option value="ai_review">AI 审查</option>
+                <option value="office_action_reply">AI 研判</option>
               </select>
             </label>
             <label class="field">
@@ -354,7 +355,7 @@
             </label>
           </div>
 
-          <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(18rem,1.5fr)_auto] 2xl:items-end">
+          <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <label class="field">
               <span>服务提供方</span>
               <select v-model="logProvider" class="field-input">
@@ -387,7 +388,7 @@
             </label>
             <button
               type="button"
-              class="query-btn query-action"
+              class="query-btn query-action sm:col-span-2 xl:col-span-4 xl:justify-self-end"
               :disabled="loadingSystemLogs || loadingSystemSummary"
               @click="refreshSystemLogsAll"
             >
@@ -681,7 +682,7 @@
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(8rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(12rem,1fr)_minmax(16rem,1.5fr)_auto] 2xl:items-end">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <label class="field">
               <span>开始日期</span>
               <input v-model="entityTaskDateFrom" type="date" class="field-input" />
@@ -694,8 +695,9 @@
               <span>类型</span>
               <select v-model="entityTaskType" class="field-input">
                 <option value="">全部</option>
-                <option value="patent_analysis">专利分析</option>
-                <option value="office_action_reply">答复研判</option>
+                <option value="patent_analysis">AI 分析</option>
+                <option value="ai_review">AI 审查</option>
+                <option value="office_action_reply">AI 研判</option>
               </select>
             </label>
             <label class="field">
@@ -730,7 +732,7 @@
             </label>
             <button
               type="button"
-              class="query-btn query-action"
+              class="query-btn query-action sm:col-span-2 xl:col-span-4 xl:justify-self-end"
               :disabled="loadingEntityTasks"
               @click="refreshEntityTasksAll"
             >
@@ -950,8 +952,9 @@ const entityTaskDateFrom = ref(defaultTaskDateFrom)
 const entityTaskDateTo = ref(defaultTaskDateTo)
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  patent_analysis: '专利分析',
-  office_action_reply: '答复研判',
+  patent_analysis: 'AI 分析',
+  ai_review: 'AI 审查',
+  office_action_reply: 'AI 研判',
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {

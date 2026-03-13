@@ -421,8 +421,10 @@ async def get_account_dashboard(
     month_work_start, month_work_end = _recent_workday_window(22, now.date())
 
     work_week_analysis = _count_created(current_user.user_id, week_start, week_end, TaskType.PATENT_ANALYSIS.value)
+    work_week_review = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REVIEW.value)
     work_week_reply = _count_created(current_user.user_id, week_start, week_end, TaskType.OFFICE_ACTION_REPLY.value)
     work_month_analysis = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.PATENT_ANALYSIS.value)
+    work_month_review = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REVIEW.value)
     work_month_reply = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.OFFICE_ACTION_REPLY.value)
 
     created_rows = task_manager.storage.aggregate_user_created_tasks_daily(
@@ -433,29 +435,33 @@ async def get_account_dashboard(
     daily_map: Dict[str, Dict[str, int]] = {}
     for row in created_rows:
         key = row["day"]
-        item = daily_map.setdefault(key, {"analysis": 0, "reply": 0})
+        item = daily_map.setdefault(key, {"analysis": 0, "review": 0, "reply": 0})
         if row["task_type"] == TaskType.PATENT_ANALYSIS.value:
             item["analysis"] += int(row["count"])
+        elif row["task_type"] == TaskType.AI_REVIEW.value:
+            item["review"] += int(row["count"])
         elif row["task_type"] == TaskType.OFFICE_ACTION_REPLY.value:
             item["reply"] += int(row["count"])
 
     weekly_bucket = [
-        {"analysis": 0, "reply": 0},
-        {"analysis": 0, "reply": 0},
-        {"analysis": 0, "reply": 0},
-        {"analysis": 0, "reply": 0},
+        {"analysis": 0, "review": 0, "reply": 0},
+        {"analysis": 0, "review": 0, "reply": 0},
+        {"analysis": 0, "review": 0, "reply": 0},
+        {"analysis": 0, "review": 0, "reply": 0},
     ]
     daily_series: List[DailyActivityPoint] = []
     for day_item in _iter_dates(month_start_day, month_end_day):
         key = day_item.isoformat()
-        row = daily_map.get(key, {"analysis": 0, "reply": 0})
+        row = daily_map.get(key, {"analysis": 0, "review": 0, "reply": 0})
         analysis = int(row["analysis"])
+        review = int(row["review"])
         reply = int(row["reply"])
-        total = analysis + reply
+        total = analysis + review + reply
         daily_series.append(
             DailyActivityPoint(
                 date=key,
                 analysisCreated=analysis,
+                reviewCreated=review,
                 replyCreated=reply,
                 totalCreated=total,
             )
@@ -463,30 +469,35 @@ async def get_account_dashboard(
 
         week_index = min(3, (day_item.day - 1) // 7)
         weekly_bucket[week_index]["analysis"] += analysis
+        weekly_bucket[week_index]["review"] += review
         weekly_bucket[week_index]["reply"] += reply
 
     weekly_series: List[WeeklyActivityPoint] = []
     for idx in range(4):
         analysis = weekly_bucket[idx]["analysis"]
+        review = weekly_bucket[idx]["review"]
         reply = weekly_bucket[idx]["reply"]
         weekly_series.append(
             WeeklyActivityPoint(
                 week=f"第{idx + 1}周",
                 analysisCreated=analysis,
+                reviewCreated=review,
                 replyCreated=reply,
-                totalCreated=analysis + reply,
+                totalCreated=analysis + review + reply,
             )
         )
 
     work_week = TaskWindowCounts(
         analysisCount=work_week_analysis,
+        reviewCount=work_week_review,
         replyCount=work_week_reply,
-        totalCount=work_week_analysis + work_week_reply,
+        totalCount=work_week_analysis + work_week_review + work_week_reply,
     )
     work_month = TaskWindowCounts(
         analysisCount=work_month_analysis,
+        reviewCount=work_month_review,
         replyCount=work_month_reply,
-        totalCount=work_month_analysis + work_month_reply,
+        totalCount=work_month_analysis + work_month_review + work_month_reply,
     )
     month_target, month_target_source = _resolve_effective_month_target(
         current_user.user_id,

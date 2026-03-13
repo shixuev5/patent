@@ -71,7 +71,27 @@ class R2Storage:
 
     def build_patent_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/analysis/{pn}.pdf"
+
+    def build_legacy_patent_pdf_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
         return f"{self.config.key_prefix}/reports/{pn}.pdf"
+
+    def build_analysis_json_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/analysis/{pn}.json"
+
+    def build_patent_json_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/patent/{pn}.json"
+
+    def build_ai_review_pdf_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/ai_review/{pn}.pdf"
+
+    def build_ai_review_json_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/ai_review/{pn}.json"
 
     def build_upload_key(self, task_id: str, filename: str) -> str:
         tid = self._clean_token(task_id, fallback="task")
@@ -107,6 +127,68 @@ class R2Storage:
         except BotoCoreError as exc:
             logger.warning(f"[R2] 读取失败，key={key}，错误：{exc}")
             return None
+
+    def key_exists(self, key: str) -> bool:
+        if not self.enabled or not self.client:
+            return False
+        try:
+            self.client.head_object(Bucket=self.config.bucket, Key=key)
+            return True
+        except ClientError as exc:
+            error_code = (
+                exc.response.get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
+            )
+            if str(error_code) in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            logger.warning(f"[R2] key_exists 失败，key={key}，错误：{exc}")
+            return False
+        except BotoCoreError as exc:
+            logger.warning(f"[R2] key_exists 失败，key={key}，错误：{exc}")
+            return False
+
+    def list_keys(self, prefix: str, max_keys: int = 1000) -> list[str]:
+        if not self.enabled or not self.client:
+            return []
+        keys: list[str] = []
+        continuation_token = None
+        try:
+            while True:
+                kwargs = {
+                    "Bucket": self.config.bucket,
+                    "Prefix": str(prefix or ""),
+                    "MaxKeys": int(max(1, min(1000, max_keys))),
+                }
+                if continuation_token:
+                    kwargs["ContinuationToken"] = continuation_token
+                response = self.client.list_objects_v2(**kwargs)
+                for item in response.get("Contents", []) or []:
+                    key = str(item.get("Key", "")).strip()
+                    if key:
+                        keys.append(key)
+                if not response.get("IsTruncated"):
+                    break
+                continuation_token = response.get("NextContinuationToken")
+                if not continuation_token:
+                    break
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning(f"[R2] list_keys 失败，prefix={prefix}，错误：{exc}")
+            return keys
+        return keys
+
+    def copy_key(self, source_key: str, target_key: str) -> bool:
+        if not self.enabled or not self.client:
+            return False
+        try:
+            self.client.copy_object(
+                Bucket=self.config.bucket,
+                CopySource={"Bucket": self.config.bucket, "Key": source_key},
+                Key=target_key,
+            )
+            logger.info(f"[R2] 文件已复制，source={source_key} target={target_key}")
+            return True
+        except (ClientError, BotoCoreError) as exc:
+            logger.warning(f"[R2] 复制失败，source={source_key} target={target_key}，错误：{exc}")
+            return False
 
     def put_bytes(self, key: str, content: bytes, content_type: str = "application/octet-stream") -> bool:
         if not self.enabled or not self.client:

@@ -2,7 +2,7 @@
 
 ## 1. 模块定位
 
-`patent_analysis` 是单篇专利分析流水线，按固定阶段执行“下载/解析/结构化/知识提取/视觉处理/形式检查/报告生成/检索策略/渲染”。
+`patent_analysis` 是单篇专利分析流水线，按固定阶段执行“下载/解析/结构化/知识提取/视觉处理/报告生成/检索策略/渲染”。
 
 入口文件：`agents/patent_analysis/main.py`
 
@@ -13,9 +13,8 @@
 1. 支持按专利号自动下载 PDF，或直接使用上传 PDF。
 2. 自动结构化专利内容（著录项、权利要求、说明书、附图）。
 3. 抽取部件知识库并做附图 OCR 识别与标注。
-4. 做附图标记一致性形式检查。
-5. 生成“技术分析报告 + 检索策略建议书”。
-6. 渲染 Markdown 和 PDF 最终报告。
+4. 生成“技术分析报告 + 检索策略建议书”。
+5. 渲染 Markdown 和 PDF 最终报告。
 
 ---
 
@@ -28,13 +27,13 @@
 3. `transform` 将 Markdown 转为结构化 `patent.json`
 4. `extract` 知识提取（部件库 `parts.json`）
 5. `vision` 视觉处理（OCR + 标注图 + `image_parts.json`）
-6. 并行分支：`check` 与 `generate`
-7. `check_generate_join` 汇聚并行结果
+6. 并行分支：`generate_core` 与 `vision_annotate`
+7. `generate_figures` 汇总图解说明
 8. 并行分支：`search_matrix` 与 `search_semantic`
 9. `search_join` 汇聚检索策略（`search_strategy.json`）
 10. `render` 渲染 Markdown/PDF（`<pn>.md`, `<pn>.pdf`）
 
-说明：`check/generate` 为并行节点；任一节点失败会路由到 `handle_error` 后结束。
+说明：`generate_core/vision_annotate` 为并行节点；任一节点失败会路由到 `handle_error` 后结束。
 默认执行路径已接入 LangGraph checkpoint（按 `task_id` 作为 `thread_id`）。
 
 ---
@@ -141,7 +140,7 @@
 - 调用 `ReportRenderer.render(...)`
 - 合并三块内容：
   - 分析报告
-  - 形式缺陷报告
+  - 审查问题报告
   - 检索策略建议
 - 检索要素表中的 `element_type` 以小标签形式展示在 `Search Element` 名称下方，不单独占列。
 - 生成：
@@ -198,7 +197,7 @@
 - 专利结构化转换
 - 知识提取
 - 视觉处理
-- 形式缺陷检查
+- AI 审查
 - 报告内容生成
 - 检索策略生成
 - 渲染报告

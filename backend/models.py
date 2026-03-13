@@ -69,12 +69,14 @@ class AccountAvatarUploadResponse(BaseModel):
 class WeeklyActivityPoint(BaseModel):
     week: str
     analysisCreated: int
+    reviewCreated: int
     replyCreated: int
     totalCreated: int
 
 
 class TaskWindowCounts(BaseModel):
     analysisCount: int
+    reviewCount: int
     replyCount: int
     totalCount: int
 
@@ -82,6 +84,7 @@ class TaskWindowCounts(BaseModel):
 class DailyActivityPoint(BaseModel):
     date: str
     analysisCreated: int
+    reviewCreated: int
     replyCreated: int
     totalCreated: int
 
@@ -113,11 +116,13 @@ class AccountMonthTargetUpsertRequest(BaseModel):
 
 class TaskPointCost(BaseModel):
     patentAnalysis: float
+    aiReview: float
     officeActionReply: float
 
 
 class UsageCreatedToday(BaseModel):
     analysisCount: int
+    reviewCount: int
     replyCount: int
     totalCount: int
 

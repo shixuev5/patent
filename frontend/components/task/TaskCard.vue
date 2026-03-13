@@ -93,16 +93,18 @@ const displayStatus = computed(() => {
 
 const showPatentNumber = computed(() => {
   if (!props.task.pn) return false
-  if (props.task.taskType !== 'patent_analysis') return false
+  if (props.task.taskType !== 'patent_analysis' && props.task.taskType !== 'ai_review') return false
   return props.task.title !== props.task.pn
 })
 
 const taskTypeLabel = computed(() => {
-  return props.task.taskType === 'office_action_reply' ? 'AI 研判' : 'AI 分析'
+  if (props.task.taskType === 'office_action_reply') return 'AI 研判'
+  if (props.task.taskType === 'ai_review') return 'AI 审查'
+  return 'AI 分析'
 })
 
 const canRetry = computed(() => {
-  return props.task.taskType === 'patent_analysis' && !!props.task.pn
+  return (props.task.taskType === 'patent_analysis' || props.task.taskType === 'ai_review') && !!props.task.pn
 })
 
 const formatTime = (timestamp: number): string => {

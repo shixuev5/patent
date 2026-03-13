@@ -19,7 +19,7 @@ DEFAULT_PIPELINE_STEPS = [
     ("transform", "专利结构化转换"),
     ("extract", "知识提取"),
     ("vision", "视觉处理"),
-    ("check", "形式缺陷检查"),
+    ("check", "AI 审查"),
     ("generate", "报告内容生成"),
     ("search_matrix", "生成检索要素"),
     ("search_semantic", "生成语义检索"),
@@ -121,7 +121,7 @@ class PipelineTaskManager:
                     analysis_pn = output_files.get("pn")
                 if not analysis_pn and task:
                     analysis_pn = task.pn
-                if analysis_pn:
+                if analysis_pn and task and str(task.task_type) == TaskType.PATENT_ANALYSIS.value:
                     self.storage.record_patent_analysis(analysis_pn)
             except Exception as exc:
                 logger.warning(f"记录专利分析统计失败（{task_id}）：{exc}")

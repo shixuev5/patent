@@ -2,11 +2,13 @@ import type { TaskType } from '~/types/task'
 
 export interface TaskPointCost {
   patentAnalysis: number
+  aiReview: number
   officeActionReply: number
 }
 
 export interface UsageCreatedToday {
   analysisCount: number
+  reviewCount: number
   replyCount: number
   totalCount: number
 }

@@ -184,13 +184,13 @@
           <article class="metric-card">
             <p class="metric-label">最近一个工作周</p>
             <p class="metric-value">{{ dashboard?.workWeek.totalCount ?? 0 }}</p>
-            <p class="metric-desc">AI 分析 {{ dashboard?.workWeek.analysisCount ?? 0 }} · AI 研判 {{ dashboard?.workWeek.replyCount ?? 0 }}</p>
+            <p class="metric-desc">分析 {{ dashboard?.workWeek.analysisCount ?? 0 }} · 审查 {{ dashboard?.workWeek.reviewCount ?? 0 }} · 研判 {{ dashboard?.workWeek.replyCount ?? 0 }}</p>
           </article>
 
           <article class="metric-card">
             <p class="metric-label">最近一个工作月</p>
             <p class="metric-value">{{ dashboard?.workMonth.totalCount ?? 0 }}</p>
-            <p class="metric-desc">AI 分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} · AI 研判 {{ dashboard?.workMonth.replyCount ?? 0 }}</p>
+            <p class="metric-desc">分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} · 审查 {{ dashboard?.workMonth.reviewCount ?? 0 }} · 研判 {{ dashboard?.workMonth.replyCount ?? 0 }}</p>
           </article>
 
           <article class="metric-card" :class="deltaToneClass">
@@ -355,7 +355,7 @@
                 <div class="mt-1 h-1.5 rounded-full bg-slate-200">
                   <div class="h-1.5 rounded-full bg-cyan-500 transition-all duration-500" :style="{ width: `${item.progressBarWidth}%` }" />
                 </div>
-                <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 研判 {{ item.replyCreated }}</p>
+                <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 审查 {{ item.reviewCreated ?? 0 }} · 研判 {{ item.replyCreated }}</p>
               </div>
             </div>
           </div>
@@ -494,9 +494,9 @@ const usageProgressCenterLabel = computed(() => {
   return `${used} / ${limit}`
 })
 const usageInfoLine = computed(() => {
-  if (!usageHasLimit.value) return '分析 1 点 / 研判 2 点 · 每日上限未配置'
-  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 研判 2 点 · 今日已用完 · 距重置 ${usageResetLabel.value}`
-  return `分析 1 点 / 研判 2 点 · 剩余 ${usageRemainingLabel.value} · 距重置 ${usageResetLabel.value}`
+  if (!usageHasLimit.value) return '分析 1 点 / 审查 1 点 / 研判 2 点 · 每日上限未配置'
+  if ((dailyUsage.value?.remainingPoints || 0) <= 0) return `分析 1 点 / 审查 1 点 / 研判 2 点 · 今日已用完 · 距重置 ${usageResetLabel.value}`
+  return `分析 1 点 / 审查 1 点 / 研判 2 点 · 剩余 ${usageRemainingLabel.value} · 距重置 ${usageResetLabel.value}`
 })
 const usageInfoToneClass = computed(() => {
   if (!usageHasLimit.value || (dailyUsage.value?.remainingPoints || 0) <= 0) return 'text-amber-500'
@@ -729,6 +729,7 @@ const weeklyBreakdown = computed(() => {
   const defaultWeeks = Array.from({ length: 4 }, (_item, index) => ({
     week: `第${index + 1}周`,
     analysisCreated: 0,
+    reviewCreated: 0,
     replyCreated: 0,
     totalCreated: 0,
   }))

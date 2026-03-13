@@ -40,7 +40,9 @@ export interface TaskSubmitResult {
 }
 
 const normalizeTaskType = (taskType?: string): TaskType => {
-  return taskType === 'office_action_reply' ? 'office_action_reply' : 'patent_analysis'
+  if (taskType === 'office_action_reply') return 'office_action_reply'
+  if (taskType === 'ai_review') return 'ai_review'
+  return 'patent_analysis'
 }
 
 const normalizeStatus = (status: string): Task['status'] => {
@@ -442,7 +444,9 @@ export const useTaskStore = defineStore('tasks', {
     getTaskPointCost(usage: UsageResponse, taskType: TaskType): number {
       const raw = taskType === 'office_action_reply'
         ? usage.costPerTask.officeActionReply
-        : usage.costPerTask.patentAnalysis
+        : taskType === 'ai_review'
+          ? usage.costPerTask.aiReview
+          : usage.costPerTask.patentAnalysis
       return Number.isFinite(raw) ? Math.max(0, raw) : 0
     },
 
@@ -464,9 +468,10 @@ export const useTaskStore = defineStore('tasks', {
       const nextUsed = this.roundPoint(currentUsage.usedPoints + cost)
       const nextRemaining = this.roundPoint(Math.max(0, currentUsage.remainingPoints - cost))
       const nextCreatedToday = {
-        analysisCount: currentUsage.createdToday.analysisCount + (taskType === 'patent_analysis' ? 1 : 0),
-        replyCount: currentUsage.createdToday.replyCount + (taskType === 'office_action_reply' ? 1 : 0),
-        totalCount: currentUsage.createdToday.totalCount + 1,
+        analysisCount: (currentUsage.createdToday.analysisCount || 0) + (taskType === 'patent_analysis' ? 1 : 0),
+        reviewCount: (currentUsage.createdToday.reviewCount || 0) + (taskType === 'ai_review' ? 1 : 0),
+        replyCount: (currentUsage.createdToday.replyCount || 0) + (taskType === 'office_action_reply' ? 1 : 0),
+        totalCount: (currentUsage.createdToday.totalCount || 0) + 1,
       }
 
       this.dailyUsage = {
@@ -505,7 +510,9 @@ export const useTaskStore = defineStore('tasks', {
     applyUsagePointLimitNotice(usage: UsageResponse, taskType: TaskType) {
       const requiredPoints = taskType === 'office_action_reply'
         ? usage.costPerTask.officeActionReply
-        : usage.costPerTask.patentAnalysis
+        : taskType === 'ai_review'
+          ? usage.costPerTask.aiReview
+          : usage.costPerTask.patentAnalysis
       const shouldPromptLogin = usage.authType === 'guest'
       this.pointLimitNotice = {
         show: true,
@@ -528,8 +535,8 @@ export const useTaskStore = defineStore('tasks', {
         dailyPointLimit: detail.dailyPointLimit,
         usedPoints: detail.usedPoints,
         remainingPoints: detail.remainingPoints,
-        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, officeActionReply: 2 },
-        createdToday: baseUsage?.createdToday || { analysisCount: 0, replyCount: 0, totalCount: 0 },
+        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, aiReview: 1, officeActionReply: 2 },
+        createdToday: baseUsage?.createdToday || { analysisCount: 0, reviewCount: 0, replyCount: 0, totalCount: 0 },
         requestedTaskType: detail.taskType,
         requestedTaskPoints: detail.requiredPoints,
         canCreateRequestedTask: false,
@@ -621,14 +628,14 @@ export const useTaskStore = defineStore('tasks', {
         }
       }
 
-      const isPatent = input.taskType === 'patent_analysis'
+      const isPatentLike = input.taskType === 'patent_analysis' || input.taskType === 'ai_review'
       const task: Task = {
         id: generateId(),
         taskType: input.taskType,
-        title: isPatent
+        title: isPatentLike
           ? input.patentNumber || input.file?.name || '未命名任务'
           : input.officeActionFile.name || '审查意见答复任务',
-        pn: isPatent ? input.patentNumber?.trim() || undefined : undefined,
+        pn: isPatentLike ? input.patentNumber?.trim() || undefined : undefined,
         status: 'pending',
         progress: 0,
         currentStep: '等待处理',
@@ -676,7 +683,7 @@ export const useTaskStore = defineStore('tasks', {
       try {
         const formData = new FormData()
         formData.append('taskType', input.taskType)
-        if (input.taskType === 'patent_analysis') {
+        if (input.taskType === 'patent_analysis' || input.taskType === 'ai_review') {
           if (input.patentNumber) formData.append('patentNumber', input.patentNumber)
           if (input.file) formData.append('file', input.file)
         } else {
@@ -715,7 +722,9 @@ export const useTaskStore = defineStore('tasks', {
         const data = await response.json()
         taskRef.backendId = data.taskId
         taskRef.taskType = input.taskType
-        if (input.taskType === 'patent_analysis') taskRef.pn = input.patentNumber?.trim() || taskRef.pn
+        if (input.taskType === 'patent_analysis' || input.taskType === 'ai_review') {
+          taskRef.pn = input.patentNumber?.trim() || taskRef.pn
+        }
         taskRef.status = normalizeStatus(data.status || 'processing')
         taskRef.currentStep = taskRef.status === 'completed' ? '已复用历史报告' : '处理中'
         taskRef.updatedAt = Date.now()
@@ -899,7 +908,9 @@ export const useTaskStore = defineStore('tasks', {
         link.rel = 'noopener'
         link.download = task.taskType === 'office_action_reply'
           ? `审查意见答复报告_${task.backendId || task.id}.pdf`
-          : `专利分析报告_${task.pn || task.title}.pdf`
+          : task.taskType === 'ai_review'
+            ? `AI 审查报告_${task.pn || task.title}.pdf`
+            : `专利分析报告_${task.pn || task.title}.pdf`
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
@@ -914,7 +925,7 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     async retryTask(task: Task) {
-      if (task.taskType !== 'patent_analysis' || !task.pn) {
+      if ((task.taskType !== 'patent_analysis' && task.taskType !== 'ai_review') || !task.pn) {
         this.showGlobalNotice('error', '该任务类型不支持直接重试，请重新上传文件创建新任务。')
         return
       }
@@ -927,7 +938,7 @@ export const useTaskStore = defineStore('tasks', {
       this.saveToStorage()
 
       const input: CreateTaskInput = {
-        taskType: 'patent_analysis',
+        taskType: task.taskType,
         patentNumber: task.pn || task.title,
       }
       await this.submitTask(task, input)

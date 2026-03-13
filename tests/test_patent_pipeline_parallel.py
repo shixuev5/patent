@@ -6,8 +6,6 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agents.patent_analysis.main import build_runtime_config, create_workflow
-from agents.patent_analysis.src.nodes.check_generate_join_node import CheckGenerateJoinNode
-from agents.patent_analysis.src.nodes.check_node import CheckNode
 from agents.patent_analysis.src.nodes.download_node import DownloadNode
 from agents.patent_analysis.src.nodes.extract_node import ExtractNode
 from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
@@ -35,8 +33,8 @@ def _build_state(tmp_path: Path) -> WorkflowState:
     )
 
 
-def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
-    check_started = Event()
+def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monkeypatch) -> None:
+    vision_annotate_started = Event()
     generate_core_started = Event()
 
     monkeypatch.setattr(DownloadNode, "run", lambda self, state: {})
@@ -48,26 +46,23 @@ def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None
         "run",
         lambda self, state: {"image_parts": {}, "image_labels": {}},
     )
-    monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
-
-    def _fake_check(self, state):
-        check_started.set()
+    def _fake_vision_annotate(self, state):
+        vision_annotate_started.set()
         assert generate_core_started.wait(timeout=1.0)
-        return {"check_result": {"consistency": "ok"}}
+        return {"image_labels": {}}
 
     def _fake_generate_core(self, state):
         generate_core_started.set()
-        assert check_started.wait(timeout=1.0)
+        assert vision_annotate_started.wait(timeout=1.0)
         return {"report_core_json": {"ai_title": "ok"}}
 
-    monkeypatch.setattr(CheckNode, "run", _fake_check)
+    monkeypatch.setattr(VisionAnnotateNode, "run", _fake_vision_annotate)
     monkeypatch.setattr(GenerateCoreNode, "run", _fake_generate_core)
     monkeypatch.setattr(
         GenerateFiguresNode,
         "run",
         lambda self, state: {"report_json": {"ai_title": "ok"}},
     )
-    monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
     monkeypatch.setattr(
         SearchMatrixNode,
         "run",
@@ -97,11 +92,10 @@ def test_check_and_generate_run_in_parallel(tmp_path: Path, monkeypatch) -> None
     result_dict = result if isinstance(result, dict) else result.model_dump()
 
     assert result_dict["status"] == "completed"
-    assert result_dict["check_result"] == {"consistency": "ok"}
     assert result_dict["report_json"] == {"ai_title": "ok"}
 
 
-def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> None:
+def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> None:
     flags = {
         "search_matrix_called": False,
         "search_semantic_called": False,
@@ -120,22 +114,15 @@ def test_check_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> N
     )
     monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
 
-    def _raise_check(self, state):
-        raise RuntimeError("check failed")
+    def _raise_generate_core(self, state):
+        raise RuntimeError("generate_core failed")
 
-    monkeypatch.setattr(CheckNode, "run", _raise_check)
-    monkeypatch.setattr(
-        GenerateCoreNode,
-        "run",
-        lambda self, state: {"report_core_json": {"ai_title": "ok"}},
-    )
+    monkeypatch.setattr(GenerateCoreNode, "run", _raise_generate_core)
     monkeypatch.setattr(
         GenerateFiguresNode,
         "run",
         lambda self, state: {"report_json": {"ai_title": "ok"}},
     )
-
-    monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
 
     def _fake_search_matrix(self, state):
         flags["search_matrix_called"] = True
@@ -213,7 +200,6 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
         lambda self, state: {"image_parts": {}, "image_labels": {}},
     )
     monkeypatch.setattr(VisionAnnotateNode, "run", lambda self, state: {"image_labels": {}})
-    monkeypatch.setattr(CheckNode, "run", lambda self, state: {"check_result": {"ok": True}})
     monkeypatch.setattr(
         GenerateCoreNode,
         "run",
@@ -224,7 +210,6 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
         "run",
         lambda self, state: {"report_json": {"ok": True}},
     )
-    monkeypatch.setattr(CheckGenerateJoinNode, "run", lambda self, state: {})
     monkeypatch.setattr(SearchMatrixNode, "run", lambda self, state: {"search_matrix": []})
     monkeypatch.setattr(
         SearchSemanticNode,

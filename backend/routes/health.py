@@ -42,6 +42,7 @@ async def health_check():
             "daily_points_guest": _daily_point_limit_for_auth_type("guest"),
             "daily_points_authing": _daily_point_limit_for_auth_type("authing"),
             "cost_patent_analysis_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]),
+            "cost_ai_review_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]),
             "cost_office_action_reply_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]),
             "token_ttl_days": AUTH_TOKEN_TTL_DAYS,
         },

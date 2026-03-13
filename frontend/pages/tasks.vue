@@ -38,6 +38,14 @@
         </button>
         <button
           type="button"
+          class="rounded-xl px-4 py-2 text-sm font-semibold transition"
+          :class="mode === 'ai_review' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+          @click="mode = 'ai_review'"
+        >
+          AI 审查
+        </button>
+        <button
+          type="button"
           class="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold transition"
           :class="mode === 'office_action_reply' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
           @click="mode = 'office_action_reply'"
@@ -59,7 +67,7 @@
             :style="{ width: `${pointUsagePercent}%` }"
           />
         </div>
-        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 研判 2 点</p>
+        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 审查 1 点 · AI 研判 2 点</p>
       </div>
 
       <div
@@ -86,7 +94,7 @@
         </div>
       </div>
 
-      <div v-if="mode === 'patent_analysis'" class="mt-4 space-y-4">
+      <div v-if="mode === 'patent_analysis' || mode === 'ai_review'" class="mt-4 space-y-4">
         <div>
           <label class="mb-2 block text-sm font-medium text-slate-700">专利公开号</label>
           <input
@@ -114,10 +122,10 @@
           type="button"
           :disabled="loading || !canSubmitPatent"
           class="w-full rounded-2xl bg-cyan-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-          @click="submitPatentTask"
+          @click="submitPatentLikeTask"
         >
           <span v-if="loading">提交中...</span>
-          <span v-else>创建 AI 分析任务</span>
+          <span v-else>{{ mode === 'ai_review' ? '创建 AI 审查任务' : '创建 AI 分析任务' }}</span>
         </button>
       </div>
 
@@ -209,7 +217,7 @@ const config = useRuntimeConfig()
 const taskStore = useTaskStore()
 const authStore = useAuthStore()
 
-const mode = ref<'patent_analysis' | 'office_action_reply'>('patent_analysis')
+const mode = ref<'patent_analysis' | 'ai_review' | 'office_action_reply'>('patent_analysis')
 
 const loading = ref(false)
 
@@ -270,13 +278,17 @@ const canShowLoginPrompt = computed(() => {
 
 const modeDescription = computed(() => {
   if (mode.value === 'patent_analysis') {
-    return '统一创建 AI 分析任务，自动完成专利解析、结构化提取、附图识别、形式缺陷检查与检索策略生成，并输出可下载分析报告。'
+    return '统一创建 AI 分析任务，自动完成专利解析、结构化提取、附图识别、报告生成与检索策略生成，并输出可下载分析报告。'
+  }
+  if (mode.value === 'ai_review') {
+    return '统一创建 AI 审查任务，优先复用已分析数据，输出独立的 AI 审查报告。'
   }
   return '统一创建 AI 研判任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的审查意见答复研判报告。'
 })
 
 const modeTitle = computed(() => {
   if (mode.value === 'patent_analysis') return 'AI 分析'
+  if (mode.value === 'ai_review') return 'AI 审查'
   return 'AI 研判（Beta）'
 })
 
@@ -360,9 +372,9 @@ const onComparisonChange = (event: Event) => {
   comparisonDocs.value = files
 }
 
-const submitPatentTask = async () => {
+const submitPatentLikeTask = async () => {
   const payload: CreateTaskInput = {
-    taskType: 'patent_analysis',
+    taskType: mode.value === 'ai_review' ? 'ai_review' : 'patent_analysis',
     patentNumber: normalizedPatentNumber.value || undefined,
     file: patentFile.value || undefined,
   }
@@ -374,7 +386,10 @@ const submitPatentTask = async () => {
       patentNumber.value = ''
       patentFile.value = null
       if (patentFileInput.value) patentFileInput.value.value = ''
-      taskStore.showGlobalNotice('success', result.message || 'AI 分析任务已创建，正在处理。')
+      taskStore.showGlobalNotice(
+        'success',
+        result.message || (mode.value === 'ai_review' ? 'AI 审查任务已创建，正在处理。' : 'AI 分析任务已创建，正在处理。'),
+      )
     } else {
       if (result.errorCode === 'DAILY_POINTS_EXCEEDED') taskStore.showGlobalNotice('info', result.error || '今日积分不足。')
       else taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')

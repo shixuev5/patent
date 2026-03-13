@@ -20,7 +20,7 @@ class CheckNode(BaseNode):
         if parts_db is None or image_parts is None:
             raise RuntimeError("check 阶段缺少 parts_db 或 image_parts")
 
-        logger.info("执行形式缺陷检查")
+        logger.info("执行AI 审查")
         examiner = FormalExaminer(parts_db=parts_db, image_parts=image_parts)
         check_result = examiner.check()
         write_json(path_objs["check_json"], check_result)

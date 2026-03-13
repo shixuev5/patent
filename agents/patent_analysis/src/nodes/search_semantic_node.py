@@ -28,7 +28,11 @@ class SearchSemanticNode(BaseNode):
         if patent_data is None and path_objs["patent_json"].exists():
             patent_data = read_json(path_objs["patent_json"])
         if report_json is None and path_objs["report_json"].exists():
-            report_json = read_json(path_objs["report_json"])
+            loaded_payload = read_json(path_objs["report_json"])
+            if isinstance(loaded_payload, dict) and isinstance(loaded_payload.get("report"), dict):
+                report_json = loaded_payload.get("report")
+            else:
+                report_json = loaded_payload
 
         if not patent_data or not report_json:
             raise RuntimeError("search_semantic 阶段缺少 patent_data 或 report_json")

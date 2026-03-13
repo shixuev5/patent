@@ -20,12 +20,14 @@ export interface AccountAvatarUploadResponse {
 export interface WeeklyActivityPoint {
   week: string
   analysisCreated: number
+  reviewCreated: number
   replyCreated: number
   totalCreated: number
 }
 
 export interface TaskWindowCounts {
   analysisCount: number
+  reviewCount: number
   replyCount: number
   totalCount: number
 }
@@ -33,6 +35,7 @@ export interface TaskWindowCounts {
 export interface DailyActivityPoint {
   date: string
   analysisCreated: number
+  reviewCreated: number
   replyCreated: number
   totalCreated: number
 }
