@@ -82,7 +82,7 @@
 
           <div
             v-if="usageScope === 'user'"
-            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(9rem,1fr)_minmax(16rem,2fr)_auto] 2xl:items-end"
+            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end"
           >
             <label class="field">
               <span>时间范围</span>
@@ -125,7 +125,7 @@
 
           <div
             v-else
-            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-[minmax(8rem,1fr)_minmax(9rem,1fr)_minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(12rem,1fr)_minmax(14rem,1.5fr)_auto] 2xl:items-end"
+            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end"
           >
             <label class="field">
               <span>时间范围</span>
@@ -355,7 +355,7 @@
             </label>
           </div>
 
-          <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
             <label class="field">
               <span>服务提供方</span>
               <select v-model="logProvider" class="field-input">
@@ -388,7 +388,7 @@
             </label>
             <button
               type="button"
-              class="query-btn query-action sm:col-span-2 xl:col-span-4 xl:justify-self-end"
+              class="query-btn query-action"
               :disabled="loadingSystemLogs || loadingSystemSummary"
               @click="refreshSystemLogsAll"
             >
@@ -420,13 +420,13 @@
           <div class="overflow-x-auto rounded-xl border border-slate-200">
             <table class="admin-log-table min-w-[82rem] divide-y divide-slate-200 text-xs">
               <colgroup>
-                <col class="w-[11rem]" />
-                <col class="w-[10rem]" />
-                <col class="w-[11rem]" />
-                <col class="w-[28rem]" />
-                <col class="w-[5.5rem]" />
-                <col class="w-[5.5rem]" />
-                <col class="w-[18rem]" />
+              <col class="w-[11rem]" />
+              <col class="w-[10rem]" />
+              <col class="w-[11rem]" />
+              <col class="w-[22rem]" />
+              <col class="w-[5.5rem]" />
+              <col class="w-[5.5rem]" />
+              <col class="w-[18rem]" />
                 <col class="w-[6.5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
@@ -457,8 +457,8 @@
                     <p class="font-mono text-[11px] text-slate-500">{{ row.taskId || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2">
-                    <p class="max-w-[26rem] truncate">{{ formatLogInterface(row) }}</p>
-                    <p class="max-w-[26rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
+                    <p class="max-w-[20rem] truncate">{{ formatLogInterface(row) }}</p>
+                    <p class="max-w-[20rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2 text-right">
                     <span :class="row.success ? 'text-emerald-700' : 'text-rose-700'">{{ row.success ? '成功' : '失败' }}</span>
@@ -529,7 +529,7 @@
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(10rem,1fr)_minmax(18rem,2fr)_auto] xl:items-end">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
             <label class="field">
               <span>角色</span>
               <select v-model="entityUserRole" class="field-input">
@@ -569,7 +569,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[10rem]" />
                 <col class="w-[10rem]" />
-                <col class="w-[4.25rem] sm:w-[5rem]" />
+                <col class="w-[5.75rem] sm:w-[6.5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -579,7 +579,7 @@
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">任务数</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">最近任务时间</th>
-                  <th class="sticky right-0 z-10 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-100/90 px-2 py-2 text-left font-semibold whitespace-nowrap sm:w-[5rem] sm:min-w-[5rem]">操作</th>
+                  <th class="sticky right-0 z-10 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-100/90 px-1.5 py-2 text-left font-semibold whitespace-nowrap sm:w-[6.5rem] sm:min-w-[6.5rem]">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -598,11 +598,11 @@
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.latestTaskAt || row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-50/90 px-2 py-2 sm:w-[5rem] sm:min-w-[5rem]">
-                    <div class="flex flex-col items-stretch gap-1">
+                  <td class="sticky right-0 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-50/90 px-1.5 py-2 sm:w-[6.5rem] sm:min-w-[6.5rem]">
+                    <div class="flex flex-nowrap items-center gap-1">
                       <button
                         type="button"
-                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="table-action-btn"
                         :disabled="!row.userName"
                         @click="openTasksByUser(row.userName)"
                       >
@@ -610,7 +610,7 @@
                       </button>
                       <button
                         type="button"
-                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="table-action-btn"
                         :disabled="!row.userName"
                         @click="openLogsByUser(row.userName)"
                       >
@@ -682,7 +682,7 @@
         </section>
 
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
             <label class="field">
               <span>开始日期</span>
               <input v-model="entityTaskDateFrom" type="date" class="field-input" />
@@ -732,7 +732,7 @@
             </label>
             <button
               type="button"
-              class="query-btn query-action sm:col-span-2 xl:col-span-4 xl:justify-self-end"
+              class="query-btn query-action"
               :disabled="loadingEntityTasks"
               @click="refreshEntityTasksAll"
             >
@@ -752,7 +752,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[4rem]" />
                 <col class="w-[6rem]" />
-                <col class="w-[4.25rem] sm:w-[5rem]" />
+                <col class="w-[5.75rem] sm:w-[6.5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -763,7 +763,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务耗时</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
-                  <th class="sticky right-0 z-10 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-100/90 px-2 py-2 text-left font-semibold whitespace-nowrap sm:w-[5rem] sm:min-w-[5rem]">操作</th>
+                  <th class="sticky right-0 z-10 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-100/90 px-1.5 py-2 text-left font-semibold whitespace-nowrap sm:w-[6.5rem] sm:min-w-[6.5rem]">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -785,11 +785,11 @@
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.status) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDuration(row.durationSeconds) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-50/90 px-2 py-2 sm:w-[5rem] sm:min-w-[5rem]">
-                    <div class="flex flex-col items-stretch gap-1">
+                  <td class="sticky right-0 w-[5.75rem] min-w-[5.75rem] border-l border-slate-200 bg-slate-50/90 px-1.5 py-2 sm:w-[6.5rem] sm:min-w-[6.5rem]">
+                    <div class="flex flex-nowrap items-center gap-1">
                       <button
                         type="button"
-                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="table-action-btn"
                         :disabled="loadingEntityTaskDetail && detailLoadingTaskId === row.taskId"
                         @click="openEntityTaskDetail(row.taskId)"
                       >
@@ -797,7 +797,7 @@
                       </button>
                       <button
                         type="button"
-                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50"
+                        class="table-action-btn"
                         @click="openLogsByTask(row.taskId)"
                       >
                         日志
@@ -1431,7 +1431,11 @@ onMounted(async () => {
 }
 
 .query-action {
-  @apply w-full justify-self-start self-end sm:w-auto;
+  @apply w-auto justify-self-start self-end;
+}
+
+.table-action-btn {
+  @apply inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded-md border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50;
 }
 
 .modal-overlay {
