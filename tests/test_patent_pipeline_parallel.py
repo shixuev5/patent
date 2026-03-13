@@ -71,7 +71,11 @@ def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monke
     monkeypatch.setattr(
         SearchSemanticNode,
         "run",
-        lambda self, state: {"search_semantic_strategy": {"content": "q"}},
+        lambda self, state: {
+            "search_semantic_strategy": {
+                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+            }
+        },
     )
     monkeypatch.setattr(
         SearchJoinNode,
@@ -130,7 +134,11 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
 
     def _fake_search_semantic(self, state):
         flags["search_semantic_called"] = True
-        return {"search_semantic_strategy": {"content": "q"}}
+        return {
+            "search_semantic_strategy": {
+                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+            }
+        }
 
     def _fake_search_join(self, state):
         flags["search_join_called"] = True
@@ -214,7 +222,11 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
     monkeypatch.setattr(
         SearchSemanticNode,
         "run",
-        lambda self, state: {"search_semantic_strategy": {"content": "q"}},
+        lambda self, state: {
+            "search_semantic_strategy": {
+                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+            }
+        },
     )
     monkeypatch.setattr(SearchJoinNode, "run", lambda self, state: {"search_json": {"ok": True}})
     monkeypatch.setattr(RenderNode, "run", lambda self, state: {"status": "completed"})
@@ -298,7 +310,7 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
             pass
 
         def build_semantic_strategy(self):
-            return {"content": "q"}
+            return {"queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]}
 
     monkeypatch.setattr(
         "agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
@@ -324,7 +336,12 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
         }
     )
 
-    assert join_updates["search_json"] == {"search_matrix": [], "semantic_strategy": {"content": "q"}}
+    assert join_updates["search_json"] == {
+        "search_matrix": [],
+        "semantic_strategy": {
+            "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+        },
+    }
     assert (cache_dir / "search_matrix_cache.json").exists()
     assert (cache_dir / "search_semantic_cache.json").exists()
     assert not (Path(matrix_updates["paths"]["root"]) / "search_strategy_intermediate.json").exists()

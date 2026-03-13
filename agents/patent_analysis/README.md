@@ -115,10 +115,20 @@ flowchart TD
 `search_matrix` 单项字段：
 - `element_name`
 - `element_role`：`Subject` / `KeyFeature` / `Functional`
+- `block_id`：`A` / `B1..Bn` / `C`
+- `effect_cluster_id`：`E1..En`（仅核心子块）
+- `is_hub_feature`：是否跨核心效果复用
+- `term_frequency`：`low` / `high`
+- `priority_tier`：`core` / `assist` / `filter`
 - `element_type`：`Product_Structure` / `Method_Process` / `Algorithm_Logic` / `Material_Composition` / `Parameter_Condition`
 - `keywords_zh`
 - `keywords_en`
 - `ipc_cpc_ref`
+
+`semantic_strategy` 字段：
+- `name`
+- `description`
+- `queries`：列表，每项包含 `query_id`（`B1..Bn`）、`effect_cluster_id`（`E1..En`）、`effect`（关联技术效果文本）、`content`
 
 ## 3.10 `render`
 
@@ -151,6 +161,10 @@ flowchart TD
 - `generate_figures_cache.json`
 - `search_matrix_cache.json`
 - `search_semantic_cache.json`
+
+检索缓存版本键：
+- `search_matrix_v3`
+- `semantic_strategy_v2`
 
 ## 4.3 后端任务级复用（R2）
 

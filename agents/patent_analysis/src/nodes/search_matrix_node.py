@@ -51,7 +51,7 @@ class SearchMatrixNode(BaseNode):
         cache = StepCache(cache_file)
 
         generator = SearchStrategyGenerator(patent_data, analysis_json)
-        search_matrix = cache.run_step("search_matrix_v2", generator.build_search_matrix)
+        search_matrix = cache.run_step("search_matrix_v3", generator.build_search_matrix)
 
         if not isinstance(search_matrix, list):
             logger.warning("检索要素矩阵类型异常，回退为空列表")

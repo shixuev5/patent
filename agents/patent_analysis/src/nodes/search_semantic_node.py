@@ -52,7 +52,7 @@ class SearchSemanticNode(BaseNode):
 
         generator = SearchStrategyGenerator(patent_data, analysis_json)
         semantic_strategy = cache.run_step(
-            "semantic_strategy_v1", generator.build_semantic_strategy
+            "semantic_strategy_v2", generator.build_semantic_strategy
         )
 
         if not isinstance(semantic_strategy, dict):

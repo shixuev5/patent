@@ -22,7 +22,18 @@ def test_render_search_section_shows_applicants_and_inventors() -> None:
     content = renderer._render_search_section(
         {
             "search_matrix": [],
-            "semantic_strategy": {"name": "语义检索", "description": "desc", "content": "query"},
+            "semantic_strategy": {
+                "name": "语义检索",
+                "description": "desc",
+                "queries": [
+                    {
+                        "query_id": "B1",
+                        "effect_cluster_id": "E1",
+                        "effect": "效果描述1",
+                        "content": "query",
+                    }
+                ],
+            },
         }
     )
 
@@ -46,7 +57,18 @@ def test_render_search_section_shows_dash_when_applicants_or_inventors_missing()
     content = renderer._render_search_section(
         {
             "search_matrix": [],
-            "semantic_strategy": {"name": "语义检索", "description": "desc", "content": "query"},
+            "semantic_strategy": {
+                "name": "语义检索",
+                "description": "desc",
+                "queries": [
+                    {
+                        "query_id": "B1",
+                        "effect_cluster_id": "E1",
+                        "effect": "效果描述1",
+                        "content": "query",
+                    }
+                ],
+            },
         }
     )
 
@@ -95,7 +117,14 @@ def test_render_search_section_sanitizes_semantic_html_fragments() -> None:
             "semantic_strategy": {
                 "name": "语义检索",
                 "description": "基于核心技术词",
-                "content": "```html\n<tr><td>关键词A</td></tr>\n```",
+                "queries": [
+                    {
+                        "query_id": "B1",
+                        "effect_cluster_id": "E1",
+                        "effect": "效果描述A",
+                        "content": "```html\n<tr><td>关键词A</td></tr>\n```",
+                    }
+                ],
             },
         }
     )
@@ -103,3 +132,5 @@ def test_render_search_section_sanitizes_semantic_html_fragments() -> None:
     assert "关键词A" in content
     assert "<td>关键词A</td>" not in content
     assert "<tr>" not in content
+    assert "效果簇-技术效果关联" in content
+    assert "效果描述A" in content

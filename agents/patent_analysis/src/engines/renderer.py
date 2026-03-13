@@ -1,7 +1,7 @@
 import html
 import re
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from loguru import logger
 
 from agents.common.rendering.report_render import render_markdown_to_pdf
@@ -456,17 +456,36 @@ class ReportRenderer:
         semantic = data.get("semantic_strategy", {})
         if not isinstance(semantic, dict):
             semantic = {}
+        semantic_queries: List[Dict[str, Any]] = []
+        if isinstance(semantic.get("queries"), list):
+            for row in semantic.get("queries", []):
+                if isinstance(row, dict):
+                    semantic_queries.append(row)
+        effect_cluster_map: Dict[str, str] = {}
+        for row in semantic_queries:
+            effect_cluster_id = self._safe_text(row.get("effect_cluster_id")).upper()
+            effect_text = self._safe_text(row.get("effect"))
+            if effect_cluster_id and effect_text:
+                effect_cluster_map[effect_cluster_id] = effect_text
 
         # --- 2. 检索要素表 (包含分类号) ---
         lines.append("## 2. 检索要素表")
         lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
 
         if matrix:
-            # 定义分块映射逻辑
             role_mapping = {
                 "Subject": "Block A<br>(应用/主题)",
                 "KeyFeature": "Block B<br>(核心特征)",
-                "Functional": "Block C<br>(功能/限定)"
+                "Functional": "Block C<br>(功能/限定)",
+            }
+            priority_mapping = {
+                "core": "核心",
+                "assist": "辅助",
+                "filter": "过滤",
+            }
+            frequency_mapping = {
+                "low": "低频",
+                "high": "高频",
             }
             
             # 英文类型映射为更友好的中文UI展示
@@ -475,19 +494,30 @@ class ReportRenderer:
                 "Method_Process": "方法/工艺",
                 "Algorithm_Logic": "算法逻辑",
                 "Material_Composition": "材料/组分",
-                "Parameter_Condition": "参数/限定"
+                "Parameter_Condition": "参数/限定",
             }
 
-            lines.append("| 检索分块 | 检索要素 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
-            lines.append("| :--- | :--- | :--- | :--- | :--- |")
+            lines.append("| 检索分块 | 效果簇 | 关联技术效果 | 检索要素 | 属性标签 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
+            lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
 
             for item in matrix:
                 if not isinstance(item, dict):
                     continue
                 concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
                 role_key = item.get("element_role", "Other")
-
-                block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
+                block_id = self._safe_text(item.get("block_id")).upper()
+                effect_cluster_id = self._safe_text(item.get("effect_cluster_id")).upper()
+                if block_id:
+                    if block_id == "A":
+                        block_display = "Block A<br>(应用/主题)"
+                    elif block_id == "C":
+                        block_display = "Block C<br>(功能/限定)"
+                    elif block_id.startswith("B"):
+                        block_display = f"Block {block_id}<br>(核心子块)"
+                    else:
+                        block_display = f"Block {block_id}"
+                else:
+                    block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
 
                 e_type_raw = self._safe_text(item.get("element_type"))
                 e_type_display = type_mapping.get(e_type_raw, e_type_raw)
@@ -533,8 +563,27 @@ class ReportRenderer:
                 zh_str = ", ".join(zh_list) if zh_list else "-"
                 en_str = ", ".join(en_list) if en_list else "-"
                 class_str = "<br>".join(ref_list) if ref_list else "-"
+                cluster_display = effect_cluster_id or "-"
+                effect_display = self._safe_text(effect_cluster_map.get(effect_cluster_id, "-"), "-")
+                term_frequency = frequency_mapping.get(
+                    self._safe_text(item.get("term_frequency")).lower(), "-"
+                )
+                priority_tier = priority_mapping.get(
+                    self._safe_text(item.get("priority_tier")).lower(), "-"
+                )
+                is_hub_feature = bool(item.get("is_hub_feature", False))
+                tag_items = [
+                    f"类型:{e_type_display or '-'}",
+                    f"频率:{term_frequency}",
+                    f"优先级:{priority_tier}",
+                    f"Hub:{'是' if is_hub_feature else '否'}",
+                ]
+                tag_display = "<br>".join(tag_items)
 
-                lines.append(f"| **{block_display}** | {concept_display} | {zh_str} | {en_str} | {class_str} |")
+                lines.append(
+                    f"| **{block_display}** | {cluster_display} | {effect_display} | "
+                    f"{concept_display} | {tag_display} | {zh_str} | {en_str} | {class_str} |"
+                )
             lines.append("\n")
         else:
             lines.append("> 未生成检索要素表。\n")
@@ -545,11 +594,28 @@ class ReportRenderer:
             semantic.get("description"),
             "基于核心技术手段的自然语言高密度提炼，用于快速召回 X 类/ Y 类文献。",
         )
-        semantic_content = self._safe_text(semantic.get("content"))
-
         lines.append(f"## 3. {semantic_name}\n")
         lines.append(f"> **策略逻辑**: {semantic_desc}\n")
-        lines.append(f"```text\n{semantic_content}\n```\n")
+        if not semantic_queries:
+            lines.append("> 未生成语义检索 Query。\n")
+        else:
+            lines.append("### 效果簇-技术效果关联")
+            lines.append("| Query | 效果簇 | 技术效果 |")
+            lines.append("| :--- | :--- | :--- |")
+            for idx, query_item in enumerate(semantic_queries, start=1):
+                query_id = self._safe_text(query_item.get("query_id"), f"Q{idx}")
+                effect_cluster_id = self._safe_text(query_item.get("effect_cluster_id"), "-")
+                effect_text = self._safe_text(query_item.get("effect"), "-")
+                lines.append(f"| {query_id} | {effect_cluster_id} | {effect_text} |")
+            lines.append("")
+            for idx, query_item in enumerate(semantic_queries, start=1):
+                query_id = self._safe_text(query_item.get("query_id"), f"Q{idx}")
+                effect_cluster_id = self._safe_text(query_item.get("effect_cluster_id"), "-")
+                effect_text = self._safe_text(query_item.get("effect"), "-")
+                content = self._safe_text(query_item.get("content"))
+                lines.append(f"### Query {query_id}（效果簇 {effect_cluster_id}）")
+                lines.append(f"> 关联技术效果：{effect_text}")
+                lines.append(f"```text\n{content}\n```\n")
             
         return "\n".join(lines)
 
