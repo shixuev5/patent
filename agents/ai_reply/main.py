@@ -11,21 +11,21 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
 from backend.log_context import bind_task_logger, task_log_context
 from backend.logging_setup import setup_logging_utc8
-from agents.office_action_reply.src.state import WorkflowState, InputFile, WorkflowConfig
-from agents.office_action_reply.src.nodes.document_processing import DocumentProcessingNode
-from agents.office_action_reply.src.nodes.patent_retrieval import PatentRetrievalNode
-from agents.office_action_reply.src.nodes.data_preparation import DataPreparationNode
-from agents.office_action_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
-from agents.office_action_reply.src.nodes.support_basis_check import SupportBasisCheckNode
-from agents.office_action_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
-from agents.office_action_reply.src.nodes.dispute_extraction import DisputeExtractionNode
-from agents.office_action_reply.src.nodes.evidence_verification import EvidenceVerificationNode
-from agents.office_action_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
-from agents.office_action_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
-from agents.office_action_reply.src.nodes.verification_join import VerificationJoinNode
-from agents.office_action_reply.src.nodes.report_generation import ReportGenerationNode
-from agents.office_action_reply.src.nodes.final_report_render import FinalReportRenderNode
-from agents.office_action_reply.src.edges import handle_error
+from agents.ai_reply.src.state import WorkflowState, InputFile, WorkflowConfig
+from agents.ai_reply.src.nodes.document_processing import DocumentProcessingNode
+from agents.ai_reply.src.nodes.patent_retrieval import PatentRetrievalNode
+from agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
+from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
+from agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
+from agents.ai_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
+from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
+from agents.ai_reply.src.nodes.evidence_verification import EvidenceVerificationNode
+from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
+from agents.ai_reply.src.nodes.verification_join import VerificationJoinNode
+from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
+from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
+from agents.ai_reply.src.edges import handle_error
 from agents.common.utils.serialization import item_get
 
 
@@ -180,11 +180,11 @@ def create_workflow(config: WorkflowConfig = None):
     return workflow.compile()
 
 
-def build_runtime_config(task_id: str, checkpoint_ns: str = "office_action_reply"):
+def build_runtime_config(task_id: str, checkpoint_ns: str = "ai_reply"):
     return {
         "configurable": {
             "thread_id": str(task_id).strip() or "oar-task",
-            "checkpoint_ns": str(checkpoint_ns).strip() or "office_action_reply",
+            "checkpoint_ns": str(checkpoint_ns).strip() or "ai_reply",
         }
     }
 
@@ -217,7 +217,7 @@ def main():
 
     # 设置日志
     setup_logging(str(output_dir / "logs"))
-    task_logger = bind_task_logger(task_id, "office_action_reply", pn="-", stage="main")
+    task_logger = bind_task_logger(task_id, "ai_reply", pn="-", stage="main")
 
     task_logger.info(f"任务ID: {task_id}")
     task_logger.info(f"输出目录: {output_dir}")
@@ -303,7 +303,7 @@ def main():
 
     task_logger.info("开始执行工作流")
     try:
-        with task_log_context(task_id, "office_action_reply", pn="-"):
+        with task_log_context(task_id, "ai_reply", pn="-"):
             result = workflow.invoke(
                 initial_state,
                 config=build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns),

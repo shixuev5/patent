@@ -6,8 +6,8 @@ from typing import Any, Dict
 from loguru import logger
 
 from agents.common.rendering.report_render import render_markdown_to_pdf, write_markdown
-from agents.patent_analysis.src.nodes.base import BaseNode
-from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths, item_get, safe_artifact_name
+from agents.ai_review.src.nodes.base import BaseNode
+from agents.ai_review.src.workflow_utils import ensure_pipeline_paths, item_get, safe_artifact_name
 
 
 _LEGAL_BASIS = (

@@ -9,8 +9,8 @@ import re
 from agents.common.utils.llm import get_llm_service
 from loguru import logger
 from typing import Dict, List, Any
-from agents.office_action_reply.src.utils import get_node_cache
-from agents.office_action_reply.src.state import Dispute
+from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.state import Dispute
 
 
 class DisputeExtractionNode:

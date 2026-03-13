@@ -422,10 +422,10 @@ async def get_account_dashboard(
 
     work_week_analysis = _count_created(current_user.user_id, week_start, week_end, TaskType.PATENT_ANALYSIS.value)
     work_week_review = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REVIEW.value)
-    work_week_reply = _count_created(current_user.user_id, week_start, week_end, TaskType.OFFICE_ACTION_REPLY.value)
+    work_week_reply = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REPLY.value)
     work_month_analysis = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.PATENT_ANALYSIS.value)
     work_month_review = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REVIEW.value)
-    work_month_reply = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.OFFICE_ACTION_REPLY.value)
+    work_month_reply = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REPLY.value)
 
     created_rows = task_manager.storage.aggregate_user_created_tasks_daily(
         current_user.user_id,
@@ -440,7 +440,7 @@ async def get_account_dashboard(
             item["analysis"] += int(row["count"])
         elif row["task_type"] == TaskType.AI_REVIEW.value:
             item["review"] += int(row["count"])
-        elif row["task_type"] == TaskType.OFFICE_ACTION_REPLY.value:
+        elif row["task_type"] == TaskType.AI_REPLY.value:
             item["reply"] += int(row["count"])
 
     weekly_bucket = [

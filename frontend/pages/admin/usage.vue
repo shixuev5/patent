@@ -153,7 +153,7 @@
                 <option value="">全部</option>
                 <option value="patent_analysis">AI 分析</option>
                 <option value="ai_review">AI 审查</option>
-                <option value="office_action_reply">AI 答复</option>
+                <option value="ai_reply">AI 答复</option>
               </select>
             </label>
             <label class="field">
@@ -699,7 +699,7 @@
                 <option value="">全部</option>
                 <option value="patent_analysis">AI 分析</option>
                 <option value="ai_review">AI 审查</option>
-                <option value="office_action_reply">AI 答复</option>
+                <option value="ai_reply">AI 答复</option>
               </select>
             </label>
             <label class="field">
@@ -958,7 +958,7 @@ const entityTaskDateTo = ref(defaultTaskDateTo)
 const TASK_TYPE_LABELS: Record<string, string> = {
   patent_analysis: 'AI 分析',
   ai_review: 'AI 审查',
-  office_action_reply: 'AI 答复',
+  ai_reply: 'AI 答复',
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {

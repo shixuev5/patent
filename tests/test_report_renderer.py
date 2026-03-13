@@ -6,21 +6,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agents.patent_analysis.src.engines.renderer import ReportRenderer
 
 
-def test_render_ai_review_section_includes_legal_source_note() -> None:
-    renderer = ReportRenderer(patent_data={})
-
-    content = renderer._render_ai_review_section(
-        {"consistency": "✅ **检查通过**：说明书文字部分与附图标记完全对应。"}
-    )
-
-    assert "# AI 审查报告" in content
-    assert "## 1. 审查依据" in content
-    assert "## 2. 最终结论" in content
-    assert "《中华人民共和国专利法实施细则》" in content
-    assert "第二十一条" in content
-    assert "附图中除必需的词语外，不应当含有其他注释" in content
-
-
 def test_render_search_section_shows_applicants_and_inventors() -> None:
     renderer = ReportRenderer(
         patent_data={

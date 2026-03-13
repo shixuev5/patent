@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from loguru import logger
 
-from agents.patent_analysis.src.engines.vision import VisualProcessor
+from agents.common.patent_engines.vision import VisualProcessor
 from agents.patent_analysis.src.nodes.base import BaseNode
 from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths, item_get, read_json
 

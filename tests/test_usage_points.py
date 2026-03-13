@@ -43,7 +43,7 @@ def test_guest_usage_uses_point_budget(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     owner_id = "guest_abc"
     _create_task(storage, owner_id, TaskType.PATENT_ANALYSIS.value, "t-g-1")
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-g-2")
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-g-2")
 
     result = usage._get_user_usage(owner_id, task_type=TaskType.PATENT_ANALYSIS.value)
     assert result.authType == "guest"
@@ -60,8 +60,8 @@ def test_authing_usage_uses_higher_default_budget(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     owner_id = "authing:sub-001"
     _create_task(storage, owner_id, TaskType.PATENT_ANALYSIS.value, "t-a-1")
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-a-2")
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-a-3")
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-a-2")
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-a-3")
 
     result = usage._get_user_usage(owner_id)
     assert result.authType == "authing"
@@ -77,7 +77,7 @@ def test_usage_query_can_create_requested_task(monkeypatch, tmp_path):
     _create_task(storage, owner_id, TaskType.PATENT_ANALYSIS.value, "t-q-2")
 
     analysis_usage = usage._get_user_usage(owner_id, task_type=TaskType.PATENT_ANALYSIS.value)
-    reply_usage = usage._get_user_usage(owner_id, task_type=TaskType.OFFICE_ACTION_REPLY.value)
+    reply_usage = usage._get_user_usage(owner_id, task_type=TaskType.AI_REPLY.value)
 
     assert analysis_usage.remainingPoints == 1.0
     assert analysis_usage.canCreateRequestedTask is True
@@ -87,8 +87,8 @@ def test_usage_query_can_create_requested_task(monkeypatch, tmp_path):
 def test_enforce_daily_quota_raises_structured_429(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     owner_id = "guest_limit"
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-l-1")
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-l-2")
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-l-1")
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-l-2")
 
     with pytest.raises(HTTPException) as exc_info:
         usage._enforce_daily_quota(owner_id, task_type=TaskType.PATENT_ANALYSIS.value)
@@ -107,10 +107,10 @@ def test_failed_or_cancelled_tasks_refund_points(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     owner_id = "guest_refund"
     _create_task(storage, owner_id, TaskType.PATENT_ANALYSIS.value, "t-r-1", status=TaskStatus.COMPLETED)
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-r-2", status=TaskStatus.FAILED)
-    _create_task(storage, owner_id, TaskType.OFFICE_ACTION_REPLY.value, "t-r-3", status=TaskStatus.CANCELLED)
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-r-2", status=TaskStatus.FAILED)
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-r-3", status=TaskStatus.CANCELLED)
 
-    result = usage._get_user_usage(owner_id, task_type=TaskType.OFFICE_ACTION_REPLY.value)
+    result = usage._get_user_usage(owner_id, task_type=TaskType.AI_REPLY.value)
     assert result.usedPoints == 1.0
     assert result.remainingPoints == 2.0
     assert result.canCreateRequestedTask is True

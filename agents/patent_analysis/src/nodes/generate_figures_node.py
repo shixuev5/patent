@@ -36,13 +36,13 @@ class GenerateFiguresNode(BaseNode):
         if not report_core_json:
             raise RuntimeError("generate_figures 阶段缺少 report_core_json")
 
-        if path_objs["report_json"].exists():
+        if path_objs["analysis_json"].exists():
             logger.info("加载已有完整报告 JSON")
-            loaded_payload = read_json(path_objs["report_json"])
+            loaded_payload = read_json(path_objs["analysis_json"])
             if isinstance(loaded_payload, dict) and isinstance(loaded_payload.get("report"), dict):
-                report_json = loaded_payload.get("report")
+                analysis_json = loaded_payload.get("report")
             else:
-                report_json = loaded_payload
+                analysis_json = loaded_payload
         else:
             logger.info("生成附图讲解并合并报告 JSON")
             cache_file = get_node_cache_file(self.config.cache_dir, self.node_name)
@@ -54,12 +54,12 @@ class GenerateFiguresNode(BaseNode):
                 cache_file=cache_file,
             )
             figure_explanations = generator.generate_figure_explanations(report_core_json)
-            report_json = dict(report_core_json)
-            report_json["figure_explanations"] = figure_explanations
-            write_json(path_objs["report_json"], report_json)
+            analysis_json = dict(report_core_json)
+            analysis_json["figure_explanations"] = figure_explanations
+            write_json(path_objs["analysis_json"], analysis_json)
 
         return {
             "paths": paths,
             "report_core_json": report_core_json,
-            "report_json": report_json,
+            "analysis_json": analysis_json,
         }

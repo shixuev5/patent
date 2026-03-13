@@ -10,7 +10,7 @@ from agents.common.office_action_structuring.models import (
     ComparisonDocument,
     OfficeActionParagraph
 )
-from agents.office_action_reply.src.utils import is_patent_document
+from agents.ai_reply.src.utils import is_patent_document
 from loguru import logger
 
 

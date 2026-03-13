@@ -20,12 +20,12 @@ DEFAULT_DAILY_POINTS_AUTHING = 10.0
 TASK_POINT_COST_UNITS = {
     TaskType.PATENT_ANALYSIS.value: 2,  # 1.0
     TaskType.AI_REVIEW.value: 2,  # 1.0
-    TaskType.OFFICE_ACTION_REPLY.value: 4,  # 2.0
+    TaskType.AI_REPLY.value: 4,  # 2.0
 }
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.AI_REVIEW.value,
-    TaskType.OFFICE_ACTION_REPLY.value,
+    TaskType.AI_REPLY.value,
 }
 POINT_OCCUPIED_STATUSES = ("pending", "processing", "completed")
 
@@ -112,14 +112,14 @@ def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResp
     daily_limit_units = _daily_point_limit_units_for_auth_type(auth_type)
     analysis_count = _today_created_count(owner_id, TaskType.PATENT_ANALYSIS.value)
     review_count = _today_created_count(owner_id, TaskType.AI_REVIEW.value)
-    reply_count = _today_created_count(owner_id, TaskType.OFFICE_ACTION_REPLY.value)
+    reply_count = _today_created_count(owner_id, TaskType.AI_REPLY.value)
     analysis_occupied_count = _today_point_occupied_count(owner_id, TaskType.PATENT_ANALYSIS.value)
     review_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REVIEW.value)
-    reply_occupied_count = _today_point_occupied_count(owner_id, TaskType.OFFICE_ACTION_REPLY.value)
+    reply_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REPLY.value)
     used_units = (
         analysis_occupied_count * TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]
         + review_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]
-        + reply_occupied_count * TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]
+        + reply_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_REPLY.value]
     )
     remaining_units = max(0, daily_limit_units - used_units)
 
@@ -137,7 +137,7 @@ def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResp
         costPerTask={
             "patentAnalysis": _units_to_points(TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]),
             "aiReview": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]),
-            "officeActionReply": _units_to_points(TASK_POINT_COST_UNITS[TaskType.OFFICE_ACTION_REPLY.value]),
+            "officeActionReply": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REPLY.value]),
         },
         createdToday={
             "analysisCount": analysis_count,

@@ -61,7 +61,7 @@ def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monke
     monkeypatch.setattr(
         GenerateFiguresNode,
         "run",
-        lambda self, state: {"report_json": {"ai_title": "ok"}},
+        lambda self, state: {"analysis_json": {"ai_title": "ok"}},
     )
     monkeypatch.setattr(
         SearchMatrixNode,
@@ -92,7 +92,7 @@ def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monke
     result_dict = result if isinstance(result, dict) else result.model_dump()
 
     assert result_dict["status"] == "completed"
-    assert result_dict["report_json"] == {"ai_title": "ok"}
+    assert result_dict["analysis_json"] == {"ai_title": "ok"}
 
 
 def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypatch) -> None:
@@ -121,7 +121,7 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         GenerateFiguresNode,
         "run",
-        lambda self, state: {"report_json": {"ai_title": "ok"}},
+        lambda self, state: {"analysis_json": {"ai_title": "ok"}},
     )
 
     def _fake_search_matrix(self, state):
@@ -208,7 +208,7 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
     monkeypatch.setattr(
         GenerateFiguresNode,
         "run",
-        lambda self, state: {"report_json": {"ok": True}},
+        lambda self, state: {"analysis_json": {"ok": True}},
     )
     monkeypatch.setattr(SearchMatrixNode, "run", lambda self, state: {"search_matrix": []})
     monkeypatch.setattr(
@@ -281,7 +281,7 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
         status="pending",
         progress=0.0,
         patent_data={"bibliographic_data": {}, "claims": [], "description": {}, "drawings": []},
-        report_json={"ai_title": "ok", "technical_features": [], "technical_effects": []},
+        analysis_json={"ai_title": "ok", "technical_features": [], "technical_effects": []},
     )
 
     cache_dir = tmp_path / "cache"

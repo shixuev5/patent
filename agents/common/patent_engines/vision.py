@@ -188,7 +188,7 @@ class VisualProcessor:
 
     @staticmethod
     def _resolve_max_workers(total_images: int) -> int:
-        configured = max(1, int(getattr(settings, "VISION_MAX_WORKERS", 4) or 4))
+        configured = max(1, int(getattr(settings, "VLM_MAX_WORKERS", 4) or 4))
         return min(configured, max(1, total_images))
 
     def _extract_target_filenames(self) -> Set[str]:
@@ -790,7 +790,7 @@ class LabelPlacer:
             # 画文字 (垂直居中微调)
             text_x = x + 4
             text_y = y + 2
-            draw.text((text_x, text_y), text, font=font, fill=settings.LABEL_COLOR)
+            draw.text((text_x, text_y), text, font=font, fill=(0, 0, 255))
 
             # 更新占用
             self.mark_existing_boxes([[x, y, x + text_w, y + text_h]])

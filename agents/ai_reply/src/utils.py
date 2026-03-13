@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 from loguru import logger
 from agents.common.utils.cache import StepCache
-from agents.office_action_reply.src.state import WorkflowConfig
+from agents.ai_reply.src.state import WorkflowConfig
 
 
 def is_patent_document(document_number: str) -> bool:

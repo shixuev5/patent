@@ -135,7 +135,7 @@ def test_figure_parallel_workers_uses_unified_setting(tmp_path: Path, monkeypatc
     )
     monkeypatch.setattr(
         "agents.patent_analysis.src.engines.generator.settings",
-        type("S", (), {"VISION_MAX_WORKERS": 4})(),
+        type("S", (), {"VLM_MAX_WORKERS": 4})(),
     )
 
     generator = ContentGenerator(

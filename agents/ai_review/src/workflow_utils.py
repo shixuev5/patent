@@ -30,9 +30,6 @@ def _build_paths_from_output_dir(output_dir: Path, artifact_name: str) -> Dict[s
         "parts_json": output_dir / "parts.json",
         "image_parts_json": output_dir / "image_parts.json",
         "image_labels_json": output_dir / "image_labels.json",
-        "report_core_json": output_dir / "report_core.json",
-        "analysis_json": output_dir / "analysis.json",
-        "search_strategy_json": output_dir / "search_strategy.json",
         "final_md": output_dir / f"{safe_artifact}.md",
         "final_pdf": output_dir / f"{safe_artifact}.pdf",
     }

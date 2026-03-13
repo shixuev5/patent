@@ -4,8 +4,8 @@ from typing import Any, Dict
 
 from loguru import logger
 
-from agents.patent_analysis.src.nodes.base import BaseNode
-from agents.patent_analysis.src.workflow_utils import (
+from agents.ai_review.src.nodes.base import BaseNode
+from agents.ai_review.src.workflow_utils import (
     ensure_pipeline_paths,
     item_get,
     refresh_output_artifact_paths,

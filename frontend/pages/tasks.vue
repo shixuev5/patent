@@ -47,8 +47,8 @@
         <button
           type="button"
           class="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold transition"
-          :class="mode === 'office_action_reply' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
-          @click="mode = 'office_action_reply'"
+          :class="mode === 'ai_reply' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+          @click="mode = 'ai_reply'"
         >
           AI 答复
           <span class="ml-1.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium leading-none text-slate-500">Beta</span>
@@ -217,7 +217,7 @@ const config = useRuntimeConfig()
 const taskStore = useTaskStore()
 const authStore = useAuthStore()
 
-const mode = ref<'patent_analysis' | 'ai_review' | 'office_action_reply'>('patent_analysis')
+const mode = ref<'patent_analysis' | 'ai_review' | 'ai_reply'>('patent_analysis')
 
 const loading = ref(false)
 
@@ -406,7 +406,7 @@ const submitOfficeActionTask = async () => {
   }
 
   const payload: CreateTaskInput = {
-    taskType: 'office_action_reply',
+    taskType: 'ai_reply',
     officeActionFile: officeActionFile.value,
     responseFile: responseFile.value,
     claimsFile: claimsFile.value || undefined,

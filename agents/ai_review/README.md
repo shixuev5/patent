@@ -66,7 +66,7 @@ flowchart TD
 
 ## 4.1 `download` / `parse` / `transform` / `extract` / `vision_extract`
 
-这 5 个节点直接复用 `agents/patent_analysis` 中同名节点实现，行为与主分析流水线保持一致：
+这 5 个节点在 `agents/ai_review/src/nodes/` 下独立实现，行为与主分析流水线保持一致：
 - `download`：下载或复制 `raw.pdf`
 - `parse`：生成 `raw.md + images`
 - `transform`：生成 `patent.json` 并解析 `resolved_pn`
@@ -75,6 +75,7 @@ flowchart TD
 
 ## 4.2 `check`
 
+- 节点实现位于 `agents/ai_review/src/nodes/check_node.py`。
 - 调用 `FormalExaminer.check()`（规则版一致性检查）。
 - 检查集合：
   - 说明书有、附图无
@@ -122,6 +123,9 @@ CLI 参数互斥二选一：
   - `check.json`
   - `<resolved_pn>_ai_review.md`
   - `<resolved_pn>_ai_review.pdf`
+
+实现说明：
+- `ai_review` 运行时不依赖 `agents/patent_analysis` 包内节点定义。
 
 后端任务模式下会额外写入：
 - `ai_review.json`（包含 `metadata/check_result/artifact_refs`）

@@ -2,13 +2,13 @@
 
 ## 1. 模块定位
 
-`office_action_reply` 是一个基于 LangGraph 的 AI 答复辅助工作流，目标是：
+`ai_reply` 是一个基于 LangGraph 的 AI 答复辅助工作流，目标是：
 
 1. 解析审查意见通知书、意见陈述书、权利要求书、对比文件。
 2. 识别争辩焦点并分流到不同核查路径。
 3. 生成统一 JSON 报告，并渲染为 Markdown / PDF。
 
-入口文件：`agents/office_action_reply/main.py`
+入口文件：`agents/ai_reply/main.py`
 
 ---
 
@@ -47,7 +47,7 @@
 
 ## 4. 全流程执行逻辑
 
-工作流定义位置：`create_workflow()`（`agents/office_action_reply/main.py`）
+工作流定义位置：`create_workflow()`（`agents/ai_reply/main.py`）
 
 ```mermaid
 flowchart TD
@@ -287,7 +287,7 @@ flowchart TD
 ## 10.1 CLI
 
 ```bash
-python -m agents.office_action_reply.main \
+python -m agents.ai_reply.main \
   --office-action /path/to/office_action.pdf \
   --response /path/to/response.pdf \
   --claims /path/to/claims.pdf \

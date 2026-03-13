@@ -96,7 +96,7 @@ def _seed_usage_rows(storage: SQLiteTaskStorage):
         {
             "task_id": "task-2",
             "owner_id": "authing:user-2",
-            "task_type": "office_action_reply",
+            "task_type": "ai_reply",
             "task_status": "failed",
             "prompt_tokens": 60,
             "completion_tokens": 40,

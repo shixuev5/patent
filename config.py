@@ -51,11 +51,7 @@ class Settings:
     VLM_BASE_URL = os.getenv("VLM_BASE_URL")
     VLM_MODEL_DEFAULT = os.getenv("VLM_MODEL_DEFAULT")
     VLM_MODEL_LARGE = os.getenv("VLM_MODEL_LARGE")
-
-    # --- 视觉处理配置 ---
-    LABEL_COLOR = (0, 0, 255)
-    # 统一视觉并发配置：在线 OCR 与附图视觉分析共用该值
-    VISION_MAX_WORKERS = max(1, int(os.getenv("VISION_MAX_WORKERS", "4")))
+    VLM_MAX_WORKERS = max(1, int(os.getenv("VLM_MAX_WORKERS", "4")))
 
     # --- 智慧芽 ---
     ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")
@@ -87,42 +83,6 @@ class Settings:
     AUTHING_APP_ID = os.getenv("AUTHING_APP_ID", "").strip()
     AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
     AUTHING_DOMAIN = os.getenv("AUTHING_DOMAIN", "").strip()
-
-    def get_project_paths(self, workspace_id: str, artifact_name: str = ""):
-        """
-        根据工作区标识生成标准化路径。
-        - workspace_id: 工作目录名（建议 task_id）
-        - artifact_name: 产物命名用标识（如专利号），为空则使用 workspace_id
-        """
-        safe_workspace_id = "".join([c for c in workspace_id if c.isalnum() or c in ("-", "_")])
-        safe_artifact_name = "".join([c for c in (artifact_name or workspace_id) if c.isalnum() or c in ("-", "_")])
-
-        project_root = self.OUTPUT_DIR / safe_workspace_id
-        mineru_output_dir = project_root / self.MINERU_TEMP_FOLDER
-
-        return {
-            "root": project_root,
-            "mineru_dir": mineru_output_dir,
-            "annotated_dir": project_root / "annotated_images",
-
-            # 输入/中间文件
-            "raw_pdf": project_root / "raw.pdf",
-            "raw_md": mineru_output_dir / "raw.md",
-            "raw_images_dir": mineru_output_dir / "images",
-
-            # 结构化数据
-            "patent_json": project_root / "patent.json",  # 专利数据
-            "parts_json": project_root / "parts.json",  # 部件数据
-            "image_parts_json": project_root / "image_parts.json",  # 图片部件数据
-            "check_json": project_root / "check.json",  # 专利 AI 审查
-            "report_json": project_root / "analysis.json",  # AI 分析报告数据
-            "analysis_json": project_root / "analysis.json",  # AI 分析报告数据（新命名）
-            "search_strategy_json": project_root / "search_strategy.json",  # 检索策略数据
-
-            # 最终产物
-            "final_md": project_root / f"{safe_artifact_name}.md",
-            "final_pdf": project_root / f"{safe_artifact_name}.pdf",
-        }
 
 
 settings = Settings()

@@ -6,7 +6,7 @@ This document provides implementation guidance for working in this repository.
 
 Patent analysis platform with two agent workflows:
 - `patent_analysis`: single/multi patent analysis pipeline (download/parse/structure/extract/vision/check/generate/render)
-- `office_action_reply`: LangGraph workflow for office-action rebuttal assistance
+- `ai_reply`: LangGraph workflow for office-action rebuttal assistance
 
 Runtime stack:
 - Backend: FastAPI (`backend/main.py`)
@@ -29,7 +29,7 @@ Runtime stack:
 │   │       ├── generator.py
 │   │       ├── search.py
 │   │       └── renderer.py
-│   ├── office_action_reply/     # Office action reply LangGraph workflow
+│   ├── ai_reply/                # Office action reply LangGraph workflow
 │   │   ├── main.py
 │   │   └── src/
 │   │       ├── state.py
@@ -72,7 +72,7 @@ uv run python -m agents.patent_analysis.main --file patents.txt
 ### Run Office Action Reply Agent (CLI)
 
 ```bash
-uv run python -m agents.office_action_reply.main \
+uv run python -m agents.ai_reply.main \
   --office-action "审查意见通知书.pdf" \
   --response "意见陈述书.docx" \
   --claims "权利要求书.pdf" \
@@ -80,7 +80,7 @@ uv run python -m agents.office_action_reply.main \
 ```
 
 Notes:
-- `office_action_reply` CLI currently auto-generates `output/<task_id>/` and does not expose a `--output` argument.
+- `ai_reply` CLI currently auto-generates `output/<task_id>/` and does not expose a `--output` argument.
 - Backend task execution entry is in `backend/routes/tasks.py`.
 
 ## API Endpoints (Current)
@@ -137,11 +137,11 @@ When adding new logs in agents:
 8. search
 9. render
 
-Artifacts are resolved via `settings.get_project_paths(...)` in `config.py`.
+Artifacts are resolved in each workflow's `workflow_utils.py` via output-dir path builders.
 
 ### Office Action Reply Workflow
 
-`agents/office_action_reply/main.py` (`create_workflow`) builds LangGraph nodes:
+`agents/ai_reply/main.py` (`create_workflow`) builds LangGraph nodes:
 - document processing
 - patent retrieval
 - data preparation

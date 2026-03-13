@@ -10,8 +10,8 @@ from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
-from agents.office_action_reply.src.state import WorkflowState
-from agents.office_action_reply.src.utils import is_patent_document, get_node_cache
+from agents.ai_reply.src.state import WorkflowState
+from agents.ai_reply.src.utils import is_patent_document, get_node_cache
 from config import settings
 
 

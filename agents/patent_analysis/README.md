@@ -43,7 +43,7 @@ flowchart TD
 说明：
 - `vision_extract -> (generate_core, vision_annotate)` 为并行分支。
 - `generate_figures -> (search_matrix, search_semantic)` 为并行分支。
-- 当前主流程不包含 `check` 节点（`CheckNode` 保留在代码中，供其他工作流复用）。
+- AI 审查链路已拆分到 `agents/ai_review`，本工作流仅负责 AI 分析与检索策略产出。
 
 ---
 
@@ -103,7 +103,7 @@ flowchart TD
 
 - 输入：`report_core_json + patent_data + parts_db + image_parts`
 - 调用 `ContentGenerator.generate_figure_explanations(...)` 生成图解说明并合并核心报告。
-- 输出：`analysis.json`（工作流内部字段名仍为 `report_json`）。
+- 输出：`analysis.json`（工作流内部字段名为 `analysis_json`）。
 - 若 `analysis.json` 已存在则直接复用。
 
 ## 3.9 `search_matrix` / `search_semantic` / `search_join`
@@ -122,7 +122,7 @@ flowchart TD
 
 ## 3.10 `render`
 
-- 输入：`patent_data + report_json + search_json`
+- 输入：`patent_data + analysis_json + search_json`
 - 调用 `ReportRenderer.render(...)` 渲染最终 Markdown/PDF。
 - 输出：
   - `output/<task_id>/<resolved_pn>.md`

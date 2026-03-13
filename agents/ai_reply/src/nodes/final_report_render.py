@@ -12,9 +12,9 @@ from agents.common.rendering.report_render import (
     render_markdown_to_pdf,
 )
 from agents.common.utils.serialization import item_get
-from agents.office_action_reply.src.report_markdown import build_final_report_markdown
-from agents.office_action_reply.src.report_styles import OAR_REPORT_CSS
-from agents.office_action_reply.src.utils import get_node_cache
+from agents.ai_reply.src.report_markdown import build_final_report_markdown
+from agents.ai_reply.src.report_styles import OAR_REPORT_CSS
+from agents.ai_reply.src.utils import get_node_cache
 
 
 class FinalReportRenderNode:

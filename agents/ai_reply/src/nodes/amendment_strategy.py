@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Set
 
 from loguru import logger
 
-from agents.office_action_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import get_node_cache
 
 
 class AmendmentStrategyNode:

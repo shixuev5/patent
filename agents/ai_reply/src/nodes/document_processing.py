@@ -12,8 +12,8 @@ from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.parsers.word_parser import WordParser
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 from agents.common.patent_structuring import extract_structured_claims
-from agents.office_action_reply.src.state import WorkflowState, ParsedFile, StructuredClaim
-from agents.office_action_reply.src.utils import get_node_cache
+from agents.ai_reply.src.state import WorkflowState, ParsedFile, StructuredClaim
+from agents.ai_reply.src.utils import get_node_cache
 from config import settings
 
 

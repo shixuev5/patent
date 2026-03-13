@@ -1,4 +1,4 @@
-from agents.office_action_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from backend import task_usage_tracking
 
 
@@ -32,7 +32,7 @@ def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
     collector = task_usage_tracking.create_task_usage_collector(
         task_id="task-oar-ctx",
         owner_id="authing:user-oar",
-        task_type="office_action_reply",
+        task_type="ai_reply",
     )
 
     with task_usage_tracking.task_usage_collection(collector):
@@ -41,4 +41,4 @@ def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
     assert evidence
     assert engines == ["openalex"]
     assert captured_context["task_id"] == "task-oar-ctx"
-    assert captured_context["task_type"] == "office_action_reply"
+    assert captured_context["task_type"] == "ai_reply"

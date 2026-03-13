@@ -16,11 +16,19 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import RetryPolicy
 from loguru import logger
 
-from agents.ai_review.src.nodes import HydrateNode, RenderNode
+from agents.ai_review.src.nodes import (
+    CheckNode,
+    DownloadNode,
+    ExtractNode,
+    HydrateNode,
+    ParseNode,
+    RenderNode,
+    TransformNode,
+    VisionExtractNode,
+)
 from agents.ai_review.src.state import WorkflowConfig, WorkflowState
-from agents.patent_analysis.src.edges import handle_error
-from agents.patent_analysis.src.nodes import CheckNode, DownloadNode, ExtractNode, ParseNode, TransformNode, VisionExtractNode
-from agents.patent_analysis.src.workflow_utils import item_get
+from agents.ai_review.src.edges import handle_error
+from agents.ai_review.src.workflow_utils import item_get
 from backend.log_context import bind_task_logger, task_log_context
 from backend.logging_setup import setup_logging_utc8
 from config import settings

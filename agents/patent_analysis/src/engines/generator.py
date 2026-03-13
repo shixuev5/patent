@@ -27,7 +27,7 @@ class ContentGenerator:
         self.image_parts = image_parts
         self.annotated_dir = annotated_dir
         self.figure_parallel_workers = max(
-            1, int(getattr(settings, "VISION_MAX_WORKERS", 4) or 4)
+            1, int(getattr(settings, "VLM_MAX_WORKERS", 4) or 4)
         )
 
         # 初始化缓存管理器

@@ -6,8 +6,8 @@
 import re
 from typing import Any, Dict, List
 from loguru import logger
-from agents.office_action_reply.src.state import WorkflowState
-from agents.office_action_reply.src.utils import get_node_cache
+from agents.ai_reply.src.state import WorkflowState
+from agents.ai_reply.src.utils import get_node_cache
 
 
 class DataPreparationNode:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
 from loguru import logger
 
-from agents.patent_analysis.src.engines.checker import FormalExaminer
-from agents.patent_analysis.src.nodes.base import BaseNode
-from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths, item_get, write_json
+from agents.ai_review.src.engines.checker import FormalExaminer
+from agents.ai_review.src.nodes.base import BaseNode
+from agents.ai_review.src.workflow_utils import ensure_pipeline_paths, item_get, write_json
 
 
 class CheckNode(BaseNode):
@@ -20,10 +21,10 @@ class CheckNode(BaseNode):
         if parts_db is None or image_parts is None:
             raise RuntimeError("check 阶段缺少 parts_db 或 image_parts")
 
-        logger.info("执行AI 审查")
+        logger.info("执行 AI 审查")
         examiner = FormalExaminer(parts_db=parts_db, image_parts=image_parts)
         check_result = examiner.check()
-        write_json(path_objs["check_json"], check_result)
+        write_json(Path(path_objs["root"]) / "check.json", check_result)
 
         return {
             "paths": paths,

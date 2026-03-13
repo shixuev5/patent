@@ -9,8 +9,8 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
-from agents.office_action_reply.src.state import SupportFinding
-from agents.office_action_reply.src.utils import get_node_cache
+from agents.ai_reply.src.state import SupportFinding
+from agents.ai_reply.src.utils import get_node_cache
 
 
 class SupportBasisCheckNode:

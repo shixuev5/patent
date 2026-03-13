@@ -5,8 +5,8 @@ from typing import Any, Dict
 from loguru import logger
 
 from agents.common.patent_engines.knowledge import KnowledgeExtractor
-from agents.patent_analysis.src.nodes.base import BaseNode
-from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths, item_get, read_json, write_json
+from agents.ai_review.src.nodes.base import BaseNode
+from agents.ai_review.src.workflow_utils import ensure_pipeline_paths, item_get, read_json, write_json
 
 
 class ExtractNode(BaseNode):

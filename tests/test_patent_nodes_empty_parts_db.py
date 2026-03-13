@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agents.patent_analysis.src.nodes.check_node import CheckNode
+from agents.ai_review.src.nodes.check_node import CheckNode
 from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
 from agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
 from agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
@@ -59,7 +59,7 @@ def test_check_node_accepts_empty_parts_db(tmp_path: Path, monkeypatch) -> None:
             return {"consistency": "ok"}
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.check_node.FormalExaminer",
+        "agents.ai_review.src.nodes.check_node.FormalExaminer",
         _FakeFormalExaminer,
     )
 
@@ -129,5 +129,5 @@ def test_generate_figures_node_accepts_empty_parts_db(tmp_path: Path, monkeypatc
     updates = node(state)
 
     assert updates["status"] == "running"
-    assert updates["report_json"]["ai_title"] == "ok"
-    assert updates["report_json"]["figure_explanations"] == [{"figure": "fig1"}]
+    assert updates["analysis_json"]["ai_title"] == "ok"
+    assert updates["analysis_json"]["figure_explanations"] == [{"figure": "fig1"}]

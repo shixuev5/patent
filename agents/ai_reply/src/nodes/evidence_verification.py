@@ -9,8 +9,8 @@ from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
-from agents.office_action_reply.src.utils import get_node_cache
-from agents.office_action_reply.src.state import EvidenceAssessment
+from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.state import EvidenceAssessment
 
 
 class EvidenceVerificationNode:

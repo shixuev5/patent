@@ -40,7 +40,7 @@ export interface TaskSubmitResult {
 }
 
 const normalizeTaskType = (taskType?: string): TaskType => {
-  if (taskType === 'office_action_reply') return 'office_action_reply'
+  if (taskType === 'ai_reply') return 'ai_reply'
   if (taskType === 'ai_review') return 'ai_review'
   return 'patent_analysis'
 }
@@ -442,7 +442,7 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     getTaskPointCost(usage: UsageResponse, taskType: TaskType): number {
-      const raw = taskType === 'office_action_reply'
+      const raw = taskType === 'ai_reply'
         ? usage.costPerTask.officeActionReply
         : taskType === 'ai_review'
           ? usage.costPerTask.aiReview
@@ -470,7 +470,7 @@ export const useTaskStore = defineStore('tasks', {
       const nextCreatedToday = {
         analysisCount: (currentUsage.createdToday.analysisCount || 0) + (taskType === 'patent_analysis' ? 1 : 0),
         reviewCount: (currentUsage.createdToday.reviewCount || 0) + (taskType === 'ai_review' ? 1 : 0),
-        replyCount: (currentUsage.createdToday.replyCount || 0) + (taskType === 'office_action_reply' ? 1 : 0),
+        replyCount: (currentUsage.createdToday.replyCount || 0) + (taskType === 'ai_reply' ? 1 : 0),
         totalCount: (currentUsage.createdToday.totalCount || 0) + 1,
       }
 
@@ -508,7 +508,7 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     applyUsagePointLimitNotice(usage: UsageResponse, taskType: TaskType) {
-      const requiredPoints = taskType === 'office_action_reply'
+      const requiredPoints = taskType === 'ai_reply'
         ? usage.costPerTask.officeActionReply
         : taskType === 'ai_review'
           ? usage.costPerTask.aiReview
@@ -906,7 +906,7 @@ export const useTaskStore = defineStore('tasks', {
         link.href = downloadUrl
         link.target = '_blank'
         link.rel = 'noopener'
-        link.download = task.taskType === 'office_action_reply'
+        link.download = task.taskType === 'ai_reply'
           ? `AI 答复报告_${task.backendId || task.id}.pdf`
           : task.taskType === 'ai_review'
             ? `AI 审查报告_${task.pn || task.title}.pdf`

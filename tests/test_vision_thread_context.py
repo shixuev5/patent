@@ -20,7 +20,7 @@ def _import_vision_module():
         fake_module.PaddleOCR = DummyPaddleOCR
         sys.modules["paddleocr"] = fake_module
 
-    return importlib.import_module("agents.patent_analysis.src.engines.vision")
+    return importlib.import_module("agents.common.patent_engines.vision")
 
 
 def test_extract_image_labels_workers_keep_task_usage_context(monkeypatch, tmp_path: Path):

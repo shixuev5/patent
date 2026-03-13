@@ -1,4 +1,4 @@
-export type TaskType = 'patent_analysis' | 'ai_review' | 'office_action_reply';
+export type TaskType = 'patent_analysis' | 'ai_review' | 'ai_reply';
 
 export interface Task {
   id: string;
@@ -27,7 +27,7 @@ export type CreateTaskInput =
       file?: File;
     }
   | {
-      taskType: 'office_action_reply';
+      taskType: 'ai_reply';
       officeActionFile: File;
       responseFile: File;
       claimsFile?: File;

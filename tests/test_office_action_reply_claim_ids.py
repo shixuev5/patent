@@ -1,5 +1,5 @@
-from agents.office_action_reply.src.nodes.dispute_extraction import DisputeExtractionNode
-from agents.office_action_reply.src.nodes.report_generation import ReportGenerationNode
+from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
+from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
 
 
 def test_dispute_extraction_normalize_claim_ids() -> None:

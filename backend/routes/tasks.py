@@ -47,7 +47,7 @@ PROGRESS_WRITE_THROTTLE_SECONDS = 3.0
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.AI_REVIEW.value,
-    TaskType.OFFICE_ACTION_REPLY.value,
+    TaskType.AI_REPLY.value,
 }
 
 NODE_LABELS = {
@@ -154,8 +154,9 @@ def _normalize_task_type(raw: Optional[str]) -> str:
 
 
 def _task_type(task: Any) -> str:
-    if getattr(task, "task_type", "") in ALLOWED_TASK_TYPES:
-        return str(task.task_type)
+    raw_task_type = str(getattr(task, "task_type", "")).strip().lower()
+    if raw_task_type in ALLOWED_TASK_TYPES:
+        return raw_task_type
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     metadata_type = str(metadata.get("task_type", "")).strip().lower()
     if metadata_type in ALLOWED_TASK_TYPES:
@@ -268,7 +269,7 @@ def _build_analysis_json_payload(
     task_id: str,
     input_sha256: Optional[str],
     report_core_json: Optional[Dict[str, Any]],
-    report_json: Optional[Dict[str, Any]],
+    analysis_json: Optional[Dict[str, Any]],
     search_json: Optional[Dict[str, Any]],
     parts_db: Optional[Dict[str, Any]],
     image_parts: Optional[Dict[str, Any]],
@@ -277,7 +278,7 @@ def _build_analysis_json_payload(
 ) -> Dict[str, Any]:
     return {
         "metadata": {
-            "schema_version": "analysis.v1",
+            "版本号": "analysis.v1",
             "created_at": _iso_now(),
             "app_version": str(VERSION),
             "task_type": TaskType.PATENT_ANALYSIS.value,
@@ -286,7 +287,7 @@ def _build_analysis_json_payload(
             "input_sha256": str(input_sha256 or "").strip() or None,
         },
         "report_core": report_core_json or {},
-        "report": report_json or {},
+        "report": analysis_json or {},
         "search_strategy": search_json or {},
         "parts": parts_db or {},
         "image_parts": image_parts or {},
@@ -624,7 +625,7 @@ async def run_patent_analysis_task(
                 task_id=task_id,
                 input_sha256=input_sha256,
                 report_core_json=_to_dict(result.get("report_core_json")),
-                report_json=_to_dict(result.get("report_json")),
+                analysis_json=_to_dict(result.get("analysis_json")),
                 search_json=_to_dict(result.get("search_json")),
                 parts_db=_to_dict(result.get("parts_db")),
                 image_parts=_to_dict(result.get("image_parts")),
@@ -1055,19 +1056,19 @@ async def run_ai_review_task(
         AI_REVIEW_CHECKPOINTERS.pop(task_id, None)
 
 
-async def run_office_action_reply_task(
+async def run_ai_reply_task(
     task_id: str,
     input_files: List[Dict[str, str]],
     cancel_event: Optional[Event] = None,
 ):
     """后台执行 AI 答复流程。"""
-    task_logger = bind_task_logger(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-", stage="run_office_action_reply_task")
+    task_logger = bind_task_logger(task_id, TaskType.AI_REPLY.value, pn="-", stage="run_ai_reply_task")
     task_snapshot = task_manager.get_task(task_id)
     owner_id = getattr(task_snapshot, "owner_id", "") or ""
     usage_collector = create_task_usage_collector(
         task_id=task_id,
         owner_id=owner_id,
-        task_type=TaskType.OFFICE_ACTION_REPLY.value,
+        task_type=TaskType.AI_REPLY.value,
     )
     try:
         task_logger.info("开始处理任务")
@@ -1077,7 +1078,7 @@ async def run_office_action_reply_task(
             event_name="task_started",
             owner_id=owner_id,
             task_id=task_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            task_type=TaskType.AI_REPLY.value,
             success=True,
             message="AI 答复任务开始执行",
             payload={"input_file_count": len(input_files)},
@@ -1087,9 +1088,9 @@ async def run_office_action_reply_task(
         loop = asyncio.get_event_loop()
 
         def run_workflow() -> Dict[str, Any]:
-            from agents.office_action_reply.main import create_workflow
-            from agents.office_action_reply.main import build_runtime_config
-            from agents.office_action_reply.src.state import WorkflowConfig, WorkflowState, InputFile
+            from agents.ai_reply.main import create_workflow
+            from agents.ai_reply.main import build_runtime_config
+            from agents.ai_reply.src.state import WorkflowConfig, WorkflowState, InputFile
 
             output_dir = settings.OUTPUT_DIR / task_id
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1098,7 +1099,7 @@ async def run_office_action_reply_task(
                 cache_dir=str(output_dir / ".cache"),
                 pdf_parser=os.getenv("PDF_PARSER", "local"),
                 enable_checkpoint=True,
-                checkpoint_ns="office_action_reply",
+                checkpoint_ns=TaskType.AI_REPLY.value,
                 checkpointer=_get_oar_checkpointer(task_id),
             )
 
@@ -1120,7 +1121,7 @@ async def run_office_action_reply_task(
 
             workflow = create_workflow(config)
             runtime_config = build_runtime_config(task_id, checkpoint_ns=config.checkpoint_ns)
-            with task_log_context(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-"), task_usage_collection(usage_collector):
+            with task_log_context(task_id, TaskType.AI_REPLY.value, pn="-"), task_usage_collection(usage_collector):
                 last_state: Dict[str, Any] = _to_dict(initial_state)
                 last_progress = -1
                 last_step = ""
@@ -1158,7 +1159,7 @@ async def run_office_action_reply_task(
                                 event_name="task_progress",
                                 owner_id=owner_id,
                                 task_id=task_id,
-                                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                                task_type=TaskType.AI_REPLY.value,
                                 success=True,
                                 message=f"progress={progress} step={step_label}",
                                 payload={
@@ -1186,7 +1187,7 @@ async def run_office_action_reply_task(
                 event_name="task_cancelled",
                 owner_id=owner_id,
                 task_id=task_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                task_type=TaskType.AI_REPLY.value,
                 success=False,
                 message="任务已取消",
             )
@@ -1207,7 +1208,7 @@ async def run_office_action_reply_task(
                 event_name="task_failed",
                 owner_id=owner_id,
                 task_id=task_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                task_type=TaskType.AI_REPLY.value,
                 success=False,
                 message=error_msg,
                 payload={"status": status},
@@ -1243,7 +1244,7 @@ async def run_office_action_reply_task(
             event_name="task_completed",
             owner_id=owner_id,
             task_id=task_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            task_type=TaskType.AI_REPLY.value,
             success=True,
             message="任务执行完成",
             payload={"output_pdf": pdf_path},
@@ -1258,7 +1259,7 @@ async def run_office_action_reply_task(
             event_name="task_cancelled",
             owner_id=owner_id,
             task_id=task_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            task_type=TaskType.AI_REPLY.value,
             success=False,
             message="任务被 asyncio 取消",
         )
@@ -1273,7 +1274,7 @@ async def run_office_action_reply_task(
             event_name="task_timeout",
             owner_id=owner_id,
             task_id=task_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            task_type=TaskType.AI_REPLY.value,
             success=False,
             message=error_msg,
         )
@@ -1287,7 +1288,7 @@ async def run_office_action_reply_task(
                 event_name="task_cancelled",
                 owner_id=owner_id,
                 task_id=task_id,
-                task_type=TaskType.OFFICE_ACTION_REPLY.value,
+                task_type=TaskType.AI_REPLY.value,
                 success=False,
                 message="异常分支检测到任务已取消",
             )
@@ -1300,7 +1301,7 @@ async def run_office_action_reply_task(
             event_name="task_exception",
             owner_id=owner_id,
             task_id=task_id,
-            task_type=TaskType.OFFICE_ACTION_REPLY.value,
+            task_type=TaskType.AI_REPLY.value,
             success=False,
             message=str(exc),
         )
@@ -1512,7 +1513,7 @@ async def create_task(
         cancel_event = Event()
         RUNNING_TASKS[task.id] = cancel_event
         workflow_task = asyncio.create_task(
-            run_office_action_reply_task(
+            run_ai_reply_task(
                 task.id,
                 input_files,
                 cancel_event=cancel_event,
@@ -1619,7 +1620,7 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     task_type = _task_type(task)
     output_files = task.metadata.get("output_files", {}) if task.metadata else {}
 
-    if task_type == TaskType.OFFICE_ACTION_REPLY.value:
+    if task_type == TaskType.AI_REPLY.value:
         filename = f"AI 答复报告_{task_id}.pdf"
     elif task_type == TaskType.AI_REVIEW.value:
         filename = f"AI 审查报告_{task.pn or task_id}.pdf"
@@ -1655,7 +1656,7 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     pdf_path_str = output_files.get("pdf")
     if pdf_path_str:
         pdf_path = Path(pdf_path_str)
-    elif task_type == TaskType.OFFICE_ACTION_REPLY.value:
+    elif task_type == TaskType.AI_REPLY.value:
         pdf_path = Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "final_report.pdf"
     else:
         artifact_name = task.pn or task_id

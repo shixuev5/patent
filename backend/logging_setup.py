@@ -52,8 +52,8 @@ def _inject_utc8_time(record: Dict[str, Any]) -> None:
 def _agent_component_from_name(name: str) -> str:
     """
     Build a short and stable component tag from module path.
-    e.g. agents.office_action_reply.src.nodes.document_processing
-      -> office_action_reply.document_processing
+    e.g. agents.ai_reply.src.nodes.document_processing
+      -> ai_reply.document_processing
     """
     parts = (name or "").split(".")
     if len(parts) < 2 or parts[0] != "agents":

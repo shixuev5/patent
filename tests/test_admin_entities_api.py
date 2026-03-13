@@ -73,7 +73,7 @@ def _seed_tasks(storage: SQLiteTaskStorage):
         Task(
             id="task-2",
             owner_id="authing:user-2",
-            task_type="office_action_reply",
+            task_type="ai_reply",
             title="答复任务B",
             status=TaskStatus.PROCESSING,
             progress=40,
@@ -142,7 +142,7 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
         admin_entities.get_admin_entity_tasks(
             q=None,
             userName="李",
-            taskType="office_action_reply",
+            taskType="ai_reply",
             status="processing",
             dateFrom=None,
             dateTo=None,
@@ -166,9 +166,9 @@ def test_admin_entities_users_and_tasks(monkeypatch, tmp_path):
         )
     )
     windows = {item["taskType"]: item for item in task_stats.taskTypeWindows}
-    assert windows["office_action_reply"]["count1d"] == 0
-    assert windows["office_action_reply"]["count7d"] == 1
-    assert windows["office_action_reply"]["count30d"] == 1
+    assert windows["ai_reply"]["count1d"] == 0
+    assert windows["ai_reply"]["count7d"] == 1
+    assert windows["ai_reply"]["count30d"] == 1
     assert windows["patent_analysis"]["count1d"] == 1
     assert windows["patent_analysis"]["count7d"] == 1
     assert windows["patent_analysis"]["count30d"] == 2

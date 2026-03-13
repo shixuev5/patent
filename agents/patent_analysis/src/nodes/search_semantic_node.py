@@ -23,19 +23,19 @@ class SearchSemanticNode(BaseNode):
         paths, path_objs = ensure_pipeline_paths(state)
 
         patent_data = item_get(state, "patent_data", None)
-        report_json = item_get(state, "report_json", None)
+        analysis_json = item_get(state, "analysis_json", None)
 
         if patent_data is None and path_objs["patent_json"].exists():
             patent_data = read_json(path_objs["patent_json"])
-        if report_json is None and path_objs["report_json"].exists():
-            loaded_payload = read_json(path_objs["report_json"])
+        if analysis_json is None and path_objs["analysis_json"].exists():
+            loaded_payload = read_json(path_objs["analysis_json"])
             if isinstance(loaded_payload, dict) and isinstance(loaded_payload.get("report"), dict):
-                report_json = loaded_payload.get("report")
+                analysis_json = loaded_payload.get("report")
             else:
-                report_json = loaded_payload
+                analysis_json = loaded_payload
 
-        if not patent_data or not report_json:
-            raise RuntimeError("search_semantic 阶段缺少 patent_data 或 report_json")
+        if not patent_data or not analysis_json:
+            raise RuntimeError("search_semantic 阶段缺少 patent_data 或 analysis_json")
 
         if path_objs["search_strategy_json"].exists():
             existing = read_json(path_objs["search_strategy_json"])
@@ -50,7 +50,7 @@ class SearchSemanticNode(BaseNode):
         cache_file = get_node_cache_file(self.config.cache_dir, self.node_name)
         cache = StepCache(cache_file)
 
-        generator = SearchStrategyGenerator(patent_data, report_json)
+        generator = SearchStrategyGenerator(patent_data, analysis_json)
         semantic_strategy = cache.run_step(
             "semantic_strategy_v1", generator.build_semantic_strategy
         )
