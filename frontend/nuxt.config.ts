@@ -43,7 +43,7 @@ export default defineNuxtConfig({
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'description', content: 'aipatents.cn AI 专利审查助手，通过 AI 分析、AI 研判、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。' },
+        { name: 'description', content: 'aipatents.cn AI 专利审查助手，通过 AI 分析、AI 答复、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。' },
         { name: 'theme-color', content: '#2563EB' },
         { name: 'mobile-web-app-capable', content: 'yes' },
         { name: 'apple-mobile-web-app-capable', content: 'yes' },
@@ -70,7 +70,7 @@ export default defineNuxtConfig({
       id: '/',
       name: 'AI Patents - AI 专利审查助手',
       short_name: 'AI Patents',
-      description: 'aipatents.cn AI 专利审查助手，通过 AI 分析、AI 研判、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。',
+      description: 'aipatents.cn AI 专利审查助手，通过 AI 分析、AI 答复、AI 检索、AI 撰写协同，让审查员从 Pull 走向 Push，聚焦高价值方向与结果判断。',
       lang: 'zh-CN',
       start_url: '/',
       scope: '/',

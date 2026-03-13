@@ -1,5 +1,5 @@
 """
-专利审查意见答复辅助Agent入口
+专利 AI 答复辅助Agent入口
 使用LangGraph实现工作流编排
 """
 
@@ -201,7 +201,7 @@ def setup_logging(log_dir: str = None):
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="专利审查意见答复辅助Agent")
+    parser = argparse.ArgumentParser(description="专利 AI 答复辅助Agent")
     parser.add_argument("--office-action", help="审查意见通知书文件路径 (PDF或Word格式)")
     parser.add_argument("--response", help="意见陈述书文件路径 (PDF或Word格式)")
     parser.add_argument("--claims", help="权利要求书文件路径 (PDF或Word格式)")

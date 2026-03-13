@@ -82,7 +82,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     )
 
     lines: List[str] = []
-    lines.append("# 审查意见答复最终报告")
+    lines.append("# AI 答复最终报告")
     lines.append("")
 
     lines.append("## 1. 核心结论卡片")

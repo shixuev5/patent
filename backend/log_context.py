@@ -10,7 +10,7 @@ from loguru import logger
 
 TASK_TYPE_LABELS = {
     "patent_analysis": "AI 分析",
-    "office_action_reply": "AI 研判",
+    "office_action_reply": "AI 答复",
     "ai_review": "AI 审查",
 }
 

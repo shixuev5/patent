@@ -1,5 +1,5 @@
 """
-专利分析 Agent 入口（LangGraph）
+AI 分析 Agent 入口（LangGraph）
 """
 
 from __future__ import annotations
@@ -171,7 +171,7 @@ def _to_dict(value: Any) -> Dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="专利分析 LangGraph 流程")
+    parser = argparse.ArgumentParser(description="AI 分析 LangGraph 流程")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pn", help="单个专利号")
     group.add_argument("--upload-file", help="上传的专利 PDF 路径")
@@ -229,7 +229,7 @@ def main() -> int:
         return 1
     finally:
         workflow_elapsed = perf_counter() - workflow_start
-        task_logger.info(f"专利分析工作流总耗时: {workflow_elapsed:.3f}s")
+        task_logger.info(f"AI 分析工作流总耗时: {workflow_elapsed:.3f}s")
 
     result_dict = _to_dict(result)
     status = str(result_dict.get("status", "failed") or "failed").lower()

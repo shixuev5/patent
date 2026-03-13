@@ -105,7 +105,7 @@ class ContentGenerator:
         生成不包含附图讲解的核心分析结果。
         """
         logger.info(
-            f"开始生成专利分析核心报告: {self.biblio.get('application_number', '未知')}"
+            f"开始生成 AI 分析核心报告: {self.biblio.get('application_number', '未知')}"
         )
 
         try:
@@ -159,7 +159,7 @@ class ContentGenerator:
                 verification_data=verification_data,
             )
 
-            logger.success("专利分析核心 JSON 生成完成")
+            logger.success("AI 分析核心 JSON 生成完成")
             return final_report
 
         except Exception as e:
@@ -193,7 +193,7 @@ class ContentGenerator:
             figures_data = self.generate_figure_explanations(report_core_json)
             final_report = dict(report_core_json)
             final_report["figure_explanations"] = figures_data
-            logger.success("专利分析 JSON 生成完成")
+            logger.success("AI 分析 JSON 生成完成")
             return final_report
         except Exception as e:
             logger.error(f"生成附图讲解过程中发生错误: {str(e)}")

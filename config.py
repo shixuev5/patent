@@ -115,8 +115,8 @@ class Settings:
             "parts_json": project_root / "parts.json",  # 部件数据
             "image_parts_json": project_root / "image_parts.json",  # 图片部件数据
             "check_json": project_root / "check.json",  # 专利 AI 审查
-            "report_json": project_root / "analysis.json",  # 专利分析报告数据
-            "analysis_json": project_root / "analysis.json",  # 专利分析报告数据（新命名）
+            "report_json": project_root / "analysis.json",  # AI 分析报告数据
+            "analysis_json": project_root / "analysis.json",  # AI 分析报告数据（新命名）
             "search_strategy_json": project_root / "search_strategy.json",  # 检索策略数据
 
             # 最终产物

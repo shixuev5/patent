@@ -36,21 +36,21 @@
         >
           AI 分析
         </button>
-        <button
+        <!-- <button
           type="button"
           class="rounded-xl px-4 py-2 text-sm font-semibold transition"
           :class="mode === 'ai_review' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
           @click="mode = 'ai_review'"
         >
           AI 审查
-        </button>
+        </button> -->
         <button
           type="button"
           class="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold transition"
           :class="mode === 'office_action_reply' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
           @click="mode = 'office_action_reply'"
         >
-          AI 研判
+          AI 答复
           <span class="ml-1.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium leading-none text-slate-500">Beta</span>
         </button>
       </div>
@@ -67,7 +67,7 @@
             :style="{ width: `${pointUsagePercent}%` }"
           />
         </div>
-        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 审查 1 点 · AI 研判 2 点</p>
+        <p class="mt-2 text-[11px] text-slate-500">AI 分析 1 点 · AI 审查 1 点 · AI 答复 2 点</p>
       </div>
 
       <div
@@ -197,7 +197,7 @@
           @click="submitOfficeActionTask"
         >
           <span v-if="loading">提交中...</span>
-          <span v-else>创建 AI 研判任务</span>
+          <span v-else>创建 AI 答复任务</span>
         </button>
       </div>
     </section>
@@ -283,13 +283,13 @@ const modeDescription = computed(() => {
   if (mode.value === 'ai_review') {
     return '统一创建 AI 审查任务，优先复用已分析数据，输出独立的 AI 审查报告。'
   }
-  return '统一创建 AI 研判任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的审查意见答复研判报告。'
+  return '统一创建 AI 答复任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的 AI 答复研判报告。'
 })
 
 const modeTitle = computed(() => {
   if (mode.value === 'patent_analysis') return 'AI 分析'
   if (mode.value === 'ai_review') return 'AI 审查'
-  return 'AI 研判（Beta）'
+  return 'AI 答复（Beta）'
 })
 
 const isSupportedDoc = (file: File): boolean => {
@@ -425,7 +425,7 @@ const submitOfficeActionTask = async () => {
       if (responseInput.value) responseInput.value.value = ''
       if (claimsInput.value) claimsInput.value.value = ''
       if (comparisonInput.value) comparisonInput.value.value = ''
-      taskStore.showGlobalNotice('success', result.message || 'AI 研判任务已创建，正在处理。')
+      taskStore.showGlobalNotice('success', result.message || 'AI 答复任务已创建，正在处理。')
     } else {
       if (result.errorCode === 'DAILY_POINTS_EXCEEDED') taskStore.showGlobalNotice('info', result.error || '今日积分不足。')
       else taskStore.showGlobalNotice('error', result.error || '任务创建失败，请重试。')

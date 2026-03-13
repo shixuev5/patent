@@ -634,7 +634,7 @@ export const useTaskStore = defineStore('tasks', {
         taskType: input.taskType,
         title: isPatentLike
           ? input.patentNumber || input.file?.name || '未命名任务'
-          : input.officeActionFile.name || '审查意见答复任务',
+          : input.officeActionFile.name || 'AI 答复任务',
         pn: isPatentLike ? input.patentNumber?.trim() || undefined : undefined,
         status: 'pending',
         progress: 0,
@@ -907,10 +907,10 @@ export const useTaskStore = defineStore('tasks', {
         link.target = '_blank'
         link.rel = 'noopener'
         link.download = task.taskType === 'office_action_reply'
-          ? `审查意见答复报告_${task.backendId || task.id}.pdf`
+          ? `AI 答复报告_${task.backendId || task.id}.pdf`
           : task.taskType === 'ai_review'
             ? `AI 审查报告_${task.pn || task.title}.pdf`
-            : `专利分析报告_${task.pn || task.title}.pdf`
+            : `AI 分析报告_${task.pn || task.title}.pdf`
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)

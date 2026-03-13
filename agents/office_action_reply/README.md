@@ -2,7 +2,7 @@
 
 ## 1. 模块定位
 
-`office_action_reply` 是一个基于 LangGraph 的审查意见答复辅助工作流，目标是：
+`office_action_reply` 是一个基于 LangGraph 的 AI 答复辅助工作流，目标是：
 
 1. 解析审查意见通知书、意见陈述书、权利要求书、对比文件。
 2. 识别争辩焦点并分流到不同核查路径。

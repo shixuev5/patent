@@ -42,9 +42,9 @@ class PipelineTaskManager:
         task_id = str(uuid.uuid4())[:8]
 
         if not title and pn:
-            title = f"专利分析任务 - {pn}"
+            title = f"AI 分析任务 - {pn}"
         elif not title:
-            title = f"专利分析任务 - {task_id}"
+            title = f"AI 分析任务 - {task_id}"
 
         output_dir = str(settings.OUTPUT_DIR / task_id)
 
@@ -124,7 +124,7 @@ class PipelineTaskManager:
                 if analysis_pn and task and str(task.task_type) == TaskType.PATENT_ANALYSIS.value:
                     self.storage.record_patent_analysis(analysis_pn)
             except Exception as exc:
-                logger.warning(f"记录专利分析统计失败（{task_id}）：{exc}")
+                logger.warning(f"记录 AI 分析统计失败（{task_id}）：{exc}")
             logger.info(f"任务已完成：{task_id}")
         return success
 

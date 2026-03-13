@@ -59,7 +59,7 @@ def _seed_tasks(storage: SQLiteTaskStorage):
             id="task-1",
             owner_id="authing:user-1",
             task_type="patent_analysis",
-            title="专利分析任务A",
+            title="AI 分析任务A",
             status=TaskStatus.COMPLETED,
             progress=100,
             current_step="done",

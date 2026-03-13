@@ -124,7 +124,7 @@ class ReportRenderer:
         顺序：AI标题 -> 摘要 -> 主图 -> 技术问题 -> 技术手段(含特征) -> 技术效果 -> 图解说明
         """
         lines = []
-        title = self._safe_text(data.get("ai_title"), "未命名专利分析报告")
+        title = self._safe_text(data.get("ai_title"), "未命名 AI 分析报告")
         lines.append(f"# {title}\n")
 
         lines.append("## 摘要")

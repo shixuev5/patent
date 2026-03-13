@@ -16,7 +16,7 @@
 
           <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
             产品按审查员工作链路设计，让审查员从信息拉取转向方向与结果判断。
-            当前工作链重点由 AI 分析与 AI 研判驱动，并通过 AI 检索与 AI 撰写形成完整协同闭环。
+            当前工作链重点由 AI 分析与 AI 答复驱动，并通过 AI 检索与 AI 撰写形成完整协同闭环。
           </p>
 
           <div class="mt-5 flex flex-wrap gap-3">
@@ -38,7 +38,7 @@
             <div class="orbit-node orbit-top orbit-strong">AI 分析</div>
             <div class="orbit-node orbit-left orbit-soft">AI 检索</div>
             <div class="orbit-node orbit-right orbit-soft">AI 撰写</div>
-            <div class="orbit-node orbit-bottom orbit-strong">AI 研判</div>
+            <div class="orbit-node orbit-bottom orbit-strong">AI 答复</div>
 
             <div class="center-avatar">
               <div class="avatar-icon" aria-hidden="true">
@@ -159,7 +159,7 @@ const phaseCards = [
     stage: '阶段4',
     title: '审查裁决',
     stageDescription: '聚焦方向与结果判断，提升结论一致性。',
-    capability: 'AI 研判',
+    capability: 'AI 答复',
     capabilityDescription: '归纳结论与依据，支撑高价值裁决。',
     soft: false,
   },

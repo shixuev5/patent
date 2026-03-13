@@ -78,12 +78,6 @@ class VisualProcessor:
             self.ocr_engine = None
             self._ocr_engine_lock = None
 
-    def process_patent_images(self) -> Dict[str, List[str]]:
-        """兼容入口：先做识别，再做标注。"""
-        image_parts, image_labels = self.extract_image_labels()
-        self.annotate_from_image_labels(image_labels)
-        return image_parts
-
     def extract_image_labels(self) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict[str, Any]]]]:
         """提取图片中的部件标号与可视化标签 (按引擎类型动态调度架构)。"""
         target_filenames = self._extract_target_filenames()
@@ -342,9 +336,6 @@ class VisualProcessor:
         
         return f"""你是专利视觉审查专家。你的核心任务是对专利附图进行【分类审查】，并结合【说明书部件库】和【初筛OCR结果】，提取图片中真实存在的【附图标记】。
 
-【说明书部件库 (Ground Truth)】（请牢记以下部件）：
-{parts_context}
-
 【任务1：专利图纸分类判断 (image_type)】
 你必须先判断当前图片的类型：
 1. structure: 机械/结构图纸。特征是有实物轮廓、剖面线、带【引出线】的数字标号。
@@ -355,9 +346,11 @@ class VisualProcessor:
 
 【任务2：提取附图标记原则】
 - 优先提取【说明书部件库】中出现过的标号并修正坐标。
-- 真正的物理零部件标记通常带有【引出线】。
-- 【严格排除（任何情况都不要提取）】：图名（如 FIG.1, 图2）、正文段落文字、尺寸标注（10mm, R5）、剖面线字母（A-A）。
+- 【说明书部件库】是该专利的全局字典，而当前输入的单张图片通常【只包含其中的一小部分】。你必须基于视觉真实所见进行提取，如果图中根本没有某个标号，【绝对不要】为了迎合部件库而强行捏造或脑补它的坐标！
+- 真正的物理零部件标记通常带有【引出线】（引出线形式包括：平滑曲线、折线、带实心/空心箭头的指示线）。请仔细甄别，不要将带箭头的零部件引出线误判为尺寸标注。
+- 【严格排除（任何情况都不要提取）】：图名（如 FIG.1, 图2）、正文段落文字、尺寸标注（10mm, R5）、剖面线字母（A-A）、表示运动或视角方向的大箭头旁边的编号。
 - 【极度危险警告】：如果你判断图纸类型为 `chart_graph`，则图中的坐标刻度（如 10, 100, 500）、等高线数值、时间轴数值【绝对不是附图标记】！此时你的 marks 数组必须输出为空 `[]`，不可产生AI 审查误报。
+- 【终极核对】：在输出前，请务必再次全局扫描图片，特别是图形中央和线条密集区。
 - 仅提取标号本身，不要带上中文名称。
 
 【输出格式要求】：
@@ -369,6 +362,10 @@ class VisualProcessor:
         {{"text": "10", "box":[xmin, ymin, xmax, ymax]}}
     ]
 }}
+
+===================
+【说明书部件库 (Ground Truth)】（动态注入内容，请牢记以下部件并在图中重点寻找）：
+{parts_context}
 """
 
     @staticmethod

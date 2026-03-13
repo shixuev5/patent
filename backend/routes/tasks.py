@@ -382,7 +382,7 @@ async def run_patent_analysis_task(
     input_sha256: Optional[str] = None,
     cancel_event: Optional[Event] = None,
 ):
-    """后台执行专利分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
+    """后台执行 AI 分析 LangGraph 流程，并在成功后按需写入对象存储缓存。"""
     task_logger = bind_task_logger(task_id, TaskType.PATENT_ANALYSIS.value, pn=pn, stage="run_patent_analysis_task")
     task_snapshot = task_manager.get_task(task_id)
     owner_id = getattr(task_snapshot, "owner_id", "") or ""
@@ -437,7 +437,7 @@ async def run_patent_analysis_task(
             task_id=task_id,
             task_type=TaskType.PATENT_ANALYSIS.value,
             success=True,
-            message="专利分析任务开始执行",
+            message="AI 分析任务开始执行",
             payload={"pn": pn or None},
         )
         task_manager.update_progress(task_id, 5, "正在准备材料")
@@ -570,7 +570,7 @@ async def run_patent_analysis_task(
             first_error = ""
             if isinstance(errors, list) and errors:
                 first_error = str(_to_dict(errors[0]).get("error_message", "")).strip()
-            error_msg = first_error or "专利分析任务执行失败"
+            error_msg = first_error or "AI 分析任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
             task_logger.error(f"任务失败：{error_msg}")
@@ -1060,7 +1060,7 @@ async def run_office_action_reply_task(
     input_files: List[Dict[str, str]],
     cancel_event: Optional[Event] = None,
 ):
-    """后台执行审查意见答复流程。"""
+    """后台执行 AI 答复流程。"""
     task_logger = bind_task_logger(task_id, TaskType.OFFICE_ACTION_REPLY.value, pn="-", stage="run_office_action_reply_task")
     task_snapshot = task_manager.get_task(task_id)
     owner_id = getattr(task_snapshot, "owner_id", "") or ""
@@ -1079,7 +1079,7 @@ async def run_office_action_reply_task(
             task_id=task_id,
             task_type=TaskType.OFFICE_ACTION_REPLY.value,
             success=True,
-            message="审查意见答复任务开始执行",
+            message="AI 答复任务开始执行",
             payload={"input_file_count": len(input_files)},
         )
         task_manager.update_progress(task_id, 5, "正在准备材料")
@@ -1198,7 +1198,7 @@ async def run_office_action_reply_task(
             first_error = ""
             if isinstance(errors, list) and errors:
                 first_error = str(_to_dict(errors[0]).get("error_message", "")).strip()
-            error_msg = first_error or "审查意见答复任务执行失败"
+            error_msg = first_error or "AI 答复任务执行失败"
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
             task_logger.error(f"任务失败：{error_msg}")
@@ -1264,7 +1264,7 @@ async def run_office_action_reply_task(
         )
         raise
     except asyncio.TimeoutError:
-        error_msg = f"审查意见答复任务超时（>{settings.OAR_WORKFLOW_TIMEOUT_SECONDS}秒）"
+        error_msg = f"AI 答复任务超时（>{settings.OAR_WORKFLOW_TIMEOUT_SECONDS}秒）"
         task_logger.error(error_msg)
         task_manager.fail_task(task_id, error_msg)
         latest_task = task_manager.get_task(task_id)
@@ -1358,7 +1358,7 @@ async def create_task(
             task_id=task.id,
             task_type=task_type,
             success=True,
-            message="创建专利分析任务" if task_type == TaskType.PATENT_ANALYSIS.value else "创建 AI 审查任务",
+            message="创建 AI 分析任务" if task_type == TaskType.PATENT_ANALYSIS.value else "创建 AI 审查任务",
             payload={
                 "pn": pn,
                 "has_upload_file": bool(file),
@@ -1426,7 +1426,7 @@ async def create_task(
             raise HTTPException(status_code=500, detail="任务创建失败，请稍后重试。") from exc
 
     if not officeActionFile or not responseFile:
-        raise HTTPException(status_code=400, detail="审查意见答复任务必须上传审查意见通知书和意见陈述书。")
+        raise HTTPException(status_code=400, detail="AI 答复任务必须上传审查意见通知书和意见陈述书。")
 
     _validate_file_suffix(officeActionFile, {".pdf", ".docx"}, "审查意见通知书")
     _validate_file_suffix(responseFile, {".pdf", ".docx"}, "意见陈述书")
@@ -1439,7 +1439,7 @@ async def create_task(
         owner_id=current_user.user_id,
         task_type=task_type,
         pn=None,
-        title=f"审查意见答复任务 - {officeActionFile.filename or '未命名文件'}",
+        title=f"AI 答复任务 - {officeActionFile.filename or '未命名文件'}",
     )
     emit_system_log(
         category="task_execution",
@@ -1448,7 +1448,7 @@ async def create_task(
         task_id=task.id,
         task_type=task_type,
         success=True,
-        message="创建审查意见答复任务",
+        message="创建 AI 答复任务",
         payload={
             "office_action_file": officeActionFile.filename,
             "response_file": responseFile.filename,
@@ -1523,7 +1523,7 @@ async def create_task(
         return TaskResponse(
             taskId=task.id,
             status="pending",
-            message="审查意见答复任务已创建并开始处理。",
+            message="AI 答复任务已创建并开始处理。",
         )
     except HTTPException as exc:
         _best_effort_fail_task(task.id, f"任务创建失败：{exc.detail}")
@@ -1620,11 +1620,11 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     output_files = task.metadata.get("output_files", {}) if task.metadata else {}
 
     if task_type == TaskType.OFFICE_ACTION_REPLY.value:
-        filename = f"审查意见答复报告_{task_id}.pdf"
+        filename = f"AI 答复报告_{task_id}.pdf"
     elif task_type == TaskType.AI_REVIEW.value:
         filename = f"AI 审查报告_{task.pn or task_id}.pdf"
     else:
-        filename = f"专利分析报告_{task.pn or task_id}.pdf"
+        filename = f"AI 分析报告_{task.pn or task_id}.pdf"
 
     r2_key = output_files.get("r2_key")
     r2_storage = _build_r2_storage()

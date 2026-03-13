@@ -1,5 +1,5 @@
 """
-专利分析后端 API 主应用入口
+AI 分析后端 API 主应用入口
 """
 import os
 
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
 from config import VERSION
 
 app = FastAPI(
-    title="专利分析 API",
+    title="AI 分析 API",
     description="提供任务创建、进度追踪和报告下载能力。",
     version=VERSION,
     lifespan=lifespan,
