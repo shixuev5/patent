@@ -3,6 +3,7 @@ import base64
 import json
 import time
 from typing import Optional, List, Dict, Any, Callable
+from urllib.parse import urlsplit
 
 from openai import OpenAI
 from loguru import logger
@@ -65,6 +66,8 @@ class LLMService:
         """
         final_api_key = api_key or settings.LLM_API_KEY
         final_base_url = base_url or settings.LLM_BASE_URL
+        self._text_interface = self._build_interface_fields(final_base_url)
+        self._vision_interface = self._build_interface_fields(settings.VLM_BASE_URL)
 
         # 文本模型客户端
         self.text_client = OpenAI(api_key=final_api_key, base_url=final_base_url)
@@ -73,6 +76,35 @@ class LLMService:
         self.vlm_client = OpenAI(
             api_key=settings.VLM_API_KEY, base_url=settings.VLM_BASE_URL
         )
+
+    @staticmethod
+    def _build_interface_fields(base_url: Optional[str]) -> Dict[str, Optional[str]]:
+        raw_base_url = str(base_url or "").strip()
+        default_fields = {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "target_host": None,
+        }
+        if not raw_base_url:
+            return default_fields
+
+        try:
+            parts = urlsplit(raw_base_url)
+        except Exception:
+            return default_fields
+
+        host = str(parts.netloc or "").strip() or None
+        path = str(parts.path or "").strip()
+        normalized_path = f"/{path.strip('/')}" if path else ""
+        if normalized_path.endswith("/chat/completions"):
+            request_path = normalized_path
+        else:
+            request_path = f"{normalized_path or '/v1'}/chat/completions"
+        return {
+            "method": "POST",
+            "path": request_path,
+            "target_host": host,
+        }
 
     @classmethod
     def _resolve_policy(cls, task_kind: str) -> Dict[str, Any]:
@@ -278,6 +310,7 @@ class LLMService:
         task_kind: str,
         event_name_prefix: str,
         task_context: Dict[str, Optional[str]],
+        interface_fields: Dict[str, Optional[str]],
     ) -> Any:
         max_attempts = max(1, int(self._MAX_RETRY_ATTEMPTS))
         for attempt in range(1, max_attempts + 1):
@@ -300,7 +333,10 @@ class LLMService:
                     owner_id=task_context.get("owner_id"),
                     task_id=task_context.get("task_id"),
                     task_type=task_context.get("task_type"),
+                    method=interface_fields.get("method"),
+                    path=interface_fields.get("path"),
                     provider="llm",
+                    target_host=interface_fields.get("target_host"),
                     success=False,
                     duration_ms=0,
                     message=f"检测到可重试错误，{delay_seconds:.1f}s 后重试",
@@ -407,6 +443,7 @@ class LLMService:
                 task_kind=policy["task_kind"],
                 event_name_prefix="chat_completion_json",
                 task_context=task_context,
+                interface_fields=self._text_interface,
             )
 
             content = response.choices[0].message.content
@@ -438,7 +475,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._text_interface.get("method"),
+                path=self._text_interface.get("path"),
                 provider="llm",
+                target_host=self._text_interface.get("target_host"),
                 success=True,
                 duration_ms=elapsed_ms,
                 message="文本模型 JSON 调用成功",
@@ -471,7 +511,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._text_interface.get("method"),
+                path=self._text_interface.get("path"),
                 provider="llm",
+                target_host=self._text_interface.get("target_host"),
                 success=False,
                 duration_ms=elapsed_ms,
                 message=str(e),
@@ -501,7 +544,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._text_interface.get("method"),
+                path=self._text_interface.get("path"),
                 provider="llm",
+                target_host=self._text_interface.get("target_host"),
                 success=False,
                 duration_ms=elapsed_ms,
                 message=str(e),
@@ -589,6 +635,7 @@ class LLMService:
                 task_kind=policy["task_kind"],
                 event_name_prefix="analyze_image_with_thinking",
                 task_context=task_context,
+                interface_fields=self._vision_interface,
             )
             content = response.choices[0].message.content or ""
             reasoning_text = self._extract_reasoning_text(response)
@@ -619,7 +666,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
                 provider="llm",
+                target_host=self._vision_interface.get("target_host"),
                 success=True,
                 duration_ms=elapsed_ms,
                 message="单图视觉分析调用成功",
@@ -655,7 +705,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
                 provider="llm",
+                target_host=self._vision_interface.get("target_host"),
                 success=False,
                 duration_ms=elapsed_ms,
                 message=str(e),
@@ -782,6 +835,7 @@ class LLMService:
                 task_kind=policy["task_kind"],
                 event_name_prefix="invoke_vision_images_json",
                 task_context=task_context,
+                interface_fields=self._vision_interface,
             )
 
             raw_content = response.choices[0].message.content or ""
@@ -813,7 +867,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
                 provider="llm",
+                target_host=self._vision_interface.get("target_host"),
                 success=True,
                 duration_ms=elapsed_ms,
                 message="多图视觉分析调用成功",
@@ -846,7 +903,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
                 provider="llm",
+                target_host=self._vision_interface.get("target_host"),
                 success=False,
                 duration_ms=elapsed_ms,
                 message=str(e),
@@ -877,7 +937,10 @@ class LLMService:
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
                 task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
                 provider="llm",
+                target_host=self._vision_interface.get("target_host"),
                 success=False,
                 duration_ms=elapsed_ms,
                 message=str(e),

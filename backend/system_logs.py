@@ -285,7 +285,9 @@ def emit_system_log(
     log_id = uuid.uuid4().hex
     context = get_request_context()
     resolved_category = str(category or "").strip() or "system"
+    resolved_event_name = str(event_name or "").strip() or "event"
     resolved_method = str(method or context.get("method") or "").strip() or None
+    resolved_path = str(path or context.get("path") or "").strip() or None
 
     if not _should_persist_system_log(
         category=resolved_category,
@@ -301,7 +303,7 @@ def emit_system_log(
         "log_id": log_id,
         "timestamp": now,
         "category": resolved_category,
-        "event_name": str(event_name or "").strip() or "event",
+        "event_name": resolved_event_name,
         "level": str(level or "INFO").strip().upper(),
         "owner_id": str(owner_id or context.get("owner_id") or "").strip() or None,
         "task_id": str(task_id or context.get("task_id") or "").strip() or None,
@@ -309,7 +311,7 @@ def emit_system_log(
         "request_id": str(request_id or context.get("request_id") or "").strip() or None,
         "trace_id": str(trace_id or context.get("trace_id") or "").strip() or None,
         "method": resolved_method,
-        "path": str(path or context.get("path") or "").strip() or None,
+        "path": resolved_path,
         "status_code": int(status_code) if status_code is not None else None,
         "duration_ms": int(duration_ms) if duration_ms is not None else None,
         "provider": str(provider or "").strip() or None,

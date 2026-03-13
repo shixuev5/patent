@@ -134,6 +134,8 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
     assert row["event_name"] == "chat_completion_json"
     assert row["task_id"] == "task-llm-1"
     assert row["owner_id"] == "authing:user-1"
+    assert row["method"] == "POST"
+    assert row["path"] == "/v1/chat/completions"
     # key-like string should be redacted in serialized payload
     payload_text = row.get("payload_inline_json") or ""
     assert "sk-abcdef1234567890" not in payload_text

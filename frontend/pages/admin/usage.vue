@@ -435,7 +435,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">用户/任务</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">接口</th>
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">状态</th>
-                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">耗时</th>
+                  <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">耗时(秒)</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">摘要</th>
                   <th class="sticky right-0 z-10 border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
                 </tr>
@@ -456,13 +456,13 @@
                     <p class="font-mono text-[11px] text-slate-500">{{ row.taskId || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2">
-                    <p class="max-w-[26rem] truncate">{{ row.method || '-' }} {{ row.path || '-' }}</p>
+                    <p class="max-w-[26rem] truncate">{{ formatLogInterface(row) }}</p>
                     <p class="max-w-[26rem] truncate text-slate-500">{{ row.provider || row.targetHost || '-' }}</p>
                   </td>
                   <td class="px-2.5 py-2 text-right">
                     <span :class="row.success ? 'text-emerald-700' : 'text-rose-700'">{{ row.success ? '成功' : '失败' }}</span>
                   </td>
-                  <td class="px-2.5 py-2 text-right">{{ row.durationMs ?? '-' }}</td>
+                  <td class="px-2.5 py-2 text-right">{{ formatLogDurationSeconds(row.durationMs) }}</td>
                   <td class="px-2.5 py-2">
                     <p class="max-w-[18rem] truncate">{{ row.message || '-' }}</p>
                   </td>
@@ -568,7 +568,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[10rem]" />
                 <col class="w-[10rem]" />
-                <col class="w-[10.5rem]" />
+                <col class="w-[4.25rem] sm:w-[5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -578,7 +578,7 @@
                   <th class="px-2.5 py-2 text-right font-semibold whitespace-nowrap">任务数</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">最近任务时间</th>
-                  <th class="sticky right-0 z-10 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
+                  <th class="sticky right-0 z-10 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-100/90 px-2 py-2 text-left font-semibold whitespace-nowrap sm:w-[5rem] sm:min-w-[5rem]">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -597,23 +597,23 @@
                   <td class="px-2.5 py-2 text-right">{{ formatNumber(row.taskCount || 0) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.latestTaskAt || row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
-                    <div class="flex flex-wrap items-center gap-2">
+                  <td class="sticky right-0 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-50/90 px-2 py-2 sm:w-[5rem] sm:min-w-[5rem]">
+                    <div class="flex flex-col items-stretch gap-1">
                       <button
                         type="button"
-                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
                         :disabled="!row.userName"
                         @click="openTasksByUser(row.userName)"
                       >
-                        查看任务
+                        任务
                       </button>
                       <button
                         type="button"
-                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
                         :disabled="!row.userName"
                         @click="openLogsByUser(row.userName)"
                       >
-                        查看日志
+                        日志
                       </button>
                     </div>
                   </td>
@@ -750,7 +750,7 @@
                 <col class="w-[4rem]" />
                 <col class="w-[4rem]" />
                 <col class="w-[6rem]" />
-                <col class="w-[10.5rem]" />
+                <col class="w-[4.25rem] sm:w-[5rem]" />
               </colgroup>
               <thead class="bg-slate-50 text-slate-600">
                 <tr>
@@ -761,7 +761,7 @@
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">状态</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">任务耗时</th>
                   <th class="px-2.5 py-2 text-left font-semibold whitespace-nowrap">创建时间</th>
-                  <th class="sticky right-0 z-10 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-100/90 px-2.5 py-2 text-left font-semibold whitespace-nowrap">操作</th>
+                  <th class="sticky right-0 z-10 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-100/90 px-2 py-2 text-left font-semibold whitespace-nowrap sm:w-[5rem] sm:min-w-[5rem]">操作</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100 bg-white text-slate-700">
@@ -783,22 +783,22 @@
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatTaskStatusLabel(row.status) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDuration(row.durationSeconds) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[6rem] min-w-[6rem] border-l border-slate-200 bg-slate-50/90 px-2.5 py-2">
-                    <div class="flex items-center gap-2">
+                  <td class="sticky right-0 w-[4.25rem] min-w-[4.25rem] border-l border-slate-200 bg-slate-50/90 px-2 py-2 sm:w-[5rem] sm:min-w-[5rem]">
+                    <div class="flex flex-col items-stretch gap-1">
                       <button
                         type="button"
-                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
                         :disabled="loadingEntityTaskDetail && detailLoadingTaskId === row.taskId"
                         @click="openEntityTaskDetail(row.taskId)"
                       >
-                        {{ loadingEntityTaskDetail && detailLoadingTaskId === row.taskId ? '加载中' : '查看' }}
+                        {{ loadingEntityTaskDetail && detailLoadingTaskId === row.taskId ? '加载' : '详情' }}
                       </button>
                       <button
                         type="button"
-                        class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 transition hover:bg-slate-50"
+                        class="w-full rounded-md border border-slate-300 bg-white px-1.5 py-1 text-[11px] leading-4 whitespace-nowrap text-slate-700 transition hover:bg-slate-50"
                         @click="openLogsByTask(row.taskId)"
                       >
-                        查看日志
+                        日志
                       </button>
                     </div>
                   </td>
@@ -1107,6 +1107,20 @@ const formatLogCategory = (value: string | null | undefined) => {
   const text = String(value || '').trim()
   if (!text) return '-'
   return LOG_CATEGORY_LABELS[text] || text
+}
+const formatLogInterface = (row: { method?: string | null; path?: string | null }) => {
+  const method = String(row.method || '').trim().toUpperCase()
+  const path = String(row.path || '').trim()
+  if (method || path) {
+    return `${method || '-'} ${path || '-'}`.trim()
+  }
+  return '-'
+}
+const formatLogDurationSeconds = (value: number | null | undefined) => {
+  const durationMs = Number(value)
+  if (!Number.isFinite(durationMs) || durationMs < 0) return '-'
+  const durationSeconds = durationMs / 1000
+  return `${durationSeconds.toFixed(2)}s`
 }
 const formatLogEvent = (value: string | null | undefined) => {
   const text = String(value || '').trim()
