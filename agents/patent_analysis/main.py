@@ -28,7 +28,6 @@ from agents.patent_analysis.src.nodes import (
     GenerateFiguresNode,
     ParseNode,
     RenderNode,
-    SearchExecutionNode,
     SearchJoinNode,
     SearchMatrixNode,
     SearchSemanticNode,
@@ -57,7 +56,6 @@ def create_workflow(config: WorkflowConfig | None = None):
     workflow.add_node("generate_figures", GenerateFiguresNode(config), retry_policy=retry_policy)
     workflow.add_node("search_matrix", SearchMatrixNode(config), retry_policy=retry_policy)
     workflow.add_node("search_semantic", SearchSemanticNode(config), retry_policy=retry_policy)
-    workflow.add_node("search_execution", SearchExecutionNode(config), retry_policy=retry_policy)
     workflow.add_node("search_join", SearchJoinNode(config), retry_policy=retry_policy)
     workflow.add_node("render", RenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
@@ -124,10 +122,14 @@ def create_workflow(config: WorkflowConfig | None = None):
     )
     workflow.add_conditional_edges(
         "search_matrix",
-        create_router("search_execution"),
-        {"failed": "handle_error", "search_execution": "search_execution"},
+        create_router("search_join"),
+        {"failed": "handle_error", "search_join": "search_join"},
     )
-    workflow.add_edge(["search_semantic", "search_execution"], "search_join")
+    workflow.add_conditional_edges(
+        "search_semantic",
+        create_router("search_join"),
+        {"failed": "handle_error", "search_join": "search_join"},
+    )
     workflow.add_conditional_edges(
         "search_join",
         create_router("render"),

@@ -227,6 +227,9 @@ def test_render_search_section_groups_by_effect_and_filters_matrix() -> None:
     assert "特征B1" not in second_group
     assert "主题A" in second_group
     assert "共通C" in second_group
+    assert "效果簇" not in content
+    assert "关联技术效果" not in content
+    assert "属性标签" not in content
 
 
 def test_render_search_section_falls_back_when_queries_missing() -> None:
@@ -264,81 +267,3 @@ def test_render_search_section_falls_back_when_queries_missing() -> None:
     assert "## 2. 检索要素表" in content
     assert "## 3. 语义检索" in content
     assert "legacy query" in content
-
-
-def test_render_search_section_renders_execution_plan_steps() -> None:
-    renderer = ReportRenderer(
-        patent_data={
-            "bibliographic_data": {
-                "invention_title": "一种装置",
-                "application_date": "2024.02.02",
-            }
-        }
-    )
-
-    content = renderer._render_search_section(
-        {
-            "search_matrix": [],
-            "semantic_strategy": {
-                "name": "语义检索",
-                "description": "desc",
-                "queries": [
-                    {
-                        "block_id": "B1",
-                        "effect_cluster_ids": ["E1"],
-                        "effect": "核心效果",
-                        "tcs_score": 5,
-                        "content": "query",
-                    }
-                ],
-            },
-            "execution_plan": [
-                {
-                    "step_name": "B1子块核心特征检索",
-                    "condition": "语义检索未命中时执行",
-                    "search_logic": "[主题A] AND [特征B1]",
-                    "rationale": "打击新颖性",
-                    "database": "专利数据库",
-                },
-                {
-                    "step_name": "B1降噪限定",
-                    "condition": "命中量过大时执行",
-                    "search_logic": "([主题A] AND [特征B1]) AND [共通C]",
-                    "rationale": "收敛检索集",
-                    "database": "专利数据库",
-                },
-            ],
-        }
-    )
-
-    assert "## 3. 审查检索执行计划" in content
-    assert "步骤 1：B1子块核心特征检索" in content
-    assert "步骤 2：B1降噪限定" in content
-    assert "[主题A] AND [特征B1]" in content
-    assert "([主题A] AND [特征B1]) AND [共通C]" in content
-
-
-def test_render_search_section_shows_execution_plan_empty_message() -> None:
-    renderer = ReportRenderer(
-        patent_data={
-            "bibliographic_data": {
-                "invention_title": "一种装置",
-                "application_date": "2024.02.02",
-            }
-        }
-    )
-
-    content = renderer._render_search_section(
-        {
-            "search_matrix": [],
-            "semantic_strategy": {
-                "name": "语义检索",
-                "description": "desc",
-                "content": "legacy query",
-            },
-            "execution_plan": [],
-        }
-    )
-
-    assert "## 4. 审查检索执行计划" in content
-    assert "执行计划为空或生成失败" in content

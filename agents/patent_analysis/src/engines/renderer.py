@@ -454,27 +454,13 @@ class ReportRenderer:
         # 获取数据源
         matrix = data.get("search_matrix", [])
         semantic = data.get("semantic_strategy", {})
-        execution_plan_raw = data.get("execution_plan", [])
         if not isinstance(semantic, dict):
             semantic = {}
-        execution_plan: List[Dict[str, Any]] = []
-        if isinstance(execution_plan_raw, list):
-            for item in execution_plan_raw:
-                if isinstance(item, dict):
-                    execution_plan.append(item)
         semantic_queries: List[Dict[str, Any]] = []
         if isinstance(semantic.get("queries"), list):
             for row in semantic.get("queries", []):
                 if isinstance(row, dict):
                     semantic_queries.append(row)
-
-        effect_cluster_map: Dict[str, str] = {}
-        for row in semantic_queries:
-            row_cluster_ids = self._extract_effect_cluster_ids(row)
-            effect_text = self._safe_text(row.get("effect"))
-            if row_cluster_ids and effect_text:
-                for effect_cluster_id in row_cluster_ids:
-                    effect_cluster_map[effect_cluster_id] = effect_text
 
         semantic_name = self._safe_text(semantic.get("name"), "语义检索")
         semantic_desc = self._safe_text(
@@ -486,39 +472,25 @@ class ReportRenderer:
             lines.append("## 2. 按核心效果分组检索策略")
             lines.append(f"> **策略逻辑**: {semantic_desc}\n")
             for idx, query_item in enumerate(semantic_queries, start=1):
-                block_id = self._safe_text(query_item.get("block_id"), f"B{idx}")
                 query_cluster_ids = self._extract_effect_cluster_ids(query_item)
                 effect_cluster_id = query_cluster_ids[0] if query_cluster_ids else f"E{idx}"
                 effect_text = self._safe_text(query_item.get("effect"), f"核心效果{idx}")
-                tcs_score = self._safe_text(query_item.get("tcs_score"), "-")
                 content = self._safe_text(query_item.get("content"))
 
                 lines.append(f"### 核心效果{idx}：{effect_text}")
-                lines.append(f"> 效果簇：{effect_cluster_id} / 查询块：{block_id}")
-                lines.append(f"> TCS评分：{tcs_score}\n")
                 lines.append("#### 语义检索")
                 lines.append(f"```text\n{content}\n```\n")
                 lines.append("#### 检索要素表")
                 filtered_matrix = self._filter_matrix_by_effect_cluster(
                     matrix, effect_cluster_id=effect_cluster_id
                 )
-                lines.extend(
-                    self._render_matrix_table(
-                        filtered_matrix,
-                        effect_cluster_map=effect_cluster_map,
-                    )
-                )
+                lines.extend(self._render_matrix_table(filtered_matrix))
                 lines.append("")
         else:
             # 回退模式：保留全局检索要素和语义展示，避免报告空白
             lines.append("## 2. 检索要素表")
             lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
-            lines.extend(
-                self._render_matrix_table(
-                    matrix,
-                    effect_cluster_map=effect_cluster_map,
-                )
-            )
+            lines.extend(self._render_matrix_table(matrix))
             lines.append(f"## 3. {semantic_name}\n")
             lines.append(f"> **策略逻辑**: {semantic_desc}\n")
             legacy_content = self._safe_text(semantic.get("content"))
@@ -526,26 +498,6 @@ class ReportRenderer:
                 lines.append(f"```text\n{legacy_content}\n```\n")
             else:
                 lines.append("> 未生成语义检索 Query。\n")
-
-        step_num = 3 if semantic_queries else 4
-        lines.append(f"## {step_num}. 审查检索执行计划")
-        lines.append("以下步骤按生成顺序完整罗列，作为审查检索执行路径：\n")
-
-        if execution_plan:
-            for idx, task in enumerate(execution_plan, start=1):
-                step_name = self._safe_text(task.get("step_name"), "布尔交叉检索")
-                condition = self._safe_text(task.get("condition"), "满足上一阶段执行阈值后执行")
-                search_logic = self._safe_text(task.get("search_logic"), "未提取到逻辑表达式")
-                rationale = self._safe_text(task.get("rationale"), "依据核心技术手段进行检索排查")
-                database = self._safe_text(task.get("database"), "专利数据库")
-
-                lines.append(f"- [ ] **步骤 {idx}：{step_name}**")
-                lines.append(f"  - **执行条件**：{condition}")
-                lines.append(f"  - **战术意图**：{rationale}")
-                lines.append(f"  - **检索逻辑**：`{search_logic}`")
-                lines.append(f"  - **目标库**：`{database}`\n")
-        else:
-            lines.append("> 执行计划为空或生成失败，请检查 execution_plan 数据源。\n")
 
         return "\n".join(lines)
 
@@ -587,11 +539,7 @@ class ReportRenderer:
     def _render_matrix_table(
         self,
         matrix: Any,
-        *,
-        effect_cluster_map: Optional[Dict[str, str]] = None,
     ) -> List[str]:
-        if not isinstance(effect_cluster_map, dict):
-            effect_cluster_map = {}
         lines: List[str] = []
         if not isinstance(matrix, list) or not matrix:
             lines.append("> 未生成检索要素表。\n")
@@ -602,15 +550,6 @@ class ReportRenderer:
             "KeyFeature": "Block B<br>(核心特征)",
             "Functional": "Block C<br>(功能/限定)",
         }
-        priority_mapping = {
-            "core": "核心",
-            "assist": "辅助",
-            "filter": "过滤",
-        }
-        frequency_mapping = {
-            "low": "低频",
-            "high": "高频",
-        }
         type_mapping = {
             "Product_Structure": "实体结构",
             "Method_Process": "方法/工艺",
@@ -619,8 +558,8 @@ class ReportRenderer:
             "Parameter_Condition": "参数/限定",
         }
 
-        lines.append("| 检索分块 | 效果簇 | 关联技术效果 | 检索要素 | 属性标签 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
-        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        lines.append("| 检索分块 | 检索要素 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
         for item in matrix:
             if not isinstance(item, dict):
@@ -628,7 +567,6 @@ class ReportRenderer:
             concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
             role_key = item.get("element_role", "Other")
             block_id = self._safe_text(item.get("block_id")).upper()
-            cluster_ids = self._extract_effect_cluster_ids(item)
 
             if block_id:
                 if block_id == "A":
@@ -675,31 +613,9 @@ class ReportRenderer:
             zh_str = ", ".join(zh_cleaned) if zh_cleaned else "-"
             en_str = ", ".join(en_cleaned) if en_cleaned else "-"
             class_str = "<br>".join(ref_cleaned) if ref_cleaned else "-"
-            cluster_display = ",".join(cluster_ids) if cluster_ids else "-"
-            effect_names = []
-            for cluster_id in cluster_ids:
-                effect_name = self._safe_text(effect_cluster_map.get(cluster_id))
-                if effect_name:
-                    effect_names.append(effect_name)
-            effect_display = " / ".join(effect_names) if effect_names else "-"
-            term_frequency = frequency_mapping.get(
-                self._safe_text(item.get("term_frequency")).lower(), "-"
-            )
-            priority_tier = priority_mapping.get(
-                self._safe_text(item.get("priority_tier")).lower(), "-"
-            )
-            is_hub_feature = bool(item.get("is_hub_feature", False))
-            tag_items = [
-                f"类型:{e_type_display or '-'}",
-                f"频率:{term_frequency}",
-                f"优先级:{priority_tier}",
-                f"Hub:{'是' if is_hub_feature else '否'}",
-            ]
-            tag_display = "<br>".join(tag_items)
 
             lines.append(
-                f"| **{block_display}** | {cluster_display} | {effect_display} | "
-                f"{concept_display} | {tag_display} | {zh_str} | {en_str} | {class_str} |"
+                f"| **{block_display}** | {concept_display} | {zh_str} | {en_str} | {class_str} |"
             )
         lines.append("\n")
         return lines

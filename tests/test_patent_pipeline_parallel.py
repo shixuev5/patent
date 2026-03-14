@@ -14,7 +14,6 @@ from agents.patent_analysis.src.nodes.parse_node import ParseNode
 from agents.patent_analysis.src.nodes.render_node import RenderNode
 from agents.patent_analysis.src.nodes.search_join_node import SearchJoinNode
 from agents.patent_analysis.src.nodes.search_matrix_node import SearchMatrixNode
-from agents.patent_analysis.src.nodes.search_execution_node import SearchExecutionNode
 from agents.patent_analysis.src.nodes.search_semantic_node import SearchSemanticNode
 from agents.patent_analysis.src.nodes.transform_node import TransformNode
 from agents.patent_analysis.src.nodes.vision_annotate_node import VisionAnnotateNode
@@ -79,11 +78,6 @@ def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monke
         },
     )
     monkeypatch.setattr(
-        SearchExecutionNode,
-        "run",
-        lambda self, state: {"search_execution_plan": []},
-    )
-    monkeypatch.setattr(
         SearchJoinNode,
         "run",
         lambda self, state: {"search_json": {"ok": True}},
@@ -109,7 +103,6 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
     flags = {
         "search_matrix_called": False,
         "search_semantic_called": False,
-        "search_execution_called": False,
         "search_join_called": False,
         "render_called": False,
     }
@@ -151,17 +144,12 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
         flags["search_join_called"] = True
         return {"search_json": {"ok": True}}
 
-    def _fake_search_execution(self, state):
-        flags["search_execution_called"] = True
-        return {"search_execution_plan": []}
-
     def _fake_render(self, state):
         flags["render_called"] = True
         return {"status": "completed", "final_output_pdf": str(tmp_path / "out.pdf")}
 
     monkeypatch.setattr(SearchMatrixNode, "run", _fake_search_matrix)
     monkeypatch.setattr(SearchSemanticNode, "run", _fake_search_semantic)
-    monkeypatch.setattr(SearchExecutionNode, "run", _fake_search_execution)
     monkeypatch.setattr(SearchJoinNode, "run", _fake_search_join)
     monkeypatch.setattr(RenderNode, "run", _fake_render)
 
@@ -172,7 +160,6 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
     assert result_dict["status"] == "failed"
     assert flags["search_matrix_called"] is False
     assert flags["search_semantic_called"] is False
-    assert flags["search_execution_called"] is False
     assert flags["search_join_called"] is False
     assert flags["render_called"] is False
 
@@ -240,11 +227,6 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
                 "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
             }
         },
-    )
-    monkeypatch.setattr(
-        SearchExecutionNode,
-        "run",
-        lambda self, state: {"search_execution_plan": []},
     )
     monkeypatch.setattr(SearchJoinNode, "run", lambda self, state: {"search_json": {"ok": True}})
     monkeypatch.setattr(RenderNode, "run", lambda self, state: {"status": "completed"})
@@ -330,21 +312,6 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
         def build_semantic_strategy(self):
             return {"queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]}
 
-    class _FakeExecutionGenerator:
-        def __init__(self, patent_data, report_data):
-            pass
-
-        def build_execution_plan(self, search_matrix):
-            return [
-                {
-                    "step_name": "步骤A",
-                    "condition": "cond",
-                    "search_logic": "[A] AND [B]",
-                    "rationale": "why",
-                    "database": "专利数据库",
-                }
-            ]
-
     monkeypatch.setattr(
         "agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
         _FakeMatrixGenerator,
@@ -353,33 +320,18 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
         "agents.patent_analysis.src.nodes.search_semantic_node.SearchStrategyGenerator",
         _FakeSemanticGenerator,
     )
-    monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.search_execution_node.SearchStrategyGenerator",
-        _FakeExecutionGenerator,
-    )
-
     matrix_node = SearchMatrixNode(WorkflowConfig(cache_dir=str(cache_dir)))
     semantic_node = SearchSemanticNode(WorkflowConfig(cache_dir=str(cache_dir)))
-    execution_node = SearchExecutionNode(WorkflowConfig(cache_dir=str(cache_dir)))
     join_node = SearchJoinNode(WorkflowConfig(cache_dir=str(cache_dir)))
 
     matrix_updates = matrix_node(state)
     semantic_updates = semantic_node(state)
-    execution_updates = execution_node(
-        {
-            "paths": matrix_updates["paths"],
-            "patent_data": state.patent_data,
-            "analysis_json": state.analysis_json,
-            "search_matrix": matrix_updates["search_matrix"],
-        }
-    )
 
     join_updates = join_node.run(
         {
             "paths": matrix_updates["paths"],
             "search_matrix": matrix_updates["search_matrix"],
             "search_semantic_strategy": semantic_updates["search_semantic_strategy"],
-            "search_execution_plan": execution_updates["search_execution_plan"],
         }
     )
 
@@ -388,17 +340,7 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
         "semantic_strategy": {
             "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
         },
-        "execution_plan": [
-            {
-                "step_name": "步骤A",
-                "condition": "cond",
-                "search_logic": "[A] AND [B]",
-                "rationale": "why",
-                "database": "专利数据库",
-            }
-        ],
     }
     assert (cache_dir / "search_matrix_cache.json").exists()
     assert (cache_dir / "search_semantic_cache.json").exists()
-    assert (cache_dir / "search_execution_cache.json").exists()
     assert not (Path(matrix_updates["paths"]["root"]) / "search_strategy_intermediate.json").exists()

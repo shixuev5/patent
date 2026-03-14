@@ -69,7 +69,6 @@ class WorkflowState(BaseModel):
     analysis_json: Optional[Dict[str, Any]] = Field(None, description="分析报告JSON")
     search_matrix: Optional[List[Dict[str, Any]]] = Field(None, description="检索矩阵中间结果")
     search_semantic_strategy: Optional[Dict[str, Any]] = Field(None, description="语义检索中间结果")
-    search_execution_plan: Optional[List[Dict[str, Any]]] = Field(None, description="执行计划中间结果")
     search_json: Optional[Dict[str, Any]] = Field(None, description="检索策略JSON")
 
     final_output_pdf: str = Field("", description="最终PDF路径")

@@ -39,7 +39,6 @@ class LLMService:
         "retrieval_query_planning": {"tier": "default", "thinking": True},
         "search_matrix_reasoning": {"tier": "large", "thinking": True},
         "semantic_query_rewrite": {"tier": "default", "thinking": True},
-        "execution_plan_generation": {"tier": "large", "thinking": True},
         "core_summary_generation": {"tier": "default", "thinking": True},
         "claim_feature_reasoning": {"tier": "large", "thinking": True},
         "technical_effect_verification": {"tier": "large", "thinking": True},
