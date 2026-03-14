@@ -71,15 +71,11 @@ class R2Storage:
 
     def build_patent_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/analysis/{pn}.pdf"
-
-    def build_legacy_patent_pdf_key(self, patent_number: str) -> str:
-        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/reports/{pn}.pdf"
+        return f"{self.config.key_prefix}/ai_analysis/{pn}.pdf"
 
     def build_analysis_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/analysis/{pn}.json"
+        return f"{self.config.key_prefix}/ai_analysis/{pn}.json"
 
     def build_patent_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
