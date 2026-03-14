@@ -454,8 +454,14 @@ class ReportRenderer:
         # 获取数据源
         matrix = data.get("search_matrix", [])
         semantic = data.get("semantic_strategy", {})
+        execution_plan_raw = data.get("execution_plan", [])
         if not isinstance(semantic, dict):
             semantic = {}
+        execution_plan: List[Dict[str, Any]] = []
+        if isinstance(execution_plan_raw, list):
+            for item in execution_plan_raw:
+                if isinstance(item, dict):
+                    execution_plan.append(item)
         semantic_queries: List[Dict[str, Any]] = []
         if isinstance(semantic.get("queries"), list):
             for row in semantic.get("queries", []):
@@ -520,7 +526,27 @@ class ReportRenderer:
                 lines.append(f"```text\n{legacy_content}\n```\n")
             else:
                 lines.append("> 未生成语义检索 Query。\n")
-            
+
+        step_num = 3 if semantic_queries else 4
+        lines.append(f"## {step_num}. 审查检索执行计划")
+        lines.append("以下步骤按生成顺序完整罗列，作为审查检索执行路径：\n")
+
+        if execution_plan:
+            for idx, task in enumerate(execution_plan, start=1):
+                step_name = self._safe_text(task.get("step_name"), "布尔交叉检索")
+                condition = self._safe_text(task.get("condition"), "满足上一阶段执行阈值后执行")
+                search_logic = self._safe_text(task.get("search_logic"), "未提取到逻辑表达式")
+                rationale = self._safe_text(task.get("rationale"), "依据核心技术手段进行检索排查")
+                database = self._safe_text(task.get("database"), "专利数据库")
+
+                lines.append(f"- [ ] **步骤 {idx}：{step_name}**")
+                lines.append(f"  - **执行条件**：{condition}")
+                lines.append(f"  - **战术意图**：{rationale}")
+                lines.append(f"  - **检索逻辑**：`{search_logic}`")
+                lines.append(f"  - **目标库**：`{database}`\n")
+        else:
+            lines.append("> 执行计划为空或生成失败，请检查 execution_plan 数据源。\n")
+
         return "\n".join(lines)
 
     def _extract_effect_cluster_ids(self, item: Dict[str, Any]) -> List[str]:

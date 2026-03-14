@@ -37,6 +37,113 @@ class SearchStrategyGenerator:
     def build_semantic_strategy(self) -> Dict[str, Any]:
         return self._build_semantic_strategy()
 
+    def build_execution_plan(self, search_matrix: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        阶段三：基于检索要素矩阵生成审查检索执行计划。
+        """
+        logger.info("基于检索要素矩阵的高阶属性生成布尔检索执行计划")
+        if not isinstance(search_matrix, list) or not search_matrix:
+            logger.warning("检索要素矩阵为空，无法生成执行计划")
+            return []
+
+        biblio = self.patent_data.get("bibliographic_data", {})
+        applicants = biblio.get("applicants", [])
+        inventors = biblio.get("inventors", [])
+
+        applicant_names: List[str] = []
+        if isinstance(applicants, list):
+            for item in applicants:
+                if isinstance(item, dict):
+                    name = self._normalize_inline_text(item.get("name"))
+                else:
+                    name = self._normalize_inline_text(item)
+                if name:
+                    applicant_names.append(name)
+
+        inventor_names: List[str] = []
+        if isinstance(inventors, list):
+            for item in inventors:
+                name = self._normalize_inline_text(item)
+                if name:
+                    inventor_names.append(name)
+
+        inventory_lines: List[str] = []
+        b_blocks_found = set()
+        for item in search_matrix:
+            if not isinstance(item, dict):
+                continue
+            name = self._normalize_inline_text(item.get("element_name"))
+            block = self._normalize_inline_text(item.get("block_id")).upper()
+            freq = self._normalize_inline_text(item.get("term_frequency")).lower() or "low"
+            tier = self._normalize_inline_text(item.get("priority_tier")).lower() or "core"
+            if not name:
+                continue
+            inventory_lines.append(
+                f"- ID: [{name}] | 归属: {block} | 词频: {freq} | 优先级: {tier}"
+            )
+            if block.startswith("B"):
+                b_blocks_found.add(block)
+
+        if not inventory_lines:
+            logger.warning("检索要素矩阵缺少可用 element_name，无法生成执行计划")
+            return []
+
+        b_block_str = ", ".join(sorted(b_blocks_found)) if b_blocks_found else "B"
+
+        context_str = f"""
+        [案情基础信息]
+        申请人：{", ".join(applicant_names) if applicant_names else "无"}
+        发明人：{", ".join(inventor_names) if inventor_names else "无"}
+        主要分类号：{", ".join(self.base_ipcs[:5])}
+        核心突破点子块 (Block B): {b_block_str}
+
+        [包含高阶属性的检索要素库 (请严格从中挑选要素名称)]
+        {chr(10).join(inventory_lines)}
+        """
+
+        system_prompt = """
+        你是一位极其严谨的资深专利审查检索专家。你的任务是基于用户提供的【案情基础信息】与【检索要素库】，制定一份布尔检索执行计划清单。
+
+        ### 审查级检索铁律（绝对遵守）：
+        1. **核心效果解耦（Block B 隔离原则）**：
+           - **致命禁止**：绝对不允许将【案情基础信息】中列出的不同核心突破点子块（例如 B1 和 B2）的要素用 AND 连在同一个检索式中！这会导致召回降为 0。
+           - **正确做法**：必须为每一个独立的核心突破点子块（如 B1、B2）分别独立设计检索步骤。
+        2. **高低频要素的战术管控 (term_frequency & priority_tier)**：
+           - `词频: low` 或 `优先级: core` 的要素是特异性极强的“破袭武器”，应作为穿透新颖性的首选检索项。
+           - `词频: high` 或 `优先级: filter` 的要素非常泛化。**绝对禁止单独搜索它们**，它们只能在核心子块召回量巨大时，作为 Block C 追加到 AND 逻辑后方用于“降噪限定”。
+        3. **执行条件的清晰判定 (condition)**：
+           - 必须为每个步骤指明“在何种前提下执行”。例如“前置步骤命中超过 X 篇时执行”、“若步骤一未查到 X 类文献则无条件执行”。
+        4. **Block C 的规范用法**：
+           - **限定降噪**：[Block A/B 要素] AND [Block C 要素]（针对海量命中的收敛）。
+           - **功能泛化替换**：丢弃 Block B 结构，仅用 [Block A] AND [Block C] 寻找不同结构但实现相同功能的对比文件。
+
+        ### 任务要求与输出约束
+        - 按检索计划完整输出全部必要步骤，不限制步骤数量。
+        - 严格使用逻辑算符 (AND, OR) 将要素名称（加方括号）连接。
+        - 只允许使用【检索要素库】中给出的要素名称。
+        - 必须输出纯 JSON 数组，严禁包含 Markdown 格式块或多余文字。
+        - 每个步骤必须包含以下字段：
+          - `step_name`: 步骤名称（必须体现具体针对哪个 Block）。
+          - `condition`: 执行判定条件。
+          - `search_logic`: 布尔组配式（如 "[无人机] AND [迷宫式密封环]"）。
+          - `rationale`: 设计该表达式的战术意图与审查逻辑依据。
+          - `database`: "专利数据库" 或 "非专利学术库"。
+        """
+
+        try:
+            response = self.llm_service.invoke_text_json(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context_str},
+                ],
+                task_kind="execution_plan_generation",
+                temperature=0.1,
+            )
+            return self._normalize_execution_plan(response)
+        except Exception as exc:
+            logger.error(f"执行计划生成失败: {exc}")
+            return []
+
     def _build_matrix_context(self) -> str:
         """
         阶段一上下文：构建全维度的技术理解环境 (基于 TCS 评分分级)
@@ -300,6 +407,31 @@ class SearchStrategyGenerator:
             if not text or text in normalized:
                 continue
             normalized.append(text)
+        return normalized
+
+    def _normalize_execution_plan(self, raw_plan: Any) -> List[Dict[str, str]]:
+        if not isinstance(raw_plan, list):
+            logger.warning("执行计划输出类型异常，回退为空列表")
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        for item in raw_plan:
+            if not isinstance(item, dict):
+                continue
+
+            normalized.append(
+                {
+                    "step_name": self._normalize_inline_text(item.get("step_name")) or "布尔交叉检索",
+                    "condition": self._normalize_inline_text(item.get("condition"))
+                    or "满足上一阶段执行阈值后执行",
+                    "search_logic": self._normalize_inline_text(item.get("search_logic"))
+                    or "未提取到逻辑表达式",
+                    "rationale": self._normalize_inline_text(item.get("rationale"))
+                    or "依据核心技术手段进行检索排查",
+                    "database": self._normalize_inline_text(item.get("database")) or "专利数据库",
+                }
+            )
+
         return normalized
 
     def _normalize_block_id(self, raw_block_id: str, element_role: str) -> str:
