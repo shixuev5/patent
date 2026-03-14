@@ -40,7 +40,7 @@ class SearchStrategyGenerator:
     def _build_matrix_context(self) -> str:
         """
         阶段一上下文：构建全维度的技术理解环境 (基于 TCS 评分分级)
-        将评分结果映射为检索块 (Block A/B1..Bn/C)，指导检索策略生成。
+        将评分结果映射为检索块 (Block A/B1..Bn/C)，指导布尔检索策略生成。
         """
         biblio = self.patent_data.get("bibliographic_data", {})
         report = self.report_data
@@ -57,44 +57,46 @@ class SearchStrategyGenerator:
             claim_source = str(info.get("claim_source", "")).strip().lower()
             is_distinguishing = bool(info.get("is_distinguishing", False))
             score = feature_max_scores.get(feat_name, 0)
-            desc = self._normalize_inline_text(info.get("description", "无描述"))
+            desc = self._normalize_inline_text(info.get("description", "无特定描述"))
             raw_rationale = self._normalize_inline_text(info.get("rationale", ""))
             rationale = (
                 (raw_rationale[:150] + "...") if len(raw_rationale) > 150 else raw_rationale
             )
 
+            # 独权前序公知特征 -> 锁定场景
             if claim_source == "independent" and (not is_distinguishing):
                 block_a_preamble.append(f"- 【{feat_name}】: {desc}")
 
+            # 较高分但未进入核心效果的特征 -> 用于降噪/限定
             if score in (3, 4):
                 block_c_content.append(
                     f"- 【{feat_name}】 (TCS: {score})\n"
-                    f"    定义: {desc}\n"
-                    f"    原理: {rationale or '无'}"
+                    f"    限定描述: {desc}\n"
+                    f"    机理/功能: {rationale or '无'}"
                 )
 
         block_b_sections: List[str] = []
         for cluster in effect_clusters:
             block_id = cluster["block_id"]
-            effect_id = cluster["effect_cluster_id"]
+            effect_id = ",".join(cluster["effect_cluster_ids"])
             score = cluster["score"]
             effect_text = cluster["effect_text"]
             feature_lines: List[str] = []
             for feat_name in cluster["features"]:
                 info = feature_details.get(feat_name, {})
-                desc = self._normalize_inline_text(info.get("description", "无描述"))
+                desc = self._normalize_inline_text(info.get("description", "无特定描述"))
                 rationale = self._normalize_inline_text(info.get("rationale", ""))
-                hub_mark = " [Hub]" if feat_name in hub_features else ""
+                hub_mark = " [★跨效果 Hub 特征]" if feat_name in hub_features else ""
                 feature_lines.append(
                     f"  - 【{feat_name}】{hub_mark}\n"
-                    f"      定义: {desc}\n"
-                    f"      原理: {rationale or '无'}"
+                    f"      结构/步骤细节: {desc}\n"
+                    f"      技术机理: {rationale or '无'}"
                 )
             if not feature_lines:
-                feature_lines = ["  - （未提供贡献特征，请从技术手段中抽取）"]
+                feature_lines = ["  - （未显式提取到特征，需依靠常识或上下文推断）"]
             block_b_sections.append(
-                f"- [{block_id}/{effect_id}] Score {score} 效果: {effect_text}\n"
-                f"{chr(10).join(feature_lines)}"
+                f"-[{block_id}/{effect_id}] 核心效果 (Score {score}): {effect_text}\n"
+                f"  贡献特征集合:\n{chr(10).join(feature_lines)}"
             )
 
         effects_summary = []
@@ -103,36 +105,32 @@ class SearchStrategyGenerator:
             if score >= 3:
                 effects_summary.append(f"- [Score {score}] {self._normalize_inline_text(e.get('effect', ''))}")
 
+        # 提供全局粗略范围，但限制字数避免冲淡核心特征
+        tech_means_summary = self._normalize_inline_text(report.get("technical_means", "未定义"))[:600]
+
         return f"""
-        [发明名称] {biblio.get('invention_title')}
-        [IPC参考] {', '.join(self.base_ipcs[:5])}
+        [基础档案]
+        发明名称: {biblio.get('invention_title', '未知')}
+        初始IPC/CPC参考: {', '.join(self.base_ipcs[:5])}
 
         === 1. Block A: 技术领域与前序公知环境 (Subject & Field) ===
         [检索主语 (核心产品/方法)]
         {report.get("claim_subject_matter", "未定义")}
-
-        [所属领域 (用于锁定 IPC/CPC 大类)]
-        {report.get("technical_field", "未定义")}
-
-        [独权前序特征 (Preamble from Independent Claims)]
-        {chr(10).join(block_a_preamble) if block_a_preamble else "（未识别到独权前序特征）"}
+        [所属技术领域 (用于锁定大类)]
+        {report.get("technical_field", "未定义")}[独权前序特征 (背景基准)]
+        {chr(10).join(block_a_preamble) if block_a_preamble else "（无明显前序特征）"}
 
         === 2. Block B: 核心创新点 (Key Features - Vital Clusters) ===
-        *** 核心效果按子块拆分：B1..Bn（每个子块对应一个核心效果） ***
+        *** 必须将核心效果按子块严密拆分：B1..Bn。绝不能把不同效果对应的特征混杂在同一个B块内。 ***
         {chr(10).join(block_b_sections) if block_b_sections else "（未识别到核心效果子块）"}
 
         === 3. Block C: 功能与限定 (Functional - Enabler/Improver) ===
-        *** TCS Score 3-4分特征 (作为限定条件或降噪词) ***
-        {chr(10).join(block_c_content) if block_c_content else "（未识别到3-4分特征）"}
+        *** TCS 3-4分特征 (作为实施例细化条件、降噪限定) ***
+        {chr(10).join(block_c_content) if block_c_content else "（无补充限定特征）"}
 
-        [关键技术效果参考 (Effects)]
-        {chr(10).join(effects_summary) if effects_summary else "（未识别到有效技术效果）"}
-
-        [Hub特征提示]
-        {", ".join(sorted(hub_features)) if hub_features else "无"}
-
-        === 4. 补充上下文 (Technical Context) ===
-        {report.get('technical_means', '未定义')[:1200]}
+        === 4. 补充上下文与技术问题 ===
+        [待解决的技术问题] {report.get('technical_problem', '未定义')}
+        [技术方案摘要] {tech_means_summary}...
         """
 
     def _build_search_matrix(self, context: str) -> List[Dict]:
@@ -142,75 +140,53 @@ class SearchStrategyGenerator:
         logger.info("基于 TCS 指导策略构建检索要素矩阵")
 
         system_prompt = """
-        你是一位拥有 20 年实战经验的全球顶级专利检索专家（精通 CNIPA, EPO, USPTO 审查与检索逻辑）。
-        你的任务是基于提供的【经过 TCS (技术贡献评分) 预处理的技术交底信息】，构建用于布尔检索的《检索要素矩阵 (search_strategy.v2)》。
+        你是一位拥有 20 年实战经验的全球顶级专利检索专家（精通 CNIPA, EPO, USPTO 审查逻辑与布尔检索架构）。
+        你的任务是基于提供的【经过 TCS 评分分级的技术交底信息】，构建高水平布尔检索《检索要素矩阵》。
 
-        ### 核心提取策略：A + B1..Bn + C
-        你必须按以下结构输出检索要素（总数建议 5-10）：
-        1. **Block A (Subject)**：必须且仅有 1 个，作为技术领域锚点。
-        2. **Block B 子块 (B1..Bn)**：每个 B_i 对应一个核心效果 E_i。来自核心效果贡献特征（优先 TCS 5分）。
-        3. **Block C (Functional)**：用于降噪、后置交集筛选。
+        ### 检索矩阵架构设计原则：A + B1..Bn + C
+        你的输出必须严密契合以下模块，通常包含 5-10 个检索要素：
+        1. **Block A (Subject/环境要素)**：必须有且仅有 1 个，作为整体技术领域或应用场景的锚点。
+        2. **Block B 子块 (B1..Bn / 核心突破点)**：每个 B_i 对应一个核心效果。必须将该效果的贡献特征全量转化为要素，且**坚决不能把不同效果的特征混在同一个 B 子块中**（保证并行或交叉检索的灵活性）。
+        3. **Block C (Functional/周边与限定要素)**：提取用于降噪、后置筛选的常规特征或功能限定特征。
 
-        ### 关键业务规则（必须遵守）
-        1. **贡献特征全收录**：核心效果的贡献特征都应进入矩阵，不能遗漏。
-        2. **Hub 特征允许复用**：同一特征贡献多个核心效果时，允许在多个 B_i 中重复出现，并标记 `is_hub_feature=true`。
-        3. **避免过度 AND**：B_i 子块用于并行检索，不要把不同核心效果强行合并成一个“超长且全AND”的检索视角。
-        4. **频率标签由你判断**：必须为每个要素输出 `term_frequency`：
-           - `low`: 低频、特异性强，优先用于召回锚定。
-           - `high`: 高频、泛化强，优先用于降噪限定。
-        5. **优先级标签**：必须输出 `priority_tier`，合法值：
-           - `core`: 核心破新颖性特征（通常 Block B）
-           - `assist`: 关键使能/协同特征
-           - `filter`: 场景或功能限定（通常 Block A/C）
+        ### 关键业务规则（必须绝对服从）：
+        1. **Hub 特征复用**：若某特征同时支撑多个效果，可在不同 B_i 子块中重复出现，并将其 `is_hub_feature` 设为 `true`。
+        2. **词频控制与优先级判断**：
+           - `term_frequency`: `low` (生僻/特异性强词汇，优先用于召回), `high` (常见/泛化词汇，常用于降噪限定)。
+           - `priority_tier`: `core` (破新颖性的核心特征), `assist` (使能/配合特征), `filter` (应用领域/兜底降噪特征)。
+        3. **要素分类 (`element_type`)**：精准归入以下5类，决定你的同义词扩展方向：
+           - `Product_Structure`: 实体件/装置/部件。
+           - `Method_Process`: 动作/步骤/工艺。
+           - `Algorithm_Logic`: 算法/协议/模型架构。
+           - `Material_Composition`: 物质/材料/化学成分。
+           - `Parameter_Condition`: 物理参数/范围/阈值。
 
-        ### 属性定义与语境切换 (element_type)
-        每个提取的要素必须被精准归入以下 5 类之一，这直接决定了你后续同义词扩展的方向：
-        - `Product_Structure` (实体结构)：诱发结构件、装置、部件及其俗称的扩展（如 device, member, assembly）。
-        - `Method_Process` (方法/动作)：诱发动名词、工艺步骤、制造过程的扩展（如 heating, controlling, etching）。
-        - `Algorithm_Logic` (算法/逻辑)：诱发学术名词、标准协议、行业缩写扩展（如 CNN, FFT, 激活函数），绝对避免与硬件实体混淆。
-        - `Material_Composition` (材料/组分)：诱发化学式、合金名、聚合物名、商品名扩展（如 PU, 聚四氟乙烯, 合金）。
-        - `Parameter_Condition` (参数/限定)：诱发物理量、比值、阈值、范围词的扩展（如 ratio, threshold, 介电常数）。
-
-        ### 检索词扩展铁律 (Expansion Rules) - 【极其重要】
-        你输出的 `keywords_zh` 和 `keywords_en` 将直接送入搜索引擎，必须遵守以下铁律：
-        1. **中文扩展 (CN)**：
-           - 必须包含：学术法定词 + 行业俗称 + 上下位概念（例如：`["移动终端", "智能手机", "手机", "移动设备"]`）。
-           - 结构功能互换：如果是弹簧，必须扩展 `["弹簧", "弹性件", "偏置件", "复位件"]`。
-        2. **英文扩展 (EN)**：
-           - 采用 Patentese 法律英语（如 `plurality of`, `configured to`, `means for`）。
-           - **强制使用截词符**（用 `*` 或 `+` 或 `?`），例如 `sensor*`, `configur+`, `encrypt?`。
-           - 词根多形态覆盖：动名词/名词变体（例如 `mix*` 涵盖 mixing, mixer, mixture）。
-        3. **【防灾性负向约束】**：
-           - **严禁**在数组的单一字符串内包含布尔逻辑词（禁止输出 `"手机 OR 终端"`，必须输出 `["手机", "终端"]`）。
-           - **严禁**输出毫无独立检索意义的短语（禁止输出 `"该方法包括"`, `"通过...连接"`）。
-           - **严禁**将一长串句子作为关键词，关键词必须是“词”或“词组”。
+        ### 检索词扩展铁律 (Expansion Rules) - 【核心成败关键】
+        你输出的 `keywords_zh` 和 `keywords_en` 将直接用于布尔组配，必须严格遵守：
+        1. **中文扩展 (CN) 穷尽原则**：法定规范词汇 + 行业俗称 + 上下位概念（如 `["手机", "智能终端", "移动设备"]`）。遇到功能性结构必须进行结构/功能等效替换（如 `["弹簧", "弹性件", "偏置件", "复位件"]`）。
+        2. **英文扩展 (EN) 截词与变体原则**：
+           - 强制采用专利英语 (Patentese)。
+           - **必须使用截词符** (`*` 或 `+` 或 `?`) 覆盖词根的多词性变体。例如：使用 `mix*` 涵盖 mixing, mixer, mixture；使用 `sensor*`；使用 `configur*`。
+        3. **【致命错误防范（绝对禁止）】**：
+           - **严禁**在数组的单一字符串内包含逻辑词（禁止输出 `"手机 OR 终端"`，必须输出 `["手机", "终端"]`）。
+           - **严禁**输出无独立检索意义的短句子（禁止输出 `"该方法包括"`, `"相连接"`, `"配置为"`）。
+           - 关键词要素必须是“词”或“短语”，绝不能是长句。
 
         ### 分类号分配原则 (ipc_cpc_ref)
-        - Block A 优先分配【应用类 IPC】（如车辆 B60）。Block B/C 优先分配【功能类 IPC】（如数据处理 G06F）。
-        - **格式严控**：必须符合国际标准 `[部类][大类][小类][大组]/[小组]`（如 `H04W 72/04`，必须有大写字母且中间必须有且仅有一个空格）。
-        - 精度要求：只输出具有强相关性的 1-3 个分类号，如果拿不准小组，保留到大组级别（如 `H04W 72/00`）。
+        - Block A 优先分配【应用类 IPC】；Block B/C 优先分配【功能/结构类 IPC】。
+        - 格式严控：必须符合国际标准 `[部类][大类][小类][大组]/[小组]`（如 `H04W 72/04`，注意大组与小组间有且仅有一个斜杠，前面必须有唯一的空格）。
+        - 精度要求：只输出具有强相关性的 1-3 个分类号，如果拿不准小组，保留到大组级别（如 `G06F 17/00`）。
 
         ### 输出格式要求
-        - 必须且只能输出一个 **JSON 数组 (List)**，每个元素必须包含：
-          - `element_name`
-          - `element_role` (`Subject|KeyFeature|Functional`)
-          - `block_id` (`A|B1|B2|...|C`)
-          - `effect_cluster_id` (`E1|E2|...`；非核心块可留空字符串)
-          - `is_hub_feature` (`true|false`)
-          - `term_frequency` (`low|high`)
-          - `priority_tier` (`core|assist|filter`)
-          - `element_type`
-          - `keywords_zh`
-          - `keywords_en`
-          - `ipc_cpc_ref`
-        - 绝对不要使用 Markdown 代码块（如 ```json），不要包含任何前言、后语或解释性文字。
+        - 必须且只能输出一个 **JSON 数组 (List)**。
+        - **绝对不要使用 Markdown 代码块（如 ```json）**，不要包含任何前语、后言或解释性文字。
 
         # 标准输出 Schema 示例：[
           {
             "element_name": "迷宫式密封环",
             "element_role": "KeyFeature",
             "block_id": "B1",
-            "effect_cluster_id": "E1",
+            "effect_cluster_ids": ["E1"],
             "is_hub_feature": false,
             "term_frequency": "low",
             "priority_tier": "core",
@@ -259,13 +235,18 @@ class SearchStrategyGenerator:
             raw_block_id = str(item.get("block_id") or "").strip().upper()
             block_id = self._normalize_block_id(raw_block_id, element_role)
 
-            effect_cluster_id = str(item.get("effect_cluster_id") or "").strip().upper()
-            if effect_cluster_id and not re.fullmatch(r"E\d+", effect_cluster_id):
-                effect_cluster_id = ""
-            if block_id.startswith("B") and not effect_cluster_id:
-                effect_cluster_id = f"E{block_id[1:]}" if block_id[1:].isdigit() else ""
-            if not block_id.startswith("B"):
-                effect_cluster_id = ""
+            effect_cluster_ids: List[str] = []
+            raw_cluster_ids = item.get("effect_cluster_ids")
+            if isinstance(raw_cluster_ids, list):
+                for value in raw_cluster_ids:
+                    cluster_id = str(value or "").strip().upper()
+                    if re.fullmatch(r"E\d+", cluster_id) and cluster_id not in effect_cluster_ids:
+                        effect_cluster_ids.append(cluster_id)
+            if block_id.startswith("B") and not effect_cluster_ids:
+                if block_id[1:].isdigit():
+                    effect_cluster_ids = [f"E{block_id[1:]}"]
+            if not block_id.startswith("B") and block_id != "C":
+                effect_cluster_ids = []
 
             term_frequency = str(item.get("term_frequency") or "").strip().lower()
             if term_frequency not in VALID_TERM_FREQUENCY:
@@ -285,7 +266,7 @@ class SearchStrategyGenerator:
                     "element_name": element_name,
                     "element_role": element_role,
                     "block_id": block_id,
-                    "effect_cluster_id": effect_cluster_id,
+                    "effect_cluster_ids": effect_cluster_ids,
                     "is_hub_feature": bool(item.get("is_hub_feature", False)),
                     "term_frequency": term_frequency,
                     "priority_tier": priority_tier,
@@ -394,7 +375,7 @@ class SearchStrategyGenerator:
             effect_clusters.append(
                 {
                     "block_id": f"B{i}",
-                    "effect_cluster_id": f"E{i}",
+                    "effect_cluster_ids": [f"E{i}"],
                     "effect_text": effect["effect_text"],
                     "score": effect["score"],
                     "features": effect["features"],
@@ -410,37 +391,40 @@ class SearchStrategyGenerator:
         }
 
     def _build_semantic_cluster_text(self, cluster: Dict[str, Any], bundle: Dict[str, Any]) -> str:
+        """
+        重构点：为语义检索提供高纯度上下文。
+        废除盲目追加全局 technical_means 的做法，防止各子块的 Embedding 向量同质化。
+        只提供强相关的 主语 + 问题 + 当前特征 + 运行机理。
+        """
         feature_details = bundle["feature_details"]
         hub_features = bundle["hub_features"]
+
+        subject_matter = self._normalize_inline_text(self.report_data.get("claim_subject_matter", "未定义"))
+        technical_problem = self._normalize_inline_text(self.report_data.get("technical_problem", "未定义"))
+
         lines = [
-            f"[{cluster['block_id']}/{cluster['effect_cluster_id']}] 核心效果: {cluster['effect_text']}",
-            f"[评分] TCS={cluster['score']}",
+            f"[应用场景/主语] {subject_matter}",
+            f"[待解决的具体问题] {technical_problem}",
+            f"[{cluster['block_id']}/{','.join(cluster['effect_cluster_ids'])}] 目标核心效果: {cluster['effect_text']}",
         ]
+
         features = cluster.get("features", [])
         if features:
-            lines.append("[贡献特征]")
+            lines.append("[实现该效果的专有技术手段及机理]")
             for feat in features:
                 info = feature_details.get(feat, {})
                 desc = self._normalize_inline_text(info.get("description", ""))
                 rationale = self._normalize_inline_text(info.get("rationale", ""))
-                hub_mark = " (Hub)" if feat in hub_features else ""
-                line = f"- {feat}{hub_mark}"
+                hub_mark = " (Hub特征-跨效果协同)" if feat in hub_features else ""
+
+                lines.append(f"- 结构/方法特征: {feat}{hub_mark}")
                 if desc:
-                    line += f"；定义: {desc}"
+                    lines.append(f"  > 实施细节: {desc}")
                 if rationale:
-                    line += f"；机理: {rationale}"
-                lines.append(line)
+                    lines.append(f"  > 作用机理/互动关系: {rationale}")
         else:
-            lines.append("[贡献特征] 无")
-        raw_tech_text = self._normalize_inline_text(
-            self.report_data.get("technical_means")
-            or self.report_data.get("technical_scheme")
-            or self.report_data.get("ai_abstract")
-            or ""
-        )
-        if raw_tech_text:
-            lines.append("[补充技术上下文]")
-            lines.append(raw_tech_text[:1000])
+            lines.append("[专有技术手段] (未显式提供，请依靠领域常识推演)")
+
         return "\n".join(lines)
 
     def _generate_semantic_query(
@@ -448,40 +432,50 @@ class SearchStrategyGenerator:
         raw_text: str,
         *,
         block_id: Optional[str] = None,
-        effect_cluster_id: Optional[str] = None,
+        effect_cluster_ids: Optional[List[str]] = None,
         effect_text: Optional[str] = None,
     ) -> str:
         """
-        通过独立的 LLM 调用，将原始技术交底内容重写为高密度的向量检索 Query
+        通过独立的 LLM 调用，将特定子块的特征+机理重写为高密度的向量检索 Query。
         """
-        logger.info(f"调用 LLM 生成语义检索查询: {block_id or '-'} / {effect_cluster_id or '-'}")
+        effect_id_display = ",".join(effect_cluster_ids or []) or "-"
+        logger.info(f"调用 LLM 生成高密度语义检索 Query: {block_id or '-'} / {effect_id_display}")
 
         if not raw_text.strip():
             return ""
 
         system_prompt = """
-        你是一位专门优化专利向量检索（Dense Retrieval / Embedding）质量的 AI 专家。
-        你的输入是某一个核心效果子块（例如 B1/E1）的技术机理文本。
-        你的任务是将文本“降噪并压实”为一段【极高信息密度的单一效果语义检索 Query】，最大化 Embedding 模型对该子块核心特征的注意力权重。
-        注意：输出必须只服务于该核心效果，不能混入其他效果语义。
+        你是一位专门优化专利向量检索（Dense Retrieval / Embedding）质量的顶级 AI 专家。
+        你的任务是将输入的某个【核心效果子块（如 B1/E1）】的离散特征与机理文本，重写为一段【极高信息密度的单一效果语义检索 Query】。
+        这段 Query 将直接输入到 Sentence-BERT 等 Embedding 模型中用于检索高相关性的对比文件。
 
-        ### 处理规则（严格遵守）：
-        1. **符号降噪（必须执行）**：彻底清除所有的 Markdown 格式（如 `**`）、引用标号（如 `[1]`）以及分析标签（如 `(★区别特征)`）。
-        2. **剥离叙述性过渡语**：直接陈述技术事实！强行删掉原文中的背景铺垫、主观评价和过渡套话（如“针对...的【核心问题】”、“本发明并未采用...而是引入了”、“其核心在于”、“从物理学角度看”等）。
-        3. **无损保留机理（IPO逻辑）**：绝对不能删减原文中的“物理/数学/算法机制”、“结构协同关系”以及“解决的具体问题”。
-        4. **语言风格**：必须是连贯紧凑的客观陈述句。严禁使用第一人称（“本发明”），严禁输出为列表格式。
-        5. **专有词保留**：低频专有技术词（材料/器件/算法名）保持原词，不做上位替换。
-        6. **字数控制**：浓缩至 100 - 180 字左右，确保每一段 Token 都是纯粹的“技术干货”。
+        ### 核心指导逻辑（Embedding 友好原则）：
+        向量模型对 "技术手段(Means) -> 作用机理(Mechanism) -> 技术效果(Effect)" 的三元组因果结构最为敏感。
+        你必须把输入信息融合成具有强逻辑连接的客观技术陈述句，最大化模型对该子块【创新本质】的注意力权重。
 
-        ### 示例对比（请深刻体会“剥离过渡语”的含义）：
-        *   **原始输入**: "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [4] 将高频载波中的低频故障冲击特征进行非线性映射，配合 **多级带通滤波器** [5] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
-        *   **输出 (JSON)**: 
-        {
-            "semantic_query": "一种基于自适应共振解调算法的轴承故障检测技术。利用包络检波器将高频载波中的低频故障冲击特征进行非线性映射，并配合多级带通滤波器的级联作用，将微伏级微弱故障特征从强干扰背景噪声中剥离，实现早期微裂纹的精准捕捉。"
-        }
+        ### 必须遵守的处理铁律：
+        1. **绝对聚焦单一效果**：输出必须且只能围绕当前输入的核心效果展开，切忌发散到其他无关效果上。
+        2. **极致降噪与提纯**：
+           - 彻底清除任何主观修饰性套话（如“本发明创造性地提出了”、“有效地解决了痛点”、“极为重要”、“从物理学角度看”等）。
+           - 剔除专利八股文（如“一种...的装置，包括：”、“根据权利要求所述的”）。
+           - 清理所有格式符号、引用标号（如 `[1]`, `**`, `(★)`）。
+        3. **无损保留技术硬核**：
+           - **绝对保留**所有的“物理量、数学模型、特定材料、专有结构名词、算法名称、化学式”。
+           - 必须清晰、连贯地描述【特征之间的位置关系/连接关系/数据流向】以及【如何引发特定机理】。
+        4. **语言风格要求**：
+           - 采用紧凑的客观技术陈述句，禁止使用列表格式。
+           - 推荐句式：“一种应用于[场景]的技术。通过[技术特征/结构]，利用/基于[运作机理]，实现/达到[技术效果]。”
+           - 字数浓缩在 100 - 180 字之间，确保输出内容的每个 Token 都是纯粹的技术干货。
+
+        ### 示例对比：
+        *   **原始输入**: "[应用场景] 旋转机械监测。[问题]早期轴承故障信号极易被背景噪声淹没。目标核心效果: 精准捕捉微裂纹。实施细节: 引入了 **自适应共振解调算法** [3](★区别特征)。作用机理: 利用 **包络检波器**[4] 将高频载波中的低频故障冲击进行非线性映射，配合 **多级带通滤波器** [5] 级联作用剥离强背景干扰。"
+        *   **标准输出 (JSON)**:
+        {{
+            "semantic_query": "一种应用于旋转机械监测的轴承故障检测技术。通过引入自适应共振解调算法，利用包络检波器对高频载波中的低频故障冲击特征进行非线性映射，并结合多级带通滤波器的级联过滤机制，将微小的微伏级故障特征从强背景噪声中彻底分离，从而实现对早期轴承微裂纹的精确捕捉与检测。"
+        }}
 
         ### 输出格式：
-        必须输出为纯 JSON 格式，包含唯一的键 `semantic_query`。严禁使用 Markdown 代码块 (如 ```json )，严禁包含任何解释性文字。
+        必须输出为纯 JSON 格式，且只包含唯一的键 `semantic_query`。严禁使用 Markdown 代码块 (如 ```json)，严禁包含任何前言或解释性文字。
         """
 
         try:
@@ -491,8 +485,7 @@ class SearchStrategyGenerator:
                     {
                         "role": "user",
                         "content": (
-                            f"子块: {block_id or 'B?'} / {effect_cluster_id or 'E?'}\n"
-                            f"核心效果: {effect_text or '未提供'}\n"
+                            f"子块标识: {block_id or 'B?'} / {effect_id_display}\n"
                             f"原始输入文本：\n{raw_text}"
                         ),
                     },
@@ -505,9 +498,7 @@ class SearchStrategyGenerator:
             if isinstance(response, dict) and "semantic_query" in response:
                 return response["semantic_query"].strip()
             else:
-                logger.warning(
-                    "LLM 返回的语义检索查询格式不符合预期，回退到基础代码清理。"
-                )
+                logger.warning("LLM 返回的语义检索查询未命中 semantic_query 键，使用正则降级处理。")
                 return self._fallback_clean_text(raw_text)
 
         except Exception as e:
@@ -537,15 +528,15 @@ class SearchStrategyGenerator:
             clean_query = self._generate_semantic_query(
                 raw_text,
                 block_id=cluster["block_id"],
-                effect_cluster_id=cluster["effect_cluster_id"],
+                effect_cluster_ids=cluster["effect_cluster_ids"],
                 effect_text=cluster["effect_text"],
             )
             if not clean_query:
                 continue
             queries.append(
                 {
-                    "query_id": cluster["block_id"],
-                    "effect_cluster_id": cluster["effect_cluster_id"],
+                    "block_id": cluster["block_id"],
+                    "effect_cluster_ids": cluster["effect_cluster_ids"],
                     "effect": cluster["effect_text"],
                     "tcs_score": cluster["score"],
                     "content": clean_query,

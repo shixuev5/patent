@@ -27,8 +27,8 @@ def test_render_search_section_shows_applicants_and_inventors() -> None:
                 "description": "desc",
                 "queries": [
                     {
-                        "query_id": "B1",
-                        "effect_cluster_id": "E1",
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
                         "effect": "效果描述1",
                         "content": "query",
                     }
@@ -62,8 +62,8 @@ def test_render_search_section_shows_dash_when_applicants_or_inventors_missing()
                 "description": "desc",
                 "queries": [
                     {
-                        "query_id": "B1",
-                        "effect_cluster_id": "E1",
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
                         "effect": "效果描述1",
                         "content": "query",
                     }
@@ -119,8 +119,8 @@ def test_render_search_section_sanitizes_semantic_html_fragments() -> None:
                 "description": "基于核心技术词",
                 "queries": [
                     {
-                        "query_id": "B1",
-                        "effect_cluster_id": "E1",
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
                         "effect": "效果描述A",
                         "content": "```html\n<tr><td>关键词A</td></tr>\n```",
                     }
@@ -132,5 +132,135 @@ def test_render_search_section_sanitizes_semantic_html_fragments() -> None:
     assert "关键词A" in content
     assert "<td>关键词A</td>" not in content
     assert "<tr>" not in content
-    assert "效果簇-技术效果关联" in content
+    assert "### 核心效果1：效果描述A" in content
     assert "效果描述A" in content
+
+
+def test_render_search_section_groups_by_effect_and_filters_matrix() -> None:
+    renderer = ReportRenderer(
+        patent_data={
+            "bibliographic_data": {
+                "invention_title": "一种装置",
+                "application_date": "2024.02.02",
+            }
+        }
+    )
+
+    content = renderer._render_search_section(
+        {
+            "search_matrix": [
+                {
+                    "element_name": "主题A",
+                    "element_role": "Subject",
+                    "block_id": "A",
+                    "effect_cluster_ids": [],
+                    "element_type": "Product_Structure",
+                    "keywords_zh": ["主题A"],
+                    "keywords_en": ["subject*"],
+                    "ipc_cpc_ref": ["A61N 5/00"],
+                },
+                {
+                    "element_name": "特征B1",
+                    "element_role": "KeyFeature",
+                    "block_id": "B1",
+                    "effect_cluster_ids": ["E1"],
+                    "element_type": "Product_Structure",
+                    "keywords_zh": ["特征B1"],
+                    "keywords_en": ["featureb1*"],
+                    "ipc_cpc_ref": ["A61N 5/01"],
+                },
+                {
+                    "element_name": "特征B2",
+                    "element_role": "KeyFeature",
+                    "block_id": "B2",
+                    "effect_cluster_ids": ["E2"],
+                    "element_type": "Product_Structure",
+                    "keywords_zh": ["特征B2"],
+                    "keywords_en": ["featureb2*"],
+                    "ipc_cpc_ref": ["A61N 5/02"],
+                },
+                {
+                    "element_name": "共通C",
+                    "element_role": "Functional",
+                    "block_id": "C",
+                    "effect_cluster_ids": [],
+                    "element_type": "Parameter_Condition",
+                    "keywords_zh": ["共通C"],
+                    "keywords_en": ["commonc*"],
+                    "ipc_cpc_ref": ["A61N 5/03"],
+                },
+            ],
+            "semantic_strategy": {
+                "name": "语义检索",
+                "description": "desc",
+                "queries": [
+                    {
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
+                        "effect": "核心效果一",
+                        "tcs_score": 5,
+                        "content": "query1",
+                    },
+                    {
+                        "block_id": "B2",
+                        "effect_cluster_ids": ["E2"],
+                        "effect": "核心效果二",
+                        "tcs_score": 5,
+                        "content": "query2",
+                    },
+                ],
+            },
+        }
+    )
+
+    assert "### 核心效果1：核心效果一" in content
+    assert "### 核心效果2：核心效果二" in content
+    first_group = content.split("### 核心效果1：核心效果一", 1)[1].split("### 核心效果2：核心效果二", 1)[0]
+    second_group = content.split("### 核心效果2：核心效果二", 1)[1]
+
+    assert "特征B1" in first_group
+    assert "特征B2" not in first_group
+    assert "主题A" in first_group
+    assert "共通C" in first_group
+
+    assert "特征B2" in second_group
+    assert "特征B1" not in second_group
+    assert "主题A" in second_group
+    assert "共通C" in second_group
+
+
+def test_render_search_section_falls_back_when_queries_missing() -> None:
+    renderer = ReportRenderer(
+        patent_data={
+            "bibliographic_data": {
+                "invention_title": "一种装置",
+                "application_date": "2024.02.02",
+            }
+        }
+    )
+
+    content = renderer._render_search_section(
+        {
+            "search_matrix": [
+                {
+                    "element_name": "特征A",
+                    "element_role": "Subject",
+                    "block_id": "A",
+                    "effect_cluster_ids": [],
+                    "element_type": "Product_Structure",
+                    "keywords_zh": ["特征A"],
+                    "keywords_en": ["feature*"],
+                    "ipc_cpc_ref": ["A61N 5/00"],
+                }
+            ],
+            "semantic_strategy": {
+                "name": "语义检索",
+                "description": "desc",
+                "content": "legacy query",
+            },
+        }
+    )
+
+    assert "## 2. 检索要素表" in content
+    assert "## 3. 语义检索" in content
+    assert "legacy query" in content

@@ -73,7 +73,7 @@ def test_generate_core_and_vision_annotate_run_in_parallel(tmp_path: Path, monke
         "run",
         lambda self, state: {
             "search_semantic_strategy": {
-                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+                "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
             }
         },
     )
@@ -136,7 +136,7 @@ def test_generate_core_failure_stops_search_and_render(tmp_path: Path, monkeypat
         flags["search_semantic_called"] = True
         return {
             "search_semantic_strategy": {
-                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+                "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
             }
         }
 
@@ -224,7 +224,7 @@ def test_workflow_checkpoint_requires_runtime_config(tmp_path: Path, monkeypatch
         "run",
         lambda self, state: {
             "search_semantic_strategy": {
-                "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+                "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
             }
         },
     )
@@ -310,7 +310,7 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
             pass
 
         def build_semantic_strategy(self):
-            return {"queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]}
+            return {"queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]}
 
     monkeypatch.setattr(
         "agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
@@ -339,7 +339,7 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
     assert join_updates["search_json"] == {
         "search_matrix": [],
         "semantic_strategy": {
-            "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "q"}]
+            "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]
         },
     }
     assert (cache_dir / "search_matrix_cache.json").exists()

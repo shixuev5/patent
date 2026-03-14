@@ -53,7 +53,7 @@ def test_build_semantic_strategy_delegates(monkeypatch) -> None:
         lambda: {
             "name": "语义检索",
             "description": "desc",
-            "queries": [{"query_id": "B1", "effect_cluster_id": "E1", "content": "query"}],
+            "queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "query"}],
         },
     )
 
@@ -87,7 +87,7 @@ def test_build_effect_clusters_assigns_b_subblocks_and_hub_feature(monkeypatch) 
     clusters = bundle["effect_clusters"]
 
     assert [item["block_id"] for item in clusters] == ["B1", "B2"]
-    assert [item["effect_cluster_id"] for item in clusters] == ["E1", "E2"]
+    assert [item["effect_cluster_ids"] for item in clusters] == [["E1"], ["E2"]]
     assert bundle["hub_features"] == {"特征B"}
 
 
@@ -139,10 +139,12 @@ def test_build_semantic_strategy_outputs_queries_by_effect_cluster(monkeypatch) 
     monkeypatch.setattr(
         generator,
         "_generate_semantic_query",
-        lambda raw_text, **kwargs: f"query-{kwargs.get('block_id')}-{kwargs.get('effect_cluster_id')}",
+        lambda raw_text, **kwargs: (
+            f"query-{kwargs.get('block_id')}-{','.join(kwargs.get('effect_cluster_ids') or [])}"
+        ),
     )
     result = generator._build_semantic_strategy()
-    assert [item["query_id"] for item in result["queries"]] == ["B1", "B2"]
+    assert [item["block_id"] for item in result["queries"]] == ["B1", "B2"]
     assert result["queries"][0]["effect"] == "效果1"
     assert result["queries"][0]["content"] == "query-B1-E1"
     assert result["queries"][1]["content"] == "query-B2-E2"
@@ -164,7 +166,7 @@ def test_normalize_search_matrix_includes_v2_fields(monkeypatch) -> None:
             "element_name": "要素A",
             "element_role": "KeyFeature",
             "block_id": "b2",
-            "effect_cluster_id": "e2",
+            "effect_cluster_ids": ["e2"],
             "is_hub_feature": True,
             "term_frequency": "low",
             "priority_tier": "core",
@@ -185,11 +187,11 @@ def test_normalize_search_matrix_includes_v2_fields(monkeypatch) -> None:
     normalized = generator._normalize_search_matrix(raw)
 
     assert normalized[0]["block_id"] == "B2"
-    assert normalized[0]["effect_cluster_id"] == "E2"
+    assert normalized[0]["effect_cluster_ids"] == ["E2"]
     assert normalized[0]["is_hub_feature"] is True
     assert normalized[0]["term_frequency"] == "low"
     assert normalized[0]["priority_tier"] == "core"
     assert normalized[1]["block_id"] == "C"
-    assert normalized[1]["effect_cluster_id"] == ""
+    assert normalized[1]["effect_cluster_ids"] == []
     assert normalized[1]["term_frequency"] == "high"
     assert normalized[1]["priority_tier"] == "assist"

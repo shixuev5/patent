@@ -461,163 +461,222 @@ class ReportRenderer:
             for row in semantic.get("queries", []):
                 if isinstance(row, dict):
                     semantic_queries.append(row)
+
         effect_cluster_map: Dict[str, str] = {}
         for row in semantic_queries:
-            effect_cluster_id = self._safe_text(row.get("effect_cluster_id")).upper()
+            row_cluster_ids = self._extract_effect_cluster_ids(row)
             effect_text = self._safe_text(row.get("effect"))
-            if effect_cluster_id and effect_text:
-                effect_cluster_map[effect_cluster_id] = effect_text
+            if row_cluster_ids and effect_text:
+                for effect_cluster_id in row_cluster_ids:
+                    effect_cluster_map[effect_cluster_id] = effect_text
 
-        # --- 2. 检索要素表 (包含分类号) ---
-        lines.append("## 2. 检索要素表")
-        lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
-
-        if matrix:
-            role_mapping = {
-                "Subject": "Block A<br>(应用/主题)",
-                "KeyFeature": "Block B<br>(核心特征)",
-                "Functional": "Block C<br>(功能/限定)",
-            }
-            priority_mapping = {
-                "core": "核心",
-                "assist": "辅助",
-                "filter": "过滤",
-            }
-            frequency_mapping = {
-                "low": "低频",
-                "high": "高频",
-            }
-            
-            # 英文类型映射为更友好的中文UI展示
-            type_mapping = {
-                "Product_Structure": "实体结构",
-                "Method_Process": "方法/工艺",
-                "Algorithm_Logic": "算法逻辑",
-                "Material_Composition": "材料/组分",
-                "Parameter_Condition": "参数/限定",
-            }
-
-            lines.append("| 检索分块 | 效果簇 | 关联技术效果 | 检索要素 | 属性标签 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
-            lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
-
-            for item in matrix:
-                if not isinstance(item, dict):
-                    continue
-                concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
-                role_key = item.get("element_role", "Other")
-                block_id = self._safe_text(item.get("block_id")).upper()
-                effect_cluster_id = self._safe_text(item.get("effect_cluster_id")).upper()
-                if block_id:
-                    if block_id == "A":
-                        block_display = "Block A<br>(应用/主题)"
-                    elif block_id == "C":
-                        block_display = "Block C<br>(功能/限定)"
-                    elif block_id.startswith("B"):
-                        block_display = f"Block {block_id}<br>(核心子块)"
-                    else:
-                        block_display = f"Block {block_id}"
-                else:
-                    block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
-
-                e_type_raw = self._safe_text(item.get("element_type"))
-                e_type_display = type_mapping.get(e_type_raw, e_type_raw)
-
-                # 在概念名下方添加小字体属性标签，不单独增加 element_type 列
-                if e_type_display:
-                    concept_display = f"**{concept}**<br><sub>*{e_type_display}*</sub>"
-                else:
-                    concept_display = f"**{concept}**"
-
-                zh_list = item.get("keywords_zh", [])
-                en_list = item.get("keywords_en", [])
-                ref_list = item.get("ipc_cpc_ref", [])
-
-                if isinstance(zh_list, list):
-                    zh_cleaned = []
-                    for value in zh_list:
-                        cleaned = self._safe_text(value)
-                        if cleaned:
-                            zh_cleaned.append(cleaned)
-                    zh_list = zh_cleaned
-                else:
-                    zh_list = []
-                if isinstance(en_list, list):
-                    en_cleaned = []
-                    for value in en_list:
-                        cleaned = self._safe_text(value)
-                        if cleaned:
-                            en_cleaned.append(cleaned)
-                    en_list = en_cleaned
-                else:
-                    en_list = []
-                if isinstance(ref_list, list):
-                    ref_cleaned = []
-                    for value in ref_list:
-                        cleaned = self._safe_text(value)
-                        if cleaned:
-                            ref_cleaned.append(cleaned)
-                    ref_list = ref_cleaned
-                else:
-                    ref_list = []
-
-                zh_str = ", ".join(zh_list) if zh_list else "-"
-                en_str = ", ".join(en_list) if en_list else "-"
-                class_str = "<br>".join(ref_list) if ref_list else "-"
-                cluster_display = effect_cluster_id or "-"
-                effect_display = self._safe_text(effect_cluster_map.get(effect_cluster_id, "-"), "-")
-                term_frequency = frequency_mapping.get(
-                    self._safe_text(item.get("term_frequency")).lower(), "-"
-                )
-                priority_tier = priority_mapping.get(
-                    self._safe_text(item.get("priority_tier")).lower(), "-"
-                )
-                is_hub_feature = bool(item.get("is_hub_feature", False))
-                tag_items = [
-                    f"类型:{e_type_display or '-'}",
-                    f"频率:{term_frequency}",
-                    f"优先级:{priority_tier}",
-                    f"Hub:{'是' if is_hub_feature else '否'}",
-                ]
-                tag_display = "<br>".join(tag_items)
-
-                lines.append(
-                    f"| **{block_display}** | {cluster_display} | {effect_display} | "
-                    f"{concept_display} | {tag_display} | {zh_str} | {en_str} | {class_str} |"
-                )
-            lines.append("\n")
-        else:
-            lines.append("> 未生成检索要素表。\n")
-
-        # --- 3. 语义检索策略 ---
         semantic_name = self._safe_text(semantic.get("name"), "语义检索")
         semantic_desc = self._safe_text(
             semantic.get("description"),
             "基于核心技术手段的自然语言高密度提炼，用于快速召回 X 类/ Y 类文献。",
         )
-        lines.append(f"## 3. {semantic_name}\n")
-        lines.append(f"> **策略逻辑**: {semantic_desc}\n")
-        if not semantic_queries:
-            lines.append("> 未生成语义检索 Query。\n")
-        else:
-            lines.append("### 效果簇-技术效果关联")
-            lines.append("| Query | 效果簇 | 技术效果 |")
-            lines.append("| :--- | :--- | :--- |")
+
+        if semantic_queries:
+            lines.append("## 2. 按核心效果分组检索策略")
+            lines.append(f"> **策略逻辑**: {semantic_desc}\n")
             for idx, query_item in enumerate(semantic_queries, start=1):
-                query_id = self._safe_text(query_item.get("query_id"), f"Q{idx}")
-                effect_cluster_id = self._safe_text(query_item.get("effect_cluster_id"), "-")
-                effect_text = self._safe_text(query_item.get("effect"), "-")
-                lines.append(f"| {query_id} | {effect_cluster_id} | {effect_text} |")
-            lines.append("")
-            for idx, query_item in enumerate(semantic_queries, start=1):
-                query_id = self._safe_text(query_item.get("query_id"), f"Q{idx}")
-                effect_cluster_id = self._safe_text(query_item.get("effect_cluster_id"), "-")
-                effect_text = self._safe_text(query_item.get("effect"), "-")
+                block_id = self._safe_text(query_item.get("block_id"), f"B{idx}")
+                query_cluster_ids = self._extract_effect_cluster_ids(query_item)
+                effect_cluster_id = query_cluster_ids[0] if query_cluster_ids else f"E{idx}"
+                effect_text = self._safe_text(query_item.get("effect"), f"核心效果{idx}")
+                tcs_score = self._safe_text(query_item.get("tcs_score"), "-")
                 content = self._safe_text(query_item.get("content"))
-                lines.append(f"### Query {query_id}（效果簇 {effect_cluster_id}）")
-                lines.append(f"> 关联技术效果：{effect_text}")
+
+                lines.append(f"### 核心效果{idx}：{effect_text}")
+                lines.append(f"> 效果簇：{effect_cluster_id} / 查询块：{block_id}")
+                lines.append(f"> TCS评分：{tcs_score}\n")
+                lines.append("#### 语义检索")
                 lines.append(f"```text\n{content}\n```\n")
+                lines.append("#### 检索要素表")
+                filtered_matrix = self._filter_matrix_by_effect_cluster(
+                    matrix, effect_cluster_id=effect_cluster_id
+                )
+                lines.extend(
+                    self._render_matrix_table(
+                        filtered_matrix,
+                        effect_cluster_map=effect_cluster_map,
+                    )
+                )
+                lines.append("")
+        else:
+            # 回退模式：保留全局检索要素和语义展示，避免报告空白
+            lines.append("## 2. 检索要素表")
+            lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
+            lines.extend(
+                self._render_matrix_table(
+                    matrix,
+                    effect_cluster_map=effect_cluster_map,
+                )
+            )
+            lines.append(f"## 3. {semantic_name}\n")
+            lines.append(f"> **策略逻辑**: {semantic_desc}\n")
+            legacy_content = self._safe_text(semantic.get("content"))
+            if legacy_content:
+                lines.append(f"```text\n{legacy_content}\n```\n")
+            else:
+                lines.append("> 未生成语义检索 Query。\n")
             
         return "\n".join(lines)
+
+    def _extract_effect_cluster_ids(self, item: Dict[str, Any]) -> List[str]:
+        cluster_ids: List[str] = []
+        multi_ids = item.get("effect_cluster_ids")
+        if isinstance(multi_ids, list):
+            for value in multi_ids:
+                text = self._safe_text(value).upper()
+                if re.fullmatch(r"E\d+", text) and text not in cluster_ids:
+                    cluster_ids.append(text)
+        return cluster_ids
+
+    def _filter_matrix_by_effect_cluster(
+        self,
+        matrix: Any,
+        *,
+        effect_cluster_id: str,
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(matrix, list):
+            return []
+        target = self._safe_text(effect_cluster_id).upper()
+        if not target:
+            return []
+
+        filtered: List[Dict[str, Any]] = []
+        for item in matrix:
+            if not isinstance(item, dict):
+                continue
+            block_id = self._safe_text(item.get("block_id")).upper()
+            cluster_ids = self._extract_effect_cluster_ids(item)
+
+            is_common = block_id == "A" or (block_id == "C" and not cluster_ids)
+            belongs_to_current = target in cluster_ids
+            if is_common or belongs_to_current:
+                filtered.append(item)
+        return filtered
+
+    def _render_matrix_table(
+        self,
+        matrix: Any,
+        *,
+        effect_cluster_map: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        if not isinstance(effect_cluster_map, dict):
+            effect_cluster_map = {}
+        lines: List[str] = []
+        if not isinstance(matrix, list) or not matrix:
+            lines.append("> 未生成检索要素表。\n")
+            return lines
+
+        role_mapping = {
+            "Subject": "Block A<br>(应用/主题)",
+            "KeyFeature": "Block B<br>(核心特征)",
+            "Functional": "Block C<br>(功能/限定)",
+        }
+        priority_mapping = {
+            "core": "核心",
+            "assist": "辅助",
+            "filter": "过滤",
+        }
+        frequency_mapping = {
+            "low": "低频",
+            "high": "高频",
+        }
+        type_mapping = {
+            "Product_Structure": "实体结构",
+            "Method_Process": "方法/工艺",
+            "Algorithm_Logic": "算法逻辑",
+            "Material_Composition": "材料/组分",
+            "Parameter_Condition": "参数/限定",
+        }
+
+        lines.append("| 检索分块 | 效果簇 | 关联技术效果 | 检索要素 | 属性标签 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+
+        for item in matrix:
+            if not isinstance(item, dict):
+                continue
+            concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
+            role_key = item.get("element_role", "Other")
+            block_id = self._safe_text(item.get("block_id")).upper()
+            cluster_ids = self._extract_effect_cluster_ids(item)
+
+            if block_id:
+                if block_id == "A":
+                    block_display = "Block A<br>(应用/主题)"
+                elif block_id == "C":
+                    block_display = "Block C<br>(功能/限定)"
+                elif block_id.startswith("B"):
+                    block_display = f"Block {block_id}<br>(核心子块)"
+                else:
+                    block_display = f"Block {block_id}"
+            else:
+                block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
+
+            e_type_raw = self._safe_text(item.get("element_type"))
+            e_type_display = type_mapping.get(e_type_raw, e_type_raw)
+            if e_type_display:
+                concept_display = f"**{concept}**<br><sub>*{e_type_display}*</sub>"
+            else:
+                concept_display = f"**{concept}**"
+
+            zh_list = item.get("keywords_zh", [])
+            en_list = item.get("keywords_en", [])
+            ref_list = item.get("ipc_cpc_ref", [])
+
+            zh_cleaned = []
+            if isinstance(zh_list, list):
+                for value in zh_list:
+                    cleaned = self._safe_text(value)
+                    if cleaned:
+                        zh_cleaned.append(cleaned)
+            en_cleaned = []
+            if isinstance(en_list, list):
+                for value in en_list:
+                    cleaned = self._safe_text(value)
+                    if cleaned:
+                        en_cleaned.append(cleaned)
+            ref_cleaned = []
+            if isinstance(ref_list, list):
+                for value in ref_list:
+                    cleaned = self._safe_text(value)
+                    if cleaned:
+                        ref_cleaned.append(cleaned)
+
+            zh_str = ", ".join(zh_cleaned) if zh_cleaned else "-"
+            en_str = ", ".join(en_cleaned) if en_cleaned else "-"
+            class_str = "<br>".join(ref_cleaned) if ref_cleaned else "-"
+            cluster_display = ",".join(cluster_ids) if cluster_ids else "-"
+            effect_names = []
+            for cluster_id in cluster_ids:
+                effect_name = self._safe_text(effect_cluster_map.get(cluster_id))
+                if effect_name:
+                    effect_names.append(effect_name)
+            effect_display = " / ".join(effect_names) if effect_names else "-"
+            term_frequency = frequency_mapping.get(
+                self._safe_text(item.get("term_frequency")).lower(), "-"
+            )
+            priority_tier = priority_mapping.get(
+                self._safe_text(item.get("priority_tier")).lower(), "-"
+            )
+            is_hub_feature = bool(item.get("is_hub_feature", False))
+            tag_items = [
+                f"类型:{e_type_display or '-'}",
+                f"频率:{term_frequency}",
+                f"优先级:{priority_tier}",
+                f"Hub:{'是' if is_hub_feature else '否'}",
+            ]
+            tag_display = "<br>".join(tag_items)
+
+            lines.append(
+                f"| **{block_display}** | {cluster_display} | {effect_display} | "
+                f"{concept_display} | {tag_display} | {zh_str} | {en_str} | {class_str} |"
+            )
+        lines.append("\n")
+        return lines
 
     def _export_pdf(self, md_text: str, output_path: Path):
         """

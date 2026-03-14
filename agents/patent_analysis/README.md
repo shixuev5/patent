@@ -116,7 +116,7 @@ flowchart TD
 - `element_name`
 - `element_role`：`Subject` / `KeyFeature` / `Functional`
 - `block_id`：`A` / `B1..Bn` / `C`
-- `effect_cluster_id`：`E1..En`（仅核心子块）
+- `effect_cluster_ids`：`["E1"]` 或 `["E1","E2"]`（无关联时为空数组）
 - `is_hub_feature`：是否跨核心效果复用
 - `term_frequency`：`low` / `high`
 - `priority_tier`：`core` / `assist` / `filter`
@@ -128,12 +128,16 @@ flowchart TD
 `semantic_strategy` 字段：
 - `name`
 - `description`
-- `queries`：列表，每项包含 `query_id`（`B1..Bn`）、`effect_cluster_id`（`E1..En`）、`effect`（关联技术效果文本）、`content`
+- `queries`：列表，每项包含 `block_id`（`B1..Bn`）、`effect_cluster_ids`（如 `["E1"]`）、`effect`（关联技术效果文本）、`content`
 
 ## 3.10 `render`
 
 - 输入：`patent_data + analysis_json + search_json`
 - 调用 `ReportRenderer.render(...)` 渲染最终 Markdown/PDF。
+- 检索策略展示规则：
+  - 若 `semantic_strategy.queries` 存在：按核心效果分组展示（每组顺序：语义检索 -> 检索要素表）。
+  - 每组要素表包含该效果簇专属要素，并复制展示共通要素（`Block A` + 未绑定簇的 `Block C`）。
+  - 若 `queries` 缺失：回退为全局“检索要素表 + 语义检索”展示。
 - 输出：
   - `output/<task_id>/<resolved_pn>.md`
   - `output/<task_id>/<resolved_pn>.pdf`
