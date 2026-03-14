@@ -71,31 +71,31 @@ class R2Storage:
 
     def build_patent_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_analysis/{pn}.pdf"
+        return f"{self.config.key_prefix}/{pn}/ai_analysis.pdf"
 
     def build_analysis_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_analysis/{pn}.json"
+        return f"{self.config.key_prefix}/{pn}/ai_analysis.json"
 
     def build_patent_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/patent/{pn}.json"
+        return f"{self.config.key_prefix}/{pn}/patent.json"
 
     def build_ai_review_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_review/{pn}.pdf"
+        return f"{self.config.key_prefix}/{pn}/ai_review.pdf"
 
     def build_ai_review_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_review/{pn}.json"
+        return f"{self.config.key_prefix}/{pn}/ai_review.json"
 
     def build_ai_reply_pdf_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_reply/{pn}.pdf"
+        return f"{self.config.key_prefix}/{pn}/ai_reply.pdf"
 
     def build_ai_reply_json_key(self, patent_number: str) -> str:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
-        return f"{self.config.key_prefix}/ai_reply/{pn}.json"
+        return f"{self.config.key_prefix}/{pn}/ai_reply.json"
 
     def build_upload_key(self, task_id: str, filename: str) -> str:
         tid = self._clean_token(task_id, fallback="task")
@@ -107,7 +107,7 @@ class R2Storage:
         user_id = self._clean_token(owner_id, fallback="user")
         fname = self._clean_token(filename or "avatar.bin", fallback="avatar.bin")
         date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
-        return f"{self.config.key_prefix}/avatars/{date_prefix}/{user_id}-{fname}"
+        return f"avatar/{date_prefix}/{user_id}-{fname}"
 
     def get_bytes(self, key: str) -> Optional[bytes]:
         if not self.enabled or not self.client:

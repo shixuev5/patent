@@ -94,6 +94,7 @@ class SearchStrategyGenerator:
                 )
             if not feature_lines:
                 feature_lines = ["  - （未显式提取到特征，需依靠常识或上下文推断）"]
+
             block_b_sections.append(
                 f"-[{block_id}/{effect_id}] 核心效果 (Score {score}): {effect_text}\n"
                 f"  贡献特征集合:\n{chr(10).join(feature_lines)}"
@@ -104,6 +105,12 @@ class SearchStrategyGenerator:
             score = self._safe_int(e.get("tcs_score"), default=0)
             if score >= 3:
                 effects_summary.append(f"- [Score {score}] {self._normalize_inline_text(e.get('effect', ''))}")
+        
+        bg_terms = []
+        for bg in report.get("background_knowledge",[]):
+            term = bg.get("term", "")
+            if term:
+                bg_terms.append(f"- {term}: {bg.get('definition', '')}")
 
         # 提供全局粗略范围，但限制字数避免冲淡核心特征
         tech_means_summary = self._normalize_inline_text(report.get("technical_means", "未定义"))[:600]
@@ -131,6 +138,8 @@ class SearchStrategyGenerator:
         === 4. 补充上下文与技术问题 ===
         [待解决的技术问题] {report.get('technical_problem', '未定义')}
         [技术方案摘要] {tech_means_summary}...
+        [背景公知术语 (现有技术，若提取为要素必须设为 high/filter)]
+        {chr(10).join(bg_terms) if bg_terms else "（未提供背景术语）"}
         """
 
     def _build_search_matrix(self, context: str) -> List[Dict]:
@@ -447,7 +456,7 @@ class SearchStrategyGenerator:
         system_prompt = """
         你是一位专门优化专利向量检索（Dense Retrieval / Embedding）质量的顶级 AI 专家。
         你的任务是将输入的某个【核心效果子块（如 B1/E1）】的离散特征与机理文本，重写为一段【极高信息密度的单一效果语义检索 Query】。
-        这段 Query 将直接输入到 Sentence-BERT 等 Embedding 模型中用于检索高相关性的对比文件。
+        这段 Query 将直接输入到 BGE-M3 等 Embedding 模型中用于检索高相关性的对比文件。
 
         ### 核心指导逻辑（Embedding 友好原则）：
         向量模型对 "技术手段(Means) -> 作用机理(Mechanism) -> 技术效果(Effect)" 的三元组因果结构最为敏感。
@@ -465,7 +474,7 @@ class SearchStrategyGenerator:
         4. **语言风格要求**：
            - 采用紧凑的客观技术陈述句，禁止使用列表格式。
            - 推荐句式：“一种应用于[场景]的技术。通过[技术特征/结构]，利用/基于[运作机理]，实现/达到[技术效果]。”
-           - 字数浓缩在 100 - 180 字之间，确保输出内容的每个 Token 都是纯粹的技术干货。
+           - 字数浓缩在 200 - 300 字之间，确保输出内容的每个 Token 都是纯粹的技术干货。
 
         ### 示例对比：
         *   **原始输入**: "[应用场景] 旋转机械监测。[问题]早期轴承故障信号极易被背景噪声淹没。目标核心效果: 精准捕捉微裂纹。实施细节: 引入了 **自适应共振解调算法** [3](★区别特征)。作用机理: 利用 **包络检波器**[4] 将高频载波中的低频故障冲击进行非线性映射，配合 **多级带通滤波器** [5] 级联作用剥离强背景干扰。"

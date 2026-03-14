@@ -26,10 +26,10 @@ class _FakeR2Storage:
         self.put_calls: List[Dict[str, Any]] = []
 
     def build_ai_reply_pdf_key(self, pn: str) -> str:
-        return f"workspace/ai_reply/{pn}.pdf"
+        return f"workspace/{pn}/ai_reply.pdf"
 
     def build_ai_reply_json_key(self, pn: str) -> str:
-        return f"workspace/ai_reply/{pn}.json"
+        return f"workspace/{pn}/ai_reply.json"
 
     def put_bytes(self, key: str, content: bytes, content_type: str = "application/octet-stream") -> bool:
         self.put_calls.append({"key": key, "content_type": content_type, "size": len(content)})
@@ -113,8 +113,8 @@ def test_ai_reply_uploads_pdf_and_json_to_r2_and_updates_pn(monkeypatch, tmp_pat
     assert latest.pn == "CN115655695A"
     output_files = latest.metadata.get("output_files", {})
     assert output_files.get("pn") == "CN115655695A"
-    assert output_files.get("r2_key") == "workspace/ai_reply/CN115655695A.pdf"
-    assert output_files.get("ai_reply_r2_key") == "workspace/ai_reply/CN115655695A.json"
+    assert output_files.get("r2_key") == "workspace/CN115655695A/ai_reply.pdf"
+    assert output_files.get("ai_reply_r2_key") == "workspace/CN115655695A/ai_reply.json"
     content_types = {item["content_type"] for item in fake_r2.put_calls}
     assert content_types == {"application/pdf", "application/json"}
 

@@ -265,6 +265,27 @@ def _normalize_pn(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -> Optional[str]:
+    resolved_pn = _normalize_pn(pn)
+    if not resolved_pn:
+        return None
+    if task_type == TaskType.AI_REPLY.value:
+        return r2_storage.build_ai_reply_pdf_key(resolved_pn)
+    if task_type == TaskType.AI_REVIEW.value:
+        return r2_storage.build_ai_review_pdf_key(resolved_pn)
+    return r2_storage.build_patent_pdf_key(resolved_pn)
+
+
+def _build_task_download_filename(task_type: str, task: Any) -> str:
+    artifact_name = str(getattr(task, "pn", None) or getattr(task, "title", None) or getattr(task, "id", "")).strip()
+    artifact_name = artifact_name or str(getattr(task, "id", ""))
+    if task_type == TaskType.AI_REPLY.value:
+        return f"AI 答复报告_{artifact_name}.pdf"
+    if task_type == TaskType.AI_REVIEW.value:
+        return f"AI 审查报告_{artifact_name}.pdf"
+    return f"AI 分析报告_{artifact_name}.pdf"
+
+
 def _extract_ai_reply_application_number(result: Dict[str, Any]) -> Optional[str]:
     result_dict = _to_dict(result)
     prepared = _to_dict(result_dict.get("prepared_materials"))
@@ -1755,16 +1776,9 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
 
     task_type = _task_type(task)
     output_files = task.metadata.get("output_files", {}) if task.metadata else {}
-
-    if task_type == TaskType.AI_REPLY.value:
-        filename = f"AI 答复报告_{task.pn or task_id}.pdf"
-    elif task_type == TaskType.AI_REVIEW.value:
-        filename = f"AI 审查报告_{task.pn or task_id}.pdf"
-    else:
-        filename = f"AI 分析报告_{task.pn or task_id}.pdf"
-
-    r2_key = output_files.get("r2_key")
+    filename = _build_task_download_filename(task_type, task)
     r2_storage = _build_r2_storage()
+    r2_key = _build_task_pdf_r2_key(task_type, task.pn, r2_storage)
     if r2_key and r2_storage.enabled:
         r2_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_key)
         if r2_pdf:
