@@ -907,7 +907,7 @@ export const useTaskStore = defineStore('tasks', {
         link.target = '_blank'
         link.rel = 'noopener'
         link.download = task.taskType === 'ai_reply'
-          ? `AI 答复报告_${task.backendId || task.id}.pdf`
+          ? `AI 答复报告_${task.pn || task.title}.pdf`
           : task.taskType === 'ai_review'
             ? `AI 审查报告_${task.pn || task.title}.pdf`
             : `AI 分析报告_${task.pn || task.title}.pdf`

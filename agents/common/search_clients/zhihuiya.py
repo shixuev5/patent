@@ -677,41 +677,24 @@ class ZhihuiyaClient(BaseSearchClient):
     # PDF 下载相关功能
     # =========================================================================
 
-    def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
-        """
-        Step 1: 查询专利ID
-        :param pn: 专利公开号 (如 CN116745575A) 或 专利申请号 (如 202211411308.6)
-        :return: PATENT_ID 或 None
-        """
+    def _query_patent_info_by_count(self, query: str) -> Optional[Dict[str, Any]]:
+        """通过 count 接口查询 patent_info。"""
         url = "https://search-service.zhihuiya.com/core-search-api/search/patent/query/count"
-
-        # 判断输入是专利公开号还是申请号
-        # 专利申请号格式通常为：YYYYXXXXXXXXX.X (如 202211411308.6)
-        if re.match(r'\d{4}\d{7,8}\.\d', pn):
-            # 申请号格式，使用 APNO 字段查询
-            logger.info(f"[智慧芽] 识别为申请号：{pn}")
-            payload = {
-                "search_mode": "publication",
-                "q": f"APNO:({pn})",
-                "simple": True,
-                "check_complexity": True
-            }
-        else:
-            # 公开号格式，使用 PN 字段查询
-            logger.info(f"[智慧芽] 识别为公开号：{pn}")
-            payload = {
-                "search_mode": "publication",
-                "q": f"PN:({pn})",
-                "simple": True,
-                "check_complexity": True
-            }
+        payload = {
+            "search_mode": "publication",
+            "q": str(query or "").strip(),
+            "simple": True,
+            "check_complexity": True,
+        }
+        if not payload["q"]:
+            return None
 
         for attempt in range(2):
             try:
                 resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
 
                 if resp.status_code == 401:
-                    logger.warning("[智慧芽] 查询专利 ID 时 Token 过期，正在刷新...")
+                    logger.warning("[智慧芽] 查询 count 时 Token 过期，正在刷新...")
                     self.token = None
                     self._login()
                     continue
@@ -720,22 +703,66 @@ class ZhihuiyaClient(BaseSearchClient):
                 data = resp.json()
 
                 if not data.get("status"):
-                    logger.error(f"[智慧芽] 查询 {pn} 的专利 ID 失败：{data.get('message')}")
+                    logger.error(f"[智慧芽] count 查询失败：{data.get('message')}")
                     return None
 
                 patent_info = data.get("data", {}).get("patent_info", {})
-                patent_id = patent_info.get("PATENT_ID")
-
-                if not patent_id:
-                    logger.warning(f"[智慧芽] 未查询到 {pn} 对应的专利 ID")
-                    return None
-
-                return patent_id
-
+                if isinstance(patent_info, dict):
+                    return patent_info
+                return None
             except Exception as e:
-                logger.error(f"[智慧芽] 获取专利 ID 失败：{e}")
+                logger.error(f"[智慧芽] count 查询失败：{e}")
                 return None
         return None
+
+    def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
+        """
+        Step 1: 查询专利ID
+        :param pn: 专利公开号 (如 CN116745575A) 或 专利申请号 (如 202211411308.6)
+        :return: PATENT_ID 或 None
+        """
+        # 判断输入是专利公开号还是申请号
+        # 专利申请号格式通常为：YYYYXXXXXXXXX.X (如 202211411308.6)
+        if re.match(r'\d{4}\d{7,8}\.\d', pn):
+            # 申请号格式，使用 APNO 字段查询
+            logger.info(f"[智慧芽] 识别为申请号：{pn}")
+            query = f"APNO:({pn})"
+        else:
+            # 公开号格式，使用 PN 字段查询
+            logger.info(f"[智慧芽] 识别为公开号：{pn}")
+            query = f"PN:({pn})"
+
+        patent_info = self._query_patent_info_by_count(query)
+        if not patent_info:
+            return None
+
+        patent_id = patent_info.get("PATENT_ID")
+        if not patent_id:
+            logger.warning(f"[智慧芽] 未查询到 {pn} 对应的专利 ID")
+            return None
+        return str(patent_id).strip() or None
+
+    def get_publication_number_by_application_number(self, application_number: str) -> Optional[str]:
+        """
+        通过申请号查询公开号（count 接口返回 data.patent_info.PN）。
+        """
+        apno = str(application_number or "").strip()
+        if not apno:
+            return None
+
+        if not self.token:
+            self._login()
+
+        patent_info = self._query_patent_info_by_count(f"APNO:({apno})")
+        if not patent_info:
+            logger.warning(f"[智慧芽] 未查询到申请号 {apno} 对应的 patent_info")
+            return None
+
+        publication_number = str(patent_info.get("PN") or "").strip().upper()
+        if not publication_number:
+            logger.warning(f"[智慧芽] 申请号 {apno} 的 count 返回中缺少 PN")
+            return None
+        return publication_number
 
     def _get_pdf_download_url(self, patent_id: str) -> Optional[str]:
         """

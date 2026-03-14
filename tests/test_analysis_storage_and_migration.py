@@ -41,3 +41,5 @@ def test_r2_key_layout_for_analysis_and_patent_json():
     assert storage.build_patent_pdf_key("cn123") == "workspace/ai_analysis/CN123.pdf"
     assert storage.build_analysis_json_key("cn123") == "workspace/ai_analysis/CN123.json"
     assert storage.build_patent_json_key("cn123") == "workspace/patent/CN123.json"
+    assert storage.build_ai_reply_pdf_key("cn123") == "workspace/ai_reply/CN123.pdf"
+    assert storage.build_ai_reply_json_key("cn123") == "workspace/ai_reply/CN123.json"

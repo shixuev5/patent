@@ -89,6 +89,14 @@ class R2Storage:
         pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
         return f"{self.config.key_prefix}/ai_review/{pn}.json"
 
+    def build_ai_reply_pdf_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/ai_reply/{pn}.pdf"
+
+    def build_ai_reply_json_key(self, patent_number: str) -> str:
+        pn = self._clean_token((patent_number or "").upper(), fallback="unknown")
+        return f"{self.config.key_prefix}/ai_reply/{pn}.json"
+
     def build_upload_key(self, task_id: str, filename: str) -> str:
         tid = self._clean_token(task_id, fallback="task")
         fname = self._clean_token(filename or "upload.bin", fallback="upload.bin")

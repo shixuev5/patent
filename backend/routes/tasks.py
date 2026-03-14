@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from loguru import logger
 
 from config import VERSION, settings
 from backend.auth import _get_current_user
@@ -256,6 +257,77 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        return None
+
+
+def _normalize_pn(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().upper()
+    return normalized or None
+
+
+def _extract_ai_reply_application_number(result: Dict[str, Any]) -> Optional[str]:
+    result_dict = _to_dict(result)
+    prepared = _to_dict(result_dict.get("prepared_materials"))
+    original_patent = _to_dict(prepared.get("original_patent"))
+    office_action = _to_dict(prepared.get("office_action"))
+    root_office_action = _to_dict(result_dict.get("office_action"))
+    return (
+        str(original_patent.get("application_number") or "").strip()
+        or str(office_action.get("application_number") or "").strip()
+        or str(root_office_action.get("application_number") or "").strip()
+        or None
+    )
+
+
+def _extract_ai_reply_publication_number(result: Dict[str, Any]) -> Optional[str]:
+    result_dict = _to_dict(result)
+    prepared = _to_dict(result_dict.get("prepared_materials"))
+    original_patent = _to_dict(prepared.get("original_patent"))
+    original_patent_data = _to_dict(original_patent.get("data"))
+    biblio = _to_dict(original_patent_data.get("bibliographic_data"))
+    publication_number = _normalize_pn(
+        biblio.get("publication_number") or original_patent_data.get("pn")
+    )
+    if publication_number:
+        return publication_number
+
+    appno = _extract_ai_reply_application_number(result_dict)
+    if not appno:
+        return None
+
+    search_results = result_dict.get("search_results")
+    if not isinstance(search_results, list):
+        return None
+    for item in search_results:
+        item_dict = _to_dict(item)
+        structured = _to_dict(item_dict.get(appno))
+        if not structured:
+            continue
+        structured_biblio = _to_dict(structured.get("bibliographic_data"))
+        publication_number = _normalize_pn(
+            structured_biblio.get("publication_number") or structured.get("pn")
+        )
+        if publication_number:
+            return publication_number
+    return None
+
+
+def _resolve_ai_reply_publication_number_by_application_number(
+    application_number: Optional[str],
+) -> Optional[str]:
+    appno = str(application_number or "").strip()
+    if not appno:
+        return None
+    try:
+        from agents.common.search_clients.factory import SearchClientFactory
+
+        client = SearchClientFactory.get_client("zhihuiya")
+        if not hasattr(client, "get_publication_number_by_application_number"):
+            return None
+        pn = client.get_publication_number_by_application_number(appno)
+        return _normalize_pn(pn)
+    except Exception as exc:
+        logger.warning(f"按申请号查询公开号失败，application_number={appno} error={exc}")
         return None
 
 
@@ -1231,11 +1303,75 @@ async def run_ai_reply_task(
             task_logger.bind(stage="finalize_report").error(error_msg)
             return
 
+        resolved_pn = _extract_ai_reply_publication_number(result)
+        if not resolved_pn:
+            application_number = _extract_ai_reply_application_number(result)
+            resolved_pn = await asyncio.to_thread(
+                _resolve_ai_reply_publication_number_by_application_number,
+                application_number,
+            )
+        existing_task = task_manager.get_task(task_id)
+        existing_pn = _normalize_pn(getattr(existing_task, "pn", "") if existing_task else "")
+        if resolved_pn and resolved_pn != existing_pn:
+            task_manager.storage.update_task(task_id, pn=resolved_pn)
+        final_pn = resolved_pn or existing_pn
+
         output_files: Dict[str, str] = {"pdf": pdf_path}
         if Path(md_path).exists():
             output_files["md"] = md_path
         if Path(json_path).exists():
             output_files["json"] = json_path
+        if final_pn:
+            output_files["pn"] = final_pn
+
+        r2_storage = _build_r2_storage()
+        if r2_storage.enabled and final_pn:
+            ai_reply_pdf_key = r2_storage.build_ai_reply_pdf_key(final_pn)
+            stored_pdf = await asyncio.to_thread(
+                r2_storage.put_bytes,
+                ai_reply_pdf_key,
+                pdf_bytes,
+                "application/pdf",
+            )
+            if stored_pdf:
+                output_files["r2_key"] = ai_reply_pdf_key
+            else:
+                emit_system_log(
+                    category="task_execution",
+                    event_name="task_artifact_upload_failed",
+                    owner_id=owner_id,
+                    task_id=task_id,
+                    task_type=TaskType.AI_REPLY.value,
+                    success=False,
+                    message="AI 答复 PDF 上传到 R2 失败",
+                    payload={"pn": final_pn, "r2_key": ai_reply_pdf_key, "artifact": "pdf"},
+                )
+                task_logger.bind(stage="r2_upload").warning(f"AI 答复 PDF 上传到 R2 失败：{ai_reply_pdf_key}")
+
+            json_file = Path(json_path)
+            if json_file.exists():
+                json_bytes = await asyncio.to_thread(json_file.read_bytes)
+                ai_reply_json_key = r2_storage.build_ai_reply_json_key(final_pn)
+                stored_json = await asyncio.to_thread(
+                    r2_storage.put_bytes,
+                    ai_reply_json_key,
+                    json_bytes,
+                    "application/json",
+                )
+                if stored_json:
+                    output_files["ai_reply_r2_key"] = ai_reply_json_key
+                else:
+                    emit_system_log(
+                        category="task_execution",
+                        event_name="task_artifact_upload_failed",
+                        owner_id=owner_id,
+                        task_id=task_id,
+                        task_type=TaskType.AI_REPLY.value,
+                        success=False,
+                        message="AI 答复 JSON 上传到 R2 失败",
+                        payload={"pn": final_pn, "r2_key": ai_reply_json_key, "artifact": "json"},
+                    )
+                    task_logger.bind(stage="r2_upload").warning(f"AI 答复 JSON 上传到 R2 失败：{ai_reply_json_key}")
 
         task_manager.complete_task(task_id, output_files=output_files)
         task_logger.bind(stage="finalize_report").success(f"任务已完成：{pdf_path}")
@@ -1621,7 +1757,7 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     output_files = task.metadata.get("output_files", {}) if task.metadata else {}
 
     if task_type == TaskType.AI_REPLY.value:
-        filename = f"AI 答复报告_{task_id}.pdf"
+        filename = f"AI 答复报告_{task.pn or task_id}.pdf"
     elif task_type == TaskType.AI_REVIEW.value:
         filename = f"AI 审查报告_{task.pn or task_id}.pdf"
     else:
