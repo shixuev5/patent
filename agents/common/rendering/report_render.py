@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 from agents.common.rendering.styles import DEFAULT_REPORT_CSS
 from agents.common.rendering.models import EChartSpec
 
-_ASSET_BASE_URL = "https://cdn.jsdelivr.net/npm"
+_ASSET_BASE_URL = "https://unpkg.com"
 _MATHJAX_ASSET_PATH = "mathjax@3.2.2/es5/tex-mml-chtml.js"
 _ECHARTS_ASSET_PATH = "echarts@5/dist/echarts.min.js"
 
