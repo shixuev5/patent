@@ -319,3 +319,38 @@ def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:
 
     assert guide.startswith("\n<div")
     assert guide.endswith("\n")
+
+
+def test_render_matrix_table_shows_block_a_and_term_frequency_badges() -> None:
+    renderer = ReportRenderer(patent_data={})
+    lines = renderer._render_matrix_table(
+        [
+            {
+                "element_name": "应用场景",
+                "block_id": "A",
+                "priority_tier": "assist",
+                "term_frequency": "high",
+                "element_type": "Product_Structure",
+                "keywords_zh": ["应用场景"],
+                "keywords_en": ["application*"],
+                "ipc_cpc_ref": [],
+            },
+            {
+                "element_name": "关键特征",
+                "block_id": "B1",
+                "priority_tier": "core",
+                "term_frequency": "low",
+                "element_type": "Product_Structure",
+                "keywords_zh": ["关键特征"],
+                "keywords_en": ["feature*"],
+                "ipc_cpc_ref": [],
+            },
+        ]
+    )
+    table = "\n".join(lines)
+
+    assert "基准环境" in table
+    assert "限字段 TAC" in table
+    assert "全文 TX" in table
+    assert "margin-top:6px; font-size:12px; color:#888;" in table
+    assert "margin-top:4px;'><span style='border:1px solid #b8daff;" in table

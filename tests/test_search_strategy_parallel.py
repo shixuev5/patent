@@ -212,6 +212,49 @@ def test_normalize_search_matrix_includes_v2_fields(monkeypatch) -> None:
     assert normalized[2]["priority_tier"] == "filter"
 
 
+def test_normalize_search_matrix_forces_block_a_and_e_to_filter_high(monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+    )
+    generator = SearchStrategyGenerator(
+        patent_data={"bibliographic_data": {"ipc_classifications": []}},
+        report_data={},
+    )
+    raw = [
+        {
+            "element_name": "应用场景",
+            "element_role": "Functional",
+            "block_id": "A",
+            "effect_cluster_ids": ["E9"],
+            "term_frequency": "low",
+            "priority_tier": "assist",
+        },
+        {
+            "element_name": "效果锚点",
+            "element_role": "Functional",
+            "block_id": "E",
+            "effect_cluster_ids": ["e1"],
+            "term_frequency": "low",
+            "priority_tier": "assist",
+        },
+    ]
+
+    normalized = generator._normalize_search_matrix(raw)
+
+    assert normalized[0]["block_id"] == "A"
+    assert normalized[0]["effect_cluster_ids"] == []
+    assert normalized[0]["term_frequency"] == "high"
+    assert normalized[0]["priority_tier"] == "filter"
+
+    assert normalized[1]["block_id"] == "E"
+    assert normalized[1]["effect_cluster_ids"] == ["E1"]
+    assert normalized[1]["term_frequency"] == "high"
+    assert normalized[1]["priority_tier"] == "filter"
+
+
 def test_build_matrix_context_groups_block_c_by_dependency(monkeypatch) -> None:
     class StubLLMService:
         pass

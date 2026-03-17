@@ -629,9 +629,9 @@ class ReportRenderer:
 <div style="margin-top: 6px;">
 <b>1. 基础组配：</b> 优先使用 <code>(Block A) AND (Block B_i)</code>。若结果过多，追加 <code>AND (Block C/E)</code> 降噪。<br>
 <b>2. 优先级说明：</b>
-   <span style="color:#c7254e; background:#f9f2f4; padding:1px 4px; border-radius:2px;">核心</span>(关键突破,不可删) &nbsp;
-   <span style="color:#8a6d3b; background:#fcf8e3; padding:1px 4px; border-radius:2px;">辅助</span>(实施例限定,优先放开) &nbsp;
-   <span style="color:#666; background:#f5f5f5; padding:1px 4px; border-radius:2px;">兜底</span>(用于降噪) &nbsp;
+   <span style="color:#c7254e; background:#f9f2f4; padding:1px 4px; border-radius:2px;">核心特征</span>(关键突破,不可删) &nbsp;
+   <span style="color:#8a6d3b; background:#fcf8e3; padding:1px 4px; border-radius:2px;">限定特征</span>(实施例限定,优先放开) &nbsp;
+   <span style="color:#666; background:#f5f5f5; padding:1px 4px; border-radius:2px;">降噪/环境</span>(用于排除无关文献) &nbsp;
    <span style="color:#8e44ad; font-weight:bold;">[枢纽]</span>(跨效果复用锚点)<br>
 <b>3. 范围控制：</b>
    <span style="border:1px solid #b8daff; color:#004085; padding:0 3px; border-radius:2px; font-size:11px;">全文 TX</span> (特异低频词) &nbsp;
@@ -660,13 +660,13 @@ class ReportRenderer:
 
         # 扁平化微底色，增加不换行属性
         priority_mapping = {
-            "core": "<span style='color:#c7254e; background-color:#f9f2f4; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>核心</span>",
-            "assist": "<span style='color:#8a6d3b; background-color:#fcf8e3; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>辅助</span>",
-            "filter": "<span style='color:#666; background-color:#f5f5f5; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>兜底</span>",
+            "core": "<span style='color:#c7254e; background-color:#f9f2f4; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>核心特征</span>",
+            "assist": "<span style='color:#8a6d3b; background-color:#fcf8e3; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>限定特征</span>",
+            "filter": "<span style='color:#666; background-color:#f5f5f5; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>降噪/环境</span>",
         }
 
         # 极简表头，避免长表头挤压换行
-        lines.append("| 逻辑块 (Block) | 检索要素 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
+        lines.append("| 逻辑块 | 检索要素 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
         lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
         for item in matrix:
@@ -684,7 +684,13 @@ class ReportRenderer:
                 block_display = f"<b>Block {display_block_id}</b>"
 
             priority = self._safe_text(item.get("priority_tier", "assist")).lower()
-            p_badge = priority_mapping.get(priority, priority_mapping["assist"])
+            if block_id == "A":
+                p_badge = (
+                    "<span style='color:#31708f; background-color:#d9edf7; padding:2px 4px; "
+                    "border-radius:3px; font-size:12px; white-space:nowrap;'>基准环境</span>"
+                )
+            else:
+                p_badge = priority_mapping.get(priority, priority_mapping["assist"])
             col_block = f"{block_display}<br><div style='margin-top:4px;'>{p_badge}</div>"
 
             e_type_raw = self._safe_text(item.get("element_type"))
@@ -695,13 +701,27 @@ class ReportRenderer:
             hub_badge = ""
             if is_hub:
                 hub_badge = "&nbsp;<span title='跨效果枢纽特征' style='color:#8e44ad; font-size:12px; font-weight:bold;'>[枢纽]</span>"
-            if e_type_display:
-                col_concept = (
-                    f"<span style='font-weight:bold; font-size:14px;'>{concept}</span>{hub_badge}"
-                    f"<br><span style='font-size:12px; color:#888;'>{e_type_display}</span>"
+            term_freq = self._safe_text(item.get("term_frequency", "")).lower()
+            scope_badge = ""
+            if term_freq == "low":
+                scope_badge = (
+                    "<span style='border:1px solid #b8daff; background:#e6f2ff; color:#004085; "
+                    "padding:1px 4px; border-radius:2px; font-size:11px; white-space:nowrap;'>全文 TX</span>"
                 )
-            else:
-                col_concept = f"<span style='font-weight:bold; font-size:14px;'>{concept}</span>{hub_badge}"
+            elif term_freq == "high":
+                scope_badge = (
+                    "<span style='border:1px solid #f5c6cb; background:#fff2f3; color:#721c24; "
+                    "padding:1px 4px; border-radius:2px; font-size:11px; white-space:nowrap;'>限字段 TAC</span>"
+                )
+
+            elements_stack: List[str] = [f"<b>{concept}</b>{hub_badge}"]
+            if e_type_display:
+                elements_stack.append(
+                    f"<div style='margin-top:6px; font-size:12px; color:#888;'>{e_type_display}</div>"
+                )
+            if scope_badge:
+                elements_stack.append(f"<div style='margin-top:4px;'>{scope_badge}</div>")
+            col_concept = f"<div style='min-width: 90px;'>{''.join(elements_stack)}</div>"
 
             zh_list = item.get("keywords_zh", [])
             en_list = item.get("keywords_en", [])

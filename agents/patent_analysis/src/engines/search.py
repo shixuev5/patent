@@ -267,9 +267,14 @@ class SearchStrategyGenerator:
 
         ### 关键业务规则（必须绝对服从）：
         1. **Hub 特征复用**：若某特征同时支撑多个效果，可在不同 B_i 子块中重复出现，并将其 `is_hub_feature` 设为 `true`。
-        2. **词频控制与优先级判断**：
-           - `term_frequency`: `low` (生僻/特异性强词汇，优先用于召回), `high` (常见/泛化词汇，常用于降噪限定)。
-           - `priority_tier`: `core` (破新颖性的核心特征), `assist` (使能/配合特征), `filter` (应用领域/兜底降噪特征)。
+        2. **要素角色与优先级判断（词频控制与属性映射）**：
+           - `element_role`（要素角色，必须严格对应各 Block 归属）：
+             - `Subject`: [专属 Block A] 整体技术领域、应用场景或产品大类的主题词。
+             - `KeyFeature`: [专属 Block B] 破新颖性的核心创新特征（实质性结构/步骤）。
+             - `Functional`: [专属 Block C] 依附于核心特征的辅助使能特征、常规功能限定或周边降噪部件。
+             - `Effect`: [专属 Block E] 具备明确技术物理意义的效果/状态变化短语。
+           - `priority_tier`（检索优先级）: `core` (破新颖性的核心重权特征), `assist` (使能/配合的辅助特征), `filter` (应用领域/兜底降噪特征)。
+           - `term_frequency`（词频特征）: `low` (生僻/特异性强词汇，优先用于核心召回), `high` (常见/泛化词汇，常用于扩大范围或降噪限定)。
         3. **要素分类 (`element_type`)**：精准归入以下5类，决定你的同义词扩展方向：
            - `Product_Structure`: 实体件/装置/部件。
            - `Method_Process`: 动作/步骤/工艺。
@@ -380,11 +385,13 @@ class SearchStrategyGenerator:
             term_frequency = str(item.get("term_frequency") or "").strip().lower()
             if term_frequency not in VALID_TERM_FREQUENCY:
                 term_frequency = "low" if element_role == "KeyFeature" else "high"
-            if element_role == "Effect":
+            if element_role == "Effect" or block_id in {"A", "E"}:
                 term_frequency = "high"
 
             priority_tier = str(item.get("priority_tier") or "").strip().lower()
-            if element_role == "Effect":
+            if element_role == "Effect" or block_id == "E":
+                priority_tier = "filter"
+            elif block_id == "A":
                 priority_tier = "filter"
             elif priority_tier not in VALID_PRIORITY_TIERS:
                 if element_role == "KeyFeature":
