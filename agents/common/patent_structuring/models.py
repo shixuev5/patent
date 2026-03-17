@@ -36,6 +36,7 @@ class PatentClaim(BaseModel):
     claim_id: str = Field("", description="权利要求编号")
     claim_text: str = Field(..., description="权利要求纯文本，不包含序号")
     claim_type: Literal["independent", "dependent"] = Field(..., description="独立或从属权利要求")
+    parent_claim_ids: List[str] = Field(default_factory=list, description="直接父权利要求编号列表（仅从属权利要求有值）")
 
 
 class DescriptionSection(BaseModel):

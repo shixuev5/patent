@@ -1,4 +1,5 @@
 from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
+from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
 
 
 def test_extract_brief_description_only_marker_entries() -> None:
@@ -184,3 +185,98 @@ def test_extract_brief_description_full_marker_list_sample() -> None:
     items = [item for item in brief.split("、") if item.strip()]
     assert len(items) == 36
     assert "401-散热块" in items
+
+
+def test_extract_structured_claims_parent_claim_ids_single_parent() -> None:
+    claims_section = """
+1. 一种装置，包括壳体和控制器。
+2. 根据权利要求1所述的装置，其特征在于，还包括传感器。
+"""
+    claims = RuleBasedExtractor.extract_structured_claims(claims_section)
+    assert claims[0]["claim_type"] == "independent"
+    assert claims[0]["parent_claim_ids"] == []
+    assert claims[1]["claim_type"] == "dependent"
+    assert claims[1]["parent_claim_ids"] == ["1"]
+
+
+def test_extract_structured_claims_parent_claim_ids_multiple_parents() -> None:
+    claims_section = """
+1. 一种方法，包括步骤A。
+2. 根据权利要求1或2所述的方法，其特征在于，包括步骤B。
+"""
+    claims = RuleBasedExtractor.extract_structured_claims(claims_section)
+    assert claims[1]["parent_claim_ids"] == ["1", "2"]
+
+
+def test_extract_structured_claims_parent_claim_ids_range_parents() -> None:
+    claims_section = """
+1. 一种系统，包括模块A。
+2. 一种系统，包括模块B。
+3. 一种系统，包括模块C。
+4. 根据权利要求1至3任一项所述的系统，其特征在于，还包括模块D。
+"""
+    claims = RuleBasedExtractor.extract_structured_claims(claims_section)
+    assert claims[3]["parent_claim_ids"] == ["1", "2", "3"]
+
+
+def test_extract_applicants_split_inline_name_and_address() -> None:
+    md = """
+(71)申请人 北京市轨道交通建设管理有限公司地址100068北京市丰台区角门北京市轨道交通建设管理有限公司A107
+"""
+    applicants = RuleBasedExtractor._extract_applicants(md)
+    assert applicants == [{
+        "name": "北京市轨道交通建设管理有限公司",
+        "address": "100068北京市丰台区角门北京市轨道交通建设管理有限公司A107",
+    }]
+
+
+def test_extract_applicants_keeps_two_line_format() -> None:
+    md = """
+(71)申请人 北京某科技有限公司
+地址 100000北京市海淀区某路1号
+"""
+    applicants = RuleBasedExtractor._extract_applicants(md)
+    assert applicants == [{
+        "name": "北京某科技有限公司",
+        "address": "100000北京市海淀区某路1号",
+    }]
+
+
+def test_extract_applicants_without_address() -> None:
+    md = """
+(71)申请人 上海某研究院
+"""
+    applicants = RuleBasedExtractor._extract_applicants(md)
+    assert applicants == [{
+        "name": "上海某研究院",
+        "address": "",
+    }]
+
+
+def test_hybrid_check_missing_fields_requires_parent_claim_ids_for_dependent_claim() -> None:
+    extractor = HybridExtractor.__new__(HybridExtractor)
+    patent_data = {
+        "bibliographic_data": {
+            "application_number": "202310001234.5",
+            "application_date": "2023.01.01",
+            "invention_title": "一种装置",
+            "ipc_classifications": ["G01K 7/36"],
+            "applicants": [{"name": "某公司", "address": ""}],
+            "inventors": ["张三"],
+            "abstract": "摘要文本",
+        },
+        "claims": [{
+            "claim_id": "2",
+            "claim_text": "根据权利要求1所述的装置，其特征在于，还包括传感器。",
+            "claim_type": "dependent",
+            "parent_claim_ids": [],
+        }],
+        "description": {
+            "technical_field": "技术领域",
+            "background_art": "背景技术",
+            "summary_of_invention": "发明内容",
+            "detailed_description": "具体实施方式",
+        },
+    }
+    missing = extractor._check_missing_fields(patent_data)
+    assert "claims[0].parent_claim_ids" in missing

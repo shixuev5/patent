@@ -91,5 +91,14 @@ class HybridExtractor:
                 for i, claim in enumerate(patent_data["claims"]):
                     if not claim.get("claim_text") or not claim.get("claim_type"):
                         missing_fields.append(f"claims[{i}]")
+                        continue
+
+                    parent_claim_ids = claim.get("parent_claim_ids")
+                    if not isinstance(parent_claim_ids, list):
+                        missing_fields.append(f"claims[{i}].parent_claim_ids")
+                        continue
+
+                    if str(claim.get("claim_type", "")).strip().lower() == "dependent" and not parent_claim_ids:
+                        missing_fields.append(f"claims[{i}].parent_claim_ids")
 
         return missing_fields

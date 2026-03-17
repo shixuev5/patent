@@ -129,6 +129,7 @@ class StructuredClaim(BaseModel):
     claim_id: str = Field(..., description="权利要求编号")
     claim_text: str = Field(..., description="权利要求文本")
     claim_type: str = Field("unknown", description="权利要求类型：independent/dependent/unknown")
+    parent_claim_ids: List[str] = Field(default_factory=list, description="直接父权利要求编号列表")
 
 
 class AddedFeature(BaseModel):

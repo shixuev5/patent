@@ -78,6 +78,8 @@ class LLMBasedExtractor:
 2. **权利要求清洗 (Claims Cleaning)**:
    - `claim_text` 必须去除开头的序号和标点！(例如原文是 "1. 一种装置..." 或 "2、根据权利要求1...", 提取后必须变成 "一种装置..." 和 "根据权利要求1...")。
    - `claim_id` 必须填写对应权利要求编号（字符串形式，如 "1"、"2"）。
+   - `parent_claim_ids` 仅用于从属权利要求：提取其直接引用的父权项编号数组（字符串数组）。
+   - 独立权利要求 `parent_claim_ids` 必须为 `[]`；从属权利要求若引用多个或区间（如“1或2”“1至3”）必须展开为完整数组。
 3. **附图标记说明 (Brief Description of Drawings) 提取规则**:
    - 此字段**仅用于**提取类似 "1-定子，2-转子" 或 "101: 处理器" 的**部件标号说明**。
    - **严禁**提取 "图1是...的示意图" 这类图解说明文字。
@@ -91,12 +93,17 @@ class LLMBasedExtractor:
 6. **公式与特殊符号 (LaTeX Rules)**:
    - 完整保留所有的 LaTeX 公式（`$$...$$` 或 `$...$`）。
    - **JSON转义铁律**: 原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\` (例如 `$120 \\mathrm{{mm}}$`)。
+7. **申请人清洗 (Applicants Cleaning)**:
+   - `applicants.name` 只能保留申请人主体名称，严禁混入地址文本。
+   - 若原文出现“申请人名称+地址”同一行粘连（例如“某公司地址100068...”），必须拆分：名称进入 `name`，地址进入 `address`。
+   - 若无法识别地址，可将 `address` 置为 `""` 或 `null`，但 `name` 绝不能包含“地址...”串。
 
 ### 字段边界识别规则
 - **invention_title (标题字段)**: 对应 `(54)` 项，可能是“发明名称”/“实用新型名称”/“外观设计名称”，统一写入 `invention_title`。
 - **summary_of_invention (发明内容)**: 仅保留技术方案本体，遇到"本发明的有益效果"或"技术效果"时必须截断。
 - **technical_effect (有益效果)**: 单独提取"有益效果"段落，若文中未明确写出，则返回 null。
 - **claim_type (权利要求类型)**: 即使内容提到其他权利要求（如"一种用于权利要求1所述装置的方法"），只要不以"根据/如权利要求X所述"开头，就是独立(independent)权利要求。
+- **parent_claim_ids (父权项字段)**: 只表示直接父节点，不要自动展开祖先链。
 
 ### 输出格式参考
 请严格按照以下结构输出：
@@ -120,12 +127,14 @@ class LLMBasedExtractor:
     {
       "claim_id": "1",
       "claim_text": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法，包括...",
-      "claim_type": "independent"
+      "claim_type": "independent",
+      "parent_claim_ids": []
     },
     {
       "claim_id": "2",
       "claim_text": "根据权利要求1所述的方法，其特征在于...",
-      "claim_type": "dependent"
+      "claim_type": "dependent",
+      "parent_claim_ids": ["1"]
     }
   ],
   "description": {

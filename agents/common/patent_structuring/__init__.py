@@ -4,7 +4,7 @@
 """
 
 import re
-from typing import List, Dict
+from typing import Any, List, Dict
 
 
 def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
@@ -31,7 +31,7 @@ def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
         raise ValueError(f"Unknown extraction method: {method}")
 
 
-def extract_structured_claims(md_content: str) -> List[Dict[str, str]]:
+def extract_structured_claims(md_content: str) -> List[Dict[str, Any]]:
     """
     从新权利要求书文本中提取结构化权利要求：
     从以 1. 开始的位置，直到文本结尾，按序号切分。

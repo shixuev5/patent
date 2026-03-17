@@ -85,6 +85,7 @@ class RuleBasedExtractor:
                 "claim_id": item.get("claim_id", ""),
                 "claim_text": item["claim_text"],
                 "claim_type": item["claim_type"],
+                "parent_claim_ids": item.get("parent_claim_ids", []),
             })
             
         return claims
@@ -335,33 +336,102 @@ class RuleBasedExtractor:
         applicants =[]
         pattern = r"\((?:71|73)\)\s*(?:申请人|专利权人)\s*([\s\S]*?)(?=\(\d+\)|#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
-        
-        if match:
-            applicant_text = match.group(1).strip()
-            lines =[line.strip() for line in applicant_text.split('\n') if line.strip()]
-            
-            current_applicant = {"name": "", "address": ""}
-            
-            for line in lines:
-                if line.startswith("地址"):
-                    address = line.replace("地址", "").strip()
-                    address = re.sub(r"\s*\(.*?\)\s*$", "", address)
-                    if not current_applicant["name"]:
-                        current_applicant["name"] = "Unknown"
-                    current_applicant["address"] = address
-                    
-                    applicants.append(current_applicant)
-                    current_applicant = {"name": "", "address": ""}
-                else:
-                    if current_applicant["name"]:
-                        applicants.append(current_applicant)
-                        current_applicant = {"name": "", "address": ""}
-                    current_applicant["name"] = line
-            
-            if current_applicant["name"]:
-                applicants.append(current_applicant)
+        if not match:
+            return applicants
 
+        applicant_text = match.group(1).strip()
+        lines =[line.strip() for line in applicant_text.split('\n') if line.strip()]
+        if not lines:
+            return applicants
+
+        current_name = ""
+        current_address = ""
+
+        def _flush_current() -> None:
+            nonlocal current_name, current_address
+            name = str(current_name or "").strip()
+            if not name:
+                current_name = ""
+                current_address = ""
+                return
+            applicants.append({
+                "name": name,
+                "address": str(current_address or "").strip(),
+            })
+            current_name = ""
+            current_address = ""
+
+        for raw_line in lines:
+            line = re.sub(r"\[\d{4}\]\s*", "", raw_line).strip()
+            if not line:
+                continue
+
+            parsed = RuleBasedExtractor._split_applicant_line(line)
+            if not parsed:
+                continue
+            name_part, address_part, has_address_marker = parsed
+
+            if has_address_marker:
+                if name_part:
+                    _flush_current()
+                    applicants.append({
+                        "name": name_part,
+                        "address": address_part,
+                    })
+                    continue
+
+                # 地址独占一行时，优先绑定到当前申请人；若无当前项则补到上一项
+                if current_name:
+                    current_address = address_part
+                    _flush_current()
+                    continue
+                if applicants and not applicants[-1].get("address"):
+                    applicants[-1]["address"] = address_part
+                continue
+
+            if current_name:
+                _flush_current()
+            current_name = name_part
+
+        _flush_current()
         return applicants
+
+    @staticmethod
+    def _split_applicant_line(line: str) -> tuple[str, str, bool] | None:
+        """拆分申请人行：返回 (name, address, has_address_marker)。"""
+        text = str(line or "").strip().strip("；;")
+        if not text:
+            return None
+
+        text = re.sub(r"^(?:申请人|专利权人)\s*", "", text).strip()
+        if not text:
+            return None
+
+        marker_match = re.search(r"(通讯地址|联系地址|住址|地址)\s*[:：]?\s*", text)
+        if not marker_match:
+            return text.strip("，,。 "), "", False
+
+        marker = marker_match.group(1)
+        name_part = text[: marker_match.start()].strip("，,。:： ")
+        address_part = text[marker_match.end() :].strip("，,。:： ")
+
+        # 避免把公司名中偶发的“地址”误判为地址标记
+        if marker == "地址" and name_part and address_part:
+            if not RuleBasedExtractor._looks_like_address(address_part):
+                return text.strip("，,。 "), "", False
+
+        address_part = re.sub(r"\s*\(.*?\)\s*$", "", address_part).strip()
+        return name_part, address_part, True
+
+    @staticmethod
+    def _looks_like_address(text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        return bool(re.match(
+            r"^(?:\d{6}|中国|[^\s]{1,8}(?:省|市|自治区|特别行政区)|[^\s]{1,8}(?:区|县|镇|乡|街道)|[^\s]{1,12}(?:路|街|道|号|弄|室))",
+            value,
+        ))
 
     @staticmethod
     def _normalize_ocr_digits(text: str) -> str:
@@ -462,12 +532,12 @@ class RuleBasedExtractor:
     # ================= 权利要求与说明书字段提取 =================
 
     @staticmethod
-    def extract_structured_claims(claims_section: str) -> List[Dict[str, str]]:
+    def extract_structured_claims(claims_section: str) -> List[Dict[str, object]]:
         """
         解析权利要求文本为结构化列表。
         从 1. 开始到结尾，每个序号之间文本为一项权利要求。
         """
-        claims: List[Dict[str, str]] =[]
+        claims: List[Dict[str, object]] =[]
         if not claims_section:
             return claims
 
@@ -481,10 +551,12 @@ class RuleBasedExtractor:
                 continue
 
             claim_type = RuleBasedExtractor._classify_claim_type(claim_text)
+            parent_claim_ids = RuleBasedExtractor._extract_parent_claim_ids(claim_text, claim_type)
             claims.append({
                 "claim_id": claim_id,
                 "claim_text": claim_text,
                 "claim_type": claim_type,
+                "parent_claim_ids": parent_claim_ids,
             })
 
         return claims
@@ -496,11 +568,82 @@ class RuleBasedExtractor:
         根据是否以“根据权利要求”开头判定从权。
         """
         text = str(claim_text or "").strip()
+        if re.match(r"^\s*(?:根据|如|按照|依照)\s*权利要求", text):
+            return "dependent"
+        if re.match(r"^\s*权利要求\s*\d+", text):
+            return "dependent"
         if text.startswith("一种"):
             return "independent"
-        if text.startswith("根据权利要求"):
-            return "dependent"
         return "unknown"
+
+    @staticmethod
+    def _extract_parent_claim_ids(claim_text: str, claim_type: str) -> List[str]:
+        """提取从属权利要求的直接父权项编号（不展开祖先）。"""
+        if claim_type != "dependent":
+            return []
+
+        text = str(claim_text or "").strip()
+        if not text:
+            return []
+
+        head_match = re.search(r"(其特征在于|其特征为|特征在于)", text)
+        head_text = text[: head_match.start()] if head_match else text[:160]
+        candidates: List[str] = []
+
+        for match in re.finditer(r"权利要求([0-9０-９、,，及和或与\-~～至到\s]+)", head_text):
+            expr = match.group(1)
+            for claim_id in RuleBasedExtractor._parse_claim_id_expression(expr):
+                if claim_id not in candidates:
+                    candidates.append(claim_id)
+
+        if candidates:
+            return candidates
+
+        # 兜底：若“权利要求”后未完整命中表达式，尝试从首句提取数字范围
+        first_sentence = re.split(r"[。；;\n]", head_text, maxsplit=1)[0]
+        if "权利要求" in first_sentence:
+            fallback_expr = first_sentence.split("权利要求", 1)[-1]
+            return RuleBasedExtractor._parse_claim_id_expression(fallback_expr)
+
+        return []
+
+    @staticmethod
+    def _parse_claim_id_expression(expr: str) -> List[str]:
+        """将 '1或2'、'1至3任一项' 等表达式展开为编号列表。"""
+        text = str(expr or "")
+        if not text:
+            return []
+
+        text = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        text = re.sub(r"(所述|任意一项|任一项|任一|之一|中任一项|中任一|任意)", "", text)
+        text = text.replace("至", "-").replace("到", "-").replace("～", "-").replace("~", "-")
+        text = re.sub(r"[、，,;；]|及|和|或|与|以及", ",", text)
+        text = re.sub(r"\s+", "", text)
+        text = re.sub(r"[^0-9,\-]", "", text)
+        if not text:
+            return []
+
+        results: List[str] = []
+        for token in [part for part in text.split(",") if part]:
+            range_match = re.fullmatch(r"(\d+)-(\d+)", token)
+            if range_match:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2))
+                if start <= end and end - start <= 50:
+                    for value in range(start, end + 1):
+                        claim_id = str(value)
+                        if claim_id not in results:
+                            results.append(claim_id)
+                else:
+                    for value in (str(start), str(end)):
+                        if value not in results:
+                            results.append(value)
+                continue
+
+            if token.isdigit() and token not in results:
+                results.append(token)
+
+        return results
 
     @staticmethod
     def _extract_technical_field(md_content: str) -> str:
