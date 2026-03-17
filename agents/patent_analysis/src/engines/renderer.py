@@ -17,6 +17,12 @@ class ReportRenderer:
         self.patent_data = patent_data
         self._sanitized_html_fragments_count = 0
 
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
     def _indent_text(self, text: str) -> str:
         """
         辅助函数：给文本首行添加两个全角空格缩进 (HTML实体)
@@ -252,62 +258,143 @@ class ReportRenderer:
             table_html += "</tbody></table>\n"
             lines.append(table_html)
 
-        append_numbered_section("技术效果")
-        effects = data.get("technical_effects", [])
-        if isinstance(effects, list) and effects:
+        append_numbered_section("技术效果与机理验证")
+        raw_effects = data.get("technical_effects",[])
+        
+        if isinstance(raw_effects, list) and raw_effects:
+            # === 1. 智能层级排序算法 (树状构建) ===
+            ordered_effects =[]
+            
+            # 分类节点
+            core_nodes =[
+                e
+                for e in raw_effects
+                if isinstance(e, dict) and self._safe_int(e.get("tcs_score"), default=0) >= 5
+            ]
+            sub_nodes =[
+                e
+                for e in raw_effects
+                if isinstance(e, dict)
+                and 3 <= self._safe_int(e.get("tcs_score"), default=0) <= 4
+            ]
+            base_nodes =[
+                e
+                for e in raw_effects
+                if isinstance(e, dict) and self._safe_int(e.get("tcs_score"), default=0) <= 2
+            ]
+
+            # 异常降级处理：如果大模型没有给出任何 5 分，直接按分数降序平铺
+            if not core_nodes:
+                sorted_raw_effects = sorted(
+                    (e for e in raw_effects if isinstance(e, dict)),
+                    key=lambda x: self._safe_int(x.get("tcs_score"), default=0),
+                    reverse=True,
+                )
+                ordered_effects =[{"effect_data": e, "level": 0} for e in sorted_raw_effects]
+            else:
+                # 遍历所有 5 分核心节点，寻找归属于它的子节点
+                for core in core_nodes:
+                    ordered_effects.append({"effect_data": core, "level": 0})
+                    core_features = core.get("contributing_features", [])
+                    
+                    remaining_sub =[]
+                    for sub in sub_nodes:
+                        dep = str(sub.get("dependent_on", "") or "").strip()
+                        # 匹配逻辑：如果子节点声明的依存特征，包含在父节点的贡献特征中（或者反过来）
+                        is_match = False
+                        if dep and dep != "null" and dep != "None":
+                            for cf in core_features:
+                                if cf in dep or dep in cf:
+                                    is_match = True
+                                    break
+                        
+                        if is_match:
+                            ordered_effects.append({"effect_data": sub, "level": 1})
+                        else:
+                            remaining_sub.append(sub)
+                    # 更新尚未分配的从属节点
+                    sub_nodes = remaining_sub
+                
+                # 将未能匹配到父节点的 4/3 分节点（模型幻觉或跨权项）补在后面
+                sub_nodes.sort(
+                    key=lambda x: self._safe_int(x.get("tcs_score"), default=0), reverse=True
+                )
+                for sub in sub_nodes:
+                    ordered_effects.append({"effect_data": sub, "level": 0})
+                
+                # 最后追加 1-2 分的常规背景特征
+                for base in base_nodes:
+                    ordered_effects.append({"effect_data": base, "level": 0})
+
+            # === 2. HTML 渲染 ===
             table_html = """<table>
 <thead>
 <tr>
 <th style="width: 28px; text-align: center;">序号</th>
 <th>技术效果</th>
-<th style="width: 60px; text-align: center;">TCS 评分</th>
-<th style="width: 40%;">贡献特征</th>
-<th style="width: 40px; text-align: center;">检索分块</th>
+<th style="width: 75px; text-align: center;">TCS 评分</th>
+<th style="width: 35%;">贡献特征</th>
+<th style="width: 65px; text-align: center;">检索分块</th>
 </tr>
 </thead>
 <tbody>"""
 
-            effect_idx = 0
-            for eff in effects:
-                if not isinstance(eff, dict):
-                    continue
-                effect_idx += 1
+            for effect_idx, item in enumerate(ordered_effects, 1):
+                eff = item["effect_data"]
+                level = item["level"]
+                
                 desc = self._safe_text(eff.get("effect"), "未命名效果")
-                score = int(eff.get("tcs_score", 0) or 0)
+                score = self._safe_int(eff.get("tcs_score"), default=0)
+                dependent_on = str(eff.get("dependent_on", "") or "").strip()
 
+                # 分数样式与 Block 映射（加回彩色原点，增强可读性）
                 if score >= 5:
-                    score_html = f"<span style='color: #dc3545;'>🔴 {score}</span>"
-                    abc = "Block B"
+                    score_html = f"<span style='color: #c7254e;'>🔴 {score}</span>"
+                    abc = "Block B<br>(核心)"
                 elif score == 4:
-                    score_html = f"<span style='color: #fd7e14;'>🟠 {score}</span>"
-                    abc = "Block C<br>(核心)"
+                    score_html = f"<span style='color: #d35400;'>🟠 {score}</span>"
+                    abc = "Block C<br>(必要)"
                 elif score == 3:
-                    score_html = f"<span style='color: #ffc107;'>🟡 {score}</span>"
+                    score_html = f"<span style='color: #8a6d3b;'>🟡 {score}</span>"
                     abc = "Block C<br>(可选)"
                 else:
                     score_html = f"<span style='color: #6c757d;'>⚪ {score}</span>"
-                    abc = "Block A"
+                    abc = "Block A<br>(背景)"
 
-                contributors = eff.get("contributing_features", [])
+                # 层级视觉呈现
+                if level == 1:
+                    desc_styled = (
+                        f"<div style='color: #495057;'>"
+                        f"<span style='background-color: #e9ecef; color: #495057; font-size: 11px; padding: 2px 6px; border-radius: 3px; margin-right: 6px;'>协同效果</span>"
+                        f"<span style='line-height: 1.5;'>{desc}</span></div>"
+                    )
+                    row_bg = "background-color: #fafbfc;"
+                else:
+                    desc_styled = f"<div style='font-weight: bold;'>{desc}</div>"
+                    row_bg = ""
+
+                # 贡献特征处理 (带上序号)
+                contributors = eff.get("contributing_features",[])
                 if isinstance(contributors, list) and contributors:
-                    formatted_items = []
+                    formatted_items =[]
                     for c in contributors:
                         c_clean = self._safe_text(c).strip()
-                        if not c_clean:
-                            continue
+                        if not c_clean: continue
                         feat_idx = feature_name_map.get(c_clean)
                         if feat_idx:
                             formatted_items.append(f"{c_clean} [{feat_idx}]")
                         else:
                             formatted_items.append(c_clean)
-                    if formatted_items:
-                        list_items = "".join([f"<li>{item}</li>" for item in formatted_items])
-                        contrib_html = f"<ul style='margin: 0;'>{list_items}</ul>"
-                    else:
-                        contrib_html = "-"
+                    list_items = "".join([f"<li>{x}</li>" for x in formatted_items])
+                    contrib_html = f"<ul style='margin: 0; padding-left: 16px;'>{list_items}</ul>"
+                    
+                    # 针对未被完美挂载但自带依附信息的节点，补充一个标签
+                    if dependent_on and dependent_on not in ("null", "None") and level == 0 and score in (3, 4):
+                        contrib_html += f"<div style='margin-top: 4px; font-size: 0.85em; color: #6c757d; border-top: 1px dashed #dee2e6; padding-top: 2px;'>依附: {dependent_on}</div>"
                 else:
                     contrib_html = "-"
 
+                # 机理与证据
                 rationale_raw = self._safe_text(eff.get("rationale"))
                 rationale = self._md_bold_to_html(rationale_raw)
                 raw_evidence = self._safe_text(eff.get("evidence"))
@@ -318,14 +405,15 @@ class ReportRenderer:
                 else:
                     evidence_styled = evidence_text
 
-                table_html += f"""<tr>
+                # 行渲染
+                table_html += f"""<tr style="{row_bg}">
 <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{effect_idx}</td>
-<td style="font-weight: bold;">{desc}</td>
+<td>{desc_styled}</td>
 <td style="text-align: center;">{score_html}</td>
 <td>{contrib_html}</td>
-<td style="text-align: center;">{abc}</td>
+<td style="text-align: center; font-size: 0.9em; color: #495057;">{abc}</td>
 </tr>
-<tr>
+<tr style="{row_bg}">
 <td colspan="4">
 <div style="margin-bottom: 8px;">
 <span style="font-weight:bold; color:#2c3e50;">机理推演：</span>
@@ -463,14 +551,12 @@ class ReportRenderer:
                     semantic_queries.append(row)
 
         semantic_name = self._safe_text(semantic.get("name"), "语义检索")
-        semantic_desc = self._safe_text(
-            semantic.get("description"),
-            "基于核心技术手段的自然语言高密度提炼，用于快速召回 X 类/ Y 类文献。",
-        )
-
         if semantic_queries:
-            lines.append("## 2. 按核心效果分组检索策略")
-            lines.append(f"> **策略逻辑**: {semantic_desc}\n")
+            lines.append("## 2. 按核心效果分块检索方案")
+            # 将指南提取到循环外，全局只渲染一次
+            lines.append(self._get_search_matrix_guide())
+            lines.append("")
+
             for idx, query_item in enumerate(semantic_queries, start=1):
                 query_cluster_ids = self._extract_effect_cluster_ids(query_item)
                 effect_cluster_id = query_cluster_ids[0] if query_cluster_ids else f"E{idx}"
@@ -489,10 +575,10 @@ class ReportRenderer:
         else:
             # 回退模式：保留全局检索要素和语义展示，避免报告空白
             lines.append("## 2. 检索要素表")
-            lines.append("基于权利要求拆解的检索要素、多语言扩展词表及关联分类号：\n")
+            lines.append(self._get_search_matrix_guide())
+            lines.append("")
             lines.extend(self._render_matrix_table(matrix))
             lines.append(f"## 3. {semantic_name}\n")
-            lines.append(f"> **策略逻辑**: {semantic_desc}\n")
             legacy_content = self._safe_text(semantic.get("content"))
             if legacy_content:
                 lines.append(f"```text\n{legacy_content}\n```\n")
@@ -530,26 +616,40 @@ class ReportRenderer:
             block_id = self._safe_text(item.get("block_id")).upper()
             cluster_ids = self._extract_effect_cluster_ids(item)
 
-            is_common = block_id == "A" or (block_id == "C" and not cluster_ids)
+            is_common = block_id == "A" or (block_id in {"C", "E"} and not cluster_ids)
             belongs_to_current = target in cluster_ids
             if is_common or belongs_to_current:
                 filtered.append(item)
         return filtered
 
+    def _get_search_matrix_guide(self) -> str:
+        """优化版：极简指南，去除非必要文字和 Emoji，将 Hub 中文化为枢纽"""
+        guide = """<div style="background-color: #f8f9fc; border-left: 3px solid #4e73df; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; color: #333; line-height: 1.5;">
+<b style="color: #4e73df; font-size: 14px;">布尔检索策略配置指南</b>
+<div style="margin-top: 6px;">
+<b>1. 基础组配：</b> 优先使用 <code>(Block A) AND (Block B_i)</code>。若结果过多，追加 <code>AND (Block C/E)</code> 降噪。<br>
+<b>2. 优先级说明：</b>
+   <span style="color:#c7254e; background:#f9f2f4; padding:1px 4px; border-radius:2px;">核心</span>(关键突破,不可删) &nbsp;
+   <span style="color:#8a6d3b; background:#fcf8e3; padding:1px 4px; border-radius:2px;">辅助</span>(实施例限定,优先放开) &nbsp;
+   <span style="color:#666; background:#f5f5f5; padding:1px 4px; border-radius:2px;">兜底</span>(用于降噪) &nbsp;
+   <span style="color:#8e44ad; font-weight:bold;">[枢纽]</span>(跨效果复用锚点)<br>
+<b>3. 范围控制：</b>
+   <span style="border:1px solid #b8daff; color:#004085; padding:0 3px; border-radius:2px; font-size:11px;">全文 TX</span> (特异低频词) &nbsp;
+   <span style="border:1px solid #f5c6cb; color:#721c24; padding:0 3px; border-radius:2px; font-size:11px;">限字段 TAC/CL</span> (泛化高频词，或搭配位置算符 W/3)
+</div>
+</div>"""
+        return f"\n{guide}\n"
+
     def _render_matrix_table(
         self,
         matrix: Any,
     ) -> List[str]:
-        lines: List[str] = []
+        lines: List[str] =[]
         if not isinstance(matrix, list) or not matrix:
             lines.append("> 未生成检索要素表。\n")
             return lines
 
-        role_mapping = {
-            "Subject": "Block A<br>(应用/主题)",
-            "KeyFeature": "Block B<br>(核心特征)",
-            "Functional": "Block C<br>(功能/限定)",
-        }
+        # 去除了所有 Emoji，文本更简练
         type_mapping = {
             "Product_Structure": "实体结构",
             "Method_Process": "方法/工艺",
@@ -558,64 +658,77 @@ class ReportRenderer:
             "Parameter_Condition": "参数/限定",
         }
 
-        lines.append("| 检索分块 | 检索要素 | 中文关键词 | 英文关键词 | 分类号 (IPC/CPC) |")
+        # 扁平化微底色，增加不换行属性
+        priority_mapping = {
+            "core": "<span style='color:#c7254e; background-color:#f9f2f4; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>核心</span>",
+            "assist": "<span style='color:#8a6d3b; background-color:#fcf8e3; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>辅助</span>",
+            "filter": "<span style='color:#666; background-color:#f5f5f5; padding:2px 4px; border-radius:3px; font-size:12px; white-space:nowrap;'>兜底</span>",
+        }
+
+        # 极简表头，避免长表头挤压换行
+        lines.append("| 逻辑块 (Block) | 检索要素 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |")
         lines.append("| :--- | :--- | :--- | :--- | :--- |")
 
         for item in matrix:
             if not isinstance(item, dict):
                 continue
+
             concept = self._safe_text(item.get("element_name"), "-").replace("|", "\\|")
-            role_key = item.get("element_role", "Other")
             block_id = self._safe_text(item.get("block_id")).upper()
 
-            if block_id:
-                if block_id == "A":
-                    block_display = "Block A<br>(应用/主题)"
-                elif block_id == "C":
-                    block_display = "Block C<br>(功能/限定)"
-                elif block_id.startswith("B"):
-                    block_display = f"Block {block_id}<br>(核心子块)"
-                else:
-                    block_display = f"Block {block_id}"
+            # 缩减 Block 列备注信息，减小占用高度
+            if block_id in ["A", "C", "E"]:
+                block_display = f"<b>Block {block_id}</b>"
             else:
-                block_display = role_mapping.get(role_key, f"Block ?<br>({role_key})")
+                display_block_id = block_id if block_id else "?"
+                block_display = f"<b>Block {display_block_id}</b>"
+
+            priority = self._safe_text(item.get("priority_tier", "assist")).lower()
+            p_badge = priority_mapping.get(priority, priority_mapping["assist"])
+            col_block = f"{block_display}<br><div style='margin-top:4px;'>{p_badge}</div>"
 
             e_type_raw = self._safe_text(item.get("element_type"))
             e_type_display = type_mapping.get(e_type_raw, e_type_raw)
+            is_hub = bool(item.get("is_hub_feature", False))
+
+            # 精简 Hub 标签样式并中文化为 [枢纽]
+            hub_badge = ""
+            if is_hub:
+                hub_badge = "&nbsp;<span title='跨效果枢纽特征' style='color:#8e44ad; font-size:12px; font-weight:bold;'>[枢纽]</span>"
             if e_type_display:
-                concept_display = f"**{concept}**<br><sub>*{e_type_display}*</sub>"
+                col_concept = (
+                    f"<span style='font-weight:bold; font-size:14px;'>{concept}</span>{hub_badge}"
+                    f"<br><span style='font-size:12px; color:#888;'>{e_type_display}</span>"
+                )
             else:
-                concept_display = f"**{concept}**"
+                col_concept = f"<span style='font-weight:bold; font-size:14px;'>{concept}</span>{hub_badge}"
 
             zh_list = item.get("keywords_zh", [])
             en_list = item.get("keywords_en", [])
             ref_list = item.get("ipc_cpc_ref", [])
 
-            zh_cleaned = []
-            if isinstance(zh_list, list):
-                for value in zh_list:
-                    cleaned = self._safe_text(value)
-                    if cleaned:
-                        zh_cleaned.append(cleaned)
-            en_cleaned = []
-            if isinstance(en_list, list):
-                for value in en_list:
-                    cleaned = self._safe_text(value)
-                    if cleaned:
-                        en_cleaned.append(cleaned)
-            ref_cleaned = []
-            if isinstance(ref_list, list):
-                for value in ref_list:
-                    cleaned = self._safe_text(value)
-                    if cleaned:
-                        ref_cleaned.append(cleaned)
+            zh_cleaned = [
+                self._safe_text(v).replace("|", "\\|")
+                for v in zh_list
+                if self._safe_text(v)
+            ] if isinstance(zh_list, list) else []
+            en_cleaned = [
+                self._safe_text(v).replace("|", "\\|")
+                for v in en_list
+                if self._safe_text(v)
+            ] if isinstance(en_list, list) else []
+            ref_cleaned = [
+                self._safe_text(v).replace("|", "\\|")
+                for v in ref_list
+                if self._safe_text(v)
+            ] if isinstance(ref_list, list) else []
 
-            zh_str = ", ".join(zh_cleaned) if zh_cleaned else "-"
-            en_str = ", ".join(en_cleaned) if en_cleaned else "-"
+            zh_str = " <small style='color:#ccc;'>OR</small> ".join(zh_cleaned) if zh_cleaned else "-"
+            en_str = " <small style='color:#ccc;'>OR</small> ".join(en_cleaned) if en_cleaned else "-"
             class_str = "<br>".join(ref_cleaned) if ref_cleaned else "-"
 
             lines.append(
-                f"| **{block_display}** | {concept_display} | {zh_str} | {en_str} | {class_str} |"
+                f"| {col_block} | {col_concept} | {zh_str} | {en_str} | {class_str} |"
             )
         lines.append("\n")
         return lines

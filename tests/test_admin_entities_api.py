@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
 from backend import admin_auth
 from backend.models import CurrentUser
@@ -14,11 +15,29 @@ from backend.storage import Task, TaskStatus, User
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 
 
+class _DisabledR2Storage:
+    enabled = False
+
+    @staticmethod
+    def build_patent_pdf_key(pn: str) -> str:
+        return f"patent/{pn}.pdf"
+
+    @staticmethod
+    def build_ai_review_pdf_key(pn: str) -> str:
+        return f"ai_review/{pn}.pdf"
+
+    @staticmethod
+    def build_ai_reply_pdf_key(pn: str) -> str:
+        return f"ai_reply/{pn}.pdf"
+
+
 def _mount_storage(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "admin_entities_api_test.db")
     manager = SimpleNamespace(storage=storage)
     monkeypatch.setattr(admin_auth, "task_manager", manager)
     monkeypatch.setattr(admin_entities, "task_manager", manager)
+    monkeypatch.setattr(admin_entities, "emit_system_log", lambda **kwargs: None)
+    monkeypatch.setattr(admin_entities, "_build_r2_storage", lambda: _DisabledR2Storage())
     return storage
 
 
@@ -199,3 +218,77 @@ def test_admin_entities_forbidden(monkeypatch, tmp_path):
             )
         )
     assert exc_info.value.status_code == 403
+
+
+def test_admin_entities_download_task_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+
+    output_dir = tmp_path / "outputs" / "task-download"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = output_dir / "CN123456A.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%fake\n")
+
+    now = datetime.now()
+    storage.create_task(
+        Task(
+            id="task-download",
+            owner_id="authing:user-1",
+            task_type="patent_analysis",
+            pn="CN123456A",
+            title="下载测试任务",
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            current_step="done",
+            output_dir=str(output_dir),
+            created_at=now - timedelta(minutes=3),
+            updated_at=now - timedelta(minutes=1),
+            completed_at=now - timedelta(minutes=1),
+            metadata={"output_files": {"pdf": str(pdf_path)}},
+        )
+    )
+
+    admin_user = CurrentUser(user_id="authing:admin-1")
+    response = asyncio.run(
+        admin_entities.download_admin_entity_task_result(
+            task_id="task-download",
+            current_user=admin_user,
+        )
+    )
+    assert isinstance(response, FileResponse)
+    assert response.path == str(pdf_path)
+    assert response.media_type == "application/pdf"
+
+
+def test_admin_entities_download_requires_completed(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+
+    now = datetime.now()
+    storage.create_task(
+        Task(
+            id="task-processing",
+            owner_id="authing:user-1",
+            task_type="ai_review",
+            pn="CN-PROCESSING",
+            title="处理中任务",
+            status=TaskStatus.PROCESSING,
+            progress=50,
+            current_step="running",
+            created_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=1),
+            metadata={},
+        )
+    )
+
+    admin_user = CurrentUser(user_id="authing:admin-1")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            admin_entities.download_admin_entity_task_result(
+                task_id="task-processing",
+                current_user=admin_user,
+            )
+        )
+    assert exc_info.value.status_code == 400

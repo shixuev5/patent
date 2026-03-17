@@ -189,6 +189,16 @@ def test_render_search_section_groups_by_effect_and_filters_matrix() -> None:
                     "keywords_en": ["commonc*"],
                     "ipc_cpc_ref": ["A61N 5/03"],
                 },
+                {
+                    "element_name": "效果限定E1",
+                    "element_role": "Effect",
+                    "block_id": "E",
+                    "effect_cluster_ids": ["E1"],
+                    "element_type": "Parameter_Condition",
+                    "keywords_zh": ["降低摩擦"],
+                    "keywords_en": ["friction* reduc*"],
+                    "ipc_cpc_ref": ["F16N 3/00"],
+                },
             ],
             "semantic_strategy": {
                 "name": "语义检索",
@@ -222,11 +232,14 @@ def test_render_search_section_groups_by_effect_and_filters_matrix() -> None:
     assert "特征B2" not in first_group
     assert "主题A" in first_group
     assert "共通C" in first_group
+    assert "效果限定E1" in first_group
 
     assert "特征B2" in second_group
     assert "特征B1" not in second_group
     assert "主题A" in second_group
     assert "共通C" in second_group
+    assert "效果限定E1" not in second_group
+    assert content.count("布尔检索策略配置指南") == 1
     assert "效果簇" not in content
     assert "关联技术效果" not in content
     assert "属性标签" not in content
@@ -267,3 +280,42 @@ def test_render_search_section_falls_back_when_queries_missing() -> None:
     assert "## 2. 检索要素表" in content
     assert "## 3. 语义检索" in content
     assert "legacy query" in content
+
+
+def test_render_analysis_section_accepts_non_numeric_tcs_score() -> None:
+    renderer = ReportRenderer(patent_data={})
+    content = renderer._render_analysis_section(
+        {
+            "ai_title": "测试报告",
+            "ai_abstract": "摘要",
+            "technical_field": "技术领域",
+            "technical_problem": "技术问题",
+            "technical_scheme": "技术方案",
+            "technical_means": "技术手段",
+            "technical_effects": [
+                {
+                    "effect": "核心效果",
+                    "tcs_score": "5",
+                    "contributing_features": ["特征A"],
+                },
+                {
+                    "effect": "异常效果",
+                    "tcs_score": "暂无",
+                    "contributing_features": ["特征B"],
+                },
+            ],
+            "figure_explanations": [],
+        }
+    )
+
+    assert "color: #c7254e" in content
+    assert ">5</span>" in content
+    assert "异常效果" in content
+
+
+def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:
+    renderer = ReportRenderer(patent_data={})
+    guide = renderer._get_search_matrix_guide()
+
+    assert guide.startswith("\n<div")
+    assert guide.endswith("\n")

@@ -789,7 +789,7 @@
                   </td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDuration(row.durationSeconds) }}</td>
                   <td class="px-2.5 py-2 whitespace-nowrap">{{ formatDateTime(row.createdAt) }}</td>
-                  <td class="sticky right-0 w-[4.75rem] min-w-[4.75rem] border-l border-slate-200 bg-slate-50/90 px-1 py-2 sm:w-[5.75rem] sm:min-w-[5.75rem]">
+                  <td class="sticky right-0 w-[7rem] min-w-[7rem] border-l border-slate-200 bg-slate-50/90 px-1 py-2 sm:w-[8.5rem] sm:min-w-[8.5rem]">
                     <div class="flex flex-nowrap items-center gap-1">
                       <button
                         type="button"
@@ -798,6 +798,14 @@
                         @click="openEntityTaskDetail(row.taskId)"
                       >
                         {{ loadingEntityTaskDetail && detailLoadingTaskId === row.taskId ? '加载' : '详情' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="table-action-btn"
+                        :disabled="!canDownloadEntityTask(row) || downloadingEntityTaskIds.has(row.taskId)"
+                        @click="downloadEntityTask(row)"
+                      >
+                        {{ downloadingEntityTaskIds.has(row.taskId) ? '下载中' : '下载' }}
                       </button>
                       <button
                         type="button"
@@ -894,7 +902,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useAdminUsageStore } from '~/stores/adminUsage'
+import { useTaskStore } from '~/stores/task'
 import type {
+  AdminEntityTaskItem,
   AdminUsageSummary,
   AdminUsageTaskRow,
   AdminUsageUserRow,
@@ -903,6 +913,7 @@ import type {
 } from '~/types/adminUsage'
 
 const adminStore = useAdminUsageStore()
+const taskStore = useTaskStore()
 
 const activeTab = ref<'usage' | 'logs' | 'users' | 'tasks'>('usage')
 
@@ -946,6 +957,7 @@ const logTraceId = ref('')
 const logKeyword = ref('')
 const detailLoadingLogId = ref('')
 const detailLoadingTaskId = ref('')
+const downloadingEntityTaskIds = ref(new Set<string>())
 const entityUserKeyword = ref('')
 const entityUserRole = ref('')
 const entityTaskKeyword = ref('')
@@ -1117,6 +1129,52 @@ const formatTaskStatusLabel = (value: string | null | undefined) => {
   const text = String(value || '').trim().toLowerCase()
   if (!text) return '-'
   return TASK_STATUS_LABELS[text] || text
+}
+const buildUrlWithToken = (url: string, token: string): string => {
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
+}
+const canDownloadEntityTask = (row: AdminEntityTaskItem): boolean => {
+  const taskId = String(row.taskId || '').trim()
+  const status = String(row.status || '').trim().toLowerCase()
+  return !!taskId && status === 'completed'
+}
+const buildEntityTaskDownloadFilename = (row: AdminEntityTaskItem): string => {
+  const taskType = String(row.taskType || '').trim().toLowerCase()
+  const artifactName = String(row.title || row.taskId || '').trim() || String(row.taskId || 'task')
+  if (taskType === 'ai_reply') return `AI 答复报告_${artifactName}.pdf`
+  if (taskType === 'ai_review') return `AI 审查报告_${artifactName}.pdf`
+  return `AI 分析报告_${artifactName}.pdf`
+}
+const downloadEntityTask = async (row: AdminEntityTaskItem) => {
+  const taskId = String(row.taskId || '').trim()
+  if (!taskId) return
+  if (!canDownloadEntityTask(row)) return
+  if (downloadingEntityTaskIds.value.has(taskId)) return
+
+  const config = useRuntimeConfig()
+  const rawDownloadUrl = `${config.public.apiBaseUrl}/api/admin/entities/tasks/${encodeURIComponent(taskId)}/download`
+
+  const authed = await taskStore.ensureAuth()
+  if (!authed || !taskStore.authToken) return
+
+  const downloadUrl = buildUrlWithToken(rawDownloadUrl, taskStore.authToken)
+
+  try {
+    downloadingEntityTaskIds.value.add(taskId)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.target = '_blank'
+    link.rel = 'noopener'
+    link.download = buildEntityTaskDownloadFilename(row)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (_error) {
+    window.open(downloadUrl, '_blank')
+  } finally {
+    downloadingEntityTaskIds.value.delete(taskId)
+  }
 }
 const formatLogCategory = (value: string | null | undefined) => {
   const text = String(value || '').trim()

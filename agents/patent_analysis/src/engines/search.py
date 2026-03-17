@@ -1,9 +1,10 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 from loguru import logger
 from agents.common.utils.llm import get_llm_service
 
-VALID_ELEMENT_ROLES = {"Subject", "KeyFeature", "Functional"}
+VALID_ELEMENT_ROLES = {"Subject", "KeyFeature", "Functional", "Effect"}
 VALID_ELEMENT_TYPES = {
     "Product_Structure",
     "Method_Process",
@@ -50,30 +51,98 @@ class SearchStrategyGenerator:
         effect_clusters = cluster_bundle["effect_clusters"]
         hub_features = cluster_bundle["hub_features"]
 
-        block_a_preamble: List[str] = []
-        block_c_content: List[str] = []
+        # 1) 核心特征 -> 效果簇(E) 的映射，用于挂载 dependent_on 的 Block C 特征
+        core_feature_to_e_ids: Dict[str, List[str]] = {}
+        for cluster in effect_clusters:
+            cluster_ids = cluster.get("effect_cluster_ids") or []
+            e_id_raw = cluster_ids[0] if cluster_ids else ""
+            e_id = self._normalize_inline_text(e_id_raw).upper()
+            if not re.fullmatch(r"E\d+", e_id):
+                continue
+            for feat in cluster.get("features", []):
+                feat_name = self._normalize_inline_text(feat)
+                if not feat_name:
+                    continue
+                bucket = core_feature_to_e_ids.setdefault(feat_name, [])
+                if e_id not in bucket:
+                    bucket.append(e_id)
 
+        block_a_preamble: List[str] = []
+        block_c_dependent: Dict[str, List[str]] = {}
+        block_c_global: List[str] = []
+
+        # Block A：独权前序特征（公知背景）
         for feat_name, info in feature_details.items():
             claim_source = str(info.get("claim_source", "")).strip().lower()
             is_distinguishing = bool(info.get("is_distinguishing", False))
-            score = feature_max_scores.get(feat_name, 0)
-            desc = self._normalize_inline_text(info.get("description", "无特定描述"))
-            raw_rationale = self._normalize_inline_text(info.get("rationale", ""))
-            rationale = (
-                (raw_rationale[:150] + "...") if len(raw_rationale) > 150 else raw_rationale
-            )
-
-            # 独权前序公知特征 -> 锁定场景
             if claim_source == "independent" and (not is_distinguishing):
+                desc = self._normalize_inline_text(info.get("description", "无特定描述"))
                 block_a_preamble.append(f"- 【{feat_name}】: {desc}")
 
-            # 较高分但未进入核心效果的特征 -> 用于降噪/限定
-            if score in (3, 4):
-                block_c_content.append(
-                    f"- 【{feat_name}】 (TCS: {score})\n"
-                    f"    限定描述: {desc}\n"
-                    f"    机理/功能: {rationale or '无'}"
+        # Block C：优先基于 technical_effects 的 dependent_on 建立“依附型/全局型”降噪特征
+        for effect in report.get("technical_effects", []):
+            if not isinstance(effect, dict):
+                continue
+            score = self._safe_int(effect.get("tcs_score"), default=0)
+            if score not in (3, 4):
+                continue
+
+            dep_feat = self._normalize_inline_text(effect.get("dependent_on", ""))
+            target_e_ids: List[str] = []
+            if dep_feat and dep_feat.lower() not in ("null", "none"):
+                for core_feat, e_ids in core_feature_to_e_ids.items():
+                    if core_feat in dep_feat or dep_feat in core_feat:
+                        for e_id in e_ids:
+                            if e_id not in target_e_ids:
+                                target_e_ids.append(e_id)
+
+            rationale_raw = self._normalize_inline_text(effect.get("rationale", ""))
+            rationale = (
+                rationale_raw[:150] + "..." if len(rationale_raw) > 150 else rationale_raw
+            )
+
+            contributors = effect.get("contributing_features", [])
+            if not isinstance(contributors, list):
+                contributors = []
+
+            for c_feat_raw in contributors:
+                c_feat = self._normalize_inline_text(c_feat_raw)
+                if not c_feat:
+                    continue
+                c_info = feature_details.get(c_feat, {})
+                desc = self._normalize_inline_text(c_info.get("description", "无特定描述"))
+                c_text = (
+                    f"  - 【{c_feat}】 (TCS: {score})\n"
+                    f"      > 限定描述: {desc}\n"
+                    f"      > 使能/协同机理: {rationale or '无'}"
                 )
+
+                if target_e_ids:
+                    for e_id in target_e_ids:
+                        bucket = block_c_dependent.setdefault(e_id, [])
+                        if c_text not in bucket:
+                            bucket.append(c_text)
+                elif c_text not in block_c_global:
+                    block_c_global.append(c_text)
+
+        # 兜底：若依附解析未产出，回退到旧策略（按特征最高分抽取 3-4 分作为全局 Block C）
+        if not block_c_dependent and not block_c_global:
+            for feat_name, score in feature_max_scores.items():
+                if score not in (3, 4):
+                    continue
+                info = feature_details.get(feat_name, {})
+                desc = self._normalize_inline_text(info.get("description", "无特定描述"))
+                rationale_raw = self._normalize_inline_text(info.get("rationale", ""))
+                rationale = (
+                    rationale_raw[:150] + "..." if len(rationale_raw) > 150 else rationale_raw
+                )
+                c_text = (
+                    f"  - 【{feat_name}】 (TCS: {score})\n"
+                    f"      > 限定描述: {desc}\n"
+                    f"      > 使能/协同机理: {rationale or '无'}"
+                )
+                if c_text not in block_c_global:
+                    block_c_global.append(c_text)
 
         block_b_sections: List[str] = []
         for cluster in effect_clusters:
@@ -97,7 +166,36 @@ class SearchStrategyGenerator:
 
             block_b_sections.append(
                 f"-[{block_id}/{effect_id}] 核心效果 (Score {score}): {effect_text}\n"
+                f"  效果核心动宾词/状态词建议: 请围绕“{effect_text}”提取可检索的技术效果短语。\n"
                 f"  贡献特征集合:\n{chr(10).join(feature_lines)}"
+            )
+
+        block_c_content: List[str] = []
+        if block_c_dependent:
+            block_c_content.append("[依附于核心突破点的协同/使能特征 (强关联降噪)]")
+            sorted_ids = sorted(
+                block_c_dependent.keys(),
+                key=lambda value: int(value[1:]) if re.fullmatch(r"E\d+", value) else 10**9,
+            )
+            for e_id in sorted_ids:
+                block_c_content.append(f"- 专用于配合/使能 【{e_id}】 效果的特征:")
+                block_c_content.extend(block_c_dependent[e_id])
+
+        if block_c_global:
+            if block_c_content:
+                block_c_content.append("")
+            block_c_content.append("[无明确依附的全局补充特征 (通用降噪)]")
+            block_c_content.extend(block_c_global)
+
+        block_e_content: List[str] = []
+        for cluster in effect_clusters:
+            effect_text = self._normalize_inline_text(cluster.get("effect_text", ""))
+            if not effect_text:
+                continue
+            effect_id = ",".join(cluster.get("effect_cluster_ids", [])) or "-"
+            block_e_content.append(
+                f"- [{cluster.get('block_id', 'B?')}/{effect_id}] 效果锚点: {effect_text}\n"
+                "  提取方向: 动词+对象/状态变化词（仅保留具备技术物理意义的词，避免“提高性能”类空泛表述）"
             )
 
         effects_summary = []
@@ -135,7 +233,11 @@ class SearchStrategyGenerator:
         *** TCS 3-4分特征 (作为实施例细化条件、降噪限定) ***
         {chr(10).join(block_c_content) if block_c_content else "（无补充限定特征）"}
 
-        === 4. 补充上下文与技术问题 ===
+        === 4. Block E: 效果与功能锚点 (Effect - Optional Precision Filter) ===
+        *** 来自高分核心效果，用于在结果量过大时进行后置过滤，不可强制绑定为必选项。 ***
+        {chr(10).join(block_e_content) if block_e_content else "（无可用效果锚点）"}
+
+        === 5. 补充上下文与技术问题 ===
         [待解决的技术问题] {report.get('technical_problem', '未定义')}
         [技术方案摘要] {tech_means_summary}...
         [背景公知术语 (现有技术，若提取为要素必须设为 high/filter)]
@@ -152,11 +254,16 @@ class SearchStrategyGenerator:
         你是一位拥有 20 年实战经验的全球顶级专利检索专家（精通 CNIPA, EPO, USPTO 审查逻辑与布尔检索架构）。
         你的任务是基于提供的【经过 TCS 评分分级的技术交底信息】，构建高水平布尔检索《检索要素矩阵》。
 
-        ### 检索矩阵架构设计原则：A + B1..Bn + C
+        ### 检索矩阵架构设计原则：A + B1..Bn + C (+ E可选)
         你的输出必须严密契合以下模块，通常包含 5-10 个检索要素：
         1. **Block A (Subject/环境要素)**：必须有且仅有 1 个，作为整体技术领域或应用场景的锚点。
         2. **Block B 子块 (B1..Bn / 核心突破点)**：每个 B_i 对应一个核心效果。必须将该效果的贡献特征全量转化为要素，且**坚决不能把不同效果的特征混在同一个 B 子块中**（保证并行或交叉检索的灵活性）。
         3. **Block C (Functional/周边与限定要素)**：提取用于降噪、后置筛选的常规特征或功能限定特征。
+           - 🚨 **【高阶关联原则】**：如果输入上下文明确指出某个 Block C 要素是专门配合/依附于特定核心效果（如 E1、E2），你**必须**在该要素的 `effect_cluster_ids` 字段填入对应标签（如 `["E1"]`）。若无明确依附关系，保持空数组 `[]`。
+        4. **Block E (Effect/Functional - 可选效果层)**：从高分效果中提取可检索的功能/状态词，作为后置过滤或补漏召回。
+           - 仅提取具有技术物理意义的词（如“抑制电磁干扰”“降低摩擦系数”），避免“提高性能/效率”一类空泛词。
+           - `element_role` 必须设为 `Effect`，`block_id` 设为 `E`，`priority_tier` 设为 `filter`，`term_frequency` 设为 `high`。
+           - 不要把 Block E 当成必须项；它用于 `(A AND B)` 结果过大时的可选限定。
 
         ### 关键业务规则（必须绝对服从）：
         1. **Hub 特征复用**：若某特征同时支撑多个效果，可在不同 B_i 子块中重复出现，并将其 `is_hub_feature` 设为 `true`。
@@ -203,6 +310,19 @@ class SearchStrategyGenerator:
             "keywords_zh":["迷宫式密封", "曲折流道", "迂回通道", "密封环", "防漏件"],
             "keywords_en": ["labyrinth*", "tortuous path*", "seal* ring*", "leak* prevent*"],
             "ipc_cpc_ref":["F16J 15/44", "F16J 15/447"]
+          },
+          {
+            "element_name": "降低摩擦系数",
+            "element_role": "Effect",
+            "block_id": "E",
+            "effect_cluster_ids": ["E1"],
+            "is_hub_feature": false,
+            "term_frequency": "high",
+            "priority_tier": "filter",
+            "element_type": "Parameter_Condition",
+            "keywords_zh": ["减摩", "降低摩擦", "摩擦系数下降"],
+            "keywords_en": ["friction* reduc*", "low* friction*", "lubricat*"],
+            "ipc_cpc_ref": ["F16N 3/00"]
           }
         ]
         """
@@ -254,15 +374,19 @@ class SearchStrategyGenerator:
             if block_id.startswith("B") and not effect_cluster_ids:
                 if block_id[1:].isdigit():
                     effect_cluster_ids = [f"E{block_id[1:]}"]
-            if not block_id.startswith("B") and block_id != "C":
+            if block_id == "A":
                 effect_cluster_ids = []
 
             term_frequency = str(item.get("term_frequency") or "").strip().lower()
             if term_frequency not in VALID_TERM_FREQUENCY:
                 term_frequency = "low" if element_role == "KeyFeature" else "high"
+            if element_role == "Effect":
+                term_frequency = "high"
 
             priority_tier = str(item.get("priority_tier") or "").strip().lower()
-            if priority_tier not in VALID_PRIORITY_TIERS:
+            if element_role == "Effect":
+                priority_tier = "filter"
+            elif priority_tier not in VALID_PRIORITY_TIERS:
                 if element_role == "KeyFeature":
                     priority_tier = "core"
                 elif element_role == "Subject":
@@ -307,18 +431,22 @@ class SearchStrategyGenerator:
             return "A"
         if raw_block_id == "C":
             return "C"
+        if raw_block_id == "E":
+            return "E"
         if re.fullmatch(r"B\d+", raw_block_id):
             return raw_block_id
         if element_role == "Subject":
             return "A"
         if element_role == "KeyFeature":
             return "B1"
+        if element_role == "Effect":
+            return "E"
         return "C"
 
     def _safe_int(self, value: Any, default: int = 0) -> int:
         try:
-            return int(value)
-        except Exception:
+            return int(float(value))
+        except (TypeError, ValueError):
             return default
 
     def _normalize_inline_text(self, value: Any) -> str:
@@ -417,20 +545,64 @@ class SearchStrategyGenerator:
             f"[{cluster['block_id']}/{','.join(cluster['effect_cluster_ids'])}] 目标核心效果: {cluster['effect_text']}",
         ]
 
-        features = cluster.get("features", [])
-        if features:
-            lines.append("[实现该效果的专有技术手段及机理]")
-            for feat in features:
+        core_features = cluster.get("features", [])
+        dependent_features_info: List[Dict[str, Any]] = []
+        seen_dependent_features = set()
+        for effect in self.report_data.get("technical_effects", []):
+            if not isinstance(effect, dict):
+                continue
+            score = self._safe_int(effect.get("tcs_score"), default=0)
+            if score not in (3, 4):
+                continue
+            dep_feat = self._normalize_inline_text(effect.get("dependent_on", ""))
+            if not dep_feat or dep_feat.lower() in ("null", "none"):
+                continue
+            is_match = any(cf in dep_feat or dep_feat in cf for cf in core_features)
+            if not is_match:
+                continue
+            contributors = effect.get("contributing_features", [])
+            if not isinstance(contributors, list):
+                continue
+            for c_feat_raw in contributors:
+                c_feat = self._normalize_inline_text(c_feat_raw)
+                if not c_feat or c_feat in seen_dependent_features or c_feat in core_features:
+                    continue
+                dependent_features_info.append(
+                    {
+                        "name": c_feat,
+                        "rationale": self._normalize_inline_text(effect.get("rationale", "")),
+                        "score": score,
+                    }
+                )
+                seen_dependent_features.add(c_feat)
+
+        if core_features:
+            lines.append("[实现该效果的核心专有技术手段及机理]")
+            for feat in core_features:
                 info = feature_details.get(feat, {})
                 desc = self._normalize_inline_text(info.get("description", ""))
                 rationale = self._normalize_inline_text(info.get("rationale", ""))
                 hub_mark = " (Hub特征-跨效果协同)" if feat in hub_features else ""
 
-                lines.append(f"- 结构/方法特征: {feat}{hub_mark}")
+                lines.append(f"- 【核心特征】: {feat}{hub_mark}")
                 if desc:
                     lines.append(f"  > 实施细节: {desc}")
                 if rationale:
                     lines.append(f"  > 作用机理/互动关系: {rationale}")
+
+            if dependent_features_info:
+                lines.append("[配套的使能/协同技术手段 (用于细化上述核心特征的落地结构)]")
+                for dep in dependent_features_info:
+                    c_feat = dep["name"]
+                    c_info = feature_details.get(c_feat, {})
+                    c_desc = self._normalize_inline_text(c_info.get("description", ""))
+                    c_rationale = dep["rationale"]
+
+                    lines.append(f"- 【协同特征】: {c_feat} (TCS: {dep['score']})")
+                    if c_desc:
+                        lines.append(f"  > 实施细节: {c_desc}")
+                    if c_rationale:
+                        lines.append(f"  > 协同机理: {c_rationale}")
         else:
             lines.append("[专有技术手段] (未显式提供，请依靠领域常识推演)")
 
@@ -471,17 +643,22 @@ class SearchStrategyGenerator:
         3. **无损保留技术硬核**：
            - **绝对保留**所有的“物理量、数学模型、特定材料、专有结构名词、算法名称、化学式”。
            - 必须清晰、连贯地描述【特征之间的位置关系/连接关系/数据流向】以及【如何引发特定机理】。
-        4. **语言风格要求**：
+        4. **【核心进化：融合使能特征】**：
+           - 如果输入中存在【配套的使能/协同技术手段】，必须把它写成核心特征的实现路径或支撑组件，并融合到同一段句子中。
+           - 禁止写成割裂并列句。
+             错误示例：“通过A实现功能。此外还通过协同特征B提升稳定性。”
+             正确示例：“通过由协同组件B支撑/配合的核心组件A，实现了...功能。”
+        5. **语言风格要求**：
            - 采用紧凑的客观技术陈述句，禁止使用列表格式。
            - 推荐句式：“一种应用于[场景]的技术。通过[技术特征/结构]，利用/基于[运作机理]，实现/达到[技术效果]。”
-           - 字数浓缩在 200 - 300 字之间，确保输出内容的每个 Token 都是纯粹的技术干货。
+           - 字数浓缩在 200 - 350 字之间，确保输出内容的每个 Token 都是纯粹的技术干货。
 
         ### 示例对比：
         *   **原始输入**: "[应用场景] 旋转机械监测。[问题]早期轴承故障信号极易被背景噪声淹没。目标核心效果: 精准捕捉微裂纹。实施细节: 引入了 **自适应共振解调算法** [3](★区别特征)。作用机理: 利用 **包络检波器**[4] 将高频载波中的低频故障冲击进行非线性映射，配合 **多级带通滤波器** [5] 级联作用剥离强背景干扰。"
         *   **标准输出 (JSON)**:
-        {{
+        {
             "semantic_query": "一种应用于旋转机械监测的轴承故障检测技术。通过引入自适应共振解调算法，利用包络检波器对高频载波中的低频故障冲击特征进行非线性映射，并结合多级带通滤波器的级联过滤机制，将微小的微伏级故障特征从强背景噪声中彻底分离，从而实现对早期轴承微裂纹的精确捕捉与检测。"
-        }}
+        }
 
         ### 输出格式：
         必须输出为纯 JSON 格式，且只包含唯一的键 `semantic_query`。严禁使用 Markdown 代码块 (如 ```json)，严禁包含任何前言或解释性文字。
@@ -531,26 +708,69 @@ class SearchStrategyGenerator:
         bundle = self._build_effect_clusters()
         effect_clusters = bundle["effect_clusters"]
 
-        queries: List[Dict[str, Any]] = []
-        for cluster in effect_clusters:
-            raw_text = self._build_semantic_cluster_text(cluster, bundle)
+        if not effect_clusters:
+            return {
+                "name": "语义检索",
+                "description": "按核心效果子块拆分生成语义查询，每段对应一个 Block B 子块。",
+                "queries": [],
+            }
+
+        cluster_payloads: List[Dict[str, Any]] = []
+        for idx, cluster in enumerate(effect_clusters):
+            cluster_payloads.append(
+                {
+                    "index": idx,
+                    "cluster": cluster,
+                    "raw_text": self._build_semantic_cluster_text(cluster, bundle),
+                }
+            )
+
+        queries_by_index: Dict[int, Dict[str, Any]] = {}
+
+        def _build_query_item(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            cluster = payload["cluster"]
             clean_query = self._generate_semantic_query(
-                raw_text,
+                payload["raw_text"],
                 block_id=cluster["block_id"],
                 effect_cluster_ids=cluster["effect_cluster_ids"],
                 effect_text=cluster["effect_text"],
             )
             if not clean_query:
-                continue
-            queries.append(
-                {
-                    "block_id": cluster["block_id"],
-                    "effect_cluster_ids": cluster["effect_cluster_ids"],
-                    "effect": cluster["effect_text"],
-                    "tcs_score": cluster["score"],
-                    "content": clean_query,
+                return None
+            return {
+                "block_id": cluster["block_id"],
+                "effect_cluster_ids": cluster["effect_cluster_ids"],
+                "effect": cluster["effect_text"],
+                "tcs_score": cluster["score"],
+                "content": clean_query,
+            }
+
+        # 多个核心效果时并发生成语义查询，缩短整体 LLM 等待时间
+        if len(cluster_payloads) > 1:
+            max_workers = min(4, len(cluster_payloads))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(_build_query_item, payload): payload["index"]
+                    for payload in cluster_payloads
                 }
-            )
+                for future in as_completed(future_map):
+                    idx = future_map[future]
+                    try:
+                        query_item = future.result()
+                    except Exception as exc:
+                        logger.error(f"并行生成语义检索查询失败 (index={idx}): {exc}")
+                        continue
+                    if query_item:
+                        queries_by_index[idx] = query_item
+        else:
+            payload = cluster_payloads[0]
+            query_item = _build_query_item(payload)
+            if query_item:
+                queries_by_index[payload["index"]] = query_item
+
+        queries: List[Dict[str, Any]] = []
+        for idx in sorted(queries_by_index.keys()):
+            queries.append(queries_by_index[idx])
 
         return {
             "name": "语义检索",

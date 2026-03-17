@@ -4,10 +4,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from config import settings
 from backend.admin_auth import ensure_admin_owner
 from backend.auth import _get_current_user
 from backend.models import (
@@ -20,7 +26,9 @@ from backend.models import (
     AdminEntityUserStatsResponse,
     CurrentUser,
 )
-from backend.storage import get_pipeline_manager
+from backend.storage import TaskType, get_pipeline_manager
+from backend.system_logs import emit_system_log
+from backend.utils import _build_r2_storage
 
 
 router = APIRouter()
@@ -38,6 +46,11 @@ DEFAULT_USER_STATS = {
 }
 
 DEFAULT_TASK_TYPE_WINDOWS: list[dict[str, Any]] = []
+ALLOWED_TASK_TYPES = {
+    TaskType.PATENT_ANALYSIS.value,
+    TaskType.AI_REVIEW.value,
+    TaskType.AI_REPLY.value,
+}
 
 
 def _norm_optional_text(value: Any) -> Optional[str]:
@@ -110,6 +123,38 @@ def _to_task_item(row: Dict[str, Any]) -> AdminEntityTaskItem:
         updatedAt=row.get("updated_at"),
         completedAt=row.get("completed_at"),
     )
+
+
+def _normalize_task_type(value: Any) -> str:
+    task_type = str(value or TaskType.PATENT_ANALYSIS.value).strip().lower()
+    if task_type in ALLOWED_TASK_TYPES:
+        return task_type
+    return TaskType.PATENT_ANALYSIS.value
+
+
+def _normalize_pn(value: Any) -> Optional[str]:
+    text = str(value or "").strip().upper()
+    return text or None
+
+
+def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -> Optional[str]:
+    resolved_pn = _normalize_pn(pn)
+    if not resolved_pn:
+        return None
+    if task_type == TaskType.AI_REPLY.value:
+        return r2_storage.build_ai_reply_pdf_key(resolved_pn)
+    if task_type == TaskType.AI_REVIEW.value:
+        return r2_storage.build_ai_review_pdf_key(resolved_pn)
+    return r2_storage.build_patent_pdf_key(resolved_pn)
+
+
+def _build_task_download_filename(task_type: str, pn: Optional[str], title: Optional[str], task_id: str) -> str:
+    artifact_name = str(pn or title or task_id or "").strip() or task_id
+    if task_type == TaskType.AI_REPLY.value:
+        return f"AI 答复报告_{artifact_name}.pdf"
+    if task_type == TaskType.AI_REVIEW.value:
+        return f"AI 审查报告_{artifact_name}.pdf"
+    return f"AI 分析报告_{artifact_name}.pdf"
 
 
 @router.get("/api/admin/entities/users", response_model=AdminEntityUserListResponse)
@@ -251,3 +296,92 @@ async def get_admin_entity_task_detail(
         "metadata": row.get("metadata"),
     }
     return AdminEntityTaskDetailResponse(item=item)
+
+
+@router.get("/api/admin/entities/tasks/{task_id}/download")
+async def download_admin_entity_task_result(
+    task_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    ensure_admin_owner(current_user.user_id)
+
+    if not hasattr(task_manager.storage, "get_admin_task_detail"):
+        raise HTTPException(status_code=404, detail="任务不存在。")
+
+    row = task_manager.storage.get_admin_task_detail(str(task_id or "").strip())
+    if not row:
+        raise HTTPException(status_code=404, detail="任务不存在。")
+
+    status = str(row.get("status") or "").strip().lower()
+    if status != "completed":
+        raise HTTPException(status_code=400, detail="任务尚未完成。")
+
+    task_type = _normalize_task_type(row.get("task_type"))
+    task_pn = str(row.get("pn") or "").strip() or None
+    task_title = str(row.get("title") or "").strip() or None
+    filename = _build_task_download_filename(task_type, task_pn, task_title, task_id)
+
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+
+    r2_storage = _build_r2_storage()
+    r2_key = _build_task_pdf_r2_key(task_type, task_pn, r2_storage)
+    if r2_key and r2_storage.enabled:
+        r2_pdf = await asyncio.to_thread(r2_storage.get_bytes, r2_key)
+        if r2_pdf:
+            emit_system_log(
+                category="task_execution",
+                event_name="task_download",
+                owner_id=current_user.user_id,
+                task_id=task_id,
+                task_type=task_type,
+                success=True,
+                message="管理员下载任务报告（R2）",
+                payload={"filename": filename, "targetOwnerId": row.get("owner_id")},
+            )
+            return StreamingResponse(
+                BytesIO(r2_pdf),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+                },
+            )
+
+    pdf_path_text = str(output_files.get("pdf") or "").strip()
+    if pdf_path_text:
+        pdf_path = Path(pdf_path_text)
+    else:
+        task_output_dir = Path(str(row.get("output_dir") or settings.OUTPUT_DIR / task_id))
+        if task_type == TaskType.AI_REPLY.value:
+            pdf_path = task_output_dir / "final_report.pdf"
+        else:
+            artifact_name = str(task_pn or task_id).strip() or task_id
+            pdf_path = task_output_dir / f"{artifact_name}.pdf"
+
+    if not pdf_path.exists():
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "报告文件不存在",
+                "message": f"未找到报告文件：{pdf_path}",
+                "task_id": task_id,
+                "suggestion": "请稍后重试或联系管理员。",
+            },
+        )
+
+    emit_system_log(
+        category="task_execution",
+        event_name="task_download",
+        owner_id=current_user.user_id,
+        task_id=task_id,
+        task_type=task_type,
+        success=True,
+        message="管理员下载任务报告",
+        payload={"filename": filename, "targetOwnerId": row.get("owner_id")},
+    )
+
+    return FileResponse(
+        path=str(pdf_path),
+        filename=filename,
+        media_type="application/pdf",
+    )

@@ -41,6 +41,7 @@ class LLMService:
         "semantic_query_rewrite": {"tier": "default", "thinking": True},
         "core_summary_generation": {"tier": "default", "thinking": True},
         "claim_feature_reasoning": {"tier": "large", "thinking": True},
+        "technical_means_generation": {"tier": "large", "thinking": True},
         "technical_effect_verification": {"tier": "large", "thinking": True},
         "oar_dispute_extraction": {"tier": "large", "thinking": True},
         "oar_amendment_tracking": {"tier": "large", "thinking": True},

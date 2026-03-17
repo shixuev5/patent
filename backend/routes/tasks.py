@@ -251,6 +251,13 @@ def _compute_file_sha256(file_path: Optional[str]) -> Optional[str]:
     return digest.hexdigest()
 
 
+def _resolve_input_sha256(input_sha256: Optional[str], fallback_file_path: Optional[str] = None) -> Optional[str]:
+    normalized = str(input_sha256 or "").strip().lower()
+    if normalized:
+        return normalized
+    return _compute_file_sha256(fallback_file_path)
+
+
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists() or not path.is_file():
         return None
@@ -485,12 +492,13 @@ async def run_patent_analysis_task(
         owner_id=owner_id,
         task_type=TaskType.PATENT_ANALYSIS.value,
     )
+    normalized_input_sha256 = _resolve_input_sha256(input_sha256)
     try:
         task_logger.info("开始处理任务")
         task_manager.start_task(task_id)
         r2_storage = _build_r2_storage()
 
-        cached_analysis_payload = _get_cached_analysis_payload(pn=pn, input_sha256=input_sha256)
+        cached_analysis_payload = _get_cached_analysis_payload(pn=pn, input_sha256=normalized_input_sha256)
         if cached_analysis_payload:
             metadata = cached_analysis_payload.get("metadata", {})
             resolved_pn = str(metadata.get("resolved_pn") or pn or "").strip().upper()
@@ -508,7 +516,7 @@ async def run_patent_analysis_task(
                         task_manager.storage.update_task(task_id, pn=resolved_pn)
                     if hasattr(task_manager.storage, "record_patent_analysis"):
                         try:
-                            task_manager.storage.record_patent_analysis(resolved_pn, input_sha256)
+                            task_manager.storage.record_patent_analysis(resolved_pn, normalized_input_sha256)
                         except TypeError:
                             task_manager.storage.record_patent_analysis(resolved_pn)
                     task_logger.bind(stage="reuse").success(f"命中 R2 复用：{resolved_pn}")
@@ -712,11 +720,15 @@ async def run_patent_analysis_task(
             analysis_json_path = output_dir / "analysis.json"
             patent_json_path = output_dir / "patent.json"
             patent_json_payload = _load_json(patent_json_path) or {}
+            resolved_input_sha256 = _resolve_input_sha256(
+                normalized_input_sha256,
+                str(output_dir / "raw.pdf"),
+            )
 
             analysis_payload = _build_analysis_json_payload(
                 resolved_pn=final_pn,
                 task_id=task_id,
-                input_sha256=input_sha256,
+                input_sha256=resolved_input_sha256,
                 report_core_json=_to_dict(result.get("report_core_json")),
                 analysis_json=_to_dict(result.get("analysis_json")),
                 search_json=_to_dict(result.get("search_json")),
@@ -764,7 +776,7 @@ async def run_patent_analysis_task(
             task_manager.complete_task(task_id, output_files=output_files)
             if hasattr(task_manager.storage, "record_patent_analysis"):
                 try:
-                    task_manager.storage.record_patent_analysis(final_pn, input_sha256)
+                    task_manager.storage.record_patent_analysis(final_pn, resolved_input_sha256)
                 except TypeError:
                     task_manager.storage.record_patent_analysis(final_pn)
             task_logger.bind(stage="finalize_report").success(f"任务已完成：{output_pdf}")

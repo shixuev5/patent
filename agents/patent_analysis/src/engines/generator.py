@@ -144,9 +144,7 @@ class ContentGenerator:
                 features_data = future_features.result()
 
             feature_list = features_data.get("technical_features", [])
-            verification_data = self._run_cached(
-                "verification",
-                self._verify_evidence,
+            verification_data = self._verify_evidence(
                 core_logic,
                 feature_list,
             )
@@ -574,42 +572,35 @@ class ContentGenerator:
 
         return response
 
-    def _verify_evidence(
-        self, core_logic: Dict[str, Any], feature_list: List[Dict]
-    ) -> Dict[str, Any]:
-        """
-        TCS 贡献度评分与证据验证。
-        """
-        logger.debug("正在执行 TCS 技术贡献分析...")
-
-        # 1. 预处理特征列表，供 LLM 选词 (避免 LLM 编造特征名称)
-        # 格式：[序号] 特征名称 (状态)
+    def _build_feature_menu_str(self, feature_list: List[Dict]) -> str:
         feature_menu = []
-        for idx, f in enumerate(feature_list, 1):
-            name = f.get("name", "unknown").strip()
-            # 标记是否为区别特征，引导模型重点关注
-            status = "★区别特征" if f.get("is_distinguishing") else "前序/从权特征"
+        for idx, feature in enumerate(feature_list, 1):
+            name = str(feature.get("name", "unknown")).strip() or "unknown"
+            status = "★区别特征" if feature.get("is_distinguishing") else "前序/从权特征"
             feature_menu.append(f"[{idx}] {name} ({status})")
+        return "\n".join(feature_menu)
 
-        feature_menu_str = "\n".join(feature_menu)
+    def _generate_technical_means(
+        self, core_logic: Dict[str, Any], feature_list: List[Dict]
+    ) -> Dict[str, str]:
+        logger.debug("正在生成 technical_means...")
+        feature_menu_str = self._build_feature_menu_str(feature_list)
 
         system_prompt = """
         你是一名以“技术深度”和“逻辑严谨”著称的高级专利审查员。
-        你的任务是基于**TCS（技术贡献评分）模型**和**第一性原理**，对专利方案进行深度剖析。
+        你的任务是基于**TCS（技术贡献评分）模型**和**第一性原理**，揭示该发明“如何从根本上起作用”。
 
         ### 核心指令：引用规范 (Citation Protocol)
-        为了确保逻辑链条清晰，你在撰写 `technical_means` (技术手段机理) 和 `rationale` (推演逻辑) 时：
+        为了确保逻辑链条清晰，你在撰写 `technical_means` 时：
         1.  **必须引用序号**：提到任何来自【特征菜单】的特征时，必须带上其序号。
         2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [序号]`。
         3.  *示例*：
             *   *Bad:* "通过双气室结构降低了噪音..."
             *   *Good:* "通过 **双气室结构** [3] 增加了气体膨胀路径，配合 **吸音棉** [5] 的多孔耗散机制..."
 
-        ---
-
         # 揭示技术机理 (The "Black Box" Revelation)
         **字段**: `technical_means`
-        **指令**：请撰写一段约 200 字的深度技术综述，揭示该发明**“如何从根本上起作用”**。
+        **指令**：请撰写一段约 200 字的深度技术综述。
 
         **核心思维模型**：
         请采用 **“IPO + 变换”** 的叙事结构：
@@ -627,68 +618,17 @@ class ContentGenerator:
         4.  **聚焦区别特征**：机理描述的重心必须落在标记为 `[★区别特征]` 的项上，说明它们是如何“四两拨千斤”地改变了现有技术的局限。
 
         **范例对比**：
-        *   *Low Quality (表象罗列)*: 
+        *   *Low Quality (表象罗列)*:
             "本发明包括 **振动传感器** [1] 和 **控制器** [2]。传感器安装在轴承座上，采集信号传给控制器，控制器进行FFT分析，如果超过阈值就报警。"
             *(评语：这是小学生水平的看图说话，没有解释“为什么能解决隐匿故障”。)*
 
-        *   *High Quality (机理洞察)*: 
+        *   *High Quality (机理洞察)*:
             "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [4] 将高频载波中的低频故障冲击特征（信息熵高的部分）进行非线性映射，实质上是在频域上对信噪比进行了‘放大’。配合 **多级带通滤波器** [5] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
-
-        # 效果验证与 TCS 评分 (The Strict Audit)
-        **字段**: `technical_effects`
-        **指令**：对申请人声称的每一个效果进行“创造性审计”。
-
-        #### 评分标准
-        请像最挑剔的审查员一样打分，**严禁分数通胀**。
-
-        - **5分 [核心/必要 (Vital)]**: 
-          *定义*：解决【核心技术问题】的“阿基米德支点”。
-          *判定*：如果移除这些特征，发明是否会立即退化为现有技术或完全失效？如果是，给5分。
-          *审查员内心戏*："这是本发明的灵魂，没有它，这个专利就不成立。"
-
-        - **4分 [关键使能 (Enabler)]**: 
-          *定义*：为了让 5分特征 落地而必须克服的技术障碍（二次问题）的解决方案。
-          *判定*：通常涉及兼容性、接口适配、或者特定场景下的可靠性保障。
-          *审查员内心戏*："虽然不是最核心的发明点，但没有这个支撑，核心构思只是空中楼阁。"
-
-        - **3分 [优化/有益 (Improver)]**: 
-          *定义*：非必要的改进。涉及成本、良率、便利性或非核心性能的提升。
-          *判定*：从属权利要求中的常见内容。
-          *审查员内心戏*："这只是锦上添花，或者是为了省钱/好用，换一种普通方式也能做。"
-
-        - **1-2分 [常规 (Generic)]**: 
-          *定义*：公知常识、标准件功能、或仅仅是自动化的必然结果。
-          *判定*：如“通过CPU计算提高速度”、“通过外壳保护内部”。
-          *审查员内心戏*："这也能算发明点？行业惯例而已。"
-
-        #### 验证逻辑 (Evidence & Rationale)
-        1.  **Contributing Features**: 
-            -   必须根据【特征菜单】中的逻辑关系选择特征。
-            -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 (★区别特征) 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
-            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含序号以及"(...)" 状态标记。
-            -   *示例*：菜单项 "[1] 自适应滤波算法 (★区别特征)" -> 输出应为 "自适应滤波算法"。
-        2.  **Evidence (实锤)**：
-            -   **一级证据（最佳）**：定位到具体的**实验数据对比**、图表（Figure X）或具体的**实施例参数**（如“温度控制在50-60度”）。
-            -   **二级证据（次之）**：具体的逻辑推演描述。
-            -   **无证据**：如果文中只有“具有...优点”的空话，填入“仅声称，无实施例支持”。
-        3.  **Rationale (逻辑链)**：
-            -   使用“特征 -> 机制 -> 效果”的句式。
-            -   **严格遵守引用规范**：必须写成 `**特征名称** [序号]` 的形式。
-            -   例如：“双气室结构(特征)增加了气体膨胀路径(机制)，从而降低了排气噪音(效果)。”
 
         # 输出格式 (JSON Only)
         必须严格输出标准的 JSON 对象，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         {
-            "technical_means": "基于...原理，利用 **特征A** [1] 实现了...",
-            "technical_effects": [
-                {
-                    "effect": "精炼的效果描述",
-                    "tcs_score": 5,
-                    "contributing_features": ["特征A", "特征B"],
-                    "evidence": "实施例3：数据显示误报率从5%降至0.1%...",
-                    "rationale": "**特征A** [1] 建立了...机制，配合 **特征B** [2] 的...作用，解决了..."
-                }
-            ]
+            "technical_means": "基于...原理，利用 **特征A** [1] 实现了..."
         }
         """
 
@@ -697,16 +637,131 @@ class ContentGenerator:
         【待解决的核心技术问题 (The Pain Point)】: {core_logic.get('technical_problem')}
         【技术方案概览 (The Solution)】: {core_logic.get('technical_scheme')}
 
-        # 2. 待验证的声称效果 (Claimed Effects)
+        # 2. 特征菜单 (Feature Menu - Strict Selection)
+        {feature_menu_str}
+
+        # 3. 待验证的声称效果 (Claimed Effects)
         {self.text_effect if self.text_effect else "（原文未集中描述效果，请基于下文实施例反推）"}
 
-        # 3. 特征菜单 (Feature Menu - Strict Selection)
+        # 4. 事实数据库 (Embodiments & Experiments)
+        {self.text_details[:12000]}
+        """
+
+        response = self.llm_service.invoke_text_json(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            task_kind="technical_means_generation",
+            temperature=0.2,
+        )
+        if isinstance(response, Dict):
+            return {"technical_means": str(response.get("technical_means", "") or "")}
+        return {"technical_means": ""}
+
+    def _evaluate_technical_effects(
+        self, core_logic_with_means: Dict[str, Any], feature_list: List[Dict]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        logger.debug("正在评估 technical_effects...")
+        feature_menu_str = self._build_feature_menu_str(feature_list)
+
+        system_prompt = """
+        你是一名以“技术深度”和“逻辑严谨”著称的高级专利审查员。
+        你的任务是基于 TCS（技术贡献评分）模型，对申请人声称的效果进行创造性审计。
+
+        ### 核心指令：引用规范 (Citation Protocol)
+        为了确保逻辑链条清晰，你在撰写 `rationale` 时：
+        1.  **必须引用序号**：提到任何来自【特征菜单】的特征时，必须带上其序号。
+        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [序号]`。
+
+        # 效果验证与 TCS 评分 (The Strict Audit)
+        **字段**: `technical_effects`
+        **指令**：对申请人声称的每一个效果进行“创造性审计”。
+
+        #### 评分标准
+        请像最挑剔的审查员一样打分，**严禁分数通胀**。
+
+        - **5分[核心/必要 (Vital) -> 对应检索块 Block B]**:
+          *定义*：解决【核心技术问题】的“阿基米德支点”（即区别技术特征）。
+          *判定*：如果移除这些特征，发明是否会立即退化为现有技术或完全失效？如果是，给5分。**（独立节点，无依存）**
+          *审查员内心戏*："这是本发明的灵魂，没有它，这篇专利就不成立。"
+
+        - **4分[关键使能 (Enabler) -> 对应检索块 Block C-核心]**:
+          *定义*：为了让 5分特征 落地而必须克服的二次技术障碍（如兼容性、接口适配、特定场景可靠性）的解决方案。
+          *判定*：通常是高价值的从属权利要求，与核心特征存在强协同。**必须明确它是为哪一个 5分特征 服务的**。
+          *审查员内心戏*："虽然不是最基础的发明点，但没有这个具体支撑，核心构思只是无法落地的空中楼阁。"
+
+        - **3分[优化/有益 (Improver) -> 对应检索块 Block C-可选]**:
+          *定义*：提供额外技术增益的非必要改进。涉及成本、良率、便利性或次要性能的具体提升。
+          *判定*：通常是一般性的从属权利要求。它具有具体的技术限定，并非毫无新意，但并非解决核心问题的唯一路径。**必须明确它依附于哪一个 5分/4分特征**。
+          *审查员内心戏*："这是锦上添花的特定优化设计，在面对无效宣告时，可以作为退板防守的权利要求。"
+
+        - **1-2分[常规/前序 (Generic/Preamble) -> 对应检索块 Block A]**:
+          *定义*：前序特征、应用场景、公知常识、标准件的常规用途，或仅仅是引入计算机/自动化带来的必然结果。
+          *判定*：说明书中一笔带过的常规结构，或者没有产生超出预期的协同效果的通用部件。**（独立背景节点，无依存）**
+          *审查员内心戏*："这只是行业惯用的背景部件和基础环境，没有任何实质性的技术贡献。"
+
+        #### 验证逻辑 (Evidence & Rationale)
+        1.  **Contributing Features**:
+            -   必须根据【特征菜单】中的逻辑关系选择特征。
+            -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 (★区别特征) 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
+            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含序号以及"(...)" 状态标记。
+            -   *示例*：菜单项 "[1] 自适应滤波算法 (★区别特征)" -> 输出应为 "自适应滤波算法"。
+        2.  **dependent_on (依存追踪)**：
+            - 如果是 4分 或 3分 效果，**必须**在此字段填入其所支撑/依附的“上一级核心特征名称”。
+            - 如果是 5分 或 1-2分 效果，请严格填入 `null`。
+        3.  **Evidence (实锤)**：
+            -   **一级证据（最佳）**：定位到具体的**实验数据对比**、图表（Figure X）或具体的**实施例参数**（如“温度控制在50-60度”）。
+            -   **二级证据（次之）**：具体的逻辑推演描述。
+            -   **无证据**：如果文中只有“具有...优点”的空话，填入“仅声称，无实施例支持”。
+        4.  **Rationale (逻辑链)**：
+            -   使用“特征 -> 机制 -> 效果”的句式。
+            -   **严格遵守引用规范**：必须写成 `**特征名称** [序号]` 的形式。
+            -   例如：“双气室结构(特征)增加了气体膨胀路径(机制)，从而降低了排气噪音(效果)。”
+
+        # 输出格式 (JSON Only)
+        必须严格输出标准的 JSON 对象，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
+        {
+            "technical_effects": [
+                {
+                    "effect": "精炼的效果描述",
+                    "tcs_score": 5,
+                    "contributing_features": ["特征A", "特征B"],
+                    "dependent_on": null,
+                    "evidence": "实施例3：数据显示误报率从5%降至0.1%...",
+                    "rationale": "**特征A** [1] 建立了...机制，解决了..."
+                },
+                {
+                    "effect": "防止强干扰下发散",
+                    "tcs_score": 4,
+                    "contributing_features": ["特征B"],
+                    "dependent_on": "特征A",
+                    "evidence": "...",
+                    "rationale": "为了配合 **特征A** [1] 的运行，**特征B** [2] 提供了..."
+                }
+            ]
+        }
+        """
+
+        user_content = f"""
+        # 1. 核心逻辑锚点 (Anchor)
+        【待解决的核心技术问题 (The Pain Point)】: {core_logic_with_means.get('technical_problem')}
+        【技术方案概览 (The Solution)】: {core_logic_with_means.get('technical_scheme')}
+
+        # 2. 前置推演出的技术机理 (Pre-derived Technical Means)
+        *** 仅作为审计推理上下文，不可与证据字段混淆 ***
+        {core_logic_with_means.get('technical_means', '')}
+
+        # 3. 待验证的声称效果 (Claimed Effects)
+        {self.text_effect if self.text_effect else "（原文未集中描述效果，请基于下文实施例反推）"}
+
+        # 4. 特征菜单 (Feature Menu - Strict Selection)
         *** 必须从此列表中选择 contributing_features ***
         {feature_menu_str}
 
-        # 4. 事实数据库 (Embodiments & Experiments)
+        # 5. 事实数据库 (Embodiments & Experiments)
         *** 请在此区域挖掘一级证据 (数据/参数/具体行为) ***
-        {self.text_details[:12000]} 
+        {self.text_details[:12000]}
         """
 
         response = self.llm_service.invoke_text_json(
@@ -715,16 +770,53 @@ class ContentGenerator:
                 {"role": "user", "content": user_content},
             ],
             task_kind="technical_effect_verification",
-            temperature=0.1,  # 保持低温度以确保精准引用特征名称
+            temperature=0.0,
         )
 
-        # 按照 tcs_score 字段进行降序排序 (reverse=True)
-        if isinstance(response, Dict) and "technical_effects" in response:
+        if isinstance(response, Dict) and isinstance(response.get("technical_effects"), list):
             effects = response.get("technical_effects", [])
             effects.sort(key=lambda x: x.get("tcs_score", 0), reverse=True)
-            response["technical_effects"] = effects
+            return {"technical_effects": effects}
+        return {"technical_effects": []}
 
-        return response
+    def _verify_evidence(
+        self, core_logic: Dict[str, Any], feature_list: List[Dict]
+    ) -> Dict[str, Any]:
+        """
+        TCS 贡献度评分与证据验证（两阶段串行）。
+        """
+        logger.debug("正在执行 TCS 技术贡献分析...")
+
+        technical_means_data = self._run_cached(
+            "technical_means",
+            self._generate_technical_means,
+            core_logic,
+            feature_list,
+        )
+        technical_means = ""
+        if isinstance(technical_means_data, Dict):
+            technical_means = str(technical_means_data.get("technical_means", "") or "")
+
+        core_logic_with_means = {
+            **core_logic,
+            "technical_means": technical_means,
+        }
+        technical_effects_data = self._run_cached(
+            "technical_effects",
+            self._evaluate_technical_effects,
+            core_logic_with_means,
+            feature_list,
+        )
+        technical_effects = []
+        if isinstance(technical_effects_data, Dict):
+            raw_effects = technical_effects_data.get("technical_effects", [])
+            if isinstance(raw_effects, list):
+                technical_effects = raw_effects
+
+        return {
+            "technical_means": technical_means,
+            "technical_effects": technical_effects,
+        }
 
     def _generate_figures_analysis(self, global_context: Dict) -> List[Dict[str, Any]]:
         """

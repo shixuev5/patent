@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from threading import Event
 
@@ -167,3 +168,183 @@ def test_generator_parallel_workers_keep_task_usage_context(tmp_path: Path, monk
     assert worker_contexts["background"]["task_type"] == "patent_analysis"
     assert worker_contexts["features"]["task_id"] == "task-parallel-ctx"
     assert worker_contexts["features"]["task_type"] == "patent_analysis"
+
+
+def test_verify_evidence_runs_means_then_effects_with_expected_params(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StubLLMService:
+        def __init__(self):
+            self.calls = []
+
+        def invoke_text_json(self, messages, task_kind, temperature):
+            self.calls.append(
+                {
+                    "messages": messages,
+                    "task_kind": task_kind,
+                    "temperature": temperature,
+                }
+            )
+            if task_kind == "technical_means_generation":
+                return {"technical_means": "通过 **特征A** [1] 建立稳定反馈机制"}
+            if task_kind == "technical_effect_verification":
+                return {
+                    "technical_effects": [
+                        {"effect": "次要优化", "tcs_score": 3},
+                        {"effect": "核心突破", "tcs_score": 5},
+                    ]
+                }
+            raise AssertionError(f"unexpected task kind: {task_kind}")
+
+    llm_stub = StubLLMService()
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: llm_stub,
+    )
+
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {"invention_title": "原始标题", "abstract": "原始摘要"},
+            "claims": [],
+            "description": {
+                "technical_field": "",
+                "background_art": "",
+                "technical_effect": "提升鲁棒性",
+                "summary_of_invention": "",
+                "detailed_description": "实施例细节",
+            },
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=None,
+    )
+
+    result = generator._verify_evidence(
+        core_logic={"technical_problem": "噪声干扰导致误检", "technical_scheme": "自适应识别方案"},
+        feature_list=[{"name": "特征A", "is_distinguishing": True}],
+    )
+
+    assert len(llm_stub.calls) == 2
+    assert llm_stub.calls[0]["task_kind"] == "technical_means_generation"
+    assert llm_stub.calls[0]["temperature"] == 0.2
+    assert llm_stub.calls[1]["task_kind"] == "technical_effect_verification"
+    assert llm_stub.calls[1]["temperature"] == 0.0
+    assert "通过 **特征A** [1] 建立稳定反馈机制" in llm_stub.calls[1]["messages"][1]["content"]
+    assert result["technical_means"] == "通过 **特征A** [1] 建立稳定反馈机制"
+    assert [item["tcs_score"] for item in result["technical_effects"]] == [5, 3]
+
+
+def test_verify_evidence_uses_split_cache_keys(tmp_path: Path, monkeypatch) -> None:
+    class StubLLMService:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke_text_json(self, messages, task_kind, temperature):
+            self.calls += 1
+            if task_kind == "technical_means_generation":
+                return {"technical_means": "机理"}
+            if task_kind == "technical_effect_verification":
+                return {"technical_effects": [{"effect": "效果", "tcs_score": 4}]}
+            raise AssertionError(f"unexpected task kind: {task_kind}")
+
+    llm_stub = StubLLMService()
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: llm_stub,
+    )
+
+    cache_file = tmp_path / "report_cache.json"
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {"invention_title": "原始标题", "abstract": "原始摘要"},
+            "claims": [],
+            "description": {
+                "technical_field": "",
+                "background_art": "",
+                "technical_effect": "",
+                "summary_of_invention": "",
+                "detailed_description": "实施例细节",
+            },
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=cache_file,
+    )
+
+    core_logic = {"technical_problem": "问题", "technical_scheme": "方案"}
+    feature_list = [{"name": "特征A", "is_distinguishing": True}]
+    _ = generator._verify_evidence(core_logic, feature_list)
+    _ = generator._verify_evidence(core_logic, feature_list)
+
+    assert llm_stub.calls == 2
+    cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert "technical_means" in cache_data
+    assert "technical_effects" in cache_data
+    assert "verification" not in cache_data
+
+
+def test_generate_core_report_no_longer_writes_verification_cache_key(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: StubLLMService(),
+    )
+
+    cache_file = tmp_path / "report_cache.json"
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {"invention_title": "原始标题", "abstract": "原始摘要"},
+            "claims": [],
+            "description": {
+                "technical_field": "",
+                "background_art": "",
+                "technical_effect": "",
+                "summary_of_invention": "",
+                "detailed_description": "",
+            },
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=cache_file,
+    )
+
+    monkeypatch.setattr(
+        generator,
+        "_analyze_domain_and_problem",
+        lambda: {"technical_field": "领域", "technical_problem": "问题"},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_synthesize_solution_package",
+        lambda problem_context: {
+            "ai_title": "标题",
+            "ai_abstract": "摘要",
+            "technical_scheme": "技术方案",
+        },
+    )
+    monkeypatch.setattr(generator, "_generate_background_knowledge", lambda core_logic: {})
+    monkeypatch.setattr(
+        generator,
+        "_extract_features",
+        lambda core_logic: {"claim_subject_matter": "", "technical_features": []},
+    )
+    monkeypatch.setattr(
+        generator,
+        "_verify_evidence",
+        lambda core_logic, feature_list: {"technical_means": "", "technical_effects": []},
+    )
+
+    _ = generator.generate_core_report_json()
+
+    cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
+    assert "verification" not in cache_data

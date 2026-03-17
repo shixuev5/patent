@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 
 from backend.routes import tasks as tasks_route
@@ -97,3 +98,14 @@ def test_build_task_download_filename_prefers_pn_then_title_then_task_id() -> No
         tasks_route._build_task_download_filename(TaskType.PATENT_ANALYSIS.value, task)
         == "AI 分析报告_task-3.pdf"
     )
+
+
+def test_resolve_input_sha256_prefers_explicit_value() -> None:
+    assert tasks_route._resolve_input_sha256("ABCDEF", "/not/exist.pdf") == "abcdef"
+
+
+def test_resolve_input_sha256_falls_back_to_file_digest(tmp_path) -> None:
+    source = tmp_path / "raw.pdf"
+    source.write_bytes(b"mock patent pdf content")
+    expected = hashlib.sha256(b"mock patent pdf content").hexdigest()
+    assert tasks_route._resolve_input_sha256(None, str(source)) == expected
