@@ -67,8 +67,7 @@ class Settings:
     MINERU_REQUEST_TIMEOUT_SECONDS = int(os.getenv("MINERU_REQUEST_TIMEOUT_SECONDS", "60"))
 
     # --- Office Action Reply 并行配置 ---
-    OAR_PARSE_MAX_CONCURRENCY = int(os.getenv("OAR_PARSE_MAX_CONCURRENCY", "5"))
-    OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY = int(os.getenv("OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY", "5"))
+    OAR_MAX_CONCURRENCY = max(1, int(os.getenv("OAR_MAX_CONCURRENCY", "4")))
     OAR_WORKFLOW_TIMEOUT_SECONDS = int(os.getenv("OAR_WORKFLOW_TIMEOUT_SECONDS", "1800"))
 
     # --- 外部检索/下载超时 ---

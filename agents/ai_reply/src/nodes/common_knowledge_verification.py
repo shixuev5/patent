@@ -5,11 +5,13 @@
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set
 
 from loguru import logger
 
 from agents.common.retrieval import LocalEvidenceRetriever
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import (
@@ -78,88 +80,132 @@ class CommonKnowledgeVerificationNode:
         local_retriever = self._build_local_retriever(prepared)
         local_doc_ids = self._extract_comparison_doc_ids(prepared)
 
-        assessments: List[Dict[str, Any]] = []
-        for dispute in common_knowledge_disputes:
-            claim_text = self._get_claim_text(dispute, claims)
-            queries_by_engine = self._build_engine_queries(dispute, claim_text, priority_date)
-            external_evidence, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
-                queries=queries_by_engine,
-                priority_date=priority_date,
-                limit=8,
-            )
-            if not external_evidence:
-                logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
+        if len(common_knowledge_disputes) == 1:
+            return [
+                self._evaluate_common_knowledge_dispute(
+                    dispute=common_knowledge_disputes[0],
+                    claims=claims,
+                    priority_date=priority_date,
+                    local_retriever=local_retriever,
+                    local_doc_ids=local_doc_ids,
+                )
+            ]
 
-            flat_queries = self._flatten_queries(queries_by_engine)
-            local_candidates, local_trace = self._search_local_candidates(
+        max_workers = max(
+            1,
+            min(
+                settings.OAR_MAX_CONCURRENCY,
+                len(common_knowledge_disputes),
+            ),
+        )
+        logger.info(
+            f"公知常识核查并行执行: disputes={len(common_knowledge_disputes)} workers={max_workers}"
+        )
+        ordered_results: List[Dict[str, Any] | None] = [None] * len(common_knowledge_disputes)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                submit_with_current_context(
+                    executor,
+                    self._evaluate_common_knowledge_dispute,
+                    dispute=dispute,
+                    claims=claims,
+                    priority_date=priority_date,
+                    local_retriever=local_retriever,
+                    local_doc_ids=local_doc_ids,
+                ): index
+                for index, dispute in enumerate(common_knowledge_disputes)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                ordered_results[index] = future.result()
+        return [item for item in ordered_results if item]
+
+    def _evaluate_common_knowledge_dispute(
+        self,
+        dispute: Dict[str, Any],
+        claims: List[Dict[str, Any]],
+        priority_date: Optional[str],
+        local_retriever: LocalEvidenceRetriever | None,
+        local_doc_ids: List[str],
+    ) -> Dict[str, Any]:
+        claim_text = self._get_claim_text(dispute, claims)
+        queries_by_engine = self._build_engine_queries(dispute, claim_text, priority_date)
+        external_evidence, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
+            queries=queries_by_engine,
+            priority_date=priority_date,
+            limit=8,
+        )
+        if not external_evidence:
+            logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
+
+        flat_queries = self._flatten_queries(queries_by_engine)
+        local_candidates, local_trace = self._search_local_candidates(
+            flat_queries=flat_queries,
+            local_doc_ids=local_doc_ids,
+            local_retriever=local_retriever,
+        )
+        external_candidates = self._to_external_candidates(external_evidence)
+        merged_candidates = self._rerank_candidates(
+            candidates=local_candidates + external_candidates,
+            flat_queries=flat_queries,
+            top_k=settings.LOCAL_RETRIEVAL_RERANK_K,
+        )
+        card_bundle = self._build_compact_cards(
+            candidates=merged_candidates,
+            local_retriever=local_retriever,
+            context_k=settings.LOCAL_RETRIEVAL_CONTEXT_K,
+            max_context_chars=settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS,
+            max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+        )
+
+        assessment = self._verify_single_dispute(
+            dispute=dispute,
+            claim_text=claim_text,
+            queries_by_engine=queries_by_engine,
+            priority_date=priority_date,
+            evidence_cards=card_bundle.get("cards", []),
+            retrieval_engines=retrieval_engines,
+            retrieval_meta=retrieval_meta,
+            local_retrieval_trace=self._merge_local_retrieval_trace(
+                local_trace=local_trace,
+                card_trace=card_bundle.get("trace", {}),
                 flat_queries=flat_queries,
                 local_doc_ids=local_doc_ids,
-                local_retriever=local_retriever,
-            )
-            external_candidates = self._to_external_candidates(external_evidence)
-            merged_candidates = self._rerank_candidates(
-                candidates=local_candidates + external_candidates,
-                flat_queries=flat_queries,
-                top_k=settings.LOCAL_RETRIEVAL_RERANK_K,
-            )
-            card_bundle = self._build_compact_cards(
+            ),
+        )
+
+        first_assessment = self._to_dict(assessment.get("assessment", {}))
+        first_verdict = str(first_assessment.get("verdict", "")).strip()
+        try:
+            first_confidence = float(first_assessment.get("confidence", 0.0) or 0.0)
+        except Exception:
+            first_confidence = 0.0
+        if first_verdict == "INCONCLUSIVE" or first_confidence < 0.6:
+            expanded_bundle = self._build_compact_cards(
                 candidates=merged_candidates,
                 local_retriever=local_retriever,
-                context_k=settings.LOCAL_RETRIEVAL_CONTEXT_K,
-                max_context_chars=settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS,
+                context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
+                max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
                 max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
             )
-
-            assessment = self._verify_single_dispute(
-                dispute=dispute,
-                claim_text=claim_text,
-                queries_by_engine=queries_by_engine,
-                priority_date=priority_date,
-                evidence_cards=card_bundle.get("cards", []),
-                retrieval_engines=retrieval_engines,
-                retrieval_meta=retrieval_meta,
-                local_retrieval_trace=self._merge_local_retrieval_trace(
-                    local_trace=local_trace,
-                    card_trace=card_bundle.get("trace", {}),
-                    flat_queries=flat_queries,
-                    local_doc_ids=local_doc_ids,
-                ),
-            )
-
-            first_assessment = self._to_dict(assessment.get("assessment", {}))
-            first_verdict = str(first_assessment.get("verdict", "")).strip()
-            try:
-                first_confidence = float(first_assessment.get("confidence", 0.0) or 0.0)
-            except Exception:
-                first_confidence = 0.0
-            if first_verdict == "INCONCLUSIVE" or first_confidence < 0.6:
-                expanded_bundle = self._build_compact_cards(
-                    candidates=merged_candidates,
-                    local_retriever=local_retriever,
-                    context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
-                    max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
-                    max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+            expanded_cards = expanded_bundle.get("cards", [])
+            if len(expanded_cards) > len(card_bundle.get("cards", [])):
+                assessment = self._verify_single_dispute(
+                    dispute=dispute,
+                    claim_text=claim_text,
+                    queries_by_engine=queries_by_engine,
+                    priority_date=priority_date,
+                    evidence_cards=expanded_cards,
+                    retrieval_engines=retrieval_engines,
+                    retrieval_meta=retrieval_meta,
+                    local_retrieval_trace=self._merge_local_retrieval_trace(
+                        local_trace=local_trace,
+                        card_trace=expanded_bundle.get("trace", {}),
+                        flat_queries=flat_queries,
+                        local_doc_ids=local_doc_ids,
+                    ),
                 )
-                expanded_cards = expanded_bundle.get("cards", [])
-                if len(expanded_cards) > len(card_bundle.get("cards", [])):
-                    assessment = self._verify_single_dispute(
-                        dispute=dispute,
-                        claim_text=claim_text,
-                        queries_by_engine=queries_by_engine,
-                        priority_date=priority_date,
-                        evidence_cards=expanded_cards,
-                        retrieval_engines=retrieval_engines,
-                        retrieval_meta=retrieval_meta,
-                        local_retrieval_trace=self._merge_local_retrieval_trace(
-                            local_trace=local_trace,
-                            card_trace=expanded_bundle.get("trace", {}),
-                            flat_queries=flat_queries,
-                            local_doc_ids=local_doc_ids,
-                        ),
-                    )
-            assessments.append(assessment)
-
-        return assessments
+        return assessment
 
     def _get_common_knowledge_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
         common_knowledge_disputes: List[Dict[str, Any]] = []

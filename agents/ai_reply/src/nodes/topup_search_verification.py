@@ -5,12 +5,14 @@
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Set, Tuple
 
 from loguru import logger
 
 from agents.common.retrieval import LocalEvidenceRetriever
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import (
@@ -79,16 +81,45 @@ class TopupSearchVerificationNode:
         priority_date = self._extract_priority_date(prepared)
         local_retriever = self._build_local_retriever(prepared)
 
-        disputes =[]
-        assessments =[]
-        for task in tasks:
+        if len(tasks) == 1:
             dispute, assessment = self._evaluate_task(
-                task=task,
+                task=tasks[0],
                 claims=claims,
                 comparison_docs=comparison_docs,
                 priority_date=priority_date,
                 local_retriever=local_retriever,
             )
+            return {
+                "disputes": [dispute],
+                "evidence_assessments": [assessment],
+            }
+
+        max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, len(tasks)))
+        logger.info(f"补充检索并行执行: tasks={len(tasks)} workers={max_workers}")
+        ordered_results: List[Tuple[Dict[str, Any], Dict[str, Any]] | None] = [None] * len(tasks)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                submit_with_current_context(
+                    executor,
+                    self._evaluate_task,
+                    task=task,
+                    claims=claims,
+                    comparison_docs=comparison_docs,
+                    priority_date=priority_date,
+                    local_retriever=local_retriever,
+                ): index
+                for index, task in enumerate(tasks)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                ordered_results[index] = future.result()
+
+        disputes: List[Dict[str, Any]] = []
+        assessments: List[Dict[str, Any]] = []
+        for result in ordered_results:
+            if not result:
+                continue
+            dispute, assessment = result
             disputes.append(dispute)
             assessments.append(assessment)
 

@@ -143,7 +143,7 @@ class DocumentProcessingNode:
         office_action_data = None
         claims_new_structured = []
 
-        max_workers = max(1, min(settings.OAR_PARSE_MAX_CONCURRENCY, max(len(input_files), 1)))
+        max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, max(len(input_files), 1)))
         parse_results = [None] * len(input_files)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

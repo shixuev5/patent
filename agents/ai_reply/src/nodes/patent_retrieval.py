@@ -177,7 +177,7 @@ class PatentRetrievalNode:
         if not dedup_patents:
             return search_results
 
-        max_workers = max(1, min(settings.OAR_PATENT_RETRIEVAL_MAX_CONCURRENCY, len(dedup_patents)))
+        max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, len(dedup_patents)))
         results_by_number: dict[str, dict] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {

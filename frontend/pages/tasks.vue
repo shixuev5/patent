@@ -283,7 +283,7 @@ const modeDescription = computed(() => {
   if (mode.value === 'ai_review') {
     return '统一创建 AI 审查任务，优先复用已分析数据，输出独立的 AI 审查报告。'
   }
-  return '统一创建 AI 答复任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的 AI 答复研判报告。'
+  return '统一创建 AI 答复任务，自动执行补正追踪、支持依据核查、争议抽取与证据核验，生成可下载的 AI 答复报告。'
 })
 
 const modeTitle = computed(() => {

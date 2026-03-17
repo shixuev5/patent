@@ -5,12 +5,15 @@
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from loguru import logger
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.utils import get_node_cache
 from agents.ai_reply.src.state import EvidenceAssessment
+from config import settings
 
 
 class EvidenceVerificationNode:
@@ -63,22 +66,50 @@ class EvidenceVerificationNode:
         comparison_doc_map = self._build_comparison_doc_map(prepared)
         grouped_disputes = self._group_disputes_by_docs(document_disputes)
 
-        assessments = []
+        verification_jobs: List[Dict[str, Any]] = []
         for doc_group, group_items in grouped_disputes.items():
             docs_context, missing_doc_ids = self._build_docs_context(doc_group, comparison_doc_map)
             prefix_messages = self._build_prefix_messages(docs_context)
 
             for dispute in group_items:
-                assessment = self._verify_single_dispute(
-                    dispute=dispute,
-                    claims=claims,
-                    doc_group=doc_group,
-                    missing_doc_ids=missing_doc_ids,
-                    prefix_messages=prefix_messages,
+                verification_jobs.append(
+                    {
+                        "dispute": dispute,
+                        "claims": claims,
+                        "doc_group": doc_group,
+                        "missing_doc_ids": missing_doc_ids,
+                        "prefix_messages": prefix_messages,
+                    }
                 )
-                assessments.append(assessment)
 
-        return assessments
+        if not verification_jobs:
+            return []
+
+        if len(verification_jobs) == 1:
+            job = verification_jobs[0]
+            return [self._verify_single_dispute(**job)]
+
+        max_workers = max(
+            1,
+            min(
+                settings.OAR_MAX_CONCURRENCY,
+                len(verification_jobs),
+            ),
+        )
+        logger.info(
+            f"证据核查并行执行: jobs={len(verification_jobs)} workers={max_workers}"
+        )
+        ordered_results: List[Dict[str, Any] | None] = [None] * len(verification_jobs)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                submit_with_current_context(executor, self._verify_single_dispute, **job): index
+                for index, job in enumerate(verification_jobs)
+            }
+            for future in as_completed(futures):
+                index = futures[future]
+                ordered_results[index] = future.result()
+
+        return [item for item in ordered_results if item]
 
     def _get_document_based_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
         document_disputes: List[Dict[str, Any]] = []
