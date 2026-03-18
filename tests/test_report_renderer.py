@@ -309,8 +309,38 @@ def test_render_analysis_section_accepts_non_numeric_tcs_score() -> None:
     )
 
     assert "color: #c7254e" in content
-    assert ">5</span>" in content
+    assert "🔴 5</span>" in content
     assert "异常效果" in content
+
+
+def test_render_analysis_section_shows_array_dependent_on() -> None:
+    renderer = ReportRenderer(patent_data={})
+    content = renderer._render_analysis_section(
+        {
+            "ai_title": "测试报告",
+            "ai_abstract": "摘要",
+            "technical_field": "技术领域",
+            "technical_problem": "技术问题",
+            "technical_scheme": "技术方案",
+            "technical_means": "技术手段",
+            "technical_features": [
+                {"name": "核心特征A", "description": "核心A描述"},
+                {"name": "协同特征X", "description": "协同X描述"},
+            ],
+            "technical_effects": [
+                {"effect": "核心效果", "tcs_score": 5, "contributing_features": ["核心特征A"]},
+                {
+                    "effect": "协同效果",
+                    "tcs_score": 4,
+                    "dependent_on": ["核心特征Z", "核心特征Y"],
+                    "contributing_features": ["协同特征X"],
+                },
+            ],
+            "figure_explanations": [],
+        }
+    )
+
+    assert "依附: 核心特征Z, 核心特征Y" in content
 
 
 def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:

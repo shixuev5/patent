@@ -283,7 +283,7 @@ def test_build_matrix_context_groups_block_c_by_dependency(monkeypatch) -> None:
                 {
                     "effect": "协同效果1",
                     "tcs_score": 4,
-                    "dependent_on": "核心特征A",
+                    "dependent_on": ["核心特征A"],
                     "contributing_features": ["协同特征X"],
                     "rationale": "通过X增强A",
                 },
@@ -302,7 +302,7 @@ def test_build_matrix_context_groups_block_c_by_dependency(monkeypatch) -> None:
     assert "[依附于核心突破点的协同/使能特征 (强关联降噪)]" in context
     assert "专用于配合/使能 【E1】 效果的特征" in context
     assert "【协同特征X】 (TCS: 4)" in context
-    assert "[无明确依附的全局补充特征 (通用降噪)]" in context
+    assert "[无明确依附的全局补充特征 (通用降噪，effect_cluster_ids 留空)]" in context
     assert "【全局特征Y】 (TCS: 3)" in context
     assert "=== 4. Block E: 效果与功能锚点 (Effect - Optional Precision Filter) ===" in context
     assert "[B1/E1] 效果锚点: 效果1" in context
@@ -329,7 +329,7 @@ def test_build_semantic_cluster_text_includes_dependent_features(monkeypatch) ->
                 {
                     "effect": "协同效果1",
                     "tcs_score": 4,
-                    "dependent_on": "核心特征A",
+                    "dependent_on": ["核心特征A"],
                     "contributing_features": ["协同特征X"],
                     "rationale": "通过X增强A",
                 },
@@ -403,7 +403,7 @@ def test_build_matrix_context_matches_dependent_on_with_loose_text(monkeypatch) 
                 {
                     "effect": "协同效果1",
                     "tcs_score": 4,
-                    "dependent_on": "1. 核心特征A",
+                    "dependent_on": ["1. 核心特征A"],
                     "contributing_features": ["协同特征X"],
                     "rationale": "通过X增强A",
                 },
@@ -435,7 +435,7 @@ def test_build_semantic_cluster_text_matches_dependent_on_with_loose_text(monkey
                 {
                     "effect": "协同效果1",
                     "tcs_score": 4,
-                    "dependent_on": "核心特征A(对应E1)",
+                    "dependent_on": ["核心特征A(对应E1)"],
                     "contributing_features": ["协同特征X"],
                     "rationale": "通过X增强A",
                 },
@@ -479,3 +479,45 @@ def test_generate_semantic_query_prompt_uses_single_braces_json_example(monkeypa
     assert '"semantic_query":' in system_prompt
     assert "{{" not in system_prompt
     assert "}}" not in system_prompt
+
+
+def test_normalize_search_matrix_backfills_block_c_effect_cluster_ids(monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+    )
+    generator = SearchStrategyGenerator(
+        patent_data={"bibliographic_data": {"ipc_classifications": []}},
+        report_data={
+            "technical_features": [
+                {"name": "核心特征A", "description": "核心A描述"},
+                {"name": "协同特征X", "description": "协同X描述"},
+            ],
+            "technical_effects": [
+                {"effect": "效果1", "tcs_score": 5, "contributing_features": ["核心特征A"]},
+                {
+                    "effect": "协同效果1",
+                    "tcs_score": 4,
+                    "dependent_on": ["核心特征A"],
+                    "contributing_features": ["协同特征X"],
+                },
+            ],
+        },
+    )
+    raw = [
+        {
+            "element_name": "协同特征X",
+            "element_role": "Functional",
+            "block_id": "C",
+            "effect_cluster_ids": [],
+            "element_type": "Product_Structure",
+            "keywords_zh": ["协同特征X"],
+            "keywords_en": ["support* feature*"],
+            "ipc_cpc_ref": [],
+        }
+    ]
+
+    normalized = generator._normalize_search_matrix(raw)
+    assert normalized[0]["effect_cluster_ids"] == ["E1"]

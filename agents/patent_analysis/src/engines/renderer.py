@@ -79,6 +79,21 @@ class ReportRenderer:
             return cleaned
         return default
 
+    def _normalize_dependent_on_list(self, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+
+        normalized: List[str] = []
+        for item in value:
+            text = self._safe_text(item).strip()
+            if not text:
+                continue
+            if text.lower() in ("null", "none"):
+                continue
+            if text not in normalized:
+                normalized.append(text)
+        return normalized
+
     def render(
         self,
         report_data: Dict[str, Any],
@@ -299,13 +314,16 @@ class ReportRenderer:
                     
                     remaining_sub =[]
                     for sub in sub_nodes:
-                        dep = str(sub.get("dependent_on", "") or "").strip()
+                        deps = self._normalize_dependent_on_list(sub.get("dependent_on"))
                         # 匹配逻辑：如果子节点声明的依存特征，包含在父节点的贡献特征中（或者反过来）
                         is_match = False
-                        if dep and dep != "null" and dep != "None":
-                            for cf in core_features:
-                                if cf in dep or dep in cf:
-                                    is_match = True
+                        if deps:
+                            for dep in deps:
+                                for cf in core_features:
+                                    if cf in dep or dep in cf:
+                                        is_match = True
+                                        break
+                                if is_match:
                                     break
                         
                         if is_match:
@@ -345,7 +363,7 @@ class ReportRenderer:
                 
                 desc = self._safe_text(eff.get("effect"), "未命名效果")
                 score = self._safe_int(eff.get("tcs_score"), default=0)
-                dependent_on = str(eff.get("dependent_on", "") or "").strip()
+                dependent_on = self._normalize_dependent_on_list(eff.get("dependent_on"))
 
                 # 分数样式与 Block 映射（加回彩色原点，增强可读性）
                 if score >= 5:
@@ -389,8 +407,9 @@ class ReportRenderer:
                     contrib_html = f"<ul style='margin: 0; padding-left: 16px;'>{list_items}</ul>"
                     
                     # 针对未被完美挂载但自带依附信息的节点，补充一个标签
-                    if dependent_on and dependent_on not in ("null", "None") and level == 0 and score in (3, 4):
-                        contrib_html += f"<div style='margin-top: 4px; font-size: 0.85em; color: #6c757d; border-top: 1px dashed #dee2e6; padding-top: 2px;'>依附: {dependent_on}</div>"
+                    if dependent_on and level == 0 and score in (3, 4):
+                        dep_text = ", ".join(dependent_on)
+                        contrib_html += f"<div style='margin-top: 4px; font-size: 0.85em; color: #6c757d; border-top: 1px dashed #dee2e6; padding-top: 2px;'>依附: {dep_text}</div>"
                 else:
                     contrib_html = "-"
 

@@ -52,20 +52,7 @@ class SearchStrategyGenerator:
         hub_features = cluster_bundle["hub_features"]
 
         # 1) 核心特征 -> 效果簇(E) 的映射，用于挂载 dependent_on 的 Block C 特征
-        core_feature_to_e_ids: Dict[str, List[str]] = {}
-        for cluster in effect_clusters:
-            cluster_ids = cluster.get("effect_cluster_ids") or []
-            e_id_raw = cluster_ids[0] if cluster_ids else ""
-            e_id = self._normalize_inline_text(e_id_raw).upper()
-            if not re.fullmatch(r"E\d+", e_id):
-                continue
-            for feat in cluster.get("features", []):
-                feat_name = self._normalize_inline_text(feat)
-                if not feat_name:
-                    continue
-                bucket = core_feature_to_e_ids.setdefault(feat_name, [])
-                if e_id not in bucket:
-                    bucket.append(e_id)
+        core_feature_to_e_ids = self._build_core_feature_to_e_ids(effect_clusters)
 
         block_a_preamble: List[str] = []
         block_c_dependent: Dict[str, List[str]] = {}
@@ -79,7 +66,7 @@ class SearchStrategyGenerator:
                 desc = self._normalize_inline_text(info.get("description", "无特定描述"))
                 block_a_preamble.append(f"- 【{feat_name}】: {desc}")
 
-        # Block C：优先基于 technical_effects 的 dependent_on 建立“依附型/全局型”降噪特征
+        # Block C：优先基于 technical_effects 的 dependent_on 数组建立“依附型/全局型”降噪特征
         for effect in report.get("technical_effects", []):
             if not isinstance(effect, dict):
                 continue
@@ -87,14 +74,11 @@ class SearchStrategyGenerator:
             if score not in (3, 4):
                 continue
 
-            dep_feat = self._normalize_inline_text(effect.get("dependent_on", ""))
-            target_e_ids: List[str] = []
-            if dep_feat and dep_feat.lower() not in ("null", "none"):
-                for core_feat, e_ids in core_feature_to_e_ids.items():
-                    if core_feat in dep_feat or dep_feat in core_feat:
-                        for e_id in e_ids:
-                            if e_id not in target_e_ids:
-                                target_e_ids.append(e_id)
+            dependent_features = self._normalize_dependent_on_list(effect.get("dependent_on"))
+            target_e_ids = self._match_dependent_features_to_effect_ids(
+                dependent_features,
+                core_feature_to_e_ids,
+            )
 
             rationale_raw = self._normalize_inline_text(effect.get("rationale", ""))
             rationale = (
@@ -178,13 +162,16 @@ class SearchStrategyGenerator:
                 key=lambda value: int(value[1:]) if re.fullmatch(r"E\d+", value) else 10**9,
             )
             for e_id in sorted_ids:
-                block_c_content.append(f"- 专用于配合/使能 【{e_id}】 效果的特征:")
+                block_c_content.append(
+                    f'- 🚨 [强制范围绑定] 专用于配合/使能 【{e_id}】 效果的特征 '
+                    f'(JSON输出时 effect_cluster_ids 必须填["{e_id}"]):'
+                )
                 block_c_content.extend(block_c_dependent[e_id])
 
         if block_c_global:
             if block_c_content:
                 block_c_content.append("")
-            block_c_content.append("[无明确依附的全局补充特征 (通用降噪)]")
+            block_c_content.append("[无明确依附的全局补充特征 (通用降噪，effect_cluster_ids 留空)]")
             block_c_content.extend(block_c_global)
 
         block_e_content: List[str] = []
@@ -259,7 +246,7 @@ class SearchStrategyGenerator:
         1. **Block A (Subject/环境要素)**：必须有且仅有 1 个，作为整体技术领域或应用场景的锚点。
         2. **Block B 子块 (B1..Bn / 核心突破点)**：每个 B_i 对应一个核心效果。必须将该效果的贡献特征全量转化为要素，且**坚决不能把不同效果的特征混在同一个 B 子块中**（保证并行或交叉检索的灵活性）。
         3. **Block C (Functional/周边与限定要素)**：提取用于降噪、后置筛选的常规特征或功能限定特征。
-           - 🚨 **【高阶关联原则】**：如果输入上下文明确指出某个 Block C 要素是专门配合/依附于特定核心效果（如 E1、E2），你**必须**在该要素的 `effect_cluster_ids` 字段填入对应标签（如 `["E1"]`）。若无明确依附关系，保持空数组 `[]`。
+           - 🚨 **【高阶关联原则-防交叉污染】**：如果输入上下文明确指出某个 Block C 要素是专用于配合/使能特定核心效果（如 E1），你**必须**在该要素的 `effect_cluster_ids` 字段精确填入对应标签（如 `["E1"]`）。若服务多个效果则填 `["E1", "E2"]`。**严禁误填或留空**；仅明确标注为“全局补充”的要素允许留空 `[]`。
         4. **Block E (Effect/Functional - 可选效果层)**：从高分效果中提取可检索的功能/状态词，作为后置过滤或补漏召回。
            - 仅提取具有技术物理意义的词（如“抑制电磁干扰”“降低摩擦系数”），避免“提高性能/效率”一类空泛词。
            - `element_role` 必须设为 `Effect`，`block_id` 设为 `E`，`priority_tier` 设为 `filter`，`term_frequency` 设为 `high`。
@@ -346,6 +333,7 @@ class SearchStrategyGenerator:
 
     def _normalize_search_matrix(self, raw_matrix: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
+        block_c_feature_to_effect_ids = self._build_block_c_feature_to_effect_ids()
 
         for item in raw_matrix:
             if not isinstance(item, dict):
@@ -376,11 +364,17 @@ class SearchStrategyGenerator:
                     cluster_id = str(value or "").strip().upper()
                     if re.fullmatch(r"E\d+", cluster_id) and cluster_id not in effect_cluster_ids:
                         effect_cluster_ids.append(cluster_id)
+            effect_cluster_ids = self._sort_effect_cluster_ids(effect_cluster_ids)
             if block_id.startswith("B") and not effect_cluster_ids:
                 if block_id[1:].isdigit():
                     effect_cluster_ids = [f"E{block_id[1:]}"]
             if block_id == "A":
                 effect_cluster_ids = []
+            if block_id == "C" and not effect_cluster_ids:
+                effect_cluster_ids = self._infer_block_c_effect_ids(
+                    element_name,
+                    block_c_feature_to_effect_ids,
+                )
 
             term_frequency = str(item.get("term_frequency") or "").strip().lower()
             if term_frequency not in VALID_TERM_FREQUENCY:
@@ -458,6 +452,115 @@ class SearchStrategyGenerator:
 
     def _normalize_inline_text(self, value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _normalize_dependent_on_list(self, value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+
+        normalized: List[str] = []
+        for item in value:
+            text = self._normalize_inline_text(item)
+            if not text:
+                continue
+            if text.lower() in ("null", "none"):
+                continue
+            if text not in normalized:
+                normalized.append(text)
+        return normalized
+
+    def _build_core_feature_to_e_ids(self, effect_clusters: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        core_feature_to_e_ids: Dict[str, List[str]] = {}
+        for cluster in effect_clusters:
+            cluster_ids = cluster.get("effect_cluster_ids") or []
+            e_id_raw = cluster_ids[0] if cluster_ids else ""
+            e_id = self._normalize_inline_text(e_id_raw).upper()
+            if not re.fullmatch(r"E\d+", e_id):
+                continue
+            for feat in cluster.get("features", []):
+                feat_name = self._normalize_inline_text(feat)
+                if not feat_name:
+                    continue
+                bucket = core_feature_to_e_ids.setdefault(feat_name, [])
+                if e_id not in bucket:
+                    bucket.append(e_id)
+        return core_feature_to_e_ids
+
+    def _match_dependent_features_to_effect_ids(
+        self,
+        dependent_features: List[str],
+        core_feature_to_e_ids: Dict[str, List[str]],
+    ) -> List[str]:
+        target_e_ids: List[str] = []
+        for dep_feat in dependent_features:
+            for core_feat, e_ids in core_feature_to_e_ids.items():
+                if core_feat in dep_feat or dep_feat in core_feat:
+                    for e_id in e_ids:
+                        if e_id not in target_e_ids:
+                            target_e_ids.append(e_id)
+        return self._sort_effect_cluster_ids(target_e_ids)
+
+    def _sort_effect_cluster_ids(self, effect_cluster_ids: List[str]) -> List[str]:
+        return sorted(
+            effect_cluster_ids,
+            key=lambda value: int(value[1:]) if re.fullmatch(r"E\d+", value) else 10**9,
+        )
+
+    def _build_block_c_feature_to_effect_ids(self) -> Dict[str, List[str]]:
+        report = self.report_data or {}
+        cluster_bundle = self._build_effect_clusters()
+        core_feature_to_e_ids = self._build_core_feature_to_e_ids(cluster_bundle["effect_clusters"])
+        block_c_feature_to_effect_ids: Dict[str, List[str]] = {}
+
+        for effect in report.get("technical_effects", []):
+            if not isinstance(effect, dict):
+                continue
+            score = self._safe_int(effect.get("tcs_score"), default=0)
+            if score not in (3, 4):
+                continue
+
+            dependent_features = self._normalize_dependent_on_list(effect.get("dependent_on"))
+            target_e_ids = self._match_dependent_features_to_effect_ids(
+                dependent_features,
+                core_feature_to_e_ids,
+            )
+            if not target_e_ids:
+                continue
+
+            contributors = effect.get("contributing_features", [])
+            if not isinstance(contributors, list):
+                continue
+
+            for c_feat_raw in contributors:
+                c_feat = self._normalize_inline_text(c_feat_raw)
+                if not c_feat:
+                    continue
+                bucket = block_c_feature_to_effect_ids.setdefault(c_feat, [])
+                for e_id in target_e_ids:
+                    if e_id not in bucket:
+                        bucket.append(e_id)
+
+        for feat_name in list(block_c_feature_to_effect_ids.keys()):
+            block_c_feature_to_effect_ids[feat_name] = self._sort_effect_cluster_ids(
+                block_c_feature_to_effect_ids[feat_name]
+            )
+        return block_c_feature_to_effect_ids
+
+    def _infer_block_c_effect_ids(
+        self,
+        element_name: str,
+        block_c_feature_to_effect_ids: Dict[str, List[str]],
+    ) -> List[str]:
+        normalized_name = self._normalize_inline_text(element_name)
+        if not normalized_name:
+            return []
+
+        inferred: List[str] = []
+        for feat_name, effect_ids in block_c_feature_to_effect_ids.items():
+            if feat_name in normalized_name or normalized_name in feat_name:
+                for e_id in effect_ids:
+                    if e_id not in inferred:
+                        inferred.append(e_id)
+        return self._sort_effect_cluster_ids(inferred)
 
     def _build_effect_clusters(self) -> Dict[str, Any]:
         report = self.report_data or {}
@@ -561,10 +664,14 @@ class SearchStrategyGenerator:
             score = self._safe_int(effect.get("tcs_score"), default=0)
             if score not in (3, 4):
                 continue
-            dep_feat = self._normalize_inline_text(effect.get("dependent_on", ""))
-            if not dep_feat or dep_feat.lower() in ("null", "none"):
+            dependent_features = self._normalize_dependent_on_list(effect.get("dependent_on"))
+            if not dependent_features:
                 continue
-            is_match = any(cf in dep_feat or dep_feat in cf for cf in core_features)
+            is_match = any(
+                cf in dep_feat or dep_feat in cf
+                for dep_feat in dependent_features
+                for cf in core_features
+            )
             if not is_match:
                 continue
             contributors = effect.get("contributing_features", [])
