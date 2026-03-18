@@ -94,10 +94,21 @@ class ContentGenerator:
         }
 
     def _build_global_context(self, report_core_json: Dict[str, Any]) -> Dict[str, Any]:
+        feature_list = report_core_json.get("technical_features", [])
+        if not isinstance(feature_list, list):
+            feature_list = []
+        feature_tree_str = (
+            self._build_feature_menu_str(feature_list)
+            if feature_list
+            else "（未提取到技术特征）"
+        )
+
         return {
             "title": report_core_json.get("ai_title"),
             "problem": report_core_json.get("technical_problem"),
             "effects": report_core_json.get("technical_effects", []),
+            "feature_tree": feature_tree_str,
+            "raw_features": feature_list,
         }
 
     def generate_core_report_json(self) -> Dict[str, Any]:
@@ -985,6 +996,9 @@ class ContentGenerator:
         if part_ids:
             temp_desc_list = []
             part_ids = sorted(set(part_ids), key=self._natural_part_id_key)
+            raw_features = global_context.get("raw_features", [])
+            if not isinstance(raw_features, list):
+                raw_features = []
 
             for pid in part_ids:
                 pid_key = self._normalize_part_id(pid)
@@ -1001,9 +1015,22 @@ class ContentGenerator:
                 spatial = info.get("spatial_connections") or "未提及"
                 motion = info.get("motion_state") or "未提及"
                 attributes = info.get("attributes") or "未提及"
+                matched_feature = self._match_distinguishing_feature(name, raw_features)
+                feature_status = ""
+                matched_feature_name = ""
+                matched_claim_source = ""
+                if matched_feature:
+                    matched_feature_name = str(matched_feature.get("name", "")).strip()
+                    matched_claim_source = str(
+                        matched_feature.get("claim_source")
+                        or matched_feature.get("claim_id")
+                        or "unknown"
+                    ).strip()
+                    feature_status = f" 🔥[核心区别特征 - 来源:{matched_claim_source}]"
+
                 local_part_ids_for_context.append(pid_key)
                 temp_desc_list.append(
-                    f"- 标号 {pid_key} ({name}): 功能={func}；层级={hierarchy or '未提及'}；"
+                    f"- {name}({pid_key}){feature_status}: 功能={func}；层级={hierarchy or '未提及'}；"
                     f"空间连接={spatial}；运动状态={motion}"
                 )
                 parts_table_data.append(
@@ -1015,9 +1042,14 @@ class ContentGenerator:
                         "spatial_connections": spatial,
                         "motion_state": motion,
                         "attributes": attributes,
+                        "is_distinguishing_feature": bool(matched_feature),
+                        "matched_feature_name": matched_feature_name,
+                        "matched_feature_source": matched_claim_source,
                     }
                 )
-            local_parts_context_str = "\n".join(temp_desc_list)
+            local_parts_context_str = (
+                "\n".join(temp_desc_list) if temp_desc_list else "（该图未识别到具体部件标号）"
+            )
         else:
             local_parts_context_str = "（该图未识别到具体部件标号）"
 
@@ -1048,6 +1080,33 @@ class ContentGenerator:
         normalized = self._normalize_part_id(value)
         target = normalized or str(value or "")
         return [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", target)]
+
+    @staticmethod
+    def _normalize_text_for_match(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]", "", raw)
+
+    def _match_distinguishing_feature(
+        self, part_name: str, raw_features: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        part_norm = self._normalize_text_for_match(part_name)
+        if len(part_norm) < 2:
+            return None
+
+        for feat in raw_features:
+            if not isinstance(feat, dict) or not feat.get("is_distinguishing"):
+                continue
+
+            feat_name = str(feat.get("name", "")).strip()
+            feat_norm = self._normalize_text_for_match(feat_name)
+            if len(feat_norm) < 2:
+                continue
+
+            if feat_norm in part_norm or part_norm in feat_norm:
+                return feat
+        return None
 
     def _build_related_parts_context(self, local_part_ids: List[str]) -> str:
         if not local_part_ids:
@@ -1118,81 +1177,87 @@ class ContentGenerator:
         生成单张图片的“看图说话”
         """
 
-        # 格式："- [效果描述] (实现手段: 特征A, 特征B)"
         effects_list = global_context.get("effects", []) or []
-        formatted_effects = []
+        formatted_effects: List[str] = []
 
-        for e in effects_list[:4]:  # 只取前4个重要效果，避免Token过长
-            eff_text = e.get("effect", "未知效果")
-            feats = e.get("contributing_features", [])
-            feat_text = ", ".join(feats)
+        for effect_item in effects_list[:6]:
+            if isinstance(effect_item, dict):
+                effect_text = str(effect_item.get("effect", "")).strip() or "未知效果"
+                features = effect_item.get("contributing_features", [])
+                if isinstance(features, list):
+                    feature_text = ", ".join(
+                        str(feature).strip() for feature in features if str(feature).strip()
+                    )
+                else:
+                    feature_text = str(features).strip()
 
-            formatted_effects.append(f"- {eff_text} (实现手段: {feat_text})")
+                if feature_text:
+                    formatted_effects.append(
+                        f"- {effect_text} (实现手段: {feature_text})"
+                    )
+                else:
+                    formatted_effects.append(f"- {effect_text}")
+            elif str(effect_item).strip():
+                formatted_effects.append(f"- {str(effect_item).strip()}")
 
-        effects_str = "\n".join(formatted_effects)
+        effects_str = "\n".join(formatted_effects) if formatted_effects else "- （未提取到明确技术效果）"
+        feature_tree = global_context.get("feature_tree") or "（未提供特征树）"
+        local_parts_str = (
+            local_parts.strip()
+            if isinstance(local_parts, str) and local_parts.strip()
+            else "（机器未能在本图中提取到带有确定标号的部件，请完全依赖你的视觉和全局上下文进行推理）"
+        )
 
         system_prompt = """
         # 角色设定
-        你是一位顶尖的专利可视化分析师。你的受众是**非本技术领域的专利审查员**。
-        审查员面临大量的阅读压力，你的任务是**降低他们的认知负荷**，通过一段通俗、逻辑严密的解说，让他们一眼看懂这张图的核心含义。
+        你是一位服务于国家知识产权局的顶尖专利可视化分析专家。你的读者是专业的专利审查员。
+        你的唯一任务是：提取专利附图中“最有价值的技术信息”，并将其与权利要求中的“区别技术特征”进行深度锚定。
+        你必须以极其客观、精炼、技术化的工程师口吻输出，绝对禁止任何主观感叹或客套话。
 
-        # 思考步骤 (请在内心执行，无需输出)
-        1. **锚点对齐**：首先锁定图中的【视觉线索】，确认关键部件在图中的具体位置，构建空间坐标系。
-        2. **意图解码**：结合【全局认知】，问自己：申请人为什么要放这张图？
-            - *如果是结构图：* 哪个部件是解决【客观问题】的“金钥匙”？
-            - *如果是数据图：* 曲线的哪个“拐点”或“极值”证明了【预期效果】？
-        3. **逻辑串联**：用一条看不见的线（力流、数据流、时间流）将静态部件串联起来。
+        # 核心红线 (严格遵守，否则视为失败)
+        1. 反幻觉红线：只能描述图中真实存在的、或基于视觉线索能确凿推导的交互关系。如果【核心区别特征】在当前图中并未体现，绝不要强行描述它，请转而客观描述图中现有的其他部件是如何运作的。
+        2. 主次红线：不要试图列举图中的所有部件。如果部件带有 `🔥核心区别特征` 标记，必须花 70% 的篇幅详细揭示其空间位置、形态及其如何改变了系统状态（力流/数据流/控制流）。对于常规的支撑件、紧固件、外壳，一笔带过。
+        3. 格式红线：提及任何部件时，必须且只能使用 `部件名(标号)` 的格式，例如 `减速齿轮(12)`。如果某个部件图中清晰可见但没有机器识别出的标号，仅允许使用 `部件名`（如 `输入端`），禁止自行编造数字标号。
 
-        # 生成策略 (根据图片类型选择)
-        **[类型 A：机械/结构/装置图]**
-        - **拒绝清单体**：严禁写成“1是A，2是B”的说明书列表。
-        - **关注交互与传递**：描述力的传递、流体的走向或动作的触发。例如：“电机(1)输出的扭矩，经由减速器(2)放大后，驱动...”
-        - **空间方位**：使用“位于...上游”、“紧贴于...内壁”等词建立清晰的空间感。
+        # 针对不同图类型的解析策略 (自适应应用)
+        请首先判断这是一张什么类型的图，并采用对应的分析逻辑：
+        - [机械/结构/装置图]：聚焦于“物理拓扑与传动/流体路径”。解释动力/流体是从哪里输入的，中间经过了 `🔥核心区别特征` 的什么空间约束或形态变换，最终输出了什么。
+        - [电子电路/模块框图]：聚焦于“信号流向与控制逻辑”。解释模块之间传递了什么信号，`🔥核心区别特征` 对信号进行了何种处理（如放大、滤波、映射）。
+        - [流程图/算法时序图]：聚焦于“状态跃迁与核心算法”。跳过常规的“开始/结束”步骤，重点解释在哪个特定的步骤（`🔥核心区别特征`）发生了数据的质变或逻辑的重定向。
+        - [数据图表/波形/对比图]：聚焦于“变量关系与临界点”。不要泛泛而谈趋势，必须指出横纵坐标的物理意义，以及图中的哪个突变点、极值或对比差异直接证明了专利的【技术效果】。
 
-        **[类型 B：流程图/时序图/算法逻辑]**
-        - **关注变化**：描述数据流经各步骤时发生了什么“质变”。例如：“原始信号经过降噪(S1)后变得纯净，随即进入判定模块(S2)...”
-        - **因果链条**：强调步骤之间的逻辑必要性。
+        # 叙事微结构 (必须遵循的强制模板)
+        你的输出必须是一段浑然一体的高密度解说（约 150 - 250 字），隐含以下三层逻辑：
+        - 【起点】图意定位：一句话点明该图展示了系统的哪个局部、视角或阶段。
+        - 【推演】核心机理：按照力/流体/数据的流向，动态推演 `🔥核心区别特征` 是如何介入系统并发挥作用的。使用诸如“受限于”、“被导向”、“转换为”、“基于...触发”等机制化词汇。
+        - 【落点】效果闭环：结尾用一句话说明图中揭示的这种机制，如何切实解决了全局设定的客观问题，或达成了哪项技术效果。
 
-        **[类型 C：数据曲线/仿真图/对比图]**
-        - **不仅读轴，更要读点**：不要只描述趋势，必须指出**“关键转折点”**或**“最大差异区”**。
-        - **数据翻译**：将抽象的坐标轴含义翻译为具体性能。例如：“纵坐标的下降并不只代表数值减小，更意味着系统延迟的显著降低。”
-
-        # 写作规范 (必须严格遵守)
-        - **三段式微结构**：
-            1. **一句话定位**：开篇直接点明这张图展示了本发明的哪个核心模块、原理或实验结果。
-            2. **动态推演**：中间部分按顺序描述工作过程、受力传递或数据变化规律。
-            3. **价值闭环**：结尾必须显式关联到【全局认知】中的某项效果（如“这一设计直接解决了[客观问题]...”）。
-        - **引用标准**：
-            提及**任何**部件时，必须严格遵循 `名称(标号)` 格式。
-            - **情况A (明确标记)**：直接使用【视觉线索】中的信息。
-            - **情况B (逻辑补全)**：若核心部件在图中清晰可见但未被机器识别（无标号），可查阅【相关部件参考库】进行补全，但只允许引用该库中列出的标号，不得扩展到库外部件。
-        - **语言风格**：
-            - **通俗化**：用“起到...作用”代替“被配置为”。
-            - **规范引用**：提及部件时必须使用 `名称(标号)` 格式，如 `传动轴(12)`。
-        - **篇幅**：控制在 150-200 字之间，紧凑且高密度。
-
-        # 输出指令
-        直接输出最终的解说段落，不要包含任何标题、Markdown标记或“好的”等客套话。
+        # 输出要求
+        - 纯文本输出：直接输出解说段落正文。
+        - 禁止出现“本图”、“如图所示”、“在这张图中”等赘余字眼（直接描述客观事实）。
+        - 禁止使用任何 Markdown 样式（如加粗、列表、标题），只输出纯净的中文字符串。
         """
 
         user_content = f"""
-        # 1. 全局认知 (Global Knowledge - Shared Context)
-        在分析图片前，请先理解本专利的核心逻辑，这将作为你**解读图片意图的唯一指引**：
-        - **核心发明点**：{global_context.get('title')}
-        - **要解决的客观问题**：{global_context.get('problem')}
-        - **预期达到的效果**：
-        {effects_str}
-        - **相关部件参考库（仅局部+直接父/子）**：
-        若视觉锚点存在漏检，只允许从以下列表补全标号：
-        {related_parts_context}
+        请严格根据以下提供的事实上下文和视觉线索，为目标图片生成专业图解。
 
-        # 2. 本图输入数据 (Specific Image Data)
-        - **图号与标题**：{label} - {caption}
-        - **视觉线索 (Visual Clues)**：
-          图片经过了机器视觉标注，请将图中的**显眼文字（蓝色/红色文本）、数字标号或指示箭头**视为最高优先级的锚点。
-          这些视觉标记对应以下部件信息（未在图中明确指出的部件请勿强行描述）：
-          {local_parts}
-          **注意：机器识别可能存在漏检。只有在图中存在明确视觉证据时，才可从上方【相关部件参考库】补全；若无证据，不要强行补编号。**
+        ### [第一层：全局技术锚点] (指引解读方向)
+        - 技术主题：{global_context.get('title', '未知主题')}
+        - 待解决的客观技术问题：{global_context.get('problem', '未知问题')}
+        - 预期达成的核心效果：
+        {effects_str}
+
+        ### [第二层：权利要求特征树] (辨别主次的准绳)
+        【提示】带有“★区别特征”的项是本发明的灵魂。请观察目标图片中是否出现了它们；如果出现，必须重点解析。
+        {feature_tree}
+
+        ### [第三层：本图实证数据] (你只能基于以下信息和你的视觉所见进行描述)
+        - 当前图号及原注：{label} - {caption}
+        - 本图机器识别的部件清单 (视觉线索)：
+          【提示】带有 `🔥` 标记的部件表明它极有可能是上述的“★区别特征”，请在图中仔细定位并重点描述其运行机理。
+          {local_parts_str}
+        - 周边部件参考库 (仅作盲区补全参考，严禁随意描述图里没有的部件)：
+          {related_parts_context}
         """
 
         try:
