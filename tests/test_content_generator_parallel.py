@@ -186,7 +186,7 @@ def test_verify_evidence_runs_means_then_effects_with_expected_params(
                 }
             )
             if task_kind == "technical_means_generation":
-                return {"technical_means": "通过 **特征A** [1] 建立稳定反馈机制"}
+                return {"technical_means": "通过 **特征A** [1.1] 建立稳定反馈机制"}
             if task_kind == "technical_effect_verification":
                 return {
                     "technical_effects": [
@@ -231,8 +231,9 @@ def test_verify_evidence_runs_means_then_effects_with_expected_params(
     assert llm_stub.calls[0]["temperature"] == 0.2
     assert llm_stub.calls[1]["task_kind"] == "technical_effect_verification"
     assert llm_stub.calls[1]["temperature"] == 0.0
-    assert "通过 **特征A** [1] 建立稳定反馈机制" in llm_stub.calls[1]["messages"][1]["content"]
-    assert result["technical_means"] == "通过 **特征A** [1] 建立稳定反馈机制"
+    assert "通过 **特征A** [1.1] 建立稳定反馈机制" in llm_stub.calls[1]["messages"][1]["content"]
+    assert "特征归属树" in llm_stub.calls[1]["messages"][1]["content"]
+    assert result["technical_means"] == "通过 **特征A** [1.1] 建立稳定反馈机制"
     assert [item["tcs_score"] for item in result["technical_effects"]] == [5, 3]
 
 
@@ -348,3 +349,161 @@ def test_generate_core_report_no_longer_writes_verification_cache_key(
 
     cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
     assert "verification" not in cache_data
+
+
+def test_format_claims_to_text_includes_parent_relationship(tmp_path: Path, monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: StubLLMService(),
+    )
+
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {},
+            "claims": [
+                {"claim_id": "1", "claim_type": "independent", "claim_text": "一种装置..."},
+                {
+                    "claim_id": "2",
+                    "claim_type": "dependent",
+                    "claim_text": "根据权利要求1所述的装置...",
+                    "parent_claim_ids": ["1"],
+                },
+            ],
+            "description": {},
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=None,
+    )
+
+    all_claims_text = generator._format_claims_to_text()
+    independent_only_text = generator._format_claims_to_text(only_independent=True)
+
+    assert "### Claim 1 [独立权利要求 (Independent)]" in all_claims_text
+    assert "### Claim 2 [从属权利要求 (Dependent, 引用 Claim 1)]" in all_claims_text
+    assert "Claim 2" not in independent_only_text
+
+
+def test_extract_features_keeps_llm_order_and_prompt_requires_claim_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StubLLMService:
+        def __init__(self):
+            self.calls = []
+
+        def invoke_text_json(self, messages, task_kind, temperature):
+            self.calls.append(
+                {
+                    "messages": messages,
+                    "task_kind": task_kind,
+                    "temperature": temperature,
+                }
+            )
+            return {
+                "claim_subject_matter": "测试主题",
+                "technical_features": [
+                    {
+                        "name": "后出现的非区别特征",
+                        "claim_id": "2",
+                        "is_distinguishing": False,
+                        "claim_source": "dependent",
+                    },
+                    {
+                        "name": "先出现的区别特征",
+                        "claim_id": "1",
+                        "is_distinguishing": True,
+                        "claim_source": "independent",
+                    },
+                ],
+            }
+
+    llm_stub = StubLLMService()
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: llm_stub,
+    )
+
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {},
+            "claims": [
+                {"claim_id": "1", "claim_type": "independent", "claim_text": "一种装置..."},
+                {
+                    "claim_id": "2",
+                    "claim_type": "dependent",
+                    "claim_text": "根据权利要求1所述的装置...",
+                    "parent_claim_ids": ["1"],
+                },
+            ],
+            "description": {},
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=None,
+    )
+
+    response = generator._extract_features(
+        {"technical_problem": "问题", "technical_scheme": "方案"}
+    )
+
+    assert [item["name"] for item in response["technical_features"]] == [
+        "后出现的非区别特征",
+        "先出现的区别特征",
+    ]
+    assert llm_stub.calls[0]["task_kind"] == "claim_feature_reasoning"
+    assert '"claim_id"' in llm_stub.calls[0]["messages"][0]["content"]
+    assert "[权X]" in llm_stub.calls[0]["messages"][0]["content"]
+
+
+def test_build_feature_menu_str_uses_claim_scoped_numbering(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        lambda: StubLLMService(),
+    )
+
+    generator = ContentGenerator(
+        patent_data={
+            "bibliographic_data": {},
+            "claims": [
+                {"claim_id": "1", "claim_type": "independent", "claim_text": "独立权1"},
+                {
+                    "claim_id": "2",
+                    "claim_type": "dependent",
+                    "claim_text": "从属权2",
+                    "parent_claim_ids": ["1"],
+                },
+            ],
+            "description": {},
+            "drawings": [],
+        },
+        parts_db={},
+        image_parts={},
+        annotated_dir=tmp_path,
+        cache_file=None,
+    )
+
+    menu = generator._build_feature_menu_str(
+        [
+            {"name": "从属特征", "claim_id": "2", "is_distinguishing": False},
+            {"name": "独立特征A", "claim_id": "1", "is_distinguishing": True},
+            {"name": "独立特征B", "claim_id": "1", "is_distinguishing": False},
+        ]
+    )
+
+    assert "▶ [Claim 1] (独立权利要求 / 根节点):" in menu
+    assert "- [1.1] 独立特征A (★区别特征)" in menu
+    assert "- [1.2] 独立特征B (前序/从权常规特征)" in menu
+    assert "↳ [Claim 2] (从属权利要求，引用 Claim 1):" in menu
+    assert "- [2.1] 从属特征 (前序/从权常规特征)" in menu

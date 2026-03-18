@@ -521,3 +521,25 @@ def test_normalize_search_matrix_backfills_block_c_effect_cluster_ids(monkeypatc
 
     normalized = generator._normalize_search_matrix(raw)
     assert normalized[0]["effect_cluster_ids"] == ["E1"]
+
+
+def test_fallback_clean_text_removes_only_decimal_feature_citations(monkeypatch) -> None:
+    class StubLLMService:
+        pass
+
+    monkeypatch.setattr(
+        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+    )
+    generator = SearchStrategyGenerator(
+        patent_data={"bibliographic_data": {"ipc_classifications": []}},
+        report_data={},
+    )
+
+    cleaned = generator._fallback_clean_text(
+        "通过 **特征A** [1.1] 与 **特征B** [1] 协同 (★区别特征)"
+    )
+
+    assert "**" not in cleaned
+    assert "★区别特征" not in cleaned
+    assert "[1.1]" not in cleaned
+    assert "[1]" in cleaned

@@ -343,6 +343,54 @@ def test_render_analysis_section_shows_array_dependent_on() -> None:
     assert "依附: 核心特征Z, 核心特征Y" in content
 
 
+def test_render_analysis_section_renders_feature_numbering_by_claim_order() -> None:
+    renderer = ReportRenderer(
+        patent_data={
+            "claims": [
+                {"claim_id": "1", "claim_type": "independent", "parent_claim_ids": []},
+                {"claim_id": "2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+                {"claim_id": "3", "claim_type": "independent", "parent_claim_ids": []},
+            ]
+        }
+    )
+    content = renderer._render_analysis_section(
+        {
+            "ai_title": "测试报告",
+            "ai_abstract": "摘要",
+            "technical_field": "技术领域",
+            "technical_problem": "技术问题",
+            "technical_scheme": "技术方案",
+            "technical_means": "技术手段",
+            "technical_features": [
+                {
+                    "name": "从属特征",
+                    "claim_id": "2",
+                    "description": "从属描述",
+                    "rationale": "[权2] 从属限定 - 逻辑",
+                    "is_distinguishing": False,
+                },
+                {
+                    "name": "独立特征",
+                    "claim_id": "1",
+                    "description": "独立描述",
+                    "rationale": "[权1] 特征部分 - 逻辑",
+                    "is_distinguishing": True,
+                },
+            ],
+            "technical_effects": [],
+            "figure_explanations": [],
+        }
+    )
+
+    assert "### 关键技术特征表" in content
+    assert "特征编号" in content
+    assert "1.1" in content
+    assert "2.1" in content
+    assert "权 2 (引1)" not in content
+    assert "└─ " not in content
+    assert content.index("独立特征") < content.index("从属特征")
+
+
 def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:
     renderer = ReportRenderer(patent_data={})
     guide = renderer._get_search_matrix_guide()

@@ -200,26 +200,37 @@ class ContentGenerator:
     def _format_claims_to_text(self, only_independent: bool = False) -> str:
         """
         通用辅助函数：将权利要求列表格式化为层级分明的 Markdown 文本。
-        适配 claim_text/claim_type 结构。
+        适配 claim_text/claim_type/parent_claim_ids 结构。
         """
         lines = []
-        # 优先使用结构化 claim_id 字段
         for idx, claim in enumerate(self.claims):
-            # 1. 类型过滤
-            c_type_raw = claim.get("claim_type", "dependent").lower()
+            c_type_raw = str(claim.get("claim_type", "dependent")).lower()
             is_indep = "independent" in c_type_raw
 
             if only_independent and not is_indep:
                 continue
 
-            # 2. 获取内容 (兼容不同字段名)
             content = claim.get("claim_text") or claim.get("content") or ""
-
-            # 3. 构建标题
             claim_id = str(claim.get("claim_id", "")).strip() or str(idx + 1)
-            type_label = (
-                "独立权利要求 (Independent)" if is_indep else "从属权利要求 (Dependent)"
-            )
+
+            parent_ids_raw = claim.get("parent_claim_ids", [])
+            if isinstance(parent_ids_raw, list):
+                parent_ids = [
+                    str(parent_id).strip()
+                    for parent_id in parent_ids_raw
+                    if str(parent_id).strip()
+                ]
+            elif parent_ids_raw is None:
+                parent_ids = []
+            else:
+                parent_text = str(parent_ids_raw).strip()
+                parent_ids = [parent_text] if parent_text else []
+
+            if is_indep:
+                type_label = "独立权利要求 (Independent)"
+            else:
+                parents_str = ", ".join(parent_ids) if parent_ids else "未知"
+                type_label = f"从属权利要求 (Dependent, 引用 Claim {parents_str})"
 
             lines.append(f"### Claim {claim_id} [{type_label}]")
             lines.append(content.strip())
@@ -529,8 +540,9 @@ class ContentGenerator:
                     "name": "特征名称",
                     "description": "原文中的定义描述",
                     "is_distinguishing": true,
+                    "claim_id": "该特征所属的具体权利要求编号（例如 '1', '2'。必须准确提取）",
                     "claim_source": "independent",
-                    "rationale": "必须遵循格式：'[Claim X] <位置标记> - <逻辑判定>'。\n1. [Claim X]: 指明来源权利要求编号。\n2. <位置标记>: 标记为 '前序部分'、'特征部分' 或 '从属限定'。\n3. <逻辑判定>: 说明该特征是否贡献于解决【待解决的技术问题】，或是否为公知常识。"
+                    "rationale": "必须遵循格式：'[权X] <位置标记> - <逻辑判定>'。\n1. [权X]: 指明来源权利要求编号。\n2. <位置标记>: 标记为 '前序部分'、'特征部分' 或 '从属限定'。\n3. <逻辑判定>: 说明该特征是否贡献于解决【待解决的技术问题】，或是否为公知常识。"
                 }
             ]
         }
@@ -554,31 +566,108 @@ class ContentGenerator:
             temperature=0.0,  # 保持零温度，追求最严谨的逻辑
         )
 
-        # 按照 tcs_score 字段进行降序排序 (reverse=True)
-        if isinstance(response, Dict) and "technical_features" in response:
-            features = response.get("technical_features", [])
-            # 排序逻辑：
-            # 1. 区别特征 (is_distinguishing=True) 排最前
-            # 2. 其次是前序特征 (claim_source="independent")
-            # 3. 最后是从权特征
-            features.sort(
-                key=lambda x: (
-                    x.get("is_distinguishing", False),
-                    x.get("claim_source", "") == "independent",
-                ),
-                reverse=True,
-            )
-            response["technical_features"] = features
-
         return response
 
+    def _build_feature_numbered_items(
+        self, feature_list: List[Dict]
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        features_by_claim: Dict[str, List[Dict[str, Any]]] = {}
+        for feature in feature_list:
+            if not isinstance(feature, dict):
+                continue
+            claim_id = str(feature.get("claim_id", "")).strip() or "1"
+            features_by_claim.setdefault(claim_id, []).append(feature)
+
+        ordered_claim_ids: List[str] = []
+        seen_claim_ids = set()
+        for idx, claim in enumerate(self.claims):
+            c_dict = claim.model_dump() if hasattr(claim, "model_dump") else claim
+            if not isinstance(c_dict, dict):
+                continue
+            claim_id = str(c_dict.get("claim_id", "")).strip() or str(idx + 1)
+            if claim_id in features_by_claim and claim_id not in seen_claim_ids:
+                ordered_claim_ids.append(claim_id)
+                seen_claim_ids.add(claim_id)
+
+        for claim_id in features_by_claim:
+            if claim_id not in seen_claim_ids:
+                ordered_claim_ids.append(claim_id)
+                seen_claim_ids.add(claim_id)
+
+        numbered_items: List[Tuple[str, Dict[str, Any]]] = []
+        for claim_id in ordered_claim_ids:
+            for feature_idx, feature in enumerate(features_by_claim.get(claim_id, []), start=1):
+                numbered_items.append((f"{claim_id}.{feature_idx}", feature))
+        return numbered_items
+
+    def _build_claim_parents_map(self) -> Dict[str, List[str]]:
+        claim_parents_map: Dict[str, List[str]] = {}
+        for idx, claim in enumerate(self.claims):
+            c_dict = claim.model_dump() if hasattr(claim, "model_dump") else claim
+            if not isinstance(c_dict, dict):
+                continue
+            claim_id = str(c_dict.get("claim_id", "")).strip() or str(idx + 1)
+            parent_ids_raw = c_dict.get("parent_claim_ids", [])
+            if isinstance(parent_ids_raw, list):
+                parent_ids = [
+                    str(parent_id).strip()
+                    for parent_id in parent_ids_raw
+                    if str(parent_id).strip()
+                ]
+            elif parent_ids_raw:
+                parent_ids = [str(parent_ids_raw).strip()]
+            else:
+                parent_ids = []
+            claim_parents_map[claim_id] = parent_ids
+        return claim_parents_map
+
     def _build_feature_menu_str(self, feature_list: List[Dict]) -> str:
-        feature_menu = []
-        for idx, feature in enumerate(feature_list, 1):
-            name = str(feature.get("name", "unknown")).strip() or "unknown"
-            status = "★区别特征" if feature.get("is_distinguishing") else "前序/从权特征"
-            feature_menu.append(f"[{idx}] {name} ({status})")
-        return "\n".join(feature_menu)
+        """
+        构建带有依赖拓扑关系的特征树上下文。
+        """
+        claim_parents_map = self._build_claim_parents_map()
+
+        features_by_claim: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+        ordered_claim_ids: List[str] = []
+        for feature_no, feature in self._build_feature_numbered_items(feature_list):
+            claim_id = str(feature.get("claim_id", "")).strip() or "1"
+            if claim_id not in features_by_claim:
+                features_by_claim[claim_id] = []
+                ordered_claim_ids.append(claim_id)
+            features_by_claim[claim_id].append((feature_no, feature))
+
+        feature_tree_lines: List[str] = []
+        for claim_id in ordered_claim_ids:
+            claim_features = features_by_claim.get(claim_id, [])
+            if not claim_features:
+                continue
+
+            parents = claim_parents_map.get(claim_id, [])
+            if feature_tree_lines:
+                feature_tree_lines.append("")
+
+            if not parents:
+                feature_tree_lines.append(
+                    f"▶ [Claim {claim_id}] (独立权利要求 / 根节点):"
+                )
+                indent = "  "
+            else:
+                parent_str = ", ".join(parents)
+                feature_tree_lines.append(
+                    f"↳ [Claim {claim_id}] (从属权利要求，引用 Claim {parent_str}):"
+                )
+                indent = "    "
+
+            for feature_no, feature in claim_features:
+                name = str(feature.get("name", "unknown")).strip() or "unknown"
+                status = (
+                    "★区别特征"
+                    if feature.get("is_distinguishing")
+                    else "前序/从权常规特征"
+                )
+                feature_tree_lines.append(f"{indent}- [{feature_no}] {name} ({status})")
+
+        return "\n".join(feature_tree_lines)
 
     def _generate_technical_means(
         self, core_logic: Dict[str, Any], feature_list: List[Dict]
@@ -592,11 +681,11 @@ class ContentGenerator:
 
         ### 核心指令：引用规范 (Citation Protocol)
         为了确保逻辑链条清晰，你在撰写 `technical_means` 时：
-        1.  **必须引用序号**：提到任何来自【特征菜单】的特征时，必须带上其序号。
-        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [序号]`。
+        1.  **必须引用编号**：提到任何来自【特征菜单】的特征时，必须带上其编号。
+        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [编号]`。
         3.  *示例*：
             *   *Bad:* "通过双气室结构降低了噪音..."
-            *   *Good:* "通过 **双气室结构** [3] 增加了气体膨胀路径，配合 **吸音棉** [5] 的多孔耗散机制..."
+            *   *Good:* "通过 **双气室结构** [1.3] 增加了气体膨胀路径，配合 **吸音棉** [2.1] 的多孔耗散机制..."
 
         # 揭示技术机理 (The "Black Box" Revelation)
         **字段**: `technical_means`
@@ -614,21 +703,22 @@ class ContentGenerator:
             -   *机械/物理类*：谈论力的传递路径、热阻的改变、流场的重构。
             -   *电学/控制类*：谈论信噪比的提升、反馈回路的收敛性、阻抗匹配。
             -   *算法/软件类*：谈论特征空间的映射、熵的减少、计算复杂度的降维。
-        3.  **必须引用序号**：提及特征时，**必须**严格使用 `**特征名称** [序号]` 格式。
-        4.  **聚焦区别特征**：机理描述的重心必须落在标记为 `[★区别特征]` 的项上，说明它们是如何“四两拨千斤”地改变了现有技术的局限。
+        3.  **结合拓扑关系阐述协同**：请仔细阅读上下文中的【特征归属树】。优先解释根节点（独立权利要求）中的★区别特征如何建立基础机制，再顺着引用树说明从属权中的特征如何对该机制进行放大、适配或优化。
+        4.  **必须引用编号**：提及特征时，**必须**严格使用 `**特征名称** [编号]` 格式。
+        5.  **聚焦区别特征**：机理描述的重心必须落在标记为 `[★区别特征]` 的项上，说明它们是如何“四两拨千斤”地改变了现有技术的局限。
 
         **范例对比**：
         *   *Low Quality (表象罗列)*:
-            "本发明包括 **振动传感器** [1] 和 **控制器** [2]。传感器安装在轴承座上，采集信号传给控制器，控制器进行FFT分析，如果超过阈值就报警。"
+            "本发明包括 **振动传感器** [1.1] 和 **控制器** [1.2]。传感器安装在轴承座上，采集信号传给控制器，控制器进行FFT分析，如果超过阈值就报警。"
             *(评语：这是小学生水平的看图说话，没有解释“为什么能解决隐匿故障”。)*
 
         *   *High Quality (机理洞察)*:
-            "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [4] 将高频载波中的低频故障冲击特征（信息熵高的部分）进行非线性映射，实质上是在频域上对信噪比进行了‘放大’。配合 **多级带通滤波器** [5] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
+            "针对早期轴承故障信号极易被背景噪声淹没的【核心问题】，本发明并未采用传统的时域阈值判定，而是引入了 **自适应共振解调算法** [1.3](★区别特征)。从信息论角度看，该算法利用 **包络检波器** [2.1] 将高频载波中的低频故障冲击特征（信息熵高的部分）进行非线性映射，实质上是在频域上对信噪比进行了‘放大’。配合 **多级带通滤波器** [2.2] 的级联作用，成功将微弱的微伏级故障特征从强干扰背景中剥离，实现了对早期微裂纹的精准捕捉。"
 
         # 输出格式 (JSON Only)
         必须严格输出标准的 JSON 对象，**严禁使用 Markdown 代码块 (```json)**，严禁包含任何解释性文字。结构如下：
         {
-            "technical_means": "基于...原理，利用 **特征A** [1] 实现了..."
+            "technical_means": "基于...原理，利用 **特征A** [1.1] 实现了..."
         }
         """
 
@@ -637,7 +727,7 @@ class ContentGenerator:
         【待解决的核心技术问题 (The Pain Point)】: {core_logic.get('technical_problem')}
         【技术方案概览 (The Solution)】: {core_logic.get('technical_scheme')}
 
-        # 2. 特征菜单 (Feature Menu - Strict Selection)
+        # 2. 特征归属树 (Feature Dependency Tree - Strict Selection)
         {feature_menu_str}
 
         # 3. 待验证的声称效果 (Claimed Effects)
@@ -671,8 +761,8 @@ class ContentGenerator:
 
         ### 核心指令：引用规范 (Citation Protocol)
         为了确保逻辑链条清晰，你在撰写 `rationale` 时：
-        1.  **必须引用序号**：提到任何来自【特征菜单】的特征时，必须带上其序号。
-        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [序号]`。
+        1.  **必须引用编号**：提到任何来自【特征菜单】的特征时，必须带上其编号。
+        2.  **格式要求**：请使用 Markdown 加粗格式：`**特征名称** [编号]`。
 
         # 效果验证与 TCS 评分 (The Strict Audit)
         **字段**: `technical_effects`
@@ -703,12 +793,13 @@ class ContentGenerator:
 
         #### 验证逻辑 (Evidence & Rationale)
         1.  **Contributing Features**:
-            -   必须根据【特征菜单】中的逻辑关系选择特征。
+            -   必须根据上下文中的【特征归属树】选择特征。
             -   **约束 A**：选取的特征组合中，**必须包含至少一个标记为 (★区别特征) 的项**，除非该效果完全由现有技术产生（此时TCS分值应低于3分）。
-            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含序号以及"(...)" 状态标记。
-            -   *示例*：菜单项 "[1] 自适应滤波算法 (★区别特征)" -> 输出应为 "自适应滤波算法"。
+            -   **约束 B**：输出 JSON 时，请**只输出特征名称**，不要包含编号以及"(...)" 状态标记。
+            -   *示例*：菜单项 "[1.1] 自适应滤波算法 (★区别特征)" -> 输出应为 "自适应滤波算法"。
         2.  **dependent_on (依存追踪)**：
-            -   如果是 4分 或 3分 效果，必须填入其所支撑/依附的“上一级核心特征名称”的列表（如果是多重依赖，请全部列出）。
+            -   请严格参考【特征归属树】中的“引用关系（Claim X 引用 Claim Y）”。
+            -   如果是 4分 或 3分 效果（通常由从属权利要求中的特征产生），必须顺着树向上追溯，填入其所依附的上级（优先独立权）核心特征名称列表（如果是多重依赖，请全部列出）。
             -   如果是 5分 或 1-2分 效果（它们属于独立的根节点或背景节点），请严格填入空数组。
         3.  **Evidence (实锤)**：
             -   **一级证据（最佳）**：定位到具体的**实验数据对比**、图表（Figure X）或具体的**实施例参数**（如“温度控制在50-60度”）。
@@ -716,7 +807,7 @@ class ContentGenerator:
             -   **无证据**：如果文中只有“具有...优点”的空话，填入“仅声称，无实施例支持”。
         4.  **Rationale (逻辑链)**：
             -   使用“特征 -> 机制 -> 效果”的句式。
-            -   **严格遵守引用规范**：必须写成 `**特征名称** [序号]` 的形式。
+            -   **严格遵守引用规范**：必须写成 `**特征名称** [编号]` 的形式。
             -   例如：“双气室结构(特征)增加了气体膨胀路径(机制)，从而降低了排气噪音(效果)。”
 
         # 输出格式 (JSON Only)
@@ -729,7 +820,7 @@ class ContentGenerator:
                     "contributing_features": ["特征A", "特征B"],
                     "dependent_on": [],
                     "evidence": "实施例3：数据显示误报率从5%降至0.1%...",
-                    "rationale": "**特征A** [1] 建立了...机制，解决了..."
+                    "rationale": "**特征A** [1.1] 建立了...机制，解决了..."
                 },
                 {
                     "effect": "防止强干扰下发散",
@@ -737,7 +828,7 @@ class ContentGenerator:
                     "contributing_features": ["特征C"],
                     "dependent_on": ["特征A", "特征B"],
                     "evidence": "...",
-                    "rationale": "为了配合 **特征A** [1] 和 **特征B** [2] 的协同，**特征C** [3] 提供了..."
+                    "rationale": "为了配合 **特征A** [1.1] 和 **特征B** [1.2] 的协同，**特征C** [2.1] 提供了..."
                 }
             ]
         }
@@ -755,7 +846,7 @@ class ContentGenerator:
         # 3. 待验证的声称效果 (Claimed Effects)
         {self.text_effect if self.text_effect else "（原文未集中描述效果，请基于下文实施例反推）"}
 
-        # 4. 特征菜单 (Feature Menu - Strict Selection)
+        # 4. 特征归属树 (Feature Dependency Tree - Strict Selection)
         *** 必须从此列表中选择 contributing_features ***
         {feature_menu_str}
 

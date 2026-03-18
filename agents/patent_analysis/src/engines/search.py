@@ -811,7 +811,7 @@ class SearchStrategyGenerator:
         """
         text = re.sub(r"\(?[★☆][^\)]+\)?", "", text)  # 清理 (★区别特征)
         text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)  # 清理 **加粗**
-        text = re.sub(r"\s*\[\d+[a-zA-Z]*\]", "", text)  # 清理 [1]
+        text = re.sub(r"\s*\[\d+\.\d+\]", "", text)  # 清理 [1.1]
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 

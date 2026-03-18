@@ -15,6 +15,7 @@ class ReportRenderer:
 
     def __init__(self, patent_data: Dict[str, Any]):
         self.patent_data = patent_data
+        self.claims = patent_data.get("claims", [])
         self._sanitized_html_fragments_count = 0
 
     def _safe_int(self, value: Any, default: int = 0) -> int:
@@ -227,41 +228,68 @@ class ReportRenderer:
         if isinstance(features, list) and features:
             lines.append("### 关键技术特征表")
 
+            features_by_claim: Dict[str, List[Dict[str, Any]]] = {}
+            for feat in features:
+                if not isinstance(feat, dict):
+                    continue
+                claim_id = str(feat.get("claim_id", "")).strip() or "1"
+                features_by_claim.setdefault(claim_id, []).append(feat)
+
+            ordered_claim_ids: List[str] = []
+            seen_claim_ids = set()
+
+            for idx, claim in enumerate(self.claims):
+                c_dict = claim.model_dump() if hasattr(claim, "model_dump") else claim
+                if not isinstance(c_dict, dict):
+                    continue
+                claim_id = str(c_dict.get("claim_id", "")).strip() or str(idx + 1)
+                if claim_id in features_by_claim and claim_id not in seen_claim_ids:
+                    ordered_claim_ids.append(claim_id)
+                    seen_claim_ids.add(claim_id)
+
+            for claim_id in features_by_claim:
+                if claim_id not in seen_claim_ids:
+                    ordered_claim_ids.append(claim_id)
+                    seen_claim_ids.add(claim_id)
+
             table_html = """<table>
 <thead>
 <tr>
-<th style="width: 28px; text-align: center;">序号</th>
+<th style="width: 68px; text-align: center;">特征编号</th>
 <th style="width: 20%;">特征名称</th>
 <th style="width: 70px; text-align: center;">属性</th>
 <th>详细定义</th>
 </tr>
 </thead>
 <tbody>"""
-            feature_idx = 0
-            for feat in features:
-                if not isinstance(feat, dict):
+
+            for claim_id in ordered_claim_ids:
+                claim_features = features_by_claim.get(claim_id, [])
+                if not claim_features:
                     continue
-                feature_idx += 1
-                name = self._safe_text(feat.get("name"), "-")
-                feature_name_map[name.strip()] = feature_idx
 
-                desc_raw = self._safe_text(feat.get("description"))
-                rationale_raw = self._safe_text(feat.get("rationale"))
-                desc = self._md_bold_to_html(desc_raw.replace("\n", "<br>"))
-                rationale = self._md_bold_to_html(rationale_raw.replace("\n", "<br>"))
+                for f_idx, feat in enumerate(claim_features, start=1):
+                    name = self._safe_text(feat.get("name"), "-")
+                    feature_no = f"{claim_id}.{f_idx}"
+                    if name.strip() and name.strip() not in feature_name_map:
+                        feature_name_map[name.strip()] = feature_no
 
-                is_distinguishing = feat.get("is_distinguishing", False)
-                source = str(feat.get("claim_source", "")).lower()
+                    desc_raw = self._safe_text(feat.get("description"))
+                    rationale_raw = self._safe_text(feat.get("rationale"))
+                    desc = self._md_bold_to_html(desc_raw.replace("\n", "<br>"))
+                    rationale = self._md_bold_to_html(rationale_raw.replace("\n", "<br>"))
 
-                if is_distinguishing:
-                    badge_text = "🌟 区别特征"
-                elif "independent" in source:
-                    badge_text = "⚪ 前序特征"
-                else:
-                    badge_text = "🔹 从权特征"
+                    is_distinguishing = feat.get("is_distinguishing", False)
+                    source = str(feat.get("claim_source", "")).lower()
+                    if is_distinguishing:
+                        badge_text = "🌟 区别特征"
+                    elif "independent" in source:
+                        badge_text = "⚪ 前序特征"
+                    else:
+                        badge_text = "🔹 从权特征"
 
-                table_html += f"""<tr>
-<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_idx}</td>
+                    table_html += f"""<tr>
+<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_no}</td>
 <td style="font-weight: bold;">{name}</td>
 <td style="text-align: center;">{badge_text}</td>
 <td>{desc}</td>
