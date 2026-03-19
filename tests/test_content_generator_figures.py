@@ -112,6 +112,9 @@ def test_generate_figures_analysis_no_paragraph_dependency(tmp_path: Path, monke
             "spatial_connections": "位于底座上方",
             "motion_state": "保持静止",
             "attributes": "金属件",
+            "is_distinguishing_feature": False,
+            "matched_feature_name": "",
+            "matched_feature_source": "",
         }
     ]
     assert captured["label"] == "图1"

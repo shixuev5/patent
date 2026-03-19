@@ -171,11 +171,11 @@ def test_vision_single_image_uses_thinking_budget(tmp_path, monkeypatch):
     _assert_thinking_payload(vision_client.completions.calls[-1])
 
 
-def test_vision_multi_image_json_uses_thinking_budget(tmp_path, monkeypatch):
+def test_vision_multi_image_text_uses_thinking_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
 
     service = LLMService(api_key="test", base_url="https://example.com")
-    vision_client = _FakeClient(content='{"ok": true}')
+    vision_client = _FakeClient(content="multi-image-ok")
     service.vlm_client = vision_client
 
     image_path1 = tmp_path / "img1.png"
@@ -183,7 +183,7 @@ def test_vision_multi_image_json_uses_thinking_budget(tmp_path, monkeypatch):
     image_path1.write_bytes(b"fake-image-1")
     image_path2.write_bytes(b"fake-image-2")
 
-    result = service.invoke_vision_images_json(
+    result = service.invoke_vision_images(
         image_paths=[str(image_path1), str(image_path2)],
         system_prompt="sys",
         user_prompt="user",
@@ -191,7 +191,7 @@ def test_vision_multi_image_json_uses_thinking_budget(tmp_path, monkeypatch):
         model_override="qwen3.5-plus",
     )
 
-    assert result == {"ok": True}
+    assert result == "multi-image-ok"
     _assert_thinking_payload(vision_client.completions.calls[-1])
 
 

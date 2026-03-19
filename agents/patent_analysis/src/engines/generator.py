@@ -1022,11 +1022,10 @@ class ContentGenerator:
                 if matched_feature:
                     matched_feature_name = str(matched_feature.get("name", "")).strip()
                     matched_claim_source = str(
-                        matched_feature.get("claim_source")
-                        or matched_feature.get("claim_id")
-                        or "unknown"
+                        matched_feature.get("claim_source", "")
+                        or matched_feature.get("claim_id", "未知权项")
                     ).strip()
-                    feature_status = f" 🔥[核心区别特征 - 来源:{matched_claim_source}]"
+                    feature_status = f" 🔥[核心特征|权{matched_claim_source}]"
 
                 local_part_ids_for_context.append(pid_key)
                 temp_desc_list.append(
@@ -1104,9 +1103,29 @@ class ContentGenerator:
             if len(feat_norm) < 2:
                 continue
 
-            if feat_norm in part_norm or part_norm in feat_norm:
+            if self._is_substring_match_reliable(part_norm, feat_norm):
                 return feat
         return None
+
+    @staticmethod
+    def _is_substring_match_reliable(part_norm: str, feat_norm: str) -> bool:
+        if not part_norm or not feat_norm:
+            return False
+        if part_norm == feat_norm:
+            return True
+        if feat_norm not in part_norm and part_norm not in feat_norm:
+            return False
+
+        shorter, longer = (
+            (feat_norm, part_norm) if len(feat_norm) <= len(part_norm) else (part_norm, feat_norm)
+        )
+        if len(shorter) <= 2:
+            return longer.startswith(shorter) or longer.endswith(shorter)
+        if len(longer) - len(shorter) <= 1:
+            return True
+        if longer.startswith(shorter) or longer.endswith(shorter):
+            return True
+        return len(shorter) >= 4
 
     def _build_related_parts_context(self, local_part_ids: List[str]) -> str:
         if not local_part_ids:
@@ -1210,54 +1229,62 @@ class ContentGenerator:
 
         system_prompt = """
         # 角色设定
-        你是一位服务于国家知识产权局的顶尖专利可视化分析专家。你的读者是专业的专利审查员。
-        你的唯一任务是：提取专利附图中“最有价值的技术信息”，并将其与权利要求中的“区别技术特征”进行深度锚定。
-        你必须以极其客观、精炼、技术化的工程师口吻输出，绝对禁止任何主观感叹或客套话。
+        你是一位服务于国家知识产权局的资深专利可视化审查员。你的唯一任务是：基于提供的【客观事实上下文】，准确提取专利附图中具有实质性技术贡献的信息，并将其与【权利要求特征树】进行映射解说。
+        输出必须是极其专业、高信息密度的工程师陈述，拒绝任何口语化、主观评价或冗余过渡语。
 
-        # 核心红线 (严格遵守，否则视为失败)
-        1. 反幻觉红线：只能描述图中真实存在的、或基于视觉线索能确凿推导的交互关系。如果【核心区别特征】在当前图中并未体现，绝不要强行描述它，请转而客观描述图中现有的其他部件是如何运作的。
-        2. 主次红线：不要试图列举图中的所有部件。如果部件带有 `🔥核心区别特征` 标记，必须花 70% 的篇幅详细揭示其空间位置、形态及其如何改变了系统状态（力流/数据流/控制流）。对于常规的支撑件、紧固件、外壳，一笔带过。
-        3. 格式红线：提及任何部件时，必须且只能使用 `部件名(标号)` 的格式，例如 `减速齿轮(12)`。如果某个部件图中清晰可见但没有机器识别出的标号，仅允许使用 `部件名`（如 `输入端`），禁止自行编造数字标号。
+        # 核心指令 (Production Rules)
 
-        # 针对不同图类型的解析策略 (自适应应用)
-        请首先判断这是一张什么类型的图，并采用对应的分析逻辑：
-        - [机械/结构/装置图]：聚焦于“物理拓扑与传动/流体路径”。解释动力/流体是从哪里输入的，中间经过了 `🔥核心区别特征` 的什么空间约束或形态变换，最终输出了什么。
-        - [电子电路/模块框图]：聚焦于“信号流向与控制逻辑”。解释模块之间传递了什么信号，`🔥核心区别特征` 对信号进行了何种处理（如放大、滤波、映射）。
-        - [流程图/算法时序图]：聚焦于“状态跃迁与核心算法”。跳过常规的“开始/结束”步骤，重点解释在哪个特定的步骤（`🔥核心区别特征`）发生了数据的质变或逻辑的重定向。
-        - [数据图表/波形/对比图]：聚焦于“变量关系与临界点”。不要泛泛而谈趋势，必须指出横纵坐标的物理意义，以及图中的哪个突变点、极值或对比差异直接证明了专利的【技术效果】。
+        ## 1. 绝对的视觉忠诚 (反幻觉机制)
+        - 你只能描述【图中真实可见】或【基于视觉线索与上下文能确凿推导】的结构/交互。
+        - **退化原则**：如果这是一张背景技术图、或图中完全没有体现【🔥核心区别特征】，请客观陈述图中展示的常规架构或基础流程，**绝对禁止**把未画出的核心特征强行塞入解说中。
 
-        # 叙事微结构 (必须遵循的强制模板)
-        你的输出必须是一段浑然一体的高密度解说（约 150 - 250 字），隐含以下三层逻辑：
-        - 【起点】图意定位：一句话点明该图展示了系统的哪个局部、视角或阶段。
-        - 【推演】核心机理：按照力/流体/数据的流向，动态推演 `🔥核心区别特征` 是如何介入系统并发挥作用的。使用诸如“受限于”、“被导向”、“转换为”、“基于...触发”等机制化词汇。
-        - 【落点】效果闭环：结尾用一句话说明图中揭示的这种机制，如何切实解决了全局设定的客观问题，或达成了哪项技术效果。
+        ## 2. 动态分析策略 (按图类型自适应)
+        请首先在内心判断该图属于以下哪种类型，并严格采用对应的解剖视角：
+        - [机械/装置/剖面图]：聚焦物理拓扑与传动/流体路径。解释动力/流体如何输入，经过 `🔥` 部件发生了何种空间约束或物理变换。
+        - [电子电路/系统框图]：聚焦信号流向与控制逻辑。解释模块间的数据耦合关系，以及 `🔥` 部件对信号进行了何种处理（如放大、映射、降噪）。
+        - [算法流程/时序图]：跳过常规的“开始/初始化”，直击发生数据质变或逻辑重定向的【关键步骤】（特别是 `🔥` 对应的步骤）。
+        - [数据图表/对比波形]：严禁泛泛而谈。必须指出横纵坐标含义，并指出图中的哪个极值、突变点或对比差异，直接印证了专利的【预期核心效果】。
 
-        # 输出要求
-        - 纯文本输出：直接输出解说段落正文。
-        - 禁止出现“本图”、“如图所示”、“在这张图中”等赘余字眼（直接描述客观事实）。
-        - 禁止使用任何 Markdown 样式（如加粗、列表、标题），只输出纯净的中文字符串。
+        ## 3. 焦点法则 (二八定律)
+        - 输入的部件清单中，带有 `🔥` 标记的是机器初筛的“核心特征”。
+        - 若图中包含 `🔥` 部件，请将 70% 的篇幅用于详细推演其运作机理。对于外壳、螺栓、常规总线等支撑性部件，一笔带过或忽略。
+
+        ## 4. 强制格式与文风 (Strict Output Formatting)
+        - **命名规范**：提及部件时，必须且只能使用 `部件名(标号)` 的格式，如 `减速齿轮(12)`。图中可见但无标号的部件仅用 `部件名`。严禁自行编造标号。
+        - **纯净文本**：输出必须是一段连贯的正文（150-250字左右）。**绝对禁止**使用任何 Markdown 语法（如 `**`、`#`、`-`、换行符 `\n`）。
+        - **客观语态**：禁止使用“本图展示了”、“我们可以看到”、“巧妙地”等主观废话。直接以技术实体作主语（例：“输入轴(1)带动偏心轮(2)旋转，基于该偏心运动触发...”）。
+
+        # 叙事结构模板 (内在逻辑，请融合成一段话)
+        1. [架构定位]：用极其简练的一句话，说明该图在整个系统特征树（独立权/从属权）中所处的逻辑位置与形态视角。
+        2. [机理推演]：顺着能量流/信息流的走向，动态推演 `🔥核心部件` 的运行机制。
+        3. [效果闭环]：一语中的，说明上述机制如何直击痛点，促成了某项客观技术效果。
         """
 
         user_content = f"""
-        请严格根据以下提供的事实上下文和视觉线索，为目标图片生成专业图解。
+        请严格遵循上述指令，为目标专利图生成一段纯文本的专业机理解说。
 
-        ### [第一层：全局技术锚点] (指引解读方向)
+        ================ 事实知识库 ================
+
+        ### [第一层：全局技术锚点] (解说落脚点)
         - 技术主题：{global_context.get('title', '未知主题')}
-        - 待解决的客观技术问题：{global_context.get('problem', '未知问题')}
+        - 待解决的客观问题：{global_context.get('problem', '未知问题')}
         - 预期达成的核心效果：
         {effects_str}
 
-        ### [第二层：权利要求特征树] (辨别主次的准绳)
-        【提示】带有“★区别特征”的项是本发明的灵魂。请观察目标图片中是否出现了它们；如果出现，必须重点解析。
+        ### [第二层：权利要求特征树] (理解系统层级与依赖)
+        【提示】：此树状结构展示了发明的逻辑层级。请参考此树，理解下文 `🔥` 部件在宏观系统中的地位（是根节点的核心，还是叶子节点的优化）。
         {feature_tree}
 
-        ### [第三层：本图实证数据] (你只能基于以下信息和你的视觉所见进行描述)
-        - 当前图号及原注：{label} - {caption}
-        - 本图机器识别的部件清单 (视觉线索)：
-          【提示】带有 `🔥` 标记的部件表明它极有可能是上述的“★区别特征”，请在图中仔细定位并重点描述其运行机理。
+        ### [第三层：本图实证线索] (解说的直接依据)
+        - 图号及原注：{label} {caption}
+        - 机器提取的本图部件清单 (视觉焦点)：
+          【注意】：`🔥` 代表核心特征。若列表为“未提取到部件”，请完全依赖你的视觉进行专业推演。
           {local_parts_str}
-        - 周边部件参考库 (仅作盲区补全参考，严禁随意描述图里没有的部件)：
+        - 周边隐藏部件参考库 (仅用于理解关联，若图中未画出，禁止描写)：
           {related_parts_context}
+
+        ================================================
+        请直接输出最终的解说段落正文，不要包含任何多余的解释、前缀或 Markdown 标记：
         """
 
         try:
@@ -1274,26 +1301,27 @@ class ContentGenerator:
                     user_prompt=user_content,
                     task_kind="vision_single_figure_explain",
                 )
-                return content.strip()
-
-            response = self.llm_service.invoke_vision_images_json(
-                image_paths=image_paths,
-                system_prompt=system_prompt,
-                user_prompt=(
+            else:
+                multi_image_prompt = (
                     user_content
-                    + "\n\n请将多图合并解说后，严格输出 JSON："
-                    + '{"image_explanation":"..."}'
-                ),
-                task_kind="vision_multi_figure_synthesis",
-                temperature=0.2,
-            )
-            content = str(
-                response.get("image_explanation") or response.get("explanation") or ""
-            ).strip()
+                    + "\n\n[多图融合指令] 以上为同一图号下的多个视角或局部截图。"
+                    + "请融合所有图片中的一致信息，仅输出一段纯文本解说。"
+                )
+                content = self.llm_service.invoke_vision_images(
+                    image_paths=image_paths,
+                    system_prompt=system_prompt,
+                    user_prompt=multi_image_prompt,
+                    task_kind="vision_multi_figure_synthesis",
+                    temperature=0.2,
+                )
+
+            content = str(content).strip()
+            content = re.sub(r"[*#`_]", "", content)
+            content = re.sub(r"\s*\n+\s*", "", content).strip()
             if content:
                 return content
-            raise ValueError("empty image_explanation from multi-image response")
+            raise ValueError("empty image_explanation from model response")
         except Exception as e:
             logger.warning(f"图片解说生成失败 {label}: {e}")
             final_label = label if str(label).startswith("图") else f"图{label}"
-            return f"{final_label}展示了{caption}的示意图。{local_parts.replace('- ', '')[:50]}..."
+            return f"{final_label}展示了{caption}的相关示意结构。具体部件的空间连接关系与运行机理请参考实施例的详细说明。"

@@ -55,7 +55,6 @@ class LLMService:
     }
 
     _JSON_PARSE_ERROR = "Model output is not valid JSON"
-    _VISION_JSON_PARSE_ERROR = "Vision model output is not valid JSON"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
@@ -732,7 +731,7 @@ class LLMService:
             )
             raise
 
-    def invoke_vision_images_json(
+    def invoke_vision_images(
         self,
         image_paths: List[str],
         system_prompt: str,
@@ -742,7 +741,7 @@ class LLMService:
         temperature: float = 0.2,
         model_override: Optional[str] = None,
         timeout: Optional[float] = None,
-    ) -> Dict[str, Any]:
+    ) -> str:
         if not self.vlm_client:
             raise RuntimeError(
                 "[LLM] Vision client not initialized. Please set VLM_API_KEY in environment"
@@ -754,48 +753,8 @@ class LLMService:
         chosen_model = str(model_override or "").strip() or self._resolve_vision_model(
             policy["tier"]
         )
+        thinking = bool(policy["thinking"])
 
-        try:
-            return self._invoke_vision_images_json_once(
-                image_paths=image_paths,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                chosen_model=chosen_model,
-                thinking=bool(policy["thinking"]),
-                temperature=temperature,
-                timeout=timeout,
-                policy=policy,
-            )
-        except ValueError as exc:
-            if str(exc) != self._VISION_JSON_PARSE_ERROR or bool(policy["thinking"]):
-                raise
-            logger.warning(
-                f"[LLM] invoke_vision_images_json 在关闭思考时解析失败，正在改为开启思考后重试。"
-                f"task_kind={policy['task_kind']}, model={chosen_model}"
-            )
-            return self._invoke_vision_images_json_once(
-                image_paths=image_paths,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                chosen_model=chosen_model,
-                thinking=True,
-                temperature=temperature,
-                timeout=timeout,
-                policy=policy,
-            )
-
-    def _invoke_vision_images_json_once(
-        self,
-        *,
-        image_paths: List[str],
-        system_prompt: str,
-        user_prompt: str,
-        chosen_model: str,
-        thinking: bool,
-        temperature: float,
-        timeout: Optional[float],
-        policy: Dict[str, Any],
-    ) -> Dict[str, Any]:
         log_payload = {
             "task_kind": policy["task_kind"],
             "tier": policy["tier"],
@@ -808,7 +767,7 @@ class LLMService:
             "temperature": temperature,
         }
         logger.info(
-            f"[LLM] invoke_vision_images_json 请求：{json.dumps(log_payload, ensure_ascii=False)}"
+            f"[LLM] invoke_vision_images 请求：{json.dumps(log_payload, ensure_ascii=False)}"
         )
         start = time.perf_counter()
         task_context = self._current_task_log_context()
@@ -834,7 +793,7 @@ class LLMService:
                 ),
                 model=chosen_model,
                 task_kind=policy["task_kind"],
-                event_name_prefix="invoke_vision_images_json",
+                event_name_prefix="invoke_vision_images",
                 task_context=task_context,
                 interface_fields=self._vision_interface,
             )
@@ -856,14 +815,13 @@ class LLMService:
                 **usage_summary,
             }
             logger.info(
-                "[LLM] invoke_vision_images_json 响应："
+                "[LLM] invoke_vision_images 响应："
                 f"{json.dumps(response_payload, ensure_ascii=False)}"
             )
             self._report_usage(chosen_model, usage_summary)
-            cleaned = str(raw_content).replace("```json", "").replace("```", "").strip()
             emit_system_log(
                 category="llm_call",
-                event_name="invoke_vision_images_json",
+                event_name="invoke_vision_images",
                 level="INFO",
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
@@ -874,7 +832,7 @@ class LLMService:
                 target_host=self._vision_interface.get("target_host"),
                 success=True,
                 duration_ms=elapsed_ms,
-                message="多图视觉分析调用成功",
+                message="多图视觉分析文本调用成功",
                 payload={
                     "request": {
                         "task_kind": policy["task_kind"],
@@ -888,52 +846,21 @@ class LLMService:
                     },
                     "response": {
                         **response_payload,
-                        "content": cleaned,
+                        "content": str(raw_content),
                         "reasoning_text": reasoning_text,
                     },
                 },
             )
-            return json.loads(cleaned)
-        except json.JSONDecodeError as e:
-            logger.error(f"[LLM] 视觉 JSON 响应解析失败：{e}")
-            elapsed_ms = int((time.perf_counter() - start) * 1000)
-            emit_system_log(
-                category="llm_call",
-                event_name="invoke_vision_images_json_parse_error",
-                level="ERROR",
-                owner_id=task_context.get("owner_id"),
-                task_id=task_context.get("task_id"),
-                task_type=task_context.get("task_type"),
-                method=self._vision_interface.get("method"),
-                path=self._vision_interface.get("path"),
-                provider="llm",
-                target_host=self._vision_interface.get("target_host"),
-                success=False,
-                duration_ms=elapsed_ms,
-                message=str(e),
-                payload={
-                    "request": {
-                        "task_kind": policy["task_kind"],
-                        "tier": policy["tier"],
-                        "model": chosen_model,
-                        "image_paths": image_paths,
-                        "system_prompt": system_prompt,
-                        "user_prompt": user_prompt,
-                        "temperature": temperature,
-                        "thinking": thinking,
-                    },
-                },
-            )
-            raise ValueError(self._VISION_JSON_PARSE_ERROR)
+            return str(raw_content)
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             logger.error(
-                "[LLM] 多图视觉分析失败："
+                "[LLM] 多图视觉分析文本调用失败："
                 f"{json.dumps({'model': chosen_model, 'image_count': len(image_paths), 'elapsed_ms': elapsed_ms, 'error': str(e)}, ensure_ascii=False)}"
             )
             emit_system_log(
                 category="llm_call",
-                event_name="invoke_vision_images_json_error",
+                event_name="invoke_vision_images_error",
                 level="ERROR",
                 owner_id=task_context.get("owner_id"),
                 task_id=task_context.get("task_id"),
@@ -963,7 +890,6 @@ class LLMService:
                 },
             )
             raise
-
 
 # 单例实例，供全局使用
 llm_service = LLMService()
