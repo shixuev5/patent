@@ -135,33 +135,50 @@ class VisualProcessor:
         image_parts: Dict[str, List[str]] = {}
         image_labels: Dict[str, List[Dict[str, Any]]] = {}
         
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vision_vlm") as executor:
-            future_map = {}
-            for img_path in all_images:
-                filename = img_path.name
-                raw_ocr = ocr_results_map.get(filename)
-                
-                # 如果该图在目标列表中且完成了 OCR，进入 VLM 审查队列
-                if raw_ocr is not None:
-                    future = submit_with_current_context(
-                        executor,
-                        self._run_vlm_pipeline,
-                        str(img_path),
-                        raw_ocr,
-                        static_system_prompt,
-                    )
-                    future_map[future] = filename
+        vlm_jobs: List[Tuple[str, str, List[Dict]]] = []
+        for img_path in all_images:
+            filename = img_path.name
+            raw_ocr = ocr_results_map.get(filename)
+            if raw_ocr is None:
+                continue
+            vlm_jobs.append((filename, str(img_path), raw_ocr))
 
-            for future in as_completed(future_map):
-                filename = future_map[future]
-                try:
-                    part_ids, labels = future.result()
-                    if part_ids:
-                        image_parts[filename] = part_ids
-                    if labels:
-                        image_labels[filename] = labels
-                except Exception as e:
-                    logger.error(f"[视觉] 并发 VLM 异常 {filename}: {e}")
+        if vlm_jobs:
+            warm_filename, warm_img_path, warm_raw_ocr = vlm_jobs[0]
+            try:
+                part_ids, labels = self._run_vlm_pipeline(
+                    warm_img_path, warm_raw_ocr, static_system_prompt
+                )
+                if part_ids:
+                    image_parts[warm_filename] = part_ids
+                if labels:
+                    image_labels[warm_filename] = labels
+            except Exception as e:
+                logger.error(f"[视觉] VLM 预热调用异常 {warm_filename}: {e}")
+
+            remaining_jobs = vlm_jobs[1:]
+            if remaining_jobs:
+                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vision_vlm") as executor:
+                    future_map = {
+                        submit_with_current_context(
+                            executor,
+                            self._run_vlm_pipeline,
+                            img_path,
+                            raw_ocr,
+                            static_system_prompt,
+                        ): filename
+                        for filename, img_path, raw_ocr in remaining_jobs
+                    }
+                    for future in as_completed(future_map):
+                        filename = future_map[future]
+                        try:
+                            part_ids, labels = future.result()
+                            if part_ids:
+                                image_parts[filename] = part_ids
+                            if labels:
+                                image_labels[filename] = labels
+                        except Exception as e:
+                            logger.error(f"[视觉] 并发 VLM 异常 {filename}: {e}")
 
         return image_parts, image_labels
     

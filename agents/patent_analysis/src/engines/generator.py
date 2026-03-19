@@ -938,17 +938,22 @@ class ContentGenerator:
             return []
 
         results: List[Optional[Dict[str, Any]]] = [None] * len(grouped_items)
-        max_workers = min(self.figure_parallel_workers, len(grouped_items))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="figures") as executor:
-            future_map = {
-                submit_with_current_context(
-                    executor, self._build_single_figure_result, label, items, global_context
-                ): idx
-                for idx, (label, items) in enumerate(grouped_items)
-            }
-            for future in as_completed(future_map):
-                idx = future_map[future]
-                results[idx] = future.result()
+        first_label, first_items = grouped_items[0]
+        results[0] = self._build_single_figure_result(first_label, first_items, global_context)
+
+        remaining_items = grouped_items[1:]
+        if remaining_items:
+            max_workers = min(self.figure_parallel_workers, len(remaining_items))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="figures") as executor:
+                future_map = {
+                    submit_with_current_context(
+                        executor, self._build_single_figure_result, label, items, global_context
+                    ): idx
+                    for idx, (label, items) in enumerate(remaining_items, start=1)
+                }
+                for future in as_completed(future_map):
+                    idx = future_map[future]
+                    results[idx] = future.result()
 
         return [item for item in results if item is not None]
 
@@ -1227,7 +1232,7 @@ class ContentGenerator:
             else "（机器未能在本图中提取到带有确定标号的部件，请完全依赖你的视觉和全局上下文进行推理）"
         )
 
-        system_prompt = """
+        system_prompt = f"""
         # 角色设定
         你是一位服务于国家知识产权局的资深专利可视化审查员。你的唯一任务是：基于提供的【客观事实上下文】，准确提取专利附图中具有实质性技术贡献的信息，并将其与【权利要求特征树】进行映射解说。
         输出必须是极其专业、高信息密度的工程师陈述，拒绝任何口语化、主观评价或冗余过渡语。
@@ -1258,12 +1263,9 @@ class ContentGenerator:
         1. [架构定位]：用极其简练的一句话，说明该图在整个系统特征树（独立权/从属权）中所处的逻辑位置与形态视角。
         2. [机理推演]：顺着能量流/信息流的走向，动态推演 `🔥核心部件` 的运行机制。
         3. [效果闭环]：一语中的，说明上述机制如何直击痛点，促成了某项客观技术效果。
-        """
 
-        user_content = f"""
-        请严格遵循上述指令，为目标专利图生成一段纯文本的专业机理解说。
-
-        ================ 事实知识库 ================
+        ================ 专利全局静态知识库 (Global Context) ================
+        以下是本专利的全局基准信息，请将其作为解析所有附图的思想纲领：
 
         ### [第一层：全局技术锚点] (解说落脚点)
         - 技术主题：{global_context.get('title', '未知主题')}
@@ -1274,7 +1276,13 @@ class ContentGenerator:
         ### [第二层：权利要求特征树] (理解系统层级与依赖)
         【提示】：此树状结构展示了发明的逻辑层级。请参考此树，理解下文 `🔥` 部件在宏观系统中的地位（是根节点的核心，还是叶子节点的优化）。
         {feature_tree}
+        ====================================================================
+        """
 
+        user_content = f"""
+        请根据上述《专利全局静态知识库》的指引，为当前目标专利图生成专业机理解说。
+
+        ================ 本图动态实证线索 (Local Context) ================
         ### [第三层：本图实证线索] (解说的直接依据)
         - 图号及原注：{label} {caption}
         - 机器提取的本图部件清单 (视觉焦点)：
@@ -1282,8 +1290,8 @@ class ContentGenerator:
           {local_parts_str}
         - 周边隐藏部件参考库 (仅用于理解关联，若图中未画出，禁止描写)：
           {related_parts_context}
+        ================================================================
 
-        ================================================
         请直接输出最终的解说段落正文，不要包含任何多余的解释、前缀或 Markdown 标记：
         """
 

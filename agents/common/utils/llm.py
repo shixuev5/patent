@@ -32,6 +32,11 @@ class LLMService:
         "capacity limits",
         "temporarily unavailable",
     )
+    _EXPLICIT_CACHE_TASK_KINDS = {
+        "vision_ocr_correction",
+        "vision_single_figure_explain",
+        "vision_multi_figure_synthesis",
+    }
 
     _TASK_POLICY_MAP: Dict[str, Dict[str, Any]] = {
         "patent_structuring_extract": {"tier": "default", "thinking": True},
@@ -212,6 +217,18 @@ class LLMService:
             completion_tokens = getattr(usage, "output_tokens", None)
         if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
             total_tokens = int(prompt_tokens) + int(completion_tokens)
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        input_details = getattr(usage, "input_tokens_details", None)
+        cached_tokens = LLMService._get_usage_detail_int(prompt_details, "cached_tokens")
+        if cached_tokens is None:
+            cached_tokens = LLMService._get_usage_detail_int(input_details, "cached_tokens")
+        cache_creation_input_tokens = LLMService._get_usage_detail_int(
+            prompt_details, "cache_creation_input_tokens"
+        )
+        if cache_creation_input_tokens is None:
+            cache_creation_input_tokens = LLMService._get_usage_detail_int(
+                input_details, "cache_creation_input_tokens"
+            )
         return {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -221,7 +238,24 @@ class LLMService:
                 "reasoning_tokens",
                 None,
             ),
+            "cached_tokens": cached_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
         }
+
+    @staticmethod
+    def _get_usage_detail_int(container: Any, key: str) -> Optional[int]:
+        if container is None:
+            return None
+        if isinstance(container, dict):
+            value = container.get(key)
+        else:
+            value = getattr(container, key, None)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
 
     @staticmethod
     def _report_usage(model: str, usage_summary: Dict[str, Optional[int]]) -> None:
@@ -355,6 +389,134 @@ class LLMService:
                     },
                 )
                 time.sleep(delay_seconds)
+
+    @classmethod
+    def _should_enable_explicit_cache(cls, task_kind: str) -> bool:
+        return str(task_kind or "").strip() in cls._EXPLICIT_CACHE_TASK_KINDS
+
+    @staticmethod
+    def _build_cached_system_content(
+        system_prompt: str, *, enable_explicit_cache: bool
+    ) -> Any:
+        if not enable_explicit_cache:
+            return system_prompt
+        return [
+            {
+                "type": "text",
+                "text": str(system_prompt or ""),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    @classmethod
+    def _is_explicit_cache_unsupported_error(cls, exc: Exception) -> bool:
+        message = str(exc or "").lower()
+        if not message or "cache" not in message:
+            return False
+        markers = (
+            "cache_control",
+            "cache control",
+            "ephemeral",
+            "unsupported",
+            "unknown parameter",
+            "invalid parameter",
+            "invalid_request_error",
+            "badrequest",
+            "bad request",
+        )
+        return any(marker in message for marker in markers)
+
+    @staticmethod
+    def _strip_messages_cache_control(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        stripped_messages: List[Dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                stripped_messages.append(message)
+                continue
+            cloned_message: Dict[str, Any] = dict(message)
+            content = cloned_message.get("content")
+            if isinstance(content, list):
+                new_content: List[Any] = []
+                for item in content:
+                    if isinstance(item, dict) and "cache_control" in item:
+                        cloned_item = dict(item)
+                        cloned_item.pop("cache_control", None)
+                        new_content.append(cloned_item)
+                    else:
+                        new_content.append(item)
+                cloned_message["content"] = new_content
+            stripped_messages.append(cloned_message)
+        return stripped_messages
+
+    def _invoke_vision_with_cache_fallback(
+        self,
+        *,
+        request_kwargs: Dict[str, Any],
+        model: str,
+        task_kind: str,
+        event_name_prefix: str,
+        task_context: Dict[str, Optional[str]],
+        explicit_cache_enabled: bool,
+        fallback_event_name: str,
+        fallback_log_message: str,
+    ) -> Any:
+        try:
+            return self._call_with_retry(
+                fn=lambda: self.vlm_client.chat.completions.create(**request_kwargs),
+                model=model,
+                task_kind=task_kind,
+                event_name_prefix=event_name_prefix,
+                task_context=task_context,
+                interface_fields=self._vision_interface,
+            )
+        except Exception as exc:
+            if not (
+                explicit_cache_enabled
+                and self._is_explicit_cache_unsupported_error(exc)
+            ):
+                raise
+            fallback_messages = self._strip_messages_cache_control(
+                request_kwargs.get("messages") or []
+            )
+            logger.warning(
+                f"[LLM] {fallback_log_message}："
+                f"{json.dumps({'task_kind': task_kind, 'model': model, 'error': str(exc)}, ensure_ascii=False)}"
+            )
+            emit_system_log(
+                category="llm_call",
+                event_name=fallback_event_name,
+                level="WARNING",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                method=self._vision_interface.get("method"),
+                path=self._vision_interface.get("path"),
+                provider="llm",
+                target_host=self._vision_interface.get("target_host"),
+                success=True,
+                duration_ms=0,
+                message="显式缓存参数不可用，已降级重试",
+                payload={
+                    "request": {
+                        "task_kind": task_kind,
+                        "model": model,
+                    },
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                },
+            )
+            fallback_kwargs = dict(request_kwargs)
+            fallback_kwargs["messages"] = fallback_messages
+            return self._call_with_retry(
+                fn=lambda: self.vlm_client.chat.completions.create(**fallback_kwargs),
+                model=model,
+                task_kind=task_kind,
+                event_name_prefix=event_name_prefix,
+                task_context=task_context,
+                interface_fields=self._vision_interface,
+            )
 
     def invoke_text_json(
         self,
@@ -594,6 +756,7 @@ class LLMService:
         policy = self._resolve_policy(task_kind)
         model = str(model_override or "").strip() or self._resolve_vision_model(policy["tier"])
         thinking = bool(policy["thinking"])
+        explicit_cache_enabled = self._should_enable_explicit_cache(policy["task_kind"])
 
         log_payload = {
             "task_kind": policy["task_kind"],
@@ -603,6 +766,7 @@ class LLMService:
             "system_prompt_chars": len(system_prompt or ""),
             "user_prompt_chars": len(user_prompt or ""),
             "thinking_enabled": thinking,
+            "explicit_cache_enabled": explicit_cache_enabled,
             "temperature": temperature,
         }
         logger.info(
@@ -613,29 +777,37 @@ class LLMService:
 
         try:
             img_url = self._to_data_url(image_path)
-
-            response = self._call_with_retry(
-                fn=lambda: self.vlm_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": img_url}},
-                                {"type": "text", "text": user_prompt},
-                            ],
-                        },
+            messages: List[Dict[str, Any]] = [
+                {
+                    "role": "system",
+                    "content": self._build_cached_system_content(
+                        system_prompt, enable_explicit_cache=explicit_cache_enabled
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": img_url}},
+                        {"type": "text", "text": user_prompt},
                     ],
-                    extra_body=self._build_thinking_extra_body(thinking),
-                    temperature=temperature,
-                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
-                ),
+                },
+            ]
+            request_kwargs = {
+                "model": model,
+                "messages": messages,
+                "extra_body": self._build_thinking_extra_body(thinking),
+                "temperature": temperature,
+                "timeout": timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            }
+            response = self._invoke_vision_with_cache_fallback(
+                request_kwargs=request_kwargs,
                 model=model,
                 task_kind=policy["task_kind"],
                 event_name_prefix="analyze_image_with_thinking",
                 task_context=task_context,
-                interface_fields=self._vision_interface,
+                explicit_cache_enabled=explicit_cache_enabled,
+                fallback_event_name="analyze_image_with_thinking_cache_fallback",
+                fallback_log_message="显式缓存参数不可用，自动降级为普通视觉调用",
             )
             content = response.choices[0].message.content or ""
             reasoning_text = self._extract_reasoning_text(response)
@@ -683,6 +855,7 @@ class LLMService:
                         "user_prompt": user_prompt,
                         "temperature": temperature,
                         "thinking": thinking,
+                        "explicit_cache_enabled": explicit_cache_enabled,
                     },
                     "response": {
                         **response_payload,
@@ -722,6 +895,7 @@ class LLMService:
                         "user_prompt": user_prompt,
                         "temperature": temperature,
                         "thinking": thinking,
+                        "explicit_cache_enabled": explicit_cache_enabled,
                     },
                     "error": {
                         "type": type(e).__name__,
@@ -754,6 +928,7 @@ class LLMService:
             policy["tier"]
         )
         thinking = bool(policy["thinking"])
+        explicit_cache_enabled = self._should_enable_explicit_cache(policy["task_kind"])
 
         log_payload = {
             "task_kind": policy["task_kind"],
@@ -764,6 +939,7 @@ class LLMService:
             "system_prompt_chars": len(system_prompt or ""),
             "user_prompt_chars": len(user_prompt or ""),
             "thinking_enabled": thinking,
+            "explicit_cache_enabled": explicit_cache_enabled,
             "temperature": temperature,
         }
         logger.info(
@@ -779,23 +955,31 @@ class LLMService:
                     {"type": "image_url", "image_url": {"url": self._to_data_url(image_path)}}
                 )
             content.append({"type": "text", "text": user_prompt})
-
-            response = self._call_with_retry(
-                fn=lambda: self.vlm_client.chat.completions.create(
-                    model=chosen_model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": content},
-                    ],
-                    extra_body=self._build_thinking_extra_body(thinking),
-                    temperature=temperature,
-                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
-                ),
+            messages: List[Dict[str, Any]] = [
+                {
+                    "role": "system",
+                    "content": self._build_cached_system_content(
+                        system_prompt, enable_explicit_cache=explicit_cache_enabled
+                    ),
+                },
+                {"role": "user", "content": content},
+            ]
+            request_kwargs = {
+                "model": chosen_model,
+                "messages": messages,
+                "extra_body": self._build_thinking_extra_body(thinking),
+                "temperature": temperature,
+                "timeout": timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            }
+            response = self._invoke_vision_with_cache_fallback(
+                request_kwargs=request_kwargs,
                 model=chosen_model,
                 task_kind=policy["task_kind"],
                 event_name_prefix="invoke_vision_images",
                 task_context=task_context,
-                interface_fields=self._vision_interface,
+                explicit_cache_enabled=explicit_cache_enabled,
+                fallback_event_name="invoke_vision_images_cache_fallback",
+                fallback_log_message="显式缓存参数不可用，自动降级为普通多图视觉调用",
             )
 
             raw_content = response.choices[0].message.content or ""
@@ -843,6 +1027,7 @@ class LLMService:
                         "user_prompt": user_prompt,
                         "temperature": temperature,
                         "thinking": thinking,
+                        "explicit_cache_enabled": explicit_cache_enabled,
                     },
                     "response": {
                         **response_payload,
@@ -882,6 +1067,7 @@ class LLMService:
                         "user_prompt": user_prompt,
                         "temperature": temperature,
                         "thinking": thinking,
+                        "explicit_cache_enabled": explicit_cache_enabled,
                     },
                     "error": {
                         "type": type(e).__name__,

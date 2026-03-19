@@ -36,6 +36,10 @@ class _FakeCompletions:
             completion_tokens=30,
             total_tokens=150,
             completion_tokens_details=SimpleNamespace(reasoning_tokens=10),
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=64,
+                cache_creation_input_tokens=128,
+            ),
         )
         return SimpleNamespace(
             id="resp-1",
@@ -81,6 +85,10 @@ class _FlakyCompletions:
             completion_tokens=30,
             total_tokens=150,
             completion_tokens_details=SimpleNamespace(reasoning_tokens=10),
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=64,
+                cache_creation_input_tokens=128,
+            ),
         )
         return SimpleNamespace(
             id="resp-1",
@@ -95,9 +103,59 @@ class _FlakyClient:
         self.chat = _FakeChat(self.completions)
 
 
+class _CacheFallbackCompletions:
+    def __init__(self, content: str):
+        self._content = content
+        self.calls = []
+        self._first_call = True
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        messages = kwargs.get("messages") or []
+        if self._first_call and _messages_have_cache_control(messages):
+            self._first_call = False
+            raise RuntimeError("cache_control unsupported")
+
+        message = SimpleNamespace(
+            content=self._content,
+            reasoning_content="reasoning text",
+        )
+        choice = SimpleNamespace(message=message)
+        usage = SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            total_tokens=150,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=10),
+            prompt_tokens_details=SimpleNamespace(
+                cached_tokens=32,
+                cache_creation_input_tokens=96,
+            ),
+        )
+        return SimpleNamespace(id="resp-fallback", choices=[choice], usage=usage)
+
+
+class _CacheFallbackClient:
+    def __init__(self, content: str):
+        self.completions = _CacheFallbackCompletions(content)
+        self.chat = _FakeChat(self.completions)
+
+
 def _assert_thinking_payload(call_kwargs):
     assert call_kwargs["extra_body"]["enable_thinking"] is True
     assert call_kwargs["extra_body"]["thinking_budget"] == LLMService._THINKING_BUDGET
+
+
+def _messages_have_cache_control(messages) -> bool:
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if isinstance(item, dict) and item.get("cache_control"):
+                return True
+    return False
 
 
 def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
@@ -139,6 +197,9 @@ def test_llm_logs_full_prompt_and_response(tmp_path, monkeypatch):
     # key-like string should be redacted in serialized payload
     payload_text = row.get("payload_inline_json") or ""
     assert "sk-abcdef1234567890" not in payload_text
+    assert '"cached_tokens": 64' in payload_text
+    assert '"cache_creation_input_tokens": 128' in payload_text
+    assert _messages_have_cache_control(text_client.completions.calls[-1]["messages"]) is False
     _assert_thinking_payload(text_client.completions.calls[-1])
 
 
@@ -168,6 +229,7 @@ def test_vision_single_image_uses_thinking_budget(tmp_path, monkeypatch):
     )
 
     assert result == "single-image-ok"
+    assert _messages_have_cache_control(vision_client.completions.calls[-1]["messages"]) is True
     _assert_thinking_payload(vision_client.completions.calls[-1])
 
 
@@ -192,7 +254,32 @@ def test_vision_multi_image_text_uses_thinking_budget(tmp_path, monkeypatch):
     )
 
     assert result == "multi-image-ok"
+    assert _messages_have_cache_control(vision_client.completions.calls[-1]["messages"]) is True
     _assert_thinking_payload(vision_client.completions.calls[-1])
+
+
+def test_vision_explicit_cache_fallback_to_plain_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm_module, "emit_system_log", lambda **kwargs: None)
+
+    service = LLMService(api_key="test", base_url="https://example.com")
+    vision_client = _CacheFallbackClient(content="fallback-ok")
+    service.vlm_client = vision_client
+
+    image_path = tmp_path / "fallback.png"
+    image_path.write_bytes(b"fake-image")
+
+    result = service.invoke_vision_image(
+        image_path=str(image_path),
+        system_prompt="sys",
+        user_prompt="user",
+        task_kind="vision_single_figure_explain",
+        model_override="qwen3.5-flash",
+    )
+
+    assert result == "fallback-ok"
+    assert len(vision_client.completions.calls) == 2
+    assert _messages_have_cache_control(vision_client.completions.calls[0]["messages"]) is True
+    assert _messages_have_cache_control(vision_client.completions.calls[1]["messages"]) is False
 
 
 def test_invoke_text_json_retries_on_retryable_error(monkeypatch):
