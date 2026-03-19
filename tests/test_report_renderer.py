@@ -386,8 +386,8 @@ def test_render_analysis_section_renders_feature_numbering_by_claim_order() -> N
     assert "特征编号" in content
     assert "1.1" in content
     assert "2.1" in content
-    assert "权 2 (引1)" not in content
-    assert "└─ " not in content
+    assert "独权" in content
+    assert "引权 1" in content
     assert content.index("独立特征") < content.index("从属特征")
 
 

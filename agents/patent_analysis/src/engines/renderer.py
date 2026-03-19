@@ -95,6 +95,69 @@ class ReportRenderer:
                 normalized.append(text)
         return normalized
 
+    def _build_claim_relation_map(self) -> Dict[str, Dict[str, Any]]:
+        relation_map: Dict[str, Dict[str, Any]] = {}
+        for idx, claim in enumerate(self.claims):
+            if not isinstance(claim, dict):
+                continue
+
+            claim_id = str(claim.get("claim_id", "")).strip() or str(idx + 1)
+            claim_type = str(claim.get("claim_type", "")).strip().lower()
+            parent_ids_raw = claim.get("parent_claim_ids", [])
+
+            if isinstance(parent_ids_raw, list):
+                parent_ids = [
+                    str(parent_id).strip()
+                    for parent_id in parent_ids_raw
+                    if str(parent_id).strip()
+                ]
+            elif parent_ids_raw is None:
+                parent_ids = []
+            else:
+                parent_text = str(parent_ids_raw).strip()
+                parent_ids = [parent_text] if parent_text else []
+
+            relation_map[claim_id] = {
+                "claim_type": claim_type,
+                "parent_claim_ids": parent_ids,
+            }
+
+        return relation_map
+
+    def _render_feature_number_cell(
+        self,
+        feature_no: str,
+        claim_id: str,
+        claim_relation_map: Dict[str, Dict[str, Any]],
+    ) -> str:
+        relation = claim_relation_map.get(claim_id, {})
+        claim_type = str(relation.get("claim_type", "")).lower()
+        parent_ids = relation.get("parent_claim_ids", [])
+
+        relation_html = ""
+        if parent_ids:
+            parent_text = ", ".join(parent_ids)
+            relation_html = (
+                "<div style=\"margin-top: 4px; font-size: 11px; color: #666; "
+                "line-height: 1.45; white-space: normal;\">"
+                f"引权 {parent_text}"
+                "</div>"
+            )
+        elif "independent" in claim_type:
+            relation_html = (
+                "<div style=\"margin-top: 4px; font-size: 11px; color: #666; "
+                "line-height: 1.45; white-space: normal;\">"
+                "独权"
+                "</div>"
+            )
+
+        return (
+            "<div>"
+            f"<div>{feature_no}</div>"
+            f"{relation_html}"
+            "</div>"
+        )
+
     def render(
         self,
         report_data: Dict[str, Any],
@@ -227,6 +290,7 @@ class ReportRenderer:
         feature_name_map = {}
         if isinstance(features, list) and features:
             lines.append("### 关键技术特征表")
+            claim_relation_map = self._build_claim_relation_map()
 
             features_by_claim: Dict[str, List[Dict[str, Any]]] = {}
             for feat in features:
@@ -255,9 +319,9 @@ class ReportRenderer:
             table_html = """<table>
 <thead>
 <tr>
-<th style="width: 68px; text-align: center;">特征编号</th>
+<th style="width: 48px; text-align: center;">特征编号</th>
 <th style="width: 20%;">特征名称</th>
-<th style="width: 70px; text-align: center;">属性</th>
+<th style="width: 68px; text-align: center;">属性</th>
 <th>详细定义</th>
 </tr>
 </thead>
@@ -288,8 +352,14 @@ class ReportRenderer:
                     else:
                         badge_text = "🔹 从权特征"
 
+                    feature_number_cell = self._render_feature_number_cell(
+                        feature_no=feature_no,
+                        claim_id=claim_id,
+                        claim_relation_map=claim_relation_map,
+                    )
+
                     table_html += f"""<tr>
-<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa;">{feature_no}</td>
+<td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa; vertical-align: top;">{feature_number_cell}</td>
 <td style="font-weight: bold;">{name}</td>
 <td style="text-align: center;">{badge_text}</td>
 <td>{desc}</td>
