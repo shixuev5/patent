@@ -134,6 +134,7 @@ def test_render_search_section_sanitizes_semantic_html_fragments() -> None:
     assert "<tr>" not in content
     assert "### 核心效果1：效果描述A" in content
     assert "效果描述A" in content
+    assert "```text\n　　关键词A\n```\n" in content
 
 
 def test_render_search_section_groups_by_effect_and_filters_matrix() -> None:
@@ -272,14 +273,14 @@ def test_render_search_section_falls_back_when_queries_missing() -> None:
             "semantic_strategy": {
                 "name": "语义检索",
                 "description": "desc",
-                "content": "legacy query",
+                "content": "legacy query\nnext line",
             },
         }
     )
 
     assert "## 2. 检索要素表" in content
     assert "## 3. 语义检索" in content
-    assert "legacy query" in content
+    assert "```text\n　　legacy query\n　　next line\n```\n" in content
 
 
 def test_render_analysis_section_accepts_non_numeric_tcs_score() -> None:
@@ -386,9 +387,65 @@ def test_render_analysis_section_renders_feature_numbering_by_claim_order() -> N
     assert "特征编号" in content
     assert "1.1" in content
     assert "2.1" in content
-    assert "独权" in content
-    assert "引权 1" in content
+    assert "独权" not in content
+    assert "引用权 1" in content
     assert content.index("独立特征") < content.index("从属特征")
+
+
+def test_render_analysis_section_does_not_bold_independent_preamble_feature_name() -> None:
+    renderer = ReportRenderer(
+        patent_data={
+            "claims": [
+                {"claim_id": "1", "claim_type": "independent", "parent_claim_ids": []},
+                {"claim_id": "2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            ]
+        }
+    )
+    content = renderer._render_analysis_section(
+        {
+            "ai_title": "测试报告",
+            "ai_abstract": "摘要",
+            "technical_field": "技术领域",
+            "technical_problem": "技术问题",
+            "technical_scheme": "技术方案",
+            "technical_means": "技术手段",
+            "technical_features": [
+                {
+                    "name": "前序特征",
+                    "claim_id": "1",
+                    "claim_source": "independent",
+                    "description": "前序描述",
+                    "rationale": "[权1] 前序部分 - 背景限定",
+                    "is_distinguishing": False,
+                },
+                {
+                    "name": "区别特征",
+                    "claim_id": "1",
+                    "claim_source": "independent",
+                    "description": "区别描述",
+                    "rationale": "[权1] 特征部分 - 解决技术问题",
+                    "is_distinguishing": True,
+                },
+                {
+                    "name": "从权特征",
+                    "claim_id": "2",
+                    "claim_source": "dependent",
+                    "description": "从权描述",
+                    "rationale": "[权2] 从属限定 - 进一步限定",
+                    "is_distinguishing": False,
+                },
+            ],
+            "technical_effects": [],
+            "figure_explanations": [],
+        }
+    )
+
+    assert '<td style="font-weight: normal; color: #666;">前序特征</td>' in content
+    assert '<td style="font-weight: bold; color: #222;">区别特征</td>' in content
+    assert '<td style="font-weight: normal; color: #222;">从权特征</td>' in content
+    assert "⚪ 前序特征" in content
+    assert "🌟 区别特征" in content
+    assert "🔹 从权特征" in content
 
 
 def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:

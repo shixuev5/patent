@@ -24,9 +24,9 @@ class ReportRenderer:
         except (TypeError, ValueError):
             return default
 
-    def _indent_text(self, text: str) -> str:
+    def _indent_paragraph_text(self, text: str) -> str:
         """
-        辅助函数：给文本首行添加两个全角空格缩进 (HTML实体)
+        给普通正文段落添加首行缩进（HTML 实体）。
         """
         if not text:
             return ""
@@ -35,6 +35,21 @@ class ReportRenderer:
         if not clean_text:
             return ""
         return f"&emsp;&emsp;{clean_text}"
+
+    def _indent_semantic_code_block_text(self, text: str) -> str:
+        """
+        给语义检索代码块中的每个非空行添加两个全角空格缩进。
+        """
+        if not text:
+            return ""
+
+        indented_lines: List[str] = []
+        for line in str(text).splitlines():
+            if line.strip():
+                indented_lines.append(f"　　{line}")
+            else:
+                indented_lines.append("")
+        return "\n".join(indented_lines)
     
     def _md_bold_to_html(self, text):
         """
@@ -140,14 +155,7 @@ class ReportRenderer:
             relation_html = (
                 "<div style=\"margin-top: 4px; font-size: 11px; color: #666; "
                 "line-height: 1.45; white-space: normal;\">"
-                f"引权 {parent_text}"
-                "</div>"
-            )
-        elif "independent" in claim_type:
-            relation_html = (
-                "<div style=\"margin-top: 4px; font-size: 11px; color: #666; "
-                "line-height: 1.45; white-space: normal;\">"
-                "独权"
+                f"引用权 {parent_text}"
                 "</div>"
             )
 
@@ -214,7 +222,7 @@ class ReportRenderer:
 
         lines.append("## 摘要")
         abstract = self._safe_text(data.get("ai_abstract"), "暂无摘要")
-        lines.append(f"{self._indent_text(abstract)}\n")
+        lines.append(f"{self._indent_paragraph_text(abstract)}\n")
 
         main_fig = str(data.get("abstract_figure") or "").strip()
         if main_fig:
@@ -229,11 +237,11 @@ class ReportRenderer:
 
         append_numbered_section("技术领域")
         domain = self._safe_text(data.get("technical_field"), "未提取到技术领域")
-        lines.append(f"{self._indent_text(domain)}\n")
+        lines.append(f"{self._indent_paragraph_text(domain)}\n")
 
         append_numbered_section("现有技术问题")
         problem = self._safe_text(data.get("technical_problem"), "未提取到技术问题")
-        lines.append(f"{self._indent_text(problem)}\n")
+        lines.append(f"{self._indent_paragraph_text(problem)}\n")
 
         bg_knowledge = data.get("background_knowledge", [])
         if isinstance(bg_knowledge, list) and bg_knowledge:
@@ -257,11 +265,11 @@ class ReportRenderer:
 <div style="display: flex; flex-direction: row; border-bottom: 1px solid #dfe2e5;">
 <div style="flex: 1; padding: 8px; border-right: 1px solid #dfe2e5;">
 <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">专业定义</div>
-<div>{self._indent_text(definition)}</div>
+<div>{self._indent_paragraph_text(definition)}</div>
 </div>
 <div style="flex: 1; padding: 8px;">
 <div style="font-size: 12px; font-weight: bold; margin-bottom: 4px;">通俗理解</div>
-<div>{self._indent_text(analogy)}</div>
+<div>{self._indent_paragraph_text(analogy)}</div>
 </div>
 </div>
 <div style="padding: 6px 8px;">
@@ -279,12 +287,12 @@ class ReportRenderer:
 
         scheme = self._safe_text(data.get("technical_scheme"), "未提取到技术方案")
         if "\n" not in scheme:
-            scheme = self._indent_text(scheme)
+            scheme = self._indent_paragraph_text(scheme)
         lines.append(f"{scheme}\n")
 
         append_numbered_section("核心技术手段")
         means = self._safe_text(data.get("technical_means"), "未提取到技术手段")
-        lines.append(f"{self._indent_text(means)}\n")
+        lines.append(f"{self._indent_paragraph_text(means)}\n")
 
         features = data.get("technical_features", [])
         feature_name_map = {}
@@ -345,12 +353,21 @@ class ReportRenderer:
 
                     is_distinguishing = feat.get("is_distinguishing", False)
                     source = str(feat.get("claim_source", "")).lower()
+                    is_independent_feature = source == "independent"
+                    is_dependent_feature = source == "dependent"
+                    is_independent_preamble = (not is_distinguishing) and is_independent_feature
                     if is_distinguishing:
                         badge_text = "🌟 区别特征"
-                    elif "independent" in source:
+                    elif is_independent_preamble:
                         badge_text = "⚪ 前序特征"
                     else:
                         badge_text = "🔹 从权特征"
+                    name_font_weight = (
+                        "bold"
+                        if is_distinguishing and not is_dependent_feature
+                        else "normal"
+                    )
+                    name_color = "#666" if is_independent_preamble else "#222"
 
                     feature_number_cell = self._render_feature_number_cell(
                         feature_no=feature_no,
@@ -360,7 +377,7 @@ class ReportRenderer:
 
                     table_html += f"""<tr>
 <td rowspan="2" style="text-align: center; font-weight: bold; background-color: #f8f9fa; vertical-align: top;">{feature_number_cell}</td>
-<td style="font-weight: bold;">{name}</td>
+<td style="font-weight: {name_font_weight}; color: {name_color};">{name}</td>
 <td style="text-align: center;">{badge_text}</td>
 <td>{desc}</td>
 </tr>
@@ -572,7 +589,9 @@ class ReportRenderer:
                 lines.append(figure_html)
 
             if explanation:
-                lines.append(f"\n**【智能解说】**\n\n{self._indent_text(explanation)}\n")
+                lines.append(
+                    f"\n**【智能解说】**\n\n{self._indent_paragraph_text(explanation)}\n"
+                )
 
             if isinstance(parts, list) and parts:
                 lines.append("\n**【可见部件清单】**\n")
@@ -682,7 +701,9 @@ class ReportRenderer:
 
                 lines.append(f"### 核心效果{idx}：{effect_text}")
                 lines.append("#### 语义检索")
-                lines.append(f"```text\n{content}\n```\n")
+                lines.append(
+                    f"```text\n{self._indent_semantic_code_block_text(content)}\n```\n"
+                )
                 lines.append("#### 检索要素表")
                 filtered_matrix = self._filter_matrix_by_effect_cluster(
                     matrix, effect_cluster_id=effect_cluster_id
@@ -698,7 +719,9 @@ class ReportRenderer:
             lines.append(f"## 3. {semantic_name}\n")
             legacy_content = self._safe_text(semantic.get("content"))
             if legacy_content:
-                lines.append(f"```text\n{legacy_content}\n```\n")
+                lines.append(
+                    f"```text\n{self._indent_semantic_code_block_text(legacy_content)}\n```\n"
+                )
             else:
                 lines.append("> 未生成语义检索 Query。\n")
 
