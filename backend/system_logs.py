@@ -42,6 +42,14 @@ _SENSITIVE_KEY_RE = re.compile(
 )
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._\-~+/]+=*", re.IGNORECASE)
 _OPENAI_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9]{10,}\b")
+_SAFE_USAGE_KEYS = {
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "cached_tokens",
+    "cache_creation_input_tokens",
+}
 
 
 _REQUEST_CONTEXT: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
@@ -80,7 +88,10 @@ def _sanitize_text(text: str) -> str:
 
 
 def _is_sensitive_key(key: Any) -> bool:
-    return bool(_SENSITIVE_KEY_RE.search(str(key or "")))
+    key_text = str(key or "")
+    if key_text.lower() in _SAFE_USAGE_KEYS:
+        return False
+    return bool(_SENSITIVE_KEY_RE.search(key_text))
 
 
 def redact_sensitive(value: Any) -> Any:

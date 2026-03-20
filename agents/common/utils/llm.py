@@ -32,7 +32,13 @@ class LLMService:
         "capacity limits",
         "temporarily unavailable",
     )
+    # 显式 prompt cache 仅用于长且高复用的前缀提示词。
+    # 经验约束：优先保留给静态前缀通常超过约 1000 tokens 的任务；
+    # 短提示词即使重复调用，cache 收益也往往不足以覆盖复杂度。
     _EXPLICIT_CACHE_TASK_KINDS = {
+        "oar_evidence_verification",
+        "oar_common_knowledge_verification",
+        "oar_topup_search_verification",
         "vision_ocr_correction",
         "vision_single_figure_explain",
         "vision_multi_figure_synthesis",
@@ -409,6 +415,51 @@ class LLMService:
         ]
 
     @classmethod
+    def _build_cached_messages(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        enable_explicit_cache: bool,
+    ) -> List[Dict[str, Any]]:
+        if not enable_explicit_cache:
+            return messages
+
+        cached_messages: List[Dict[str, Any]] = []
+        cache_applied = False
+        for message in messages:
+            if not isinstance(message, dict):
+                cached_messages.append(message)
+                continue
+
+            cloned_message: Dict[str, Any] = dict(message)
+            content = cloned_message.get("content")
+            if not cache_applied and cloned_message.get("role") == "system":
+                if isinstance(content, str):
+                    cloned_message["content"] = cls._build_cached_system_content(
+                        content,
+                        enable_explicit_cache=True,
+                    )
+                    cache_applied = True
+                elif isinstance(content, list):
+                    new_content: List[Any] = []
+                    for item in content:
+                        if (
+                            not cache_applied
+                            and isinstance(item, dict)
+                            and item.get("type") == "text"
+                            and "cache_control" not in item
+                        ):
+                            cached_item = dict(item)
+                            cached_item["cache_control"] = {"type": "ephemeral"}
+                            new_content.append(cached_item)
+                            cache_applied = True
+                        else:
+                            new_content.append(item)
+                    cloned_message["content"] = new_content
+            cached_messages.append(cloned_message)
+        return cached_messages
+
+    @classmethod
     def _is_explicit_cache_unsupported_error(cls, exc: Exception) -> bool:
         message = str(exc or "").lower()
         if not message or "cache" not in message:
@@ -518,6 +569,76 @@ class LLMService:
                 interface_fields=self._vision_interface,
             )
 
+    def _invoke_text_with_cache_fallback(
+        self,
+        *,
+        request_kwargs: Dict[str, Any],
+        model: str,
+        task_kind: str,
+        event_name_prefix: str,
+        task_context: Dict[str, Optional[str]],
+        explicit_cache_enabled: bool,
+        fallback_event_name: str,
+        fallback_log_message: str,
+    ) -> Any:
+        try:
+            return self._call_with_retry(
+                fn=lambda: self.text_client.chat.completions.create(**request_kwargs),
+                model=model,
+                task_kind=task_kind,
+                event_name_prefix=event_name_prefix,
+                task_context=task_context,
+                interface_fields=self._text_interface,
+            )
+        except Exception as exc:
+            if not (
+                explicit_cache_enabled
+                and self._is_explicit_cache_unsupported_error(exc)
+            ):
+                raise
+            fallback_messages = self._strip_messages_cache_control(
+                request_kwargs.get("messages") or []
+            )
+            logger.warning(
+                f"[LLM] {fallback_log_message}："
+                f"{json.dumps({'task_kind': task_kind, 'model': model, 'error': str(exc)}, ensure_ascii=False)}"
+            )
+            emit_system_log(
+                category="llm_call",
+                event_name=fallback_event_name,
+                level="WARNING",
+                owner_id=task_context.get("owner_id"),
+                task_id=task_context.get("task_id"),
+                task_type=task_context.get("task_type"),
+                method=self._text_interface.get("method"),
+                path=self._text_interface.get("path"),
+                provider="llm",
+                target_host=self._text_interface.get("target_host"),
+                success=True,
+                duration_ms=0,
+                message="显式缓存参数不可用，已降级重试",
+                payload={
+                    "request": {
+                        "task_kind": task_kind,
+                        "model": model,
+                    },
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                },
+            )
+            fallback_kwargs = dict(request_kwargs)
+            fallback_kwargs["messages"] = fallback_messages
+            return self._call_with_retry(
+                fn=lambda: self.text_client.chat.completions.create(**fallback_kwargs),
+                model=model,
+                task_kind=task_kind,
+                event_name_prefix=event_name_prefix,
+                task_context=task_context,
+                interface_fields=self._text_interface,
+            )
+
     def invoke_text_json(
         self,
         messages: List[Dict[str, str]],
@@ -563,7 +684,7 @@ class LLMService:
     def _invoke_text_json_once(
         self,
         *,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         chosen_model: str,
         thinking: bool,
         temperature: float,
@@ -571,6 +692,11 @@ class LLMService:
         timeout: Optional[float],
         policy: Dict[str, Any],
     ) -> Dict[str, Any]:
+        explicit_cache_enabled = self._should_enable_explicit_cache(policy["task_kind"])
+        request_messages = self._build_cached_messages(
+            messages,
+            enable_explicit_cache=explicit_cache_enabled,
+        )
         log_payload = self._collect_prompt_summary(messages)
         task_context = self._current_task_log_context()
         log_payload.update(
@@ -581,6 +707,7 @@ class LLMService:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "thinking_enabled": thinking,
+                "explicit_cache_enabled": explicit_cache_enabled,
             }
         )
         logger.info(
@@ -591,21 +718,24 @@ class LLMService:
         start = time.perf_counter()
         task_context = self._current_task_log_context()
         try:
-            response = self._call_with_retry(
-                fn=lambda: self.text_client.chat.completions.create(
-                    model=chosen_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format={"type": "json_object"},
-                    extra_body=self._build_thinking_extra_body(thinking),
-                    timeout=timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
-                ),
+            request_kwargs = {
+                "model": chosen_model,
+                "messages": request_messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"},
+                "extra_body": self._build_thinking_extra_body(thinking),
+                "timeout": timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS,
+            }
+            response = self._invoke_text_with_cache_fallback(
+                request_kwargs=request_kwargs,
                 model=chosen_model,
                 task_kind=policy["task_kind"],
                 event_name_prefix="chat_completion_json",
                 task_context=task_context,
-                interface_fields=self._text_interface,
+                explicit_cache_enabled=explicit_cache_enabled,
+                fallback_event_name="chat_completion_json_cache_fallback",
+                fallback_log_message="显式缓存参数不可用，自动降级为普通文本 JSON 调用",
             )
 
             content = response.choices[0].message.content

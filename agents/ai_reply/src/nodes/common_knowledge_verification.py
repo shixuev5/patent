@@ -80,6 +80,13 @@ class CommonKnowledgeVerificationNode:
         local_retriever = self._build_local_retriever(prepared)
         local_doc_ids = self._extract_comparison_doc_ids(prepared)
 
+        max_workers = max(
+            1,
+            min(
+                settings.OAR_MAX_CONCURRENCY,
+                len(common_knowledge_disputes),
+            ),
+        )
         if len(common_knowledge_disputes) == 1:
             return [
                 self._evaluate_common_knowledge_dispute(
@@ -91,17 +98,24 @@ class CommonKnowledgeVerificationNode:
                 )
             ]
 
-        max_workers = max(
-            1,
-            min(
-                settings.OAR_MAX_CONCURRENCY,
-                len(common_knowledge_disputes),
-            ),
-        )
         logger.info(
             f"公知常识核查并行执行: disputes={len(common_knowledge_disputes)} workers={max_workers}"
         )
         ordered_results: List[Dict[str, Any] | None] = [None] * len(common_knowledge_disputes)
+        remaining_disputes = common_knowledge_disputes
+        if len(common_knowledge_disputes) > 2 and max_workers > 1:
+            ordered_results[0] = self._evaluate_common_knowledge_dispute(
+                dispute=common_knowledge_disputes[0],
+                claims=claims,
+                priority_date=priority_date,
+                local_retriever=local_retriever,
+                local_doc_ids=local_doc_ids,
+            )
+            remaining_disputes = common_knowledge_disputes[1:]
+
+        if not remaining_disputes:
+            return [item for item in ordered_results if item]
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 submit_with_current_context(
@@ -113,7 +127,10 @@ class CommonKnowledgeVerificationNode:
                     local_retriever=local_retriever,
                     local_doc_ids=local_doc_ids,
                 ): index
-                for index, dispute in enumerate(common_knowledge_disputes)
+                for index, dispute in enumerate(
+                    remaining_disputes,
+                    start=1 if ordered_results[0] else 0,
+                )
             }
             for future in as_completed(futures):
                 index = futures[future]

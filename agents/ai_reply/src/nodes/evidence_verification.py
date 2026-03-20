@@ -7,8 +7,9 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 from loguru import logger
+from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.utils import get_node_cache
@@ -18,6 +19,9 @@ from config import settings
 
 class EvidenceVerificationNode:
     """证据核查节点（新结构）"""
+    _MAX_DOC_CACHE_MARKERS = 3
+    _FULL_DOC_CONTEXT_LIMIT = 16000
+    _NON_PATENT_RETRIEVAL_QUERY_LIMIT = 4
 
     def __init__(self, config=None):
         self.config = config
@@ -30,7 +34,7 @@ class EvidenceVerificationNode:
         try:
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence_v4",
+                "verify_evidence_v5",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -64,30 +68,31 @@ class EvidenceVerificationNode:
         prepared = self._to_dict(prepared_materials)
         claims = self._extract_claims(prepared)
         comparison_doc_map = self._build_comparison_doc_map(prepared)
+        local_retriever = self._build_local_retriever(prepared)
         grouped_disputes = self._group_disputes_by_docs(document_disputes)
 
         verification_jobs: List[Dict[str, Any]] = []
-        for doc_group, group_items in grouped_disputes.items():
-            docs_context, missing_doc_ids = self._build_docs_context(doc_group, comparison_doc_map)
+        for doc_group in sorted(grouped_disputes.keys()):
+            group_items = grouped_disputes[doc_group]
+            docs_context, retrieval_docs, missing_doc_ids = self._build_docs_context(doc_group, comparison_doc_map)
             prefix_messages = self._build_prefix_messages(docs_context)
 
             for dispute in group_items:
                 verification_jobs.append(
-                    {
-                        "dispute": dispute,
-                        "claims": claims,
-                        "doc_group": doc_group,
-                        "missing_doc_ids": missing_doc_ids,
-                        "prefix_messages": prefix_messages,
-                    }
+                    self._build_verification_job(
+                        dispute=dispute,
+                        claims=claims,
+                        doc_group=doc_group,
+                        missing_doc_ids=missing_doc_ids,
+                        prefix_messages=prefix_messages,
+                        docs_context=docs_context,
+                        retrieval_docs=retrieval_docs,
+                        local_retriever=local_retriever,
+                    )
                 )
 
         if not verification_jobs:
             return []
-
-        if len(verification_jobs) == 1:
-            job = verification_jobs[0]
-            return [self._verify_single_dispute(**job)]
 
         max_workers = max(
             1,
@@ -96,18 +101,52 @@ class EvidenceVerificationNode:
                 len(verification_jobs),
             ),
         )
+        if len(verification_jobs) == 1:
+            job = verification_jobs[0]
+            return [self._verify_single_dispute(**self._job_call_kwargs(job))]
+
         logger.info(
             f"证据核查并行执行: jobs={len(verification_jobs)} workers={max_workers}"
         )
         ordered_results: List[Dict[str, Any] | None] = [None] * len(verification_jobs)
+        available_prefixes: Set[Tuple[str, ...]] = set()
+        pending_indices = list(range(len(verification_jobs)))
+        if len(verification_jobs) > 2 and max_workers > 1:
+            warm_index = self._select_warmup_job_index(verification_jobs)
+            ordered_results[warm_index] = self._verify_single_dispute(
+                **self._job_call_kwargs(verification_jobs[warm_index])
+            )
+            available_prefixes.update(self._job_cache_prefixes(verification_jobs[warm_index]))
+            pending_indices.remove(warm_index)
+
+        if not pending_indices:
+            return [item for item in ordered_results if item]
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                submit_with_current_context(executor, self._verify_single_dispute, **job): index
-                for index, job in enumerate(verification_jobs)
-            }
-            for future in as_completed(futures):
-                index = futures[future]
+            futures: Dict[Any, int] = {}
+            while pending_indices or futures:
+                while pending_indices and len(futures) < max_workers:
+                    next_index = self._select_next_job_index(
+                        pending_indices,
+                        verification_jobs,
+                        available_prefixes,
+                    )
+                    futures[
+                        submit_with_current_context(
+                            executor,
+                            self._verify_single_dispute,
+                            **self._job_call_kwargs(verification_jobs[next_index]),
+                        )
+                    ] = next_index
+                    pending_indices.remove(next_index)
+
+                if not futures:
+                    continue
+
+                future = next(as_completed(list(futures.keys())))
+                index = futures.pop(future)
                 ordered_results[index] = future.result()
+                available_prefixes.update(self._job_cache_prefixes(verification_jobs[index]))
 
         return [item for item in ordered_results if item]
 
@@ -150,15 +189,16 @@ class EvidenceVerificationNode:
                 value = str(self._to_dict(item).get("doc_id", "")).strip()
                 if value and value not in normalized_ids:
                     normalized_ids.append(value)
-            grouped[tuple(normalized_ids)].append(dispute)
+            grouped[tuple(sorted(normalized_ids))].append(dispute)
         return grouped
 
     def _build_docs_context(
         self,
         doc_group: Tuple[str, ...],
         comparison_doc_map: Dict[str, Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, str]], List[str]]:
+    ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str]]:
         docs_context: List[Dict[str, str]] = []
+        retrieval_docs: List[Dict[str, str]] = []
         missing_doc_ids: List[str] = []
 
         for doc_id in doc_group:
@@ -172,13 +212,144 @@ class EvidenceVerificationNode:
                 missing_doc_ids.append(doc_id)
                 continue
 
-            docs_context.append({
+            doc_context = {
                 "doc_id": doc_id,
                 "document_number": str(doc.get("document_number", "")),
-                "content": content[:16000],
+                "content": content,
+            }
+            if self._should_use_retrieval_context(doc, content):
+                retrieval_docs.append(doc_context)
+                continue
+            docs_context.append({
+                **doc_context,
+                "content": content[: self._FULL_DOC_CONTEXT_LIMIT],
             })
 
-        return docs_context, missing_doc_ids
+        return docs_context, retrieval_docs, missing_doc_ids
+
+    def _build_verification_job(
+        self,
+        *,
+        dispute: Dict[str, Any],
+        claims: List[Dict[str, Any]],
+        doc_group: Tuple[str, ...],
+        missing_doc_ids: List[str],
+        prefix_messages: List[Dict[str, Any]],
+        docs_context: List[Dict[str, str]],
+        retrieval_docs: List[Dict[str, str]] | None = None,
+        local_retriever: LocalEvidenceRetriever | None = None,
+    ) -> Dict[str, Any]:
+        return {
+            "dispute": dispute,
+            "claims": claims,
+            "doc_group": doc_group,
+            "missing_doc_ids": missing_doc_ids,
+            "prefix_messages": prefix_messages,
+            "retrieval_docs": retrieval_docs or [],
+            "local_retriever": local_retriever,
+            "_cache_prefix_scores": self._build_cache_prefix_scores(docs_context),
+        }
+
+    def _build_cache_prefix_scores(
+        self,
+        docs_context: List[Dict[str, str]],
+    ) -> Dict[Tuple[str, ...], int]:
+        prefix_scores: Dict[Tuple[str, ...], int] = {}
+        prefix_doc_ids: List[str] = []
+        cumulative_chars = 0
+        for doc in docs_context[: self._MAX_DOC_CACHE_MARKERS]:
+            prefix_doc_ids.append(str(doc.get("doc_id", "")).strip())
+            cumulative_chars += len(self._build_doc_context_text(doc))
+            prefix_scores[tuple(prefix_doc_ids)] = cumulative_chars
+        return prefix_scores
+
+    def _build_doc_context_text(self, doc: Dict[str, str]) -> str:
+        return (
+            f"对比文件上下文：{doc['doc_id']} ({doc['document_number']})\n"
+            f"全文片段如下：\n{doc['content']}"
+        )
+
+    @staticmethod
+    def _job_call_kwargs(job: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "dispute": job["dispute"],
+            "claims": job["claims"],
+            "doc_group": job["doc_group"],
+            "missing_doc_ids": job["missing_doc_ids"],
+            "prefix_messages": job["prefix_messages"],
+            "retrieval_docs": job["retrieval_docs"],
+            "local_retriever": job["local_retriever"],
+        }
+
+    @staticmethod
+    def _job_cache_prefixes(job: Dict[str, Any]) -> Set[Tuple[str, ...]]:
+        return set(job.get("_cache_prefix_scores", {}).keys())
+
+    def _job_cache_hit_score(
+        self,
+        job: Dict[str, Any],
+        available_prefixes: Set[Tuple[str, ...]],
+    ) -> int:
+        prefix_scores = job.get("_cache_prefix_scores", {})
+        return max(
+            (
+                int(score)
+                for prefix, score in prefix_scores.items()
+                if prefix in available_prefixes
+            ),
+            default=0,
+        )
+
+    def _job_seed_value(
+        self,
+        job: Dict[str, Any],
+        candidate_jobs: List[Dict[str, Any]],
+    ) -> int:
+        available_prefixes = self._job_cache_prefixes(job)
+        return sum(
+            self._job_cache_hit_score(other_job, available_prefixes)
+            for other_job in candidate_jobs
+            if other_job is not job
+        )
+
+    @staticmethod
+    def _job_total_cache_score(job: Dict[str, Any]) -> int:
+        return max((int(v) for v in job.get("_cache_prefix_scores", {}).values()), default=0)
+
+    def _select_warmup_job_index(self, jobs: List[Dict[str, Any]]) -> int:
+        best_index = 0
+        best_key: Tuple[int, int] | None = None
+        for index, job in enumerate(jobs):
+            key = (
+                self._job_seed_value(job, jobs),
+                self._job_total_cache_score(job),
+            )
+            if best_key is None or key > best_key:
+                best_index = index
+                best_key = key
+        return best_index
+
+    def _select_next_job_index(
+        self,
+        pending_indices: List[int],
+        jobs: List[Dict[str, Any]],
+        available_prefixes: Set[Tuple[str, ...]],
+    ) -> int:
+        best_index = pending_indices[0]
+        best_key: Tuple[int, int, int] | None = None
+        pending_jobs = [jobs[index] for index in pending_indices]
+
+        for index in pending_indices:
+            job = jobs[index]
+            key = (
+                self._job_cache_hit_score(job, available_prefixes),
+                self._job_seed_value(job, pending_jobs),
+                self._job_total_cache_score(job),
+            )
+            if best_key is None or key > best_key:
+                best_index = index
+                best_key = key
+        return best_index
 
     def _extract_doc_content(self, doc: Dict[str, Any]) -> str:
         is_patent = bool(doc.get("is_patent", False))
@@ -197,25 +368,25 @@ class EvidenceVerificationNode:
 
         return ""
 
-    def _build_prefix_messages(self, docs_context: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        messages: List[Dict[str, str]] = [
+    def _should_use_retrieval_context(self, doc: Dict[str, Any], content: str) -> bool:
+        return not bool(doc.get("is_patent", False)) and len(content) > self._FULL_DOC_CONTEXT_LIMIT
+
+    def _build_prefix_messages(self, docs_context: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = [
             {"role": "system", "content": self._build_system_prompt()},
         ]
 
-        if not docs_context:
+        for index, doc in enumerate(docs_context):
+            text = self._build_doc_context_text(doc)
+            content_item: Dict[str, Any] = {
+                "type": "text",
+                "text": text,
+            }
+            if index < self._MAX_DOC_CACHE_MARKERS:
+                content_item["cache_control"] = {"type": "ephemeral"}
             messages.append({
                 "role": "user",
-                "content": "当前争议项未提供任何可用对比文件全文内容。请在输出中给出 INCONCLUSIVE。"
-            })
-            return messages
-
-        for doc in docs_context:
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"对比文件上下文：{doc['doc_id']} ({doc['document_number']})\n"
-                    f"全文片段如下：\n{doc['content']}"
-                )
+                "content": [content_item],
             })
 
         return messages
@@ -273,10 +444,30 @@ class EvidenceVerificationNode:
         doc_group: Tuple[str, ...],
         missing_doc_ids: List[str],
         prefix_messages: List[Dict[str, str]],
+        retrieval_docs: List[Dict[str, str]],
+        local_retriever: LocalEvidenceRetriever | None,
     ) -> Dict[str, Any]:
         claim_text = self._get_claim_text(dispute, claims)
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
+        messages: List[Dict[str, Any]] = list(prefix_messages)
+
+        if retrieval_docs:
+            messages.extend(
+                self._build_long_non_patent_messages(
+                    dispute=dispute,
+                    claim_text=claim_text,
+                    examiner_opinion=examiner_opinion,
+                    applicant_opinion=applicant_opinion,
+                    retrieval_docs=retrieval_docs,
+                    local_retriever=local_retriever,
+                )
+            )
+        elif len(messages) == 1:
+            messages.append({
+                "role": "user",
+                "content": "当前争议项未提供任何可用对比文件全文内容。请在输出中给出 INCONCLUSIVE。",
+            })
 
         dispute_prompt = f"""请核查以下争议项：
 claim_ids: {json.dumps(self._normalize_claim_ids(dispute.get("claim_ids", [])), ensure_ascii=False)}
@@ -287,7 +478,7 @@ applicant_opinion: {json.dumps(applicant_opinion, ensure_ascii=False)}
 supporting_docs_doc_ids: {json.dumps(list(doc_group), ensure_ascii=False)}
 missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
 """
-        messages = prefix_messages + [{"role": "user", "content": dispute_prompt}]
+        messages.append({"role": "user", "content": dispute_prompt})
 
         response = self.llm_service.invoke_text_json(
             messages=messages,
@@ -315,6 +506,160 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
                 "missing_doc_ids": list(missing_doc_ids),
             },
         }
+
+    def _build_local_retriever(self, prepared_materials: Dict[str, Any]) -> LocalEvidenceRetriever | None:
+        local_meta = self._to_dict(prepared_materials.get("local_retrieval", {}))
+        if not local_meta or not bool(local_meta.get("enabled", False)):
+            return None
+        index_path = str(local_meta.get("index_path", "")).strip()
+        if not index_path:
+            return None
+        return LocalEvidenceRetriever(
+            db_path=index_path,
+            chunk_chars=int(local_meta.get("chunk_chars") or settings.LOCAL_RETRIEVAL_CHUNK_CHARS),
+            chunk_overlap=int(local_meta.get("chunk_overlap") or settings.LOCAL_RETRIEVAL_CHUNK_OVERLAP),
+        )
+
+    def _build_long_non_patent_messages(
+        self,
+        dispute: Dict[str, Any],
+        claim_text: str,
+        examiner_opinion: Dict[str, Any],
+        applicant_opinion: Dict[str, Any],
+        retrieval_docs: List[Dict[str, str]],
+        local_retriever: LocalEvidenceRetriever | None,
+    ) -> List[Dict[str, Any]]:
+        queries = self._build_non_patent_queries(
+            dispute=dispute,
+            claim_text=claim_text,
+            examiner_opinion=examiner_opinion,
+            applicant_opinion=applicant_opinion,
+        )
+        messages: List[Dict[str, Any]] = []
+        for doc in retrieval_docs:
+            cards = self._search_non_patent_evidence_cards(
+                doc_id=str(doc.get("doc_id", "")).strip(),
+                queries=queries,
+                local_retriever=local_retriever,
+            )
+            if cards:
+                messages.append({
+                    "role": "user",
+                    "content": self._build_non_patent_card_prompt(doc, queries, cards),
+                })
+                continue
+            messages.append({
+                "role": "user",
+                "content": self._build_non_patent_fallback_prompt(doc),
+            })
+        return messages
+
+    def _build_non_patent_queries(
+        self,
+        dispute: Dict[str, Any],
+        claim_text: str,
+        examiner_opinion: Dict[str, Any],
+        applicant_opinion: Dict[str, Any],
+    ) -> List[str]:
+        feature_text = str(dispute.get("feature_text", "")).strip()
+        candidates = [
+            feature_text,
+            f"{feature_text} {claim_text[:180]}".strip(),
+            str(examiner_opinion.get("reasoning", "")).strip(),
+            str(applicant_opinion.get("reasoning", "")).strip(),
+            str(applicant_opinion.get("core_conflict", "")).strip(),
+        ]
+        queries: List[str] = []
+        for raw in candidates:
+            value = re.sub(r"\s+", " ", str(raw or "")).strip()
+            if len(value) < 4 or value in queries:
+                continue
+            queries.append(value[:240])
+            if len(queries) >= self._NON_PATENT_RETRIEVAL_QUERY_LIMIT:
+                break
+        return queries
+
+    def _search_non_patent_evidence_cards(
+        self,
+        doc_id: str,
+        queries: List[str],
+        local_retriever: LocalEvidenceRetriever | None,
+    ) -> List[Dict[str, Any]]:
+        if not local_retriever or not doc_id or not queries:
+            return []
+
+        candidates: List[Dict[str, Any]] = []
+        for query in queries:
+            candidates.extend(
+                local_retriever.search(
+                    query=query,
+                    intent="fact_verification",
+                    doc_filters=[doc_id],
+                    top_k=settings.LOCAL_RETRIEVAL_CANDIDATE_K,
+                )
+            )
+
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in candidates:
+            chunk_id = str(item.get("chunk_id", "")).strip()
+            if not chunk_id:
+                continue
+            current = deduped.get(chunk_id)
+            if not current or float(item.get("score", 0.0)) > float(current.get("score", 0.0)):
+                deduped[chunk_id] = item
+
+        reranked = sorted(
+            deduped.values(),
+            key=lambda x: float(x.get("score", 0.0)),
+            reverse=True,
+        )[: settings.LOCAL_RETRIEVAL_RERANK_K]
+        if not reranked:
+            return []
+
+        card_bundle = local_retriever.build_evidence_cards(
+            candidates=reranked,
+            context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 4),
+            max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 2600),
+            max_quote_chars=max(settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS, 220),
+            read_window=1,
+        )
+        cards: List[Dict[str, Any]] = []
+        for item in card_bundle.get("cards", []) or []:
+            card = self._to_dict(item)
+            cards.append(
+                {
+                    "doc_id": str(card.get("doc_id", "")).strip(),
+                    "quote": str(card.get("quote", "")).strip(),
+                    "location": str(card.get("location", "")).strip(),
+                    "analysis": str(card.get("analysis", "")).strip(),
+                }
+            )
+        return cards
+
+    def _build_non_patent_card_prompt(
+        self,
+        doc: Dict[str, str],
+        queries: List[str],
+        cards: List[Dict[str, Any]],
+    ) -> str:
+        return (
+            "以下为超长非专对比文件的检索证据卡，仅用于在原文中定位相关段落；"
+            "这些内容不作为显式缓存前缀。\n"
+            f"doc_id: {doc.get('doc_id', '')}\n"
+            f"document_number: {doc.get('document_number', '')}\n"
+            f"retrieval_queries: {json.dumps(queries, ensure_ascii=False)}\n"
+            f"evidence_cards: {json.dumps(cards, ensure_ascii=False)}"
+        )
+
+    def _build_non_patent_fallback_prompt(self, doc: Dict[str, str]) -> str:
+        excerpt = str(doc.get("content", ""))[: self._FULL_DOC_CONTEXT_LIMIT]
+        return (
+            "以下为超长非专对比文件的检索回退原文片段；由于未命中稳定证据卡，现提供截断原文供核查。"
+            "这些内容不作为显式缓存前缀。\n"
+            f"doc_id: {doc.get('doc_id', '')}\n"
+            f"document_number: {doc.get('document_number', '')}\n"
+            f"全文片段如下：\n{excerpt}"
+        )
 
     def _normalize_llm_output(self, response: Dict[str, Any], allowed_doc_ids: set[str]) -> Dict[str, Any]:
         output = self._to_dict(response)

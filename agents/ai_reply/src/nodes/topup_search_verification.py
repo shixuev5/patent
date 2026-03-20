@@ -81,6 +81,7 @@ class TopupSearchVerificationNode:
         priority_date = self._extract_priority_date(prepared)
         local_retriever = self._build_local_retriever(prepared)
 
+        max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, len(tasks)))
         if len(tasks) == 1:
             dispute, assessment = self._evaluate_task(
                 task=tasks[0],
@@ -93,10 +94,25 @@ class TopupSearchVerificationNode:
                 "disputes": [dispute],
                 "evidence_assessments": [assessment],
             }
-
-        max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, len(tasks)))
         logger.info(f"补充检索并行执行: tasks={len(tasks)} workers={max_workers}")
         ordered_results: List[Tuple[Dict[str, Any], Dict[str, Any]] | None] = [None] * len(tasks)
+        remaining_tasks = tasks
+        if len(tasks) > 2 and max_workers > 1:
+            warm_dispute, warm_assessment = self._evaluate_task(
+                task=tasks[0],
+                claims=claims,
+                comparison_docs=comparison_docs,
+                priority_date=priority_date,
+                local_retriever=local_retriever,
+            )
+            ordered_results[0] = (warm_dispute, warm_assessment)
+            remaining_tasks = tasks[1:]
+
+        if not remaining_tasks:
+            disputes = [item[0] for item in ordered_results if item]
+            assessments = [item[1] for item in ordered_results if item]
+            return {"disputes": disputes, "evidence_assessments": assessments}
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 submit_with_current_context(
@@ -108,7 +124,10 @@ class TopupSearchVerificationNode:
                     priority_date=priority_date,
                     local_retriever=local_retriever,
                 ): index
-                for index, task in enumerate(tasks)
+                for index, task in enumerate(
+                    remaining_tasks,
+                    start=1 if ordered_results[0] else 0,
+                )
             }
             for future in as_completed(futures):
                 index = futures[future]
