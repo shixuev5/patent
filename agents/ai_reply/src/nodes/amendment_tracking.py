@@ -3,7 +3,6 @@
 使用大模型识别新增/变化特征，并判定来源（原权利要求上提 or 说明书特征）
 """
 
-import difflib
 import json
 import re
 from typing import Any, Dict, List
@@ -33,7 +32,7 @@ class AmendmentTrackingNode:
         try:
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v4",
+                "track_amendment_v5",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
                 self._state_get(state, "claims_new_structured",[]),
@@ -80,10 +79,9 @@ class AmendmentTrackingNode:
                 "added_features":[],
             }
 
-        # 将 old_claims 一起传入，解决 LLM 的信息盲区
         messages =[
             {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": self._build_user_prompt(structured_diff, old_claims)},
+            {"role": "user", "content": self._build_user_prompt(structured_diff)},
         ]
         
         # 依赖外部 LangGraph 节点的自动重试机制
@@ -101,22 +99,24 @@ class AmendmentTrackingNode:
         }
 
     def _build_system_prompt(self) -> str:
-        return """你是资深的中国专利代理师和专利局审查员。你的任务是基于提供的“新旧权利要求结构化差异（Diff）”，精准识别出权利要求中的【新增/修改的实质性技术特征】，并判定这些特征的来源。
+        return """你是资深的中国专利代理师和专利局审查员。你的任务是对比【修改前和修改后的权利要求对】，精准提取引入的【新增/修改的实质性技术特征】，并判定这些特征的来源。
 
 ### 分析步骤与核心原则：
 
-1. **判断实质性修改（has_claim_amendment）**
-   - 过滤掉非实质性修改：如果 Diff 仅包含标点符号更改、错别字修正、从属编号调整或纯语言文字的润色（不改变技术方案实质），请判定为 `false`。
-   - 只有当引入了新的技术限制条件、新的结构、步骤、参数或关系时，才判定为 `true`。
+1. **对比权项对（changed_claims_pairs）**
+   - 阅读每一对修改前后的权利要求，找出申请人实际增加或实质性修改的“完整技术特征”。
+   - **特殊情况处理**：如果 `old_text` 为空字符串，说明该权利要求是**全新增加**的，请直接提取 `new_text` 中的实质性技术特征（请忽略“如权利要求X所述的”等前序引用套话）。
+   - 过滤掉非实质性修改：如果仅包含标点符号更改、错别字修正、从属编号调整、语序调整或纯语言文字润色（不改变技术方案实质），请忽略。
+   - 只有当引入了新的技术限制条件、新的结构、步骤、参数或关系时，才将 `has_claim_amendment` 判定为 `true`。
 
 2. **提炼新增技术特征（added_features）**
-   - **防碎片化（重要）**：算法提供的 `added_segments`（新增片段）可能是细碎的词语。你**必须**结合 `target_claim_excerpt`（目标权项上下文），将这些细碎片段**归纳整合成具有完整技术含义的“技术特征”**。不要直接照抄碎片。
-   - 如果多个片段同属于一个技术动作或结构关系，请将它们合并为一个完整的 `feature_text`。
+   - `feature_text` 必须是技术上语义完整的句子或短句，不能是零碎词语。
+   - 如果同一权项中的多个零碎修改共同组成了一个完整的技术动作或结构关系，必须将它们合并成一个完整通顺的 `feature_text`。
 
 3. **判定特征来源（source_type）**
-   - 逐一分析提炼出的技术特征：
-   - **`claim`（权项上提）**：如果该特征在原权利要求（旧权项）中已经存在（参考 `candidate_source_claim_ids` 和 提供的旧权项全文），属于将原从属权利要求的特征合并到了目标权利要求中。
-   - **`spec`（说明书提取）**：如果在原权利要求中完全找不到该特征的记载，说明该特征是申请人从说明书/附图中新提取并补充到新权利要求中的。
+   - 必须全局检索提供的 `full_old_claims_context`（旧权利要求全文本）。
+   - **`claim`（权项上提）**：如果该新特征的实质技术内容，在**任意一条**旧权利要求中已经记载过（即使本次措辞有微调），则判定为 `claim`，并在 `source_claim_ids` 填写该特征原本所在的旧权项编号。
+   - **`spec`（说明书提取）**：当且仅当该特征的内容在**所有旧权利要求**中均未曾记载过（属于申请人从说明书中找出的新特征），才判定为 `spec`。
 
 ### 严格的输出格式与约束：
 
@@ -128,7 +128,7 @@ class AmendmentTrackingNode:
     {
       "feature_id": "F1", // 从 F1, F2 开始依次编号
       "feature_text": "完整的技术特征描述（如：第二弹性件的一端与滑块连接，另一端与壳体内壁连接）",
-      "target_claim_ids": ["1", "3"], // 该特征被添加到了哪些新权利要求中（字符串数组）
+      "target_claim_ids":["1", "3"], // 该特征被添加到了哪些新权利要求中（字符串数组）
       "source_type": "claim", // 必须且只能是 "claim" 或 "spec"
       "source_claim_ids": ["4", "5"] // 如果是 claim，填写原权项编号；如果是 spec，必须为空数组[]
     }
@@ -140,25 +140,15 @@ class AmendmentTrackingNode:
 - `source_claim_ids` 中的编号必须仅包含数字（作为字符串），不要包含“权利要求”等字眼。
 - 当 `source_type` 为 `spec` 时，`source_claim_ids` **必须**为空数组 `[]`。"""
 
-    def _build_user_prompt(self, structured_diff: Dict[str, Any], old_claims: List[Dict[str, Any]]) -> str:
-        # 提取精简版的旧权项供 LLM 查阅，打破由于 Diff 匹配失败产生的信息盲区
-        old_claims_context = {
-            str(claim.get("claim_id", "")): str(claim.get("claim_text", ""))
-            for claim in old_claims if str(claim.get("claim_id", ""))
-        }
-
-        return f"""请分析以下新旧权利要求结构化差异（Diff）数据。
+    def _build_user_prompt(self, structured_diff: Dict[str, Any]) -> str:
+        return f"""请分析以下新旧权利要求差异数据。
 
 【分析提示】
-1. `added_segments` 提供了通过文本对比直接找出的增量片段，可能比较碎片化。
-2. `target_claim_excerpt` 提供了该片段在新权利要求中的上下文，请务必依赖它来还原出完整的技术特征（feature_text）。
-3. `candidate_source_claim_ids` 是系统基于字面相似度推荐的来源，请结合你的专利专业知识最终判定是否真的构成了特征上提（claim）还是说明书补充（spec）。
-4. 在判断来源时，请务必核对下方提供的【原权利要求完整文本】。如果该特征的实质内容曾在原权利要求中出现过（即使措辞有微调，导致系统没推荐），也应判定为 `claim`（特征上提）。如果在原权利要求中完全没有记载，才判定为 `spec`。
+1. `changed_claims_pairs` 是代码层面已粗筛出的“确有文本差异，且不是纯重编号/平移”的权项对。
+2. 请直接对比每组 `old_text` 与 `new_text`，提炼真正新增或实质修改的完整技术特征。
+3. 请务必核对 `full_old_claims_context`。如果某个新特征的实质内容在任一旧权利要求中已经出现过，即使表达有微调，也应判定为 `claim`；只有在旧权利要求中完全找不到时，才判定为 `spec`。
 
-【原权利要求完整文本（用于核对特征来源）】
-{json.dumps(old_claims_context, ensure_ascii=False, indent=2)}
-
-【结构化Diff数据】
+【差异数据】
 {json.dumps(structured_diff, ensure_ascii=False, indent=2)}"""
 
     def _normalize_tracking_result(self, response: Dict[str, Any]) -> Dict[str, Any]:
@@ -228,145 +218,58 @@ class AmendmentTrackingNode:
         old_map = {str(item.get("claim_id", "")).strip(): item for item in old_claims if str(item.get("claim_id", "")).strip()}
         new_map = {str(item.get("claim_id", "")).strip(): item for item in new_claims if str(item.get("claim_id", "")).strip()}
 
-        old_ids = set(old_map.keys())
-        new_ids = set(new_map.keys())
-        common_ids = self._sort_claim_ids(list(old_ids & new_ids))
-        removed_ids = self._sort_claim_ids(list(old_ids - new_ids))
-        added_ids = self._sort_claim_ids(list(new_ids - old_ids))
-
-        changed_claim_ids: List[str] = []
-        added_segments: List[Dict[str, Any]] =[]
-        segment_index = 1
+        # 改为遍历所有的新权利要求ID，以涵盖纯新增的编号
+        new_ids_sorted = self._sort_claim_ids(list(new_map.keys()))
+        changed_claims_pairs: List[Dict[str, str]] =[]
 
         # 构建旧权利要求的标准化文本池，用于处理权项“重编号/平移”的情况
         old_texts_pool = {self._normalize_text(claim.get("claim_text", "")) for claim in old_claims}
 
-        for claim_id in common_ids:
-            old_claim = self._to_dict(old_map.get(claim_id, {}))
+        for claim_id in new_ids_sorted:
             new_claim = self._to_dict(new_map.get(claim_id, {}))
-            old_text = str(old_claim.get("claim_text", "")).strip()
             new_text = str(new_claim.get("claim_text", "")).strip()
+            
+            # 提取对应的旧权项（如果是全新增加的编号，old_text 为空）
+            old_claim = self._to_dict(old_map.get(claim_id, {}))
+            old_text = str(old_claim.get("claim_text", "")).strip()
             
             old_text_norm = self._normalize_text(old_text)
             new_text_norm = self._normalize_text(new_text)
             
-            # 若文本完全一致，跳过
+            # 若文本完全一致，跳过（未修改）
             if old_text_norm == new_text_norm:
                 continue
 
-            # 核心防御：如果新权利要求的文本在任意旧权利要求中原封不动出现过，
+            # 核心防御：如果新权利要求的文本在任意旧权利要求中原封不动出现过
             # 说明只是申请人删除了某些权项导致编号前移（重编号），不应视为内容被修改
             if new_text_norm in old_texts_pool:
                 continue
 
-            changed_claim_ids.append(claim_id)
+            changed_claims_pairs.append({
+                "claim_id": claim_id,
+                "old_text": old_text,  # 可能是空字符串
+                "new_text": new_text,
+            })
 
-            segments = self._extract_added_segments(old_text, new_text)
-            for segment in segments:
-                candidate_source_claim_ids = self._find_candidate_source_claim_ids(segment, old_claims)
-                added_segments.append({
-                    "segment_id": f"S{segment_index}",
-                    "target_claim_id": claim_id,
-                    "text": segment,
-                    "target_claim_excerpt": self._build_target_claim_excerpt(new_text, segment),
-                    "candidate_source_claim_ids": candidate_source_claim_ids,
-                })
-                segment_index += 1
-
-        all_changed_claim_ids = self._sort_claim_ids(changed_claim_ids + removed_ids + added_ids)
+        full_old_claims_context = {
+            str(claim.get("claim_id", "")): str(claim.get("claim_text", ""))
+            for claim in old_claims
+            if str(claim.get("claim_id", "")).strip()
+        }
+        
+        changed_claim_ids = [item["claim_id"] for item in changed_claims_pairs]
 
         return {
             "summary": {
                 "old_claim_count": len(old_claims),
                 "new_claim_count": len(new_claims),
-                "changed_claim_count": len(all_changed_claim_ids),
-                "added_segment_count": len(added_segments),
+                "changed_claim_count": len(changed_claims_pairs),
             },
-            "has_changes": bool(all_changed_claim_ids),
-            "changed_claim_ids": all_changed_claim_ids,
-            "added_segments": added_segments,
+            "has_changes": bool(changed_claims_pairs),
+            "changed_claim_ids": changed_claim_ids,
+            "changed_claims_pairs": changed_claims_pairs,
+            "full_old_claims_context": full_old_claims_context,
         }
-
-    def _extract_added_segments(self, old_text: str, new_text: str) -> List[str]:
-        matcher = difflib.SequenceMatcher(None, old_text, new_text)
-        segments: List[str] =[]
-        seen = set()
-
-        for op, _, _, j1, j2 in matcher.get_opcodes():
-            if op not in {"insert", "replace"}:
-                continue
-            piece = self._clean_segment(new_text[j1:j2])
-            if len(self._normalize_text(piece)) < 6:
-                continue
-            key = self._normalize_text(piece)
-            if key in seen:
-                continue
-            seen.add(key)
-            segments.append(piece)
-
-        if segments:
-            return segments[:12]
-
-        old_units = {self._normalize_text(unit) for unit in self._split_units(old_text)}
-        for unit in self._split_units(new_text):
-            key = self._normalize_text(unit)
-            if len(key) < 6 or key in old_units or key in seen:
-                continue
-            seen.add(key)
-            segments.append(unit)
-            if len(segments) >= 12:
-                break
-        return segments
-
-    def _build_target_claim_excerpt(self, claim_text: str, segment: str, window: int = 60) -> str:
-        content = str(claim_text or "").strip()
-        seg = str(segment or "").strip()
-        if not content or not seg:
-            return ""
-        idx = content.find(seg)
-        if idx < 0:
-            return content[: max(2 * window, 120)]
-        start = max(0, idx - window)
-        end = min(len(content), idx + len(seg) + window)
-        return content[start:end].strip()
-
-    def _find_candidate_source_claim_ids(
-        self,
-        segment: str,
-        old_claims: List[Dict[str, Any]],
-    ) -> List[str]:
-        segment_norm = self._normalize_text(segment)
-        if not segment_norm:
-            return []
-
-        candidates: List[str] =[]
-        for claim in old_claims:
-            claim_id = str(claim.get("claim_id", "")).strip()
-            if not claim_id:
-                continue
-            claim_text = str(claim.get("claim_text", "")).strip()
-            claim_norm = self._normalize_text(claim_text)
-            if not claim_norm:
-                continue
-
-            if segment_norm in claim_norm:
-                if claim_id not in candidates:
-                    candidates.append(claim_id)
-            if len(candidates) >= 4:
-                break
-        return self._sort_claim_ids(candidates)
-
-    def _split_units(self, text: str) -> List[str]:
-        units = re.split(r"[；;。！？\n]+", str(text or ""))
-        cleaned_units: List[str] =[]
-        for unit in units:
-            cleaned = self._clean_segment(unit)
-            if cleaned:
-                cleaned_units.append(cleaned)
-        return cleaned_units
-
-    def _clean_segment(self, text: str) -> str:
-        return re.sub(r"\s+", " ", str(text or "")).strip(" ，,；;。:\n\r\t")
 
     def _normalize_text(self, text: Any) -> str:
         value = str(text or "")
