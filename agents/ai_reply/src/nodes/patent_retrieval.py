@@ -3,6 +3,7 @@
 负责调用智慧芽API下载专利文件并解析为结构化数据
 """
 
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from loguru import logger
@@ -12,6 +13,7 @@ from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
 from agents.ai_reply.src.state import WorkflowState
 from agents.ai_reply.src.utils import is_patent_document, get_node_cache
+from backend.utils import _build_r2_storage
 from config import settings
 
 
@@ -88,6 +90,89 @@ class PatentRetrievalNode:
 
         return structured_data
 
+    def _resolve_patent_json_candidates(self, document_number: str) -> list[str]:
+        """解析 patent.json 对应的候选专利号，优先原值，其次申请号映射出的公开号。"""
+        candidates: list[str] = []
+        normalized_document_number = str(document_number or "").strip().upper()
+        if normalized_document_number:
+            candidates.append(normalized_document_number)
+
+        if document_number and not is_patent_document(document_number):
+            try:
+                publication_number = self.search_client.get_publication_number_by_application_number(document_number)
+            except Exception as exc:
+                logger.warning(f"原专利申请号转公开号失败，将回退到下载解析: {document_number}, error={exc}")
+            else:
+                normalized_publication_number = str(publication_number or "").strip().upper()
+                if normalized_publication_number and normalized_publication_number not in candidates:
+                    candidates.append(normalized_publication_number)
+        return candidates
+
+    def _write_local_patent_json(self, patent_dir: Path, patent_data: dict) -> Path:
+        patent_json_path = patent_dir / "patent.json"
+        patent_json_path.write_text(
+            json.dumps(patent_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return patent_json_path
+
+    def _load_patent_json_from_r2(self, document_number: str, patent_dir: Path):
+        """尝试从 R2 直接加载已分析专利的 patent.json。"""
+        r2_storage = _build_r2_storage()
+        if not r2_storage.enabled:
+            return None
+
+        for patent_number in self._resolve_patent_json_candidates(document_number):
+            patent_key = r2_storage.build_patent_json_key(patent_number)
+            patent_bytes = r2_storage.get_bytes(patent_key)
+            if not patent_bytes:
+                continue
+
+            try:
+                patent_data = json.loads(patent_bytes.decode("utf-8"))
+            except Exception as exc:
+                logger.warning(f"R2 patent.json 解析失败，将回退到下载解析: key={patent_key}, error={exc}")
+                continue
+
+            if not isinstance(patent_data, dict):
+                logger.warning(f"R2 patent.json 格式非法，将回退到下载解析: key={patent_key}")
+                continue
+
+            self._write_local_patent_json(patent_dir, patent_data)
+            logger.info(
+                f"命中原专利 R2 patent.json，跳过下载解析: document_number={document_number}, r2_key={patent_key}"
+            )
+            return patent_data
+
+        return None
+
+    def _persist_patent_json_to_r2(self, document_number: str, patent_data: dict) -> bool:
+        """将 AI 答复阶段首次解析出的原专利 patent.json 回写到 R2。"""
+        r2_storage = _build_r2_storage()
+        if not r2_storage.enabled:
+            return False
+
+        candidates = self._resolve_patent_json_candidates(document_number)
+        if not candidates:
+            logger.warning(f"原专利 patent.json 缺少可用 key，跳过 R2 回写: document_number={document_number}")
+            return False
+
+        patent_number = candidates[-1]
+        patent_key = r2_storage.build_patent_json_key(patent_number)
+        stored = r2_storage.put_bytes(
+            patent_key,
+            json.dumps(patent_data, ensure_ascii=False, indent=2).encode("utf-8"),
+            "application/json",
+        )
+        if stored:
+            logger.info(
+                f"原专利 patent.json 已回写到 R2: document_number={document_number}, r2_key={patent_key}"
+            )
+            return True
+
+        logger.warning(f"原专利 patent.json 回写到 R2 失败: document_number={document_number}")
+        return False
+
     def __call__(self, state: WorkflowState):
         """
         执行专利检索节点
@@ -148,11 +233,12 @@ class PatentRetrievalNode:
         """
         patent_numbers: list[str] = []
         search_results: list[dict] = []
+        original_patent_number = ""
 
         if office_action:
-            application_number = (office_action.get("application_number") or "").strip()
-            if application_number:
-                patent_numbers.append(application_number)
+            original_patent_number = (office_action.get("application_number") or "").strip()
+            if original_patent_number:
+                patent_numbers.append(original_patent_number)
 
             comparison_documents = office_action.get("comparison_documents", [])
             logger.info(f"找到 {len(comparison_documents)} 个对比文件")
@@ -182,7 +268,11 @@ class PatentRetrievalNode:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 submit_with_current_context(
-                    executor, self._retrieve_single_patent, patent_number, output_dir
+                    executor,
+                    self._retrieve_single_patent,
+                    patent_number,
+                    output_dir,
+                    patent_number == original_patent_number,
                 ): patent_number
                 for patent_number in dedup_patents
             }
@@ -198,7 +288,12 @@ class PatentRetrievalNode:
                 search_results.append(result)
         return search_results
 
-    def _retrieve_single_patent(self, document_number: str, output_dir: str):
+    def _retrieve_single_patent(
+        self,
+        document_number: str,
+        output_dir: str,
+        prefer_cached_patent_json: bool = False,
+    ):
         """下载、解析并结构化单个专利。"""
         if not document_number:
             return None
@@ -206,10 +301,20 @@ class PatentRetrievalNode:
         patent_dir = Path(output_dir) / f"patent_{document_number}"
         patent_dir.mkdir(parents=True, exist_ok=True)
 
+        if prefer_cached_patent_json:
+            cached_patent_data = self._load_patent_json_from_r2(document_number, patent_dir)
+            if cached_patent_data is not None:
+                return {
+                    document_number: cached_patent_data
+                }
+
         patent_path = self.download_patent(document_number, patent_dir)
         markdown_path = self.parse_patent_document(patent_path, patent_dir)
 
         structured_data = self.extract_patent_structured_data(markdown_path)
+        self._write_local_patent_json(patent_dir, structured_data)
+        if prefer_cached_patent_json:
+            self._persist_patent_json_to_r2(document_number, structured_data)
 
         return {
             document_number: structured_data
