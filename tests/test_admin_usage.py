@@ -338,3 +338,93 @@ def test_admin_usage_forbidden_for_non_admin(monkeypatch, tmp_path):
             )
         )
     assert exc_info.value.status_code == 403
+
+
+def test_admin_usage_respects_utc8_day_boundary_and_localizes_usage_time(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+
+    rows = [
+        ("task-before", "2026-03-19T15:59:59"),
+        ("task-start", "2026-03-19T16:00:00"),
+        ("task-end", "2026-03-20T15:59:59"),
+        ("task-after", "2026-03-20T16:00:00"),
+    ]
+    for task_id, last_usage_at in rows:
+        storage.upsert_task_llm_usage(
+            {
+                "task_id": task_id,
+                "owner_id": "authing:user-1",
+                "task_type": "patent_analysis",
+                "task_status": "completed",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "reasoning_tokens": 0,
+                "llm_call_count": 1,
+                "estimated_cost_cny": 0.1,
+                "price_missing": False,
+                "model_breakdown_json": {"qwen3.5-flash": {"totalTokens": 15}},
+                "first_usage_at": last_usage_at,
+                "last_usage_at": last_usage_at,
+                "created_at": last_usage_at,
+                "updated_at": last_usage_at,
+            }
+        )
+
+    admin_user = CurrentUser(user_id="authing:admin-1")
+
+    dashboard = asyncio.run(
+        admin_usage.get_admin_usage_dashboard(
+            rangeType="day",
+            anchor="2026-03-20",
+            current_user=admin_user,
+        )
+    )
+    assert dashboard.startAt == "2026-03-20T00:00:00"
+    assert dashboard.endAt == "2026-03-21T00:00:00"
+    assert dashboard.overview.totalTasks == 2
+
+    task_table = asyncio.run(
+        admin_usage.get_admin_usage_table(
+            rangeType="day",
+            anchor="2026-03-20",
+            scope="task",
+            q=None,
+            taskType=None,
+            status=None,
+            model=None,
+            page=1,
+            pageSize=20,
+            sortBy="lastUsageAt",
+            sortOrder="asc",
+            current_user=admin_user,
+        )
+    )
+    assert [item["taskId"] for item in task_table.items] == ["task-start", "task-end"]
+    assert task_table.items[0]["lastUsageAt"] == "2026-03-20T00:00:00"
+    assert task_table.items[1]["lastUsageAt"] == "2026-03-20T23:59:59"
+
+
+def test_admin_usage_resolve_time_window_uses_utc8_for_day_month_year():
+    day_anchor, day_start, day_end, day_query_start, day_query_end = admin_usage._resolve_time_window("day", "2026-03-20")
+    assert day_anchor == "2026-03-20"
+    assert day_start.isoformat() == "2026-03-20T00:00:00+08:00"
+    assert day_end.isoformat() == "2026-03-21T00:00:00+08:00"
+    assert day_query_start == "2026-03-19T16:00:00"
+    assert day_query_end == "2026-03-20T16:00:00"
+
+    month_anchor, month_start, month_end, month_query_start, month_query_end = admin_usage._resolve_time_window("month", "2026-03")
+    assert month_anchor == "2026-03"
+    assert month_start.isoformat() == "2026-03-01T00:00:00+08:00"
+    assert month_end.isoformat() == "2026-04-01T00:00:00+08:00"
+    assert month_query_start == "2026-02-28T16:00:00"
+    assert month_query_end == "2026-03-31T16:00:00"
+
+    year_anchor, year_start, year_end, year_query_start, year_query_end = admin_usage._resolve_time_window("year", "2026")
+    assert year_anchor == "2026"
+    assert year_start.isoformat() == "2026-01-01T00:00:00+08:00"
+    assert year_end.isoformat() == "2027-01-01T00:00:00+08:00"
+    assert year_query_start == "2025-12-31T16:00:00"
+    assert year_query_end == "2026-12-31T16:00:00"

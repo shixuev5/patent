@@ -56,8 +56,8 @@ class TaskUsageCollector:
     model_breakdown: Dict[str, ModelUsageAggregate] = field(default_factory=dict)
     first_usage_at: Optional[str] = None
     last_usage_at: Optional[str] = None
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds"))
+    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds"))
 
     def mark_status(self, status: Optional[str]):
         text = str(status or "").strip().lower()
@@ -103,7 +103,7 @@ class TaskUsageCollector:
         self.estimated_cost_cny += estimated_cost
         self.price_missing = self.price_missing or missing
 
-        now_iso = datetime.now().isoformat()
+        now_iso = datetime.utcnow().isoformat(timespec="seconds")
         if not self.first_usage_at:
             self.first_usage_at = now_iso
         self.last_usage_at = now_iso

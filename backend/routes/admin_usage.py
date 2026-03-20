@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import os
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 
@@ -33,16 +35,40 @@ YEAR = "year"
 TASK = "task"
 USER = "user"
 ALL = "all"
+UTC = timezone.utc
+APP_TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
 
 
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+def _parse_storage_datetime(value: Optional[str]) -> Optional[datetime]:
     text = str(value or "").strip()
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _format_local_datetime(value: Optional[str]) -> Optional[str]:
+    parsed = _parse_storage_datetime(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(APP_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _to_storage_iso(local_dt: datetime) -> str:
+    if local_dt.tzinfo is None:
+        local_dt = local_dt.replace(tzinfo=APP_TZ)
+    return local_dt.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _to_local_iso(local_dt: datetime) -> str:
+    if local_dt.tzinfo is None:
+        return local_dt.isoformat(timespec="seconds")
+    return local_dt.astimezone(APP_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 def _normalize_range_type(raw: Optional[str]) -> RangeType:
@@ -52,8 +78,11 @@ def _normalize_range_type(raw: Optional[str]) -> RangeType:
     return DAY
 
 
-def _resolve_time_window(range_type: RangeType, anchor: Optional[str]) -> Tuple[str, datetime, datetime]:
-    now = datetime.now()
+def _resolve_time_window(
+    range_type: RangeType,
+    anchor: Optional[str],
+) -> Tuple[str, datetime, datetime, str, str]:
+    now = datetime.now(UTC).astimezone(APP_TZ)
     raw_anchor = str(anchor or "").strip()
 
     if range_type == DAY:
@@ -64,9 +93,9 @@ def _resolve_time_window(range_type: RangeType, anchor: Optional[str]) -> Tuple[
                 day = now.date()
         else:
             day = now.date()
-        start = datetime.combine(day, datetime.min.time())
+        start = datetime.combine(day, time.min, APP_TZ)
         end = start + timedelta(days=1)
-        return day.isoformat(), start, end
+        return day.isoformat(), start, end, _to_storage_iso(start), _to_storage_iso(end)
 
     if range_type == MONTH:
         if raw_anchor:
@@ -83,12 +112,12 @@ def _resolve_time_window(range_type: RangeType, anchor: Optional[str]) -> Tuple[
         if month < 1 or month > 12:
             month = now.month
             year = now.year
-        start = datetime(year, month, 1)
+        start = datetime(year, month, 1, tzinfo=APP_TZ)
         if month == 12:
-            end = datetime(year + 1, 1, 1)
+            end = datetime(year + 1, 1, 1, tzinfo=APP_TZ)
         else:
-            end = datetime(year, month + 1, 1)
-        return f"{year:04d}-{month:02d}", start, end
+            end = datetime(year, month + 1, 1, tzinfo=APP_TZ)
+        return f"{year:04d}-{month:02d}", start, end, _to_storage_iso(start), _to_storage_iso(end)
 
     if raw_anchor:
         try:
@@ -97,16 +126,16 @@ def _resolve_time_window(range_type: RangeType, anchor: Optional[str]) -> Tuple[
             target_year = now.year
     else:
         target_year = now.year
-    start = datetime(target_year, 1, 1)
-    end = datetime(target_year + 1, 1, 1)
-    return str(target_year), start, end
+    start = datetime(target_year, 1, 1, tzinfo=APP_TZ)
+    end = datetime(target_year + 1, 1, 1, tzinfo=APP_TZ)
+    return str(target_year), start, end, _to_storage_iso(start), _to_storage_iso(end)
 
 
 def _load_rows(range_type: RangeType, anchor: Optional[str]) -> Tuple[str, datetime, datetime, List[Dict[str, Any]]]:
-    normalized_anchor, start, end = _resolve_time_window(range_type, anchor)
+    normalized_anchor, start, end, query_start_iso, query_end_iso = _resolve_time_window(range_type, anchor)
     rows = task_manager.storage.list_task_llm_usage_by_last_usage_range(
-        start_iso=start.isoformat(),
-        end_iso=end.isoformat(),
+        start_iso=query_start_iso,
+        end_iso=query_end_iso,
     )
     return normalized_anchor, start, end, rows
 
@@ -160,9 +189,9 @@ def _to_task_table_item(row: Dict[str, Any], user_name: Optional[str]) -> Dict[s
         "estimatedCostCny": float(row.get("estimated_cost_cny") or 0),
         "priceMissing": bool(row.get("price_missing")),
         "models": _row_models(row),
-        "firstUsageAt": row.get("first_usage_at"),
-        "lastUsageAt": row.get("last_usage_at"),
-        "updatedAt": row.get("updated_at"),
+        "firstUsageAt": _format_local_datetime(row.get("first_usage_at")),
+        "lastUsageAt": _format_local_datetime(row.get("last_usage_at")),
+        "updatedAt": _format_local_datetime(row.get("updated_at")),
     }
 
 
@@ -233,8 +262,8 @@ async def get_admin_usage_dashboard(
     return AdminUsageDashboardResponse(
         rangeType=normalized_range,
         anchor=normalized_anchor,
-        startAt=start.isoformat(),
-        endAt=end.isoformat(),
+        startAt=_to_local_iso(start),
+        endAt=_to_local_iso(end),
         currency=TOKEN_PRICING_CURRENCY,
         overview=overview,
         priceMissing=price_missing,
@@ -258,14 +287,14 @@ async def get_admin_usage_table(
 ):
     ensure_admin_owner(current_user.user_id)
     normalized_range = _normalize_range_type(rangeType)
-    normalized_anchor, start, end = _resolve_time_window(normalized_range, anchor)
+    normalized_anchor, start, end, query_start_iso, query_end_iso = _resolve_time_window(normalized_range, anchor)
     normalized_scope = str(scope or TASK).strip().lower()
     if normalized_scope not in {TASK, USER, ALL}:
         normalized_scope = TASK
 
     result = task_manager.storage.list_admin_usage_table(
-        start_iso=start.isoformat(),
-        end_iso=end.isoformat(),
+        start_iso=query_start_iso,
+        end_iso=query_end_iso,
         scope=normalized_scope,
         q=str(q or "").strip() or None,
         task_type=str(taskType or "").strip() or None,
@@ -305,7 +334,7 @@ async def get_admin_usage_table(
                     "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
                     "priceMissing": _to_bool(row.get("price_missing")),
                     "models": list(row.get("models") or []),
-                    "lastUsageAt": row.get("last_usage_at"),
+                    "lastUsageAt": _format_local_datetime(row.get("last_usage_at")),
                 }
             )
             continue
@@ -319,7 +348,7 @@ async def get_admin_usage_table(
                     "llmCallCount": int(row.get("llm_call_count") or 0),
                     "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
                     "priceMissing": _to_bool(row.get("price_missing")),
-                    "latestUsageAt": row.get("latest_usage_at"),
+                    "latestUsageAt": _format_local_datetime(row.get("latest_usage_at")),
                 }
             )
             continue

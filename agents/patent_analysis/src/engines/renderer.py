@@ -329,7 +329,7 @@ class ReportRenderer:
 <tr>
 <th style="width: 48px; text-align: center;">特征编号</th>
 <th style="width: 20%;">特征名称</th>
-<th style="width: 68px; text-align: center;">属性</th>
+<th style="width: 48px; text-align: center;">属性</th>
 <th>详细定义</th>
 </tr>
 </thead>
@@ -357,11 +357,11 @@ class ReportRenderer:
                     is_dependent_feature = source == "dependent"
                     is_independent_preamble = (not is_distinguishing) and is_independent_feature
                     if is_distinguishing:
-                        badge_text = "🌟 区别特征"
+                        badge_text = "区别特征"
                     elif is_independent_preamble:
-                        badge_text = "⚪ 前序特征"
+                        badge_text = "前序特征"
                     else:
-                        badge_text = "🔹 从权特征"
+                        badge_text = "从权特征"
                     name_font_weight = (
                         "bold"
                         if is_distinguishing and not is_dependent_feature

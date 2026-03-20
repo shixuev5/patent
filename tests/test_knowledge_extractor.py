@@ -4,8 +4,10 @@ from agents.common.patent_engines.knowledge import KnowledgeExtractor
 class _StubLLM:
     def __init__(self, payload):
         self.payload = payload
+        self.last_kwargs = None
 
     def invoke_text_json(self, **kwargs):
+        self.last_kwargs = kwargs
         return self.payload
 
 
@@ -131,3 +133,15 @@ def test_knowledge_extractor_outputs_none_for_empty_text_fields() -> None:
     assert record["spatial_connections"] is None
     assert record["motion_state"] is None
     assert record["attributes"] is None
+def test_knowledge_extractor_prompt_requires_name_plus_id_in_spatial_connections() -> None:
+    llm = _StubLLM({"parts": []})
+    extractor = KnowledgeExtractor(llm_service=llm, model="fake")
+
+    extractor.extract_entities(_sample_patent_data())
+
+    system_prompt = llm.last_kwargs["messages"][0]["content"]
+    assert "必须写成“部件名称 [标号]”的完整形式" in system_prompt
+    assert "正确示例：" in system_prompt
+    assert "错误示例：" in system_prompt
+    assert "光线穿过圆孔靶标 [4] 进入平行光管A [3]" in system_prompt
+    assert "光线穿过 [4] 进入 [3]" in system_prompt
