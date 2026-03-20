@@ -6,7 +6,8 @@ def test_dispute_extraction_normalize_claim_ids() -> None:
     node = DisputeExtractionNode.__new__(DisputeExtractionNode)
     assert node._normalize_claim_ids(["1", "2", "2", " 3 "]) == ["1", "2", "3"]
     assert node._normalize_claim_ids("1,2，3") == ["1", "2", "3"]
-    assert node._normalize_claim_ids(["权利要求1", "", None, "4"]) == ["4"]
+    assert node._normalize_claim_ids(["权利要求1", "", None, "4"]) == ["1", "4"]
+    assert node._normalize_claim_ids("权利要求2-4及权利要求6") == ["2", "3", "4", "6"]
 
 
 def test_report_generation_collect_second_notice_with_claim_ids() -> None:

@@ -52,6 +52,7 @@ class ApplicantOpinion(BaseModel):
 class Dispute(BaseModel):
     """争辩焦点数据"""
     dispute_id: str = Field(..., description="争议项唯一标识")
+    source_argument_id: str = Field("", description="来源申请人论点编号")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     feature_text: str = Field(..., description="特征描述文本")
     examiner_opinion: ExaminerOpinion = Field(..., description="审查员观点")
@@ -114,6 +115,7 @@ class EvidenceAssessmentTrace(BaseModel):
 class EvidenceAssessment(BaseModel):
     """事实核查结果（新结构）"""
     dispute_id: str = Field(..., description="争议项唯一标识")
+    source_argument_id: str = Field("", description="来源申请人论点编号")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     claim_text: str = Field(default="", description="原权利要求文本")
     feature_text: str = Field(default="", description="争议技术特征")
@@ -177,6 +179,10 @@ class PreparedOfficeActionParagraph(BaseModel):
     """整理后的审查意见段落"""
     paragraph_id: str = Field("", description="段落编号")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求编号列表")
+    legal_basis: List[str] = Field(default_factory=list, description="法律依据列表")
+    issue_types: List[str] = Field(default_factory=list, description="缺陷类型列表")
+    cited_doc_ids: List[str] = Field(default_factory=list, description="明确引用的对比文件编号")
+    evaluation: str = Field("unknown", description="段落结论倾向：negative/positive/neutral/unknown")
     content: str = Field("", description="段落内容")
 
 
