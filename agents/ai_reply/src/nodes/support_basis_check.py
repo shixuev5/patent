@@ -31,7 +31,7 @@ class SupportBasisCheckNode:
         try:
             cache = get_node_cache(self.config, "support_basis_check")
             result = cache.run_step(
-                "check_support_basis_v3",
+                "check_support_basis_v4",
                 self._check_support_basis,
                 self._state_get(state, "added_features", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -75,9 +75,9 @@ class SupportBasisCheckNode:
         original_patent = self._to_dict(prepared.get("original_patent", {}))
         original_data = self._to_dict(original_patent.get("data", {}))
         description = self._to_dict(original_data.get("description", {}))
-        detailed_description = str(description.get("detailed_description", "")).strip()
+        specification_context = self._build_specification_context(description)
 
-        if not detailed_description:
+        if not specification_context:
             findings = [
                 {
                     "feature_id": str(feature.get("feature_id", "")).strip(),
@@ -91,12 +91,12 @@ class SupportBasisCheckNode:
             return {
                 "support_findings": findings,
                 "added_matter_risk": True,
-                "early_rejection_reason": "原说明书缺少 detailed_description，无法证明新增特征存在原始记载，存在修改超范围风险。",
+                "early_rejection_reason": "原说明书缺少可用的支持性文本上下文，无法证明新增特征存在原始记载，存在修改超范围风险。",
             }
 
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": self._build_user_prompt(spec_features, detailed_description)},
+            {"role": "user", "content": self._build_user_prompt(spec_features, specification_context)},
         ]
         response = self.llm_service.invoke_text_json(
             messages=messages,
@@ -128,7 +128,7 @@ class SupportBasisCheckNode:
 修改的内容必须是原说明书明确记载的内容，或者是所属技术领域的技术人员通过原说明书记载的内容**直接、毫无疑义地推导**出的内容。
 
 【具体审查规则】
-1. **严格限定范围**：只能以用户提供的【说明书 detailed_description】文本为依据，绝对禁止引入外部常识或主观推理来补足未记载的技术特征。
+1. **严格限定范围**：只能以用户提供的【说明书相关文本】为依据，绝对禁止引入外部常识或主观推理来补足未记载的技术特征。
 2. **支持的情形（support_found = true）**：
    - 原文字义支持：说明书中有完全相同的文字。
    - 同义替换：使用了本领域公知且毫无歧义的同义词。
@@ -163,7 +163,7 @@ class SupportBasisCheckNode:
     def _build_user_prompt(
         self,
         features: List[Dict[str, Any]],
-        detailed_description: str,
+        specification_context: str,
     ) -> str:
         simplified_features =[
             {
@@ -179,9 +179,22 @@ class SupportBasisCheckNode:
 {json.dumps(simplified_features, ensure_ascii=False, indent=2)}
 
 =========================
-【说明书 detailed_description】
+【说明书相关文本】
 （注：请仔细检索以下文本寻找直接、明确的支持依据）
-{detailed_description}"""
+{specification_context}"""
+
+    def _build_specification_context(self, description: Dict[str, Any]) -> str:
+        sections = [
+            ("发明内容", str(description.get("summary_of_invention", "")).strip()),
+            ("有益效果/技术效果", str(description.get("technical_effect", "")).strip()),
+            ("附图说明", str(description.get("brief_description_of_drawings", "")).strip()),
+            ("具体实施方式", str(description.get("detailed_description", "")).strip()),
+        ]
+        return "\n\n".join(
+            f"【{title}】\n{content}"
+            for title, content in sections
+            if content
+        ).strip()
 
     def _normalize_result(self, response: Dict[str, Any]) -> Dict[str, Any]:
         result = self._to_dict(response)
