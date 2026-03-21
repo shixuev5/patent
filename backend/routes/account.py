@@ -29,6 +29,7 @@ from backend.models import (
 )
 from backend.utils import _build_r2_storage
 from backend.storage import TaskType, get_pipeline_manager
+from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
 from config import settings
 
 
@@ -165,11 +166,11 @@ def _iter_dates(start_day: date, end_day: date):
 
 
 def _month_start_end(year: int, month: int) -> Tuple[datetime, datetime]:
-    start = datetime(year, month, 1)
+    start = datetime(year, month, 1, tzinfo=APP_TZ)
     if month == 12:
-        end = datetime(year + 1, 1, 1)
+        end = datetime(year + 1, 1, 1, tzinfo=APP_TZ)
     else:
-        end = datetime(year, month + 1, 1)
+        end = datetime(year, month + 1, 1, tzinfo=APP_TZ)
     return start, end
 
 
@@ -186,9 +187,7 @@ def _recent_workday_window(days: int, today: date) -> Tuple[date, date]:
 
 
 def _datetime_bounds(start_day: date, end_day: date) -> Tuple[str, str]:
-    start_dt = datetime.combine(start_day, datetime.min.time())
-    end_dt = datetime.combine(end_day + timedelta(days=1), datetime.min.time())
-    return start_dt.isoformat(), end_dt.isoformat()
+    return local_day_start_end_to_utc(start_day, day_count=(end_day - start_day).days + 1)
 
 
 def _build_summary_text(work_week_total: int, work_month_total: int, weekly_series: List[WeeklyActivityPoint]) -> str:
@@ -369,7 +368,7 @@ async def get_account_month_target(
     month: int = Query(default_factory=lambda: datetime.now().month),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
-    now = datetime.now()
+    now = utc_now().astimezone(APP_TZ)
     actual_year, actual_month = _normalize_year_month(year, month, now)
     target_count, source = _resolve_effective_month_target(current_user.user_id, actual_year, actual_month)
     return AccountMonthTargetResponse(
@@ -410,7 +409,7 @@ async def get_account_dashboard(
     month: int = Query(default_factory=lambda: datetime.now().month),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
-    now = datetime.now()
+    now = utc_now().astimezone(APP_TZ)
     actual_year, actual_month = _normalize_year_month(year, month, now)
 
     month_start_dt, month_end_dt = _month_start_end(actual_year, actual_month)

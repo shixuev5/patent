@@ -1086,19 +1086,26 @@ const formatPercent = (value: number) => {
   const numeric = Number(value || 0)
   return `${(numeric * 100).toFixed(2)}%`
 }
+const adminDateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
 const formatDateTime = (value: string | null | undefined) => {
   const text = String(value || '').trim()
   if (!text) return '-'
-  const normalized = text.includes('T') ? text : `${text}T00:00:00`
+  const normalizedText = text.replace(' ', 'T')
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalizedText)
+    ? normalizedText
+    : (normalizedText.includes('T') ? `${normalizedText}Z` : `${normalizedText}T00:00:00Z`)
   const parsed = new Date(normalized)
   if (Number.isNaN(parsed.getTime())) return text.slice(0, 19).replace('T', ' ')
-  const year = parsed.getFullYear()
-  const month = String(parsed.getMonth() + 1).padStart(2, '0')
-  const day = String(parsed.getDate()).padStart(2, '0')
-  const hours = String(parsed.getHours()).padStart(2, '0')
-  const minutes = String(parsed.getMinutes()).padStart(2, '0')
-  const seconds = String(parsed.getSeconds()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+  return adminDateTimeFormatter.format(parsed).replace(/\//g, '-')
 }
 const toLocalDateTimeFilter = (value: string | null | undefined): string | undefined => {
   const text = String(value || '').trim()
@@ -1489,11 +1496,11 @@ onMounted(async () => {
 }
 
 .field {
-  @apply flex min-w-[10rem] flex-col gap-1 text-xs font-medium text-slate-600;
+  @apply flex min-w-0 w-full flex-col gap-1 text-xs font-medium text-slate-600;
 }
 
 .field-input {
-  @apply rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100;
+  @apply min-w-0 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-100;
 }
 
 .query-btn {

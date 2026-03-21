@@ -24,6 +24,7 @@ from fastapi import Request
 from loguru import logger
 
 from config import settings
+from backend.time_utils import utc_now, utc_now_z
 
 
 SYSTEM_LOG_RETENTION_DAYS = int(os.getenv("SYSTEM_LOG_RETENTION_DAYS", "14"))
@@ -197,7 +198,7 @@ def reset_request_context(token):
 
 
 def _payload_file_path(log_id: str, timestamp: str) -> Path:
-    day = (timestamp or datetime.now().isoformat())[:10].replace("-", "")
+    day = (timestamp or utc_now_z(timespec="seconds"))[:10].replace("-", "")
     return SYSTEM_LOG_PAYLOAD_DIR / day / f"{log_id}.json.gz"
 
 
@@ -291,7 +292,7 @@ def emit_system_log(
     message: Optional[str] = None,
     payload: Optional[Any] = None,
 ) -> str:
-    now = datetime.now().isoformat()
+    now = utc_now_z(timespec="microseconds")
     log_id = uuid.uuid4().hex
     context = get_request_context()
     resolved_category = str(category or "").strip() or "system"
@@ -545,8 +546,7 @@ async def request_logging_middleware(request: Request, call_next):
 
 def cleanup_expired_system_logs(retention_days: Optional[int] = None) -> Dict[str, int]:
     days = int(retention_days or SYSTEM_LOG_RETENTION_DAYS)
-    cutoff = datetime.now() - timedelta(days=days)
-    cutoff_iso = cutoff.isoformat()
+    cutoff_iso = (utc_now() - timedelta(days=days)).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
     deleted_db = 0
     storage = None
@@ -566,7 +566,7 @@ def cleanup_expired_system_logs(retention_days: Optional[int] = None) -> Dict[st
     if SYSTEM_LOG_PAYLOAD_DIR.exists():
         for file in SYSTEM_LOG_PAYLOAD_DIR.rglob("*.json.gz"):
             try:
-                if datetime.fromtimestamp(file.stat().st_mtime) < cutoff:
+                if datetime.fromtimestamp(file.stat().st_mtime) < utc_now().replace(tzinfo=None) - timedelta(days=days):
                     file.unlink(missing_ok=True)
                     deleted_files += 1
             except Exception:

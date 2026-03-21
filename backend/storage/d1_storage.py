@@ -9,6 +9,14 @@ from typing import Any, Dict, List, Literal, Optional
 import requests
 from loguru import logger
 
+from backend.time_utils import (
+    local_day_start_end_to_utc,
+    local_recent_day_window_to_utc,
+    parse_storage_ts,
+    to_utc_z,
+    utc_now_z,
+    utc_to_local_day,
+)
 from .models import AccountMonthTarget, Task, TaskStatus, TaskType, User
 
 
@@ -344,7 +352,7 @@ class D1TaskStorage:
         if isinstance(value, TaskStatus):
             return value.value
         if isinstance(value, datetime):
-            return value.isoformat()
+            return to_utc_z(value, naive_strategy="utc")
         return value
 
     def _row_to_task(self, row: Dict[str, Any]) -> Task:
@@ -359,10 +367,10 @@ class D1TaskStorage:
             current_step=row.get("current_step"),
             output_dir=row.get("output_dir"),
             error_message=row.get("error_message"),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row.get("completed_at") else None,
-            deleted_at=datetime.fromisoformat(row["deleted_at"]) if row.get("deleted_at") else None,
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+            completed_at=parse_storage_ts(row["completed_at"], naive_strategy="utc") if row.get("completed_at") else None,
+            deleted_at=parse_storage_ts(row["deleted_at"], naive_strategy="utc") if row.get("deleted_at") else None,
             metadata=self._parse_metadata(row.get("metadata")),
         )
 
@@ -377,9 +385,9 @@ class D1TaskStorage:
             phone=row.get("phone"),
             picture=row.get("picture"),
             raw_profile=self._parse_metadata(row.get("raw_profile")),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-            last_login_at=datetime.fromisoformat(row["last_login_at"]),
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+            last_login_at=parse_storage_ts(row["last_login_at"], naive_strategy="utc"),
         )
 
     def _row_to_account_month_target(self, row: Dict[str, Any]) -> AccountMonthTarget:
@@ -388,8 +396,8 @@ class D1TaskStorage:
             year=int(row["year"]),
             month=int(row["month"]),
             target_count=int(row["target_count"]),
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
         )
 
     def create_task(self, task: Task) -> Task:
@@ -411,9 +419,9 @@ class D1TaskStorage:
                 task.current_step,
                 task.output_dir,
                 task.error_message,
-                task.created_at.isoformat(),
-                task.updated_at.isoformat(),
-                task.completed_at.isoformat() if task.completed_at else None,
+                to_utc_z(task.created_at, naive_strategy="utc"),
+                to_utc_z(task.updated_at, naive_strategy="utc"),
+                to_utc_z(task.completed_at, naive_strategy="utc") if task.completed_at else None,
                 json.dumps(task.metadata, ensure_ascii=False) if task.metadata else None,
             ],
         )
@@ -443,7 +451,7 @@ class D1TaskStorage:
         if not updates:
             return False
 
-        updates["updated_at"] = datetime.now().isoformat()
+        updates["updated_at"] = utc_now_z()
         for key in list(updates.keys()):
             updates[key] = self._normalize_update_value(self._encode_metadata(updates[key]))
 
@@ -455,7 +463,7 @@ class D1TaskStorage:
     def delete_task(self, task_id: str) -> bool:
         result = self._request(
             "UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
-            [datetime.now().isoformat(), datetime.now().isoformat(), task_id]
+            [utc_now_z(), utc_now_z(), task_id]
         )
         return self._changed_rows(result) > 0
 
@@ -497,8 +505,8 @@ class D1TaskStorage:
             "first_usage_at": str(usage.get("first_usage_at") or "").strip() or None,
             "last_usage_at": str(usage.get("last_usage_at") or "").strip() or None,
             "currency": str(usage.get("currency") or "CNY").strip() or "CNY",
-            "created_at": str(usage.get("created_at") or datetime.now().isoformat()),
-            "updated_at": str(usage.get("updated_at") or datetime.now().isoformat()),
+            "created_at": str(usage.get("created_at") or utc_now_z()),
+            "updated_at": str(usage.get("updated_at") or utc_now_z()),
         }
         if not payload["task_id"] or not payload["owner_id"] or not payload["task_type"]:
             return False
@@ -895,7 +903,7 @@ class D1TaskStorage:
     def insert_system_log(self, record: Dict[str, Any]) -> bool:
         payload = {
             "log_id": str(record.get("log_id", "")).strip(),
-            "timestamp": str(record.get("timestamp") or datetime.now().isoformat()),
+            "timestamp": str(record.get("timestamp") or utc_now_z()),
             "category": str(record.get("category", "")).strip(),
             "event_name": str(record.get("event_name", "")).strip(),
             "level": str(record.get("level", "INFO")).strip().upper() or "INFO",
@@ -916,7 +924,7 @@ class D1TaskStorage:
             "payload_file_path": str(record.get("payload_file_path") or "").strip() or None,
             "payload_bytes": int(record.get("payload_bytes") or 0),
             "payload_overflow": 1 if record.get("payload_overflow") else 0,
-            "created_at": str(record.get("created_at") or datetime.now().isoformat()),
+            "created_at": str(record.get("created_at") or utc_now_z()),
         }
         if not payload["log_id"] or not payload["category"] or not payload["event_name"]:
             return False
@@ -1326,10 +1334,9 @@ class D1TaskStorage:
         }
 
     def summarize_admin_users(self) -> Dict[str, Any]:
-        now = datetime.now()
-        cutoff_1d = (now - timedelta(days=1)).isoformat()
-        cutoff_7d = (now - timedelta(days=7)).isoformat()
-        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        cutoff_1d, _ = local_recent_day_window_to_utc(1)
+        cutoff_7d, _ = local_recent_day_window_to_utc(7)
+        cutoff_30d, _ = local_recent_day_window_to_utc(30)
         overview_row = self._fetchone(
             """
             WITH all_identities AS (
@@ -1492,15 +1499,7 @@ class D1TaskStorage:
         )
 
         def _parse_iso(value: Any) -> Optional[datetime]:
-            text = str(value or "").strip()
-            if not text:
-                return None
-            if text.endswith("Z"):
-                text = f"{text[:-1]}+00:00"
-            try:
-                return datetime.fromisoformat(text)
-            except ValueError:
-                return None
+            return parse_storage_ts(value, naive_strategy="utc")
 
         def _calc_duration_seconds(created_at: Any, completed_at: Any) -> Optional[int]:
             created_dt = _parse_iso(created_at)
@@ -1508,7 +1507,7 @@ class D1TaskStorage:
                 return None
             end_dt = _parse_iso(completed_at)
             if not end_dt:
-                end_dt = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+                end_dt = parse_storage_ts(utc_now_z(), naive_strategy="utc")
             try:
                 seconds = int(end_dt.timestamp() - created_dt.timestamp())
             except Exception:
@@ -1535,10 +1534,9 @@ class D1TaskStorage:
         }
 
     def summarize_admin_tasks(self) -> Dict[str, Any]:
-        now = datetime.now()
-        cutoff_1d = (now - timedelta(days=1)).isoformat()
-        cutoff_7d = (now - timedelta(days=7)).isoformat()
-        cutoff_30d = (now - timedelta(days=30)).isoformat()
+        cutoff_1d, _ = local_recent_day_window_to_utc(1)
+        cutoff_7d, _ = local_recent_day_window_to_utc(7)
+        cutoff_30d, _ = local_recent_day_window_to_utc(30)
         task_type_rows = self._fetchall(
             """
             SELECT
@@ -1642,11 +1640,10 @@ class D1TaskStorage:
         include_deleted: bool = False,
         statuses: Optional[List[str]] = None,
     ) -> int:
-        today = datetime.utcnow() + timedelta(hours=tz_offset_hours)
-        today_str = today.strftime("%Y-%m-%d")
-        modifier = f"{tz_offset_hours:+d} hours"
-        where = ["owner_id = ?", "DATE(created_at, ?) = ?"]
-        params: List[Any] = [owner_id, modifier, today_str]
+        del tz_offset_hours
+        start_iso, end_iso = local_recent_day_window_to_utc(1)
+        where = ["owner_id = ?", "created_at >= ?", "created_at < ?"]
+        params: List[Any] = [owner_id, start_iso, end_iso]
         if task_type:
             where.append("task_type = ?")
             params.append(task_type)
@@ -1671,10 +1668,10 @@ class D1TaskStorage:
         rows = self._fetchall("SELECT status, COUNT(*) AS count FROM tasks WHERE deleted_at IS NULL GROUP BY status")
         status_counts = {row["status"]: int(row["count"]) for row in rows}
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today_start_iso, today_end_iso = local_recent_day_window_to_utc(1)
         today_count_row = self._fetchone(
-            "SELECT COUNT(*) AS c FROM tasks WHERE DATE(created_at) = ? AND deleted_at IS NULL",
-            [today],
+            "SELECT COUNT(*) AS c FROM tasks WHERE created_at >= ? AND created_at < ? AND deleted_at IS NULL",
+            [today_start_iso, today_end_iso],
         )
         today_count = int(today_count_row["c"]) if today_count_row else 0
 
@@ -1714,7 +1711,7 @@ class D1TaskStorage:
                     ELSE patent_analyses.sha256
                 END
             """,
-            [normalized, datetime.now().isoformat(), normalized_sha256],
+            [normalized, utc_now_z(), normalized_sha256],
         )
         return True
 
@@ -1751,7 +1748,7 @@ class D1TaskStorage:
         }
 
     def cleanup_old_tasks(self, days: int = 365, dry_run: bool = False) -> int:
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = to_utc_z(datetime.utcnow() - timedelta(days=days), naive_strategy="utc")
         rows = self._fetchall(
             """
             SELECT id FROM tasks
@@ -1777,8 +1774,8 @@ class D1TaskStorage:
             logger.warning(f"D1 VACUUM 已跳过：{exc}")
 
     def upsert_authing_user(self, user: User) -> User:
-        now_iso = datetime.now().isoformat()
-        created_at_iso = user.created_at.isoformat() if user.created_at else now_iso
+        now_iso = utc_now_z()
+        created_at_iso = to_utc_z(user.created_at, naive_strategy="utc") if user.created_at else now_iso
         raw_profile = json.dumps(user.raw_profile, ensure_ascii=False) if user.raw_profile else None
 
         self._request(
@@ -1846,7 +1843,7 @@ class D1TaskStorage:
         name: Optional[str],
         picture: Optional[str],
     ) -> Optional[User]:
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_z()
         result = self._request(
             """
             UPDATE users
@@ -1867,7 +1864,7 @@ class D1TaskStorage:
         month: int,
         target_count: int,
     ) -> AccountMonthTarget:
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_z()
         self._request(
             """
             INSERT INTO account_month_targets (
@@ -1980,26 +1977,29 @@ class D1TaskStorage:
         start_day: date,
         end_day: date,
     ) -> List[Dict[str, Any]]:
+        start_iso, end_iso = local_day_start_end_to_utc(start_day, day_count=(end_day - start_day).days + 1)
         rows = self._fetchall(
             """
-            SELECT DATE(created_at) AS day, task_type, COUNT(*) AS count
+            SELECT created_at, task_type
             FROM tasks
             WHERE owner_id = ?
-              AND DATE(created_at) >= DATE(?)
-              AND DATE(created_at) <= DATE(?)
+              AND created_at >= ?
+              AND created_at < ?
               AND deleted_at IS NULL
-            GROUP BY day, task_type
-            ORDER BY day ASC
             """,
-            [owner_id, start_day.isoformat(), end_day.isoformat()],
+            [owner_id, start_iso, end_iso],
         )
+        bucket: Dict[tuple[str, str], int] = {}
+        for row in rows:
+            day = utc_to_local_day(row.get("created_at"), naive_strategy="utc")
+            task_type = str(row.get("task_type") or "")
+            if not day or not task_type:
+                continue
+            key = (day, task_type)
+            bucket[key] = bucket.get(key, 0) + 1
         return [
-            {
-                "day": str(row["day"]),
-                "task_type": str(row["task_type"]),
-                "count": int(row["count"]),
-            }
-            for row in rows
+            {"day": day, "task_type": task_type, "count": count}
+            for (day, task_type), count in sorted(bucket.items(), key=lambda item: (item[0][0], item[0][1]))
         ]
 
     def aggregate_user_completed_tasks_daily(
@@ -2010,14 +2010,15 @@ class D1TaskStorage:
         task_type: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        start_iso, end_iso = local_day_start_end_to_utc(start_day, day_count=(end_day - start_day).days + 1)
         where = [
             "owner_id = ?",
             "completed_at IS NOT NULL",
-            "DATE(completed_at) >= DATE(?)",
-            "DATE(completed_at) <= DATE(?)",
+            "completed_at >= ?",
+            "completed_at < ?",
             "deleted_at IS NULL",
         ]
-        params: List[Any] = [owner_id, start_day.isoformat(), end_day.isoformat()]
+        params: List[Any] = [owner_id, start_iso, end_iso]
         if task_type:
             where.append("task_type = ?")
             params.append(task_type)
@@ -2027,20 +2028,25 @@ class D1TaskStorage:
 
         rows = self._fetchall(
             f"""
-            SELECT DATE(completed_at) AS day, task_type, status, COUNT(*) AS count
+            SELECT completed_at, task_type, status
             FROM tasks
             WHERE {' AND '.join(where)}
-            GROUP BY day, task_type, status
-            ORDER BY day ASC
             """,
             params,
         )
+        bucket: Dict[tuple[str, str, str], int] = {}
+        for row in rows:
+            day = utc_to_local_day(row.get("completed_at"), naive_strategy="utc")
+            resolved_task_type = str(row.get("task_type") or "")
+            resolved_status = str(row.get("status") or "")
+            if not day or not resolved_task_type or not resolved_status:
+                continue
+            key = (day, resolved_task_type, resolved_status)
+            bucket[key] = bucket.get(key, 0) + 1
         return [
-            {
-                "day": str(row["day"]),
-                "task_type": str(row["task_type"]),
-                "status": str(row["status"]),
-                "count": int(row["count"]),
-            }
-            for row in rows
+            {"day": day, "task_type": resolved_task_type, "status": resolved_status, "count": count}
+            for (day, resolved_task_type, resolved_status), count in sorted(
+                bucket.items(),
+                key=lambda item: (item[0][0], item[0][1], item[0][2]),
+            )
         ]

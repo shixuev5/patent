@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from backend.time_utils import parse_storage_ts, utc_now
+
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
@@ -34,9 +36,9 @@ class User:
     phone: Optional[str] = None
     picture: Optional[str] = None
     raw_profile: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
-    last_login_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    last_login_at: datetime = field(default_factory=utc_now)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -61,8 +63,8 @@ class AccountMonthTarget:
     year: int
     month: int
     target_count: int
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass
@@ -77,8 +79,8 @@ class Task:
     current_step: Optional[str] = None
     output_dir: Optional[str] = None
     error_message: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
     completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -114,8 +116,8 @@ class Task:
             current_step=data.get("current_step"),
             output_dir=data.get("output_dir"),
             error_message=data.get("error_message"),
-            created_at=datetime.fromisoformat(data["created_at"]) if data.get("created_at") else datetime.now(),
-            updated_at=datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else datetime.now(),
-            completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None,
+            created_at=parse_storage_ts(data["created_at"], naive_strategy="utc") if data.get("created_at") else utc_now(),
+            updated_at=parse_storage_ts(data["updated_at"], naive_strategy="utc") if data.get("updated_at") else utc_now(),
+            completed_at=parse_storage_ts(data["completed_at"], naive_strategy="utc") if data.get("completed_at") else None,
             metadata=data.get("metadata", {}),
         )

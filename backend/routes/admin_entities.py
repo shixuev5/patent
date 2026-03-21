@@ -28,6 +28,7 @@ from backend.models import (
 )
 from backend.storage import TaskType, get_pipeline_manager
 from backend.system_logs import emit_system_log
+from backend.time_utils import parse_local_input_to_utc_z, to_utc_z
 from backend.utils import _build_r2_storage
 
 
@@ -103,10 +104,10 @@ def _to_user_item(row: Dict[str, Any]) -> AdminEntityUserItem:
         userName=row.get("user_name"),
         email=row.get("email"),
         role=row.get("role"),
-        lastLoginAt=row.get("last_login_at"),
-        createdAt=row.get("created_at"),
+        lastLoginAt=to_utc_z(row.get("last_login_at"), naive_strategy="utc", timespec="seconds"),
+        createdAt=to_utc_z(row.get("created_at"), naive_strategy="utc", timespec="seconds"),
         taskCount=int(row.get("task_count") or 0),
-        latestTaskAt=row.get("latest_task_at"),
+        latestTaskAt=to_utc_z(row.get("latest_task_at"), naive_strategy="utc", timespec="seconds"),
     )
 
 
@@ -119,9 +120,9 @@ def _to_task_item(row: Dict[str, Any]) -> AdminEntityTaskItem:
         taskType=row.get("task_type"),
         status=row.get("status"),
         durationSeconds=row.get("duration_seconds"),
-        createdAt=row.get("created_at"),
-        updatedAt=row.get("updated_at"),
-        completedAt=row.get("completed_at"),
+        createdAt=to_utc_z(row.get("created_at"), naive_strategy="utc", timespec="seconds"),
+        updatedAt=to_utc_z(row.get("updated_at"), naive_strategy="utc", timespec="seconds"),
+        completedAt=to_utc_z(row.get("completed_at"), naive_strategy="utc", timespec="seconds"),
     )
 
 
@@ -135,6 +136,16 @@ def _normalize_task_type(value: Any) -> str:
 def _normalize_pn(value: Any) -> Optional[str]:
     text = str(value or "").strip().upper()
     return text or None
+
+
+def _norm_optional_local_datetime(value: Any, *, end_of_day: bool = False) -> Optional[str]:
+    text = _norm_optional_text(value)
+    if not text:
+        return None
+    try:
+        return parse_local_input_to_utc_z(text, end_of_day=end_of_day, timespec="seconds")
+    except Exception:
+        return None
 
 
 def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -> Optional[str]:
@@ -231,8 +242,8 @@ async def get_admin_entity_tasks(
         user_name=_norm_optional_text(userName),
         task_type=_norm_optional_text(taskType),
         status=_norm_optional_text(status),
-        date_from=_norm_optional_text(dateFrom),
-        date_to=_norm_optional_text(dateTo),
+        date_from=_norm_optional_local_datetime(dateFrom),
+        date_to=_norm_optional_local_datetime(dateTo, end_of_day=True),
         page=page,
         page_size=pageSize,
         sort_by=_map_task_sort_by(sortBy),
@@ -290,9 +301,9 @@ async def get_admin_entity_task_detail(
         "currentStep": row.get("current_step"),
         "outputDir": row.get("output_dir"),
         "errorMessage": row.get("error_message"),
-        "createdAt": row.get("created_at"),
-        "updatedAt": row.get("updated_at"),
-        "completedAt": row.get("completed_at"),
+        "createdAt": to_utc_z(row.get("created_at"), naive_strategy="utc", timespec="seconds"),
+        "updatedAt": to_utc_z(row.get("updated_at"), naive_strategy="utc", timespec="seconds"),
+        "completedAt": to_utc_z(row.get("completed_at"), naive_strategy="utc", timespec="seconds"),
         "metadata": row.get("metadata"),
     }
     return AdminEntityTaskDetailResponse(item=item)

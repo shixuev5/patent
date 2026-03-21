@@ -4,10 +4,8 @@
 
 from __future__ import annotations
 
-import os
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 
@@ -21,6 +19,7 @@ from backend.models import (
     AdminUsageTableResponse,
 )
 from backend.models import CurrentUser
+from backend.time_utils import APP_TZ, to_utc_z, utc_now
 from backend.token_pricing import TOKEN_PRICING_CURRENCY
 from backend.storage import get_pipeline_manager
 
@@ -35,42 +34,6 @@ YEAR = "year"
 TASK = "task"
 USER = "user"
 ALL = "all"
-UTC = timezone.utc
-APP_TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
-
-
-def _parse_storage_datetime(value: Optional[str]) -> Optional[datetime]:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _format_local_datetime(value: Optional[str]) -> Optional[str]:
-    parsed = _parse_storage_datetime(value)
-    if parsed is None:
-        return None
-    return parsed.astimezone(APP_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
-
-
-def _to_storage_iso(local_dt: datetime) -> str:
-    if local_dt.tzinfo is None:
-        local_dt = local_dt.replace(tzinfo=APP_TZ)
-    return local_dt.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
-
-
-def _to_local_iso(local_dt: datetime) -> str:
-    if local_dt.tzinfo is None:
-        return local_dt.isoformat(timespec="seconds")
-    return local_dt.astimezone(APP_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
-
-
 def _normalize_range_type(raw: Optional[str]) -> RangeType:
     text = str(raw or DAY).strip().lower()
     if text in {DAY, MONTH, YEAR}:
@@ -82,7 +45,7 @@ def _resolve_time_window(
     range_type: RangeType,
     anchor: Optional[str],
 ) -> Tuple[str, datetime, datetime, str, str]:
-    now = datetime.now(UTC).astimezone(APP_TZ)
+    now = utc_now().astimezone(APP_TZ)
     raw_anchor = str(anchor or "").strip()
 
     if range_type == DAY:
@@ -95,7 +58,7 @@ def _resolve_time_window(
             day = now.date()
         start = datetime.combine(day, time.min, APP_TZ)
         end = start + timedelta(days=1)
-        return day.isoformat(), start, end, _to_storage_iso(start), _to_storage_iso(end)
+        return day.isoformat(), start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
 
     if range_type == MONTH:
         if raw_anchor:
@@ -117,7 +80,7 @@ def _resolve_time_window(
             end = datetime(year + 1, 1, 1, tzinfo=APP_TZ)
         else:
             end = datetime(year, month + 1, 1, tzinfo=APP_TZ)
-        return f"{year:04d}-{month:02d}", start, end, _to_storage_iso(start), _to_storage_iso(end)
+        return f"{year:04d}-{month:02d}", start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
 
     if raw_anchor:
         try:
@@ -128,7 +91,7 @@ def _resolve_time_window(
         target_year = now.year
     start = datetime(target_year, 1, 1, tzinfo=APP_TZ)
     end = datetime(target_year + 1, 1, 1, tzinfo=APP_TZ)
-    return str(target_year), start, end, _to_storage_iso(start), _to_storage_iso(end)
+    return str(target_year), start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
 
 
 def _load_rows(range_type: RangeType, anchor: Optional[str]) -> Tuple[str, datetime, datetime, List[Dict[str, Any]]]:
@@ -189,9 +152,9 @@ def _to_task_table_item(row: Dict[str, Any], user_name: Optional[str]) -> Dict[s
         "estimatedCostCny": float(row.get("estimated_cost_cny") or 0),
         "priceMissing": bool(row.get("price_missing")),
         "models": _row_models(row),
-        "firstUsageAt": _format_local_datetime(row.get("first_usage_at")),
-        "lastUsageAt": _format_local_datetime(row.get("last_usage_at")),
-        "updatedAt": _format_local_datetime(row.get("updated_at")),
+        "firstUsageAt": to_utc_z(row.get("first_usage_at"), naive_strategy="utc", timespec="seconds"),
+        "lastUsageAt": to_utc_z(row.get("last_usage_at"), naive_strategy="utc", timespec="seconds"),
+        "updatedAt": to_utc_z(row.get("updated_at"), naive_strategy="utc", timespec="seconds"),
     }
 
 
@@ -262,8 +225,8 @@ async def get_admin_usage_dashboard(
     return AdminUsageDashboardResponse(
         rangeType=normalized_range,
         anchor=normalized_anchor,
-        startAt=_to_local_iso(start),
-        endAt=_to_local_iso(end),
+        startAt=to_utc_z(start, naive_strategy="local", timespec="seconds"),
+        endAt=to_utc_z(end, naive_strategy="local", timespec="seconds"),
         currency=TOKEN_PRICING_CURRENCY,
         overview=overview,
         priceMissing=price_missing,
@@ -334,7 +297,7 @@ async def get_admin_usage_table(
                     "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
                     "priceMissing": _to_bool(row.get("price_missing")),
                     "models": list(row.get("models") or []),
-                    "lastUsageAt": _format_local_datetime(row.get("last_usage_at")),
+                    "lastUsageAt": to_utc_z(row.get("last_usage_at"), naive_strategy="utc", timespec="seconds"),
                 }
             )
             continue
@@ -348,7 +311,7 @@ async def get_admin_usage_table(
                     "llmCallCount": int(row.get("llm_call_count") or 0),
                     "estimatedCostCny": round(float(row.get("estimated_cost_cny") or 0), 6),
                     "priceMissing": _to_bool(row.get("price_missing")),
-                    "latestUsageAt": _format_local_datetime(row.get("latest_usage_at")),
+                    "latestUsageAt": to_utc_z(row.get("latest_usage_at"), naive_strategy="utc", timespec="seconds"),
                 }
             )
             continue

@@ -4,10 +4,7 @@
 
 from __future__ import annotations
 
-import os
-from datetime import datetime
 from typing import Any, Dict, Optional
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -22,11 +19,11 @@ from backend.models import (
 )
 from backend.storage import get_pipeline_manager
 from backend.system_logs import resolve_payload_from_record
+from backend.time_utils import parse_local_input_to_utc_z, to_utc_z
 
 
 router = APIRouter()
 task_manager = get_pipeline_manager()
-APP_TZ = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
 
 
 def _norm_optional_text(value: Any) -> Optional[str]:
@@ -42,15 +39,10 @@ def _norm_optional_datetime(value: Any) -> Optional[str]:
     text = _norm_optional_text(value)
     if not text:
         return None
-    candidate = text.replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(candidate)
+        return parse_local_input_to_utc_z(text, timespec="seconds")
     except Exception:
-        return text
-    if parsed.tzinfo is None:
-        return parsed.isoformat(timespec="seconds")
-    local_dt = parsed.astimezone(APP_TZ).replace(tzinfo=None)
-    return local_dt.isoformat(timespec="seconds")
+        return None
 
 
 def _to_bool(value: Optional[str]) -> Optional[bool]:
@@ -67,7 +59,7 @@ def _to_bool(value: Optional[str]) -> Optional[bool]:
 def _to_item(row: Dict[str, Any]) -> AdminSystemLogItem:
     return AdminSystemLogItem(
         logId=str(row.get("log_id") or ""),
-        timestamp=str(row.get("timestamp") or ""),
+        timestamp=str(to_utc_z(row.get("timestamp"), naive_strategy="utc", timespec="seconds") or ""),
         category=str(row.get("category") or ""),
         eventName=str(row.get("event_name") or ""),
         level=str(row.get("level") or "INFO"),
@@ -87,7 +79,7 @@ def _to_item(row: Dict[str, Any]) -> AdminSystemLogItem:
         message=row.get("message"),
         payloadBytes=int(row.get("payload_bytes") or 0),
         payloadOverflow=bool(row.get("payload_overflow")),
-        createdAt=str(row.get("created_at") or ""),
+        createdAt=str(to_utc_z(row.get("created_at"), naive_strategy="utc", timespec="seconds") or ""),
     )
 
 

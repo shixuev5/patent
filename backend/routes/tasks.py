@@ -32,6 +32,7 @@ from backend.utils import (
     _build_r2_storage,
 )
 from backend.storage import TaskType, get_pipeline_manager
+from backend.time_utils import to_utc_z, utc_now_z
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -175,9 +176,9 @@ def _task_to_response(task: Any) -> Dict[str, Any]:
         "progress": task.progress,
         "step": task.current_step,
         "error": task.error_message,
-        "created_at": task.created_at.isoformat(),
-        "updated_at": task.updated_at.isoformat(),
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "created_at": to_utc_z(task.created_at, naive_strategy="utc"),
+        "updated_at": to_utc_z(task.updated_at, naive_strategy="utc"),
+        "completed_at": to_utc_z(task.completed_at, naive_strategy="utc") if task.completed_at else None,
     }
 
 
@@ -360,7 +361,7 @@ def _resolve_ai_reply_publication_number_by_application_number(
 
 
 def _iso_now() -> str:
-    return datetime.now().isoformat()
+    return utc_now_z(timespec="microseconds")
 
 
 def _build_analysis_json_payload(

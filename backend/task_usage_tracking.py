@@ -7,12 +7,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, Iterator, Optional
 
 from loguru import logger
 
+from backend.time_utils import utc_now_z
 from backend.token_pricing import TOKEN_PRICING_CURRENCY, estimate_cost_cny
 
 
@@ -56,8 +56,8 @@ class TaskUsageCollector:
     model_breakdown: Dict[str, ModelUsageAggregate] = field(default_factory=dict)
     first_usage_at: Optional[str] = None
     last_usage_at: Optional[str] = None
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds"))
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds"))
+    created_at: str = field(default_factory=lambda: utc_now_z(timespec="seconds"))
+    updated_at: str = field(default_factory=lambda: utc_now_z(timespec="seconds"))
 
     def mark_status(self, status: Optional[str]):
         text = str(status or "").strip().lower()
@@ -103,7 +103,7 @@ class TaskUsageCollector:
         self.estimated_cost_cny += estimated_cost
         self.price_missing = self.price_missing or missing
 
-        now_iso = datetime.utcnow().isoformat(timespec="seconds")
+        now_iso = utc_now_z(timespec="seconds")
         if not self.first_usage_at:
             self.first_usage_at = now_iso
         self.last_usage_at = now_iso

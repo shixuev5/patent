@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from config import settings
+from backend.time_utils import utc_now
 from .models import Task, TaskStatus, TaskType
 from .task_storage import get_task_storage
 
@@ -57,8 +58,8 @@ class PipelineTaskManager:
             status=TaskStatus.PENDING,
             progress=0,
             output_dir=output_dir,
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
+            created_at=utc_now(),
+            updated_at=utc_now(),
         )
 
         self.storage.create_task(task)
@@ -70,7 +71,7 @@ class PipelineTaskManager:
         success = self.storage.update_task(
             task_id,
             status=TaskStatus.PROCESSING.value,
-            updated_at=datetime.now().isoformat(),
+            updated_at=utc_now(),
         )
         if success:
             logger.info(f"任务已开始：{task_id}")
@@ -85,7 +86,7 @@ class PipelineTaskManager:
     ) -> bool:
         updates = {
             "progress": max(0, min(100, progress)),
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": utc_now(),
         }
         if step:
             updates["current_step"] = step
@@ -94,7 +95,7 @@ class PipelineTaskManager:
         return success
 
     def complete_task(self, task_id: str, output_files: Optional[Dict[str, str]] = None) -> bool:
-        now = datetime.now()
+        now = utc_now()
         metadata_updates = {}
 
         if output_files:
@@ -139,7 +140,7 @@ class PipelineTaskManager:
         return str(completed_at)
 
     def fail_task(self, task_id: str, error_message: str) -> bool:
-        now = datetime.now()
+        now = utc_now()
         success = self.storage.update_task(
             task_id,
             status=TaskStatus.FAILED.value,
@@ -152,7 +153,7 @@ class PipelineTaskManager:
         return success
 
     def cancel_task(self, task_id: str, error_message: str = "任务已取消") -> bool:
-        now = datetime.now()
+        now = utc_now()
         success = self.storage.update_task(
             task_id,
             status=TaskStatus.CANCELLED.value,
