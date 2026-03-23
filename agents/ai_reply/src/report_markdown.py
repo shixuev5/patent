@@ -369,7 +369,7 @@ def _render_second_notice_argument_blocks(disputes: List[Any], second_notice_ite
     rejection_reason_by_dispute: Dict[str, str] = {}
     for item in second_notice_items or []:
         dispute_id = str(_item_get(item, "dispute_id", "")).strip()
-        rejection_reason = str(_item_get(item, "examiner_rejection_reason", "")).strip()
+        rejection_reason = str(_item_get(item, "final_examiner_rejection_reason", "")).strip()
         if dispute_id and rejection_reason:
             rejection_reason_by_dispute[dispute_id] = rejection_reason
 

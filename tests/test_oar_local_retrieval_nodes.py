@@ -53,7 +53,7 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
                     "verdict": "EXAMINER_CORRECT",
                     "reasoning": "证据显示该技术属于常见手段。",
                     "confidence": 0.84,
-                    "examiner_rejection_reason": "",
+                    "examiner_rejection_rationale": "",
                 },
                 "evidence": [
                     {
@@ -124,4 +124,3 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     evidence_messages = [item["content"] for item in call_messages if "证据卡" in item.get("content", "")]
     assert evidence_messages
     assert all(len(msg) < 700 for msg in evidence_messages)
-

@@ -58,6 +58,7 @@ class ReportGenerationNode:
     def _generate_report(self, state) -> Dict[str, Any]:
         """生成最终报告"""
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
+        drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
         early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
 
         report = {
@@ -95,7 +96,7 @@ class ReportGenerationNode:
 
         # 添加汇总信息
         report["summary"] = self._generate_summary(report["disputes"])
-        second_notice_items = self._collect_second_office_action_items(report["disputes"])
+        second_notice_items = self._collect_second_office_action_items(report["disputes"], drafted_rejection_reasons)
         report["summary"]["second_office_action_points"] = len(second_notice_items)
         report["second_office_action_notice"] = {
             "text": self._build_second_office_action_text(second_notice_items),
@@ -149,7 +150,11 @@ class ReportGenerationNode:
             "verdict_distribution": verdict_distribution,
         }
 
-    def _collect_second_office_action_items(self, disputes: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    def _collect_second_office_action_items(
+        self,
+        disputes: List[Dict[str, Any]],
+        drafted_rejection_reasons: Dict[str, str],
+    ) -> List[Dict[str, str]]:
         """收集可用于二次审查意见通知书的驳回说理点。"""
         items: List[Dict[str, str]] = []
         for dispute in disputes:
@@ -159,18 +164,24 @@ class ReportGenerationNode:
             if verdict != "APPLICANT_CORRECT":
                 continue
 
-            rejection_reason = str(item_get(assessment, "examiner_rejection_reason", "")).strip()
-            if not rejection_reason:
+            rationale = str(item_get(assessment, "examiner_rejection_rationale", "")).strip()
+            if not rationale:
                 dispute_id = str(item_get(dispute, "dispute_id", "")).strip() or "<unknown_dispute>"
                 raise ValueError(
-                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_reason"
+                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_rationale"
+                )
+            dispute_id = str(item_get(dispute, "dispute_id", "")).strip()
+            final_reason = str(drafted_rejection_reasons.get(dispute_id, "")).strip()
+            if not final_reason:
+                raise ValueError(
+                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 drafted final reason"
                 )
 
             items.append({
-                "dispute_id": str(item_get(dispute, "dispute_id", "")).strip(),
+                "dispute_id": dispute_id,
                 "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
                 "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
-                "examiner_rejection_reason": rejection_reason,
+                "final_examiner_rejection_reason": final_reason,
             })
         return items
 
@@ -184,7 +195,7 @@ class ReportGenerationNode:
             claim_ids = self._normalize_claim_ids(item.get("claim_ids", []))
             claim_label = "、".join(claim_ids) if claim_ids else "未标注权利要求"
             feature_text = item.get("feature_text", "") or "未提取争议特征"
-            reason = item.get("examiner_rejection_reason", "").strip().rstrip("。；;")
+            reason = item.get("final_examiner_rejection_reason", "").strip().rstrip("。；;")
             clauses.append(
                 f"关于第{index}项核查结论（权利要求{claim_label}，争议特征“{feature_text}”），{reason}"
             )

@@ -180,7 +180,7 @@ flowchart TD
    - `assessment.verdict`：`APPLICANT_CORRECT / EXAMINER_CORRECT / INCONCLUSIVE`
    - `assessment.reasoning`
    - `assessment.confidence`
-   - `assessment.examiner_rejection_reason`（仅当 verdict=APPLICANT_CORRECT 时强制非空）
+   - `assessment.examiner_rejection_rationale`（仅当 verdict=APPLICANT_CORRECT 时强制非空）
    - `evidence[]`
 4. 结果写入统一结构 `evidence_assessments[]`，并携带 `trace.used_doc_ids/missing_doc_ids`。
 
@@ -219,7 +219,7 @@ flowchart TD
 ### 严格约束
 
 - `verdict` 与 `confidence` 范围校验同上
-- `verdict=APPLICANT_CORRECT` 时，`examiner_rejection_reason` 必须非空
+- `verdict=APPLICANT_CORRECT` 时，`examiner_rejection_rationale` 必须非空
 - 证据 `doc_id` 必须在 `EXT*` 或 `MODEL` 白名单中
 
 ---
@@ -278,7 +278,7 @@ flowchart TD
 3. 统计 `summary`（争议总数、已核查数、裁决分布、反驳类型分布）
 4. 生成 `second_office_action_notice`
    - 仅收集 `verdict=APPLICANT_CORRECT` 的争议
-   - 使用 `examiner_rejection_reason` 拼接为可直接复用的二通语句
+   - 使用 `examiner_rejection_rationale` 作为中间逻辑要点，经统一润色后生成 `final_examiner_rejection_reason`
 
 ---
 

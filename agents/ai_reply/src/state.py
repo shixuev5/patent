@@ -63,9 +63,9 @@ class EvidenceAssessmentDecision(BaseModel):
     verdict: str = Field(..., description="裁决结果: APPLICANT_CORRECT/EXAMINER_CORRECT/INCONCLUSIVE")
     reasoning: str = Field(default="", description="判断理由")
     confidence: float = Field(0.0, description="置信度 0~1")
-    examiner_rejection_reason: str = Field(
+    examiner_rejection_rationale: str = Field(
         ...,
-        description="当 verdict=APPLICANT_CORRECT 时必须给出有利于审查员维持驳回的说理理由；其他情况为空字符串",
+        description="当 verdict=APPLICANT_CORRECT 时必须给出基于当前证据的替代性驳回逻辑要点；其他情况为空字符串",
     )
 
 
@@ -236,6 +236,10 @@ class WorkflowState(BaseModel):
     reuse_oa_tasks: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list, description="可复用历史审查意见的任务列表")
     topup_tasks: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list, description="需补充检索比对的任务列表")
     early_rejection_reason: str = Field("", description="可提前驳回的原因（如修改超范围）")
+    drafted_rejection_reasons: Dict[str, str] = Field(
+        default_factory=dict,
+        description="统一润色后的正式驳回正文，按 dispute_id 索引",
+    )
 
     # 最终报告
     final_report: Optional[Dict[str, Any]] = Field(None, description="最终JSON报告")

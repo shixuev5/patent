@@ -574,10 +574,10 @@ class CommonKnowledgeVerificationNode:
 由于系统管线要求，你需要遵守以下严格的条件约束：
 - reasoning：在此字段中进行详尽的逻辑推演（分析特征 -> 评估证据 -> 得出结论）。
 - confidence：0.0 到 1.0 之间的浮点数。外部证据确凿时 >0.8；仅靠模型知识时 0.5~0.7；存疑时 <0.5。
-- examiner_rejection_reason：
-  *[强制规则 1] 仅当 verdict 为 "APPLICANT_CORRECT" 时，本字段【必须】填写内容。其业务逻辑是：虽然申请人成功反驳了该特征是“公知常识”，但为了维持审查意见的对抗性，你必须代表审查员撰写一段“替代性的驳回说理”（例如：指出该特征虽非公知常识，但结合具体应用场景属于容易想到的常规手段变形，或利用其他逻辑维持不具备创造性的结论）。
+- examiner_rejection_rationale：
+  *[强制规则 1] 仅当 verdict 为 "APPLICANT_CORRECT" 时，本字段【必须】填写内容。其业务逻辑是：虽然申请人成功反驳了该特征是“公知常识”，但系统仍需要一段与当前证据一致的“替代性驳回逻辑要点”（例如：指出该特征虽非公知常识，但结合具体应用场景仍属于容易想到的常规变形）。
   *[强制规则 2] 当 verdict 为 "EXAMINER_CORRECT" 或 "INCONCLUSIVE" 时，本字段【必须】为空字符串 ""。
-  *[语气约束] 必须使用“审查意见通知书正文口吻”，面向申请人，必须是确定性陈述。绝对禁止使用“审查员可主张、建议、应补充”等第三人称或元话术。
+  *[表达约束] 只写逻辑骨架，不要写成正式审查意见通知书正文，不要使用策略性元话术。
 
 【输出格式要求】
 1. 必须且只能输出合法的 JSON 对象，不要包含 ```json 等任何 Markdown 标记，不要输出额外说明文本。
@@ -587,7 +587,7 @@ class CommonKnowledgeVerificationNode:
     "verdict": "APPLICANT_CORRECT | EXAMINER_CORRECT | INCONCLUSIVE",
     "reasoning": "详细的判定理由，包含对技术特征、证据内容以及公知常识属性的分析。",
     "confidence": 0.85,
-    "examiner_rejection_reason": "遵守上述强制规则。若需填写，示例：经核查，虽然现有证据未将...直接定义为公知常识，但其工作原理属于本领域常规设计手段的直接推演，本领域技术人员在D1基础上引入该手段不需要创造性劳动，故相关权利要求仍不具备创造性。"
+    "examiner_rejection_rationale": "遵守上述强制规则。若需填写，示例：现有证据虽不足以将该特征直接认定为公知常识，但结合D1已公开的基础结构与本领域常规设计推演，相关权利要求仍可能不具备创造性。"
   },
   "evidence":[
     {
@@ -737,15 +737,15 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             raise ValueError(f"common_knowledge_verification 输出非法 confidence 范围: {confidence}")
 
         reasoning = str(assessment.get("reasoning", "")).strip()
-        if "examiner_rejection_reason" not in assessment:
-            raise ValueError("common_knowledge_verification 输出缺少 assessment.examiner_rejection_reason")
-        rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
-        if verdict == "APPLICANT_CORRECT" and not rejection_reason:
+        if "examiner_rejection_rationale" not in assessment:
+            raise ValueError("common_knowledge_verification 输出缺少 assessment.examiner_rejection_rationale")
+        rejection_rationale = str(assessment.get("examiner_rejection_rationale", "")).strip()
+        if verdict == "APPLICANT_CORRECT" and not rejection_rationale:
             raise ValueError(
-                "common_knowledge_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空"
+                "common_knowledge_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_rationale 不能为空"
             )
         if verdict != "APPLICANT_CORRECT":
-            rejection_reason = ""
+            rejection_rationale = ""
 
         evidence_items: List[Dict[str, Any]] = []
         for item in output.get("evidence", []) or []:
@@ -782,7 +782,7 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
                 "verdict": verdict,
                 "reasoning": reasoning,
                 "confidence": confidence,
-                "examiner_rejection_reason": rejection_reason,
+                "examiner_rejection_rationale": rejection_rationale,
             },
             "evidence": evidence_items,
         }

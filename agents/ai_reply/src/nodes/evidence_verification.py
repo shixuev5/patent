@@ -403,13 +403,13 @@ class EvidenceVerificationNode:
    - `APPLICANT_CORRECT`：对比文件并未公开该特征，或原文含义被审查员曲解/误读。申请人的事实主张成立。
    - `INCONCLUSIVE`：提供的对比文件内容缺失、乱码，或提供的信息不足以做出判定。
 
-### 特殊字段约束：examiner_rejection_reason（极度重要）
+### 特殊字段约束：examiner_rejection_rationale（极度重要）
 在专利审查实务的自动化流程中，当审查员最初的某项认定被指出错误时，系统需尝试寻找新的驳回理由。
 - **当 verdict = "EXAMINER_CORRECT" 或 "INCONCLUSIVE" 时**：该字段必须为空字符串 `""`。
-- **当 verdict = "APPLICANT_CORRECT" 时**：你必须代入审查员的角色，**基于核查后发现的真实对比文件内容，重新构建一段无懈可击的驳回说理**，用于后续下发给申请人。
-  - **口吻要求（强制）**：必须是“审查意见通知书正文口吻”，绝对确定，面向申请人论述。
-  - **禁止词汇**：严禁使用“审查员可主张”、“可认为”、“可以”、“建议”、“应补充”、“如需”、“若…则…”等商榷性、策略性或元描述词汇。
-  - **标准话术示例**：“经审查认为，虽然对比文件D1未直接公开[原争议特征]，但D1中记载了[真实存在的相关特征]......本领域技术人员在此基础上容易想到......，因此权利要求1仍不具备创造性。”
+- **当 verdict = "APPLICANT_CORRECT" 时**：你必须基于核查后发现的真实对比文件内容，提供一段**替代性驳回逻辑要点**。
+  - **内容要求（强制）**：只需客观说明审查员仍可依据什么新的证据映射、组合逻辑或技术常识继续维持驳回。
+  - **表达要求（强制）**：只写逻辑骨架，不需要正式公文口吻，不要写成完整通知书正文。
+  - **禁止事项**：严禁脱离当前核查证据新增事实，严禁输出策略性元话术。
 
 ### JSON 输出格式与字段定义
 你必须输出且仅输出一个合法的 JSON 对象，不要包含任何 Markdown 格式标记（如 ```json），不要有任何前言或后语。JSON 结构如下：
@@ -419,7 +419,7 @@ class EvidenceVerificationNode:
     "verdict": "必须是 APPLICANT_CORRECT, EXAMINER_CORRECT, INCONCLUSIVE 之一",
     "reasoning": "你的核查分析过程。指出审查员和申请人谁对谁错，以及为什么。逻辑需严密。",
     "confidence": 0.95, // 0.0到1.0之间的浮点数，表示你对该判定的信心
-    "examiner_rejection_reason": "严格遵循上述【特殊字段约束】的要求填写"
+    "examiner_rejection_rationale": "严格遵循上述【特殊字段约束】的要求填写"
   },
   "evidence":[
     {
@@ -678,13 +678,13 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
             raise ValueError(f"evidence_verification 输出非法 confidence 范围: {confidence}")
 
         reasoning = str(assessment.get("reasoning", "")).strip()
-        if "examiner_rejection_reason" not in assessment:
-            raise ValueError("evidence_verification 输出缺少 assessment.examiner_rejection_reason")
-        rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
-        if verdict == "APPLICANT_CORRECT" and not rejection_reason:
-            raise ValueError("evidence_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空")
+        if "examiner_rejection_rationale" not in assessment:
+            raise ValueError("evidence_verification 输出缺少 assessment.examiner_rejection_rationale")
+        rejection_rationale = str(assessment.get("examiner_rejection_rationale", "")).strip()
+        if verdict == "APPLICANT_CORRECT" and not rejection_rationale:
+            raise ValueError("evidence_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_rationale 不能为空")
         if verdict != "APPLICANT_CORRECT":
-            rejection_reason = ""
+            rejection_rationale = ""
 
         evidence_items = []
         for item in output.get("evidence", []) or []:
@@ -707,7 +707,7 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
                 "verdict": verdict,
                 "reasoning": reasoning,
                 "confidence": confidence,
-                "examiner_rejection_reason": rejection_reason,
+                "examiner_rejection_rationale": rejection_rationale,
             },
             "evidence": evidence_items,
         }

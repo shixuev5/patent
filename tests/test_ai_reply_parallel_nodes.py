@@ -35,7 +35,7 @@ def test_evidence_verification_runs_disputes_in_parallel(monkeypatch) -> None:
             dispute = kwargs["dispute"]
             return {
                 "dispute_id": dispute.get("dispute_id", ""),
-                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_reason": ""},
+                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_rationale": ""},
                 "evidence": [],
             }
         finally:
@@ -303,7 +303,7 @@ def test_common_knowledge_verification_runs_disputes_in_parallel(monkeypatch) ->
             dispute = kwargs["dispute"]
             return {
                 "dispute_id": dispute.get("dispute_id", ""),
-                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_reason": ""},
+                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_rationale": ""},
                 "evidence": [],
                 "trace": {},
             }
@@ -360,7 +360,7 @@ def test_topup_search_verification_runs_tasks_in_parallel(monkeypatch) -> None:
             }
             assessment = {
                 "dispute_id": dispute_id,
-                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_reason": ""},
+                "assessment": {"verdict": "INCONCLUSIVE", "confidence": 0.1, "reasoning": "", "examiner_rejection_rationale": ""},
                 "evidence": [],
                 "trace": {},
             }

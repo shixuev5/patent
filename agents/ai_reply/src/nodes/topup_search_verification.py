@@ -268,7 +268,7 @@ class TopupSearchVerificationNode:
     "verdict": "APPLICANT_CORRECT",
     "reasoning": "作为中立专家的最终裁决理由，解释为什么做出该判决。",
     "confidence": 0.85,
-    "examiner_rejection_reason": "【关键】当判决倾向申请人时，审查员为了强行维持驳回可能使用的官方说理（见下方约束）。"
+    "examiner_rejection_rationale": "【关键】当判决倾向申请人时，基于当前证据仍可继续维持驳回的逻辑要点（见下方约束）。"
   },
   "evidence":[
     {
@@ -296,13 +296,11 @@ class TopupSearchVerificationNode:
 - evidence数组中的 `doc_id` **必须**来自给定证据列表中的 ID（如 D1, EXT_1 等）。
 - 如果实在没有外部证据且特征确实是公认的公知常识，`doc_id` 可使用 `"MODEL"`，但必须谨慎使用。
 
-【驳回正文话术约束 (examiner_rejection_reason) —— 极度重要❗】
-- 此字段的文本将直接插入发送给申请人的《审查意见通知书》正文中。
-- **触发条件**：仅当 verdict 为 `APPLICANT_CORRECT` 且你必须模拟审查员强行驳回时填写；若 verdict 不为 APPLICANT_CORRECT，必须留空字符串 `""`。
-- **文风要求**：必须是**面向申请人的、确定的、官方的陈述语气**。
-- **绝对禁止出现的词汇**：禁止出现“审查员可主张”、“审查员认为”、“建议”、“可以尝试”、“如果...则...”、“为了维持驳回”。
-- ✅ 合格示例："经审查，虽然修改后的权利要求增加了XXX特征，但该特征已被对比文件1附件中的YYY内容所公开，且将其应用于本发明解决ZZZ问题属于本领域技术人员的常规技术手段，故该权利要求依然不具备创造性。"
-- ❌ 违规示例："审查员可以主张该特征是公知常识，建议指出其不具备创造性以维持驳回。"
+【替代性驳回逻辑约束 (examiner_rejection_rationale) —— 极度重要❗】
+- **触发条件**：仅当 verdict 为 `APPLICANT_CORRECT` 时填写；若 verdict 不为 APPLICANT_CORRECT，必须留空字符串 `""`。
+- **内容要求**：只需概括基于当前证据仍可继续维持驳回的逻辑骨架，例如新的证据映射、文献结合路径或常规技术推演。
+- **表达要求**：不要写成正式通知书正文，不要追求官方修辞。
+- **绝对禁止**：禁止脱离当前证据新增事实，禁止输出“建议”“可以尝试”“为了维持驳回”等策略性元语言。
 """
 
     def _build_user_prompt(
@@ -433,15 +431,15 @@ feature_text: {feature_text}
             confidence = 0.5
 
         reasoning = str(assessment.get("reasoning", "")).strip()
-        if "examiner_rejection_reason" not in assessment:
-            raise ValueError("topup_search_verification 输出缺少 assessment.examiner_rejection_reason")
-        rejection_reason = str(assessment.get("examiner_rejection_reason", "")).strip()
-        if verdict == "APPLICANT_CORRECT" and not rejection_reason:
+        if "examiner_rejection_rationale" not in assessment:
+            raise ValueError("topup_search_verification 输出缺少 assessment.examiner_rejection_rationale")
+        rejection_rationale = str(assessment.get("examiner_rejection_rationale", "")).strip()
+        if verdict == "APPLICANT_CORRECT" and not rejection_rationale:
             raise ValueError(
-                "topup_search_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_reason 不能为空"
+                "topup_search_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_rationale 不能为空"
             )
         if verdict != "APPLICANT_CORRECT":
-            rejection_reason = ""
+            rejection_rationale = ""
 
         evidence_items = []
         used_doc_ids: List[str] =[]
@@ -484,7 +482,7 @@ feature_text: {feature_text}
                 "verdict": verdict,
                 "reasoning": reasoning,
                 "confidence": confidence,
-                "examiner_rejection_reason": rejection_reason,
+                "examiner_rejection_rationale": rejection_rationale,
             },
             "evidence": evidence_items,
             "used_doc_ids": used_doc_ids,

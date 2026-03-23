@@ -23,6 +23,7 @@ from agents.ai_reply.src.nodes.evidence_verification import EvidenceVerification
 from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 from agents.ai_reply.src.nodes.verification_join import VerificationJoinNode
+from agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
 from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
 from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
 from agents.ai_reply.src.edges import handle_error
@@ -62,6 +63,7 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_node("common_knowledge_verification", CommonKnowledgeVerificationNode(config), retry_policy=retry_policy)
     workflow.add_node("topup_search_verification", TopupSearchVerificationNode(config), retry_policy=retry_policy)
     workflow.add_node("verification_join", VerificationJoinNode(config), retry_policy=retry_policy)
+    workflow.add_node("rejection_drafting", RejectionDraftingNode(config), retry_policy=retry_policy)
     workflow.add_node("report_generation", ReportGenerationNode(config), retry_policy=retry_policy)
     workflow.add_node("final_report_render", FinalReportRenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
@@ -158,7 +160,16 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_edge("evidence_verification", "verification_join")
     workflow.add_edge("common_knowledge_verification", "verification_join")
     workflow.add_edge("topup_search_verification", "verification_join")
-    workflow.add_conditional_edges("verification_join", create_router("report_generation"), {"failed": "handle_error", "report_generation": "report_generation"})
+    workflow.add_conditional_edges(
+        "verification_join",
+        create_router("rejection_drafting"),
+        {"failed": "handle_error", "rejection_drafting": "rejection_drafting"},
+    )
+    workflow.add_conditional_edges(
+        "rejection_drafting",
+        create_router("report_generation"),
+        {"failed": "handle_error", "report_generation": "report_generation"},
+    )
 
     # 报告生成后进入最终渲染节点
     workflow.add_conditional_edges(

@@ -47,7 +47,7 @@ def _sample_report() -> dict:
                         "verdict": "APPLICANT_CORRECT",
                         "confidence": 0.84,
                         "reasoning": "AI理由" * 18 + " AI_REASON_END",
-                        "examiner_rejection_reason": "经再次审查，仍可基于 D1 与 D2 的结合维持驳回。",
+                        "examiner_rejection_rationale": "结合 D1 与 D2 的公开内容，相关权利要求仍可被认定为不具备创造性。",
                     },
                     "evidence": [
                         {
@@ -81,7 +81,7 @@ def _sample_report() -> dict:
                         "verdict": "INCONCLUSIVE",
                         "confidence": 0.33,
                         "reasoning": "尚需补充检索 SECOND_AI_REASON_END",
-                        "examiner_rejection_reason": "",
+                        "examiner_rejection_rationale": "",
                     },
                     "evidence": [],
                 },
@@ -94,7 +94,7 @@ def _sample_report() -> dict:
                     "dispute_id": "DSP_1",
                     "claim_ids": ["1", "2"],
                     "feature_text": "争议特征" * 24 + " FEATURE_END",
-                    "examiner_rejection_reason": "经再次审查，仍可基于 D1 与 D2 的结合维持驳回。",
+                    "final_examiner_rejection_reason": "经再次审查，仍可基于 D1 与 D2 的结合维持驳回。",
                 }
             ],
         },
