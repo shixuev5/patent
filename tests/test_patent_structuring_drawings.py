@@ -137,6 +137,27 @@ def test_extract_priority_date_from_30_block() -> None:
     assert RuleBasedExtractor._extract_priority_date(md) == "2021.04.14"
 
 
+def test_rule_based_extractor_returns_empty_string_for_missing_string_fields() -> None:
+    md = """
+(21) 申请号 202310001234.5
+(22) 申请日 2023.01.01
+(54) 发明名称 一种装置
+(57) 摘要 摘要文本
+"""
+    result = RuleBasedExtractor.extract(md)
+
+    assert result["bibliographic_data"]["priority_date"] == ""
+    assert result["bibliographic_data"]["publication_number"] == ""
+    assert result["bibliographic_data"]["publication_date"] == ""
+    assert result["bibliographic_data"]["abstract_figure"] == ""
+    assert result["description"]["technical_field"] == ""
+    assert result["description"]["background_art"] == ""
+    assert result["description"]["summary_of_invention"] == ""
+    assert result["description"]["technical_effect"] == ""
+    assert result["description"]["brief_description_of_drawings"] == ""
+    assert result["description"]["detailed_description"] == ""
+
+
 def test_extract_inventors_split_chinese_names_by_single_space() -> None:
     md = """
 (72)发明人竹内高穗 铃木修一 池田充志

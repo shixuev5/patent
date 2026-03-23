@@ -83,7 +83,7 @@ class LLMBasedExtractor:
 3. **附图标记说明 (Brief Description of Drawings) 提取规则**:
    - 此字段**仅用于**提取类似 "1-定子，2-转子" 或 "101: 处理器" 的**部件标号说明**。
    - **严禁**提取 "图1是...的示意图" 这类图解说明文字。
-   - 如果原文中根本没有部件标号说明列表，该字段**必须返回 null**，绝不可用图解说明文字充数。
+   - 如果原文中根本没有部件标号说明列表，该字段**必须返回空字符串 `""`**，绝不可用图解说明文字充数。
 4. **附图标题清洗 (Drawing Captions)**:
    - `drawings.caption` 必须去除开头的图号（如"图1"）及紧跟的谓语动词/连接词（如"为"、"是"、"示出"、"："）。例如原文"图1是装置结构图"，提取后必须为"装置结构图"。
 5. **附图抽取一致性规则 (Drawings Consistency)**:
@@ -96,12 +96,21 @@ class LLMBasedExtractor:
 7. **申请人清洗 (Applicants Cleaning)**:
    - `applicants.name` 只能保留申请人主体名称，严禁混入地址文本。
    - 若原文出现“申请人名称+地址”同一行粘连（例如“某公司地址100068...”），必须拆分：名称进入 `name`，地址进入 `address`。
-   - 若无法识别地址，可将 `address` 置为 `""` 或 `null`，但 `name` 绝不能包含“地址...”串。
+   - 若无法识别地址，`address` 必须返回空字符串 `""`，但 `name` 绝不能包含“地址...”串。
+8. **必填字符串字段铁律 (Required String Fields)**:
+   - 除明确允许为 `null` 的可选字段外，其余字段必须返回 JSON 字符串，绝不允许返回 `null`。
+   - 若原文缺少某个必填文本章节，必须返回空字符串 `""`，不要返回 `null`。
+   - 特别是 `description.technical_field`、`description.background_art`、`description.summary_of_invention`、`description.detailed_description` 必须始终为字符串。
+9. **字符串统一约定 (String Contract)**:
+   - 所有字符串字段一律使用字符串类型表达缺失值，统一返回空字符串 `""`。
+   - 不要为任何字符串字段返回 `null`，包括 `priority_date`、`publication_number`、`publication_date`、`abstract_figure`、`technical_effect`、`brief_description_of_drawings`、`drawings.caption`、`applicants.address`。
 
 ### 字段边界识别规则
 - **invention_title (标题字段)**: 对应 `(54)` 项，可能是“发明名称”/“实用新型名称”/“外观设计名称”，统一写入 `invention_title`。
+- **background_art (背景技术)**: 若原文无法识别该章节，返回 `""`，不得返回 `null`。
 - **summary_of_invention (发明内容)**: 仅保留技术方案本体，遇到"本发明的有益效果"或"技术效果"时必须截断。
-- **technical_effect (有益效果)**: 单独提取"有益效果"段落，若文中未明确写出，则返回 null。
+- **technical_effect (有益效果)**: 单独提取"有益效果"段落，若文中未明确写出，则返回 `""`。
+- **detailed_description (具体实施方式)**: 若原文无法识别该章节，返回 `""`，不得返回 `null`。
 - **claim_type (权利要求类型)**: 即使内容提到其他权利要求（如"一种用于权利要求1所述装置的方法"），只要不以"根据/如权利要求X所述"开头，就是独立(independent)权利要求。
 - **parent_claim_ids (父权项字段)**: 只表示直接父节点，不要自动展开祖先链。
 
@@ -112,7 +121,7 @@ class LLMBasedExtractor:
   "bibliographic_data": {
     "application_number": "202310001234.5",
     "application_date": "2023.01.01",
-    "priority_date": null,
+    "priority_date": "",
     "publication_number": "CN116793681A",
     "publication_date": "2024.03.20",
     "invention_title": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法（对应发明名称/实用新型名称/外观设计名称）",
@@ -121,7 +130,7 @@ class LLMBasedExtractor:
     "inventors": ["张三", "李四"],
     "agency": {"agency_name": "某专利中心", "agents": ["王五"]},
     "abstract": "本发明公开了一种基于磁纳米粒子...",
-    "abstract_figure": "images/xxx.jpg"
+    "abstract_figure": ""
   },
   "claims": [
     {
@@ -141,8 +150,8 @@ class LLMBasedExtractor:
     "technical_field": "本发明属于纳米材料测试技术领域...",
     "background_art": "温度是反映生命活动状态的重要指标...",
     "summary_of_invention": "针对现有技术的以上缺陷，本发明提供了一种...",
-    "technical_effect": "本发明使用法拉第磁光效应对温度进行测量，可以实现...",
-    "brief_description_of_drawings": null,
+    "technical_effect": "",
+    "brief_description_of_drawings": "",
     "detailed_description": "为了使本发明的目的、技术方案及优点更加清楚明白..."
   },
   "drawings": [

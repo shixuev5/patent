@@ -251,13 +251,13 @@ class RuleBasedExtractor:
     def _extract_application_number(md_content: str) -> str:
         pattern = r"\(21\)\s*申请号\s*([^\s]+)"
         match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else None
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _extract_application_date(md_content: str) -> str:
         pattern = r"\(22\)\s*申请日\s*(\d{4}\s*[\.\-]\s*\d{1,2}\s*[\.\-]\s*\d{1,2})"
         match = re.search(pattern, md_content)
-        return match.group(1).replace(" ", "") if match else None
+        return match.group(1).replace(" ", "") if match else ""
 
     @staticmethod
     def _extract_priority_date(md_content: str) -> str:
@@ -270,7 +270,7 @@ class RuleBasedExtractor:
         if not date_matches and block_match:
             date_matches = re.findall(date_pattern, block_match.group(0))
         if not date_matches:
-            return None
+            return ""
 
         normalized_dates = []
         for raw_date in date_matches:
@@ -279,7 +279,7 @@ class RuleBasedExtractor:
                 normalized_dates.append(normalized)
 
         if not normalized_dates:
-            return None
+            return ""
 
         return sorted(normalized_dates)[0]
 
@@ -287,19 +287,19 @@ class RuleBasedExtractor:
     def _extract_publication_number(md_content: str) -> str:
         pattern = r"\((?:19|10|11)\)\s*(?:公开号|授权公告号|公告号)\s*([^\s]+)"
         match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else None
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _extract_publication_date(md_content: str) -> str:
         pattern = r"\((?:43|45)\)\s*(?:公开日|授权公告日|公告日)\s*(\d{4}\s*[\.\-]\s*\d{1,2}\s*[\.\-]\s*\d{1,2})"
         match = re.search(pattern, md_content)
-        return match.group(1).replace(" ", "") if match else None
+        return match.group(1).replace(" ", "") if match else ""
 
     @staticmethod
     def _extract_invention_title(md_content: str) -> str:
         pattern = r"\(54\)\s*(?:发明名称|实用新型名称|外观设计名称)\s*\n*\s*([^\n#]+)"
         match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else None
+        return match.group(1).strip() if match else ""
 
     @staticmethod
     def _extract_ipc_classifications(md_content: str) -> list:
@@ -514,7 +514,7 @@ class RuleBasedExtractor:
             abstract = re.sub(r"!\[.*?\]\(.*?\)", "", abstract)
             abstract = re.sub(r"\s+", " ", abstract)
             return abstract.strip()
-        return None
+        return ""
 
     @staticmethod
     def _extract_abstract_figure(md_content: str) -> str:
@@ -527,7 +527,7 @@ class RuleBasedExtractor:
             fig_match = re.search(r"!\[.*?\]\((.*?)\)", after_abstract)
             if fig_match:
                 return fig_match.group(1).strip()
-        return None
+        return ""
 
     # ================= 权利要求与说明书字段提取 =================
 
@@ -651,7 +651,7 @@ class RuleBasedExtractor:
         match = re.search(pattern, md_content, re.DOTALL)
         if match:
             return re.sub(r"\[\d{4}\]\s*", "", match.group(1).strip())
-        return None
+        return ""
 
     @staticmethod
     def _extract_background_art(md_content: str) -> str:
@@ -659,7 +659,7 @@ class RuleBasedExtractor:
         match = re.search(pattern, md_content, re.DOTALL)
         if match:
             return re.sub(r"\[\d{4}\]\s*", "", match.group(1).strip())
-        return None
+        return ""
 
     @staticmethod
     def _extract_summary_and_effect(md_content: str) -> tuple:
@@ -667,7 +667,7 @@ class RuleBasedExtractor:
         pattern = r"#+\s*(?:发明内容|实用新型内容|外观设计简要说明)\s*([\s\S]*?)(?=#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
         if not match:
-            return None, None
+            return "", ""
             
         content = match.group(1).strip()
 
@@ -683,7 +683,7 @@ class RuleBasedExtractor:
             summary = _clean_section_text(content[: heading_match.start()])
             effect = _clean_section_text(content[heading_match.start() :])
             effect = re.sub(r"^(?:发明效果|有益效果|技术效果)\s*[：:]?\s*", "", effect).strip()
-            return summary or None, effect or None
+            return summary or "", effect or ""
         
         split_pattern = r"(\[?\d{4}\]?\s*(?:总体而言[，,]\s*)?(?:通过.*?)?与现有技术相比[^\n]*?(?:有益|技术)效果[。：]?|\[?\d{4}\]?\s*(?:有益|技术)效果[：为。]|\[?\d{4}\]?\s*优点[：为。]|\[?\d{4}\]?\s*本(?:发明|实用新型)的?(?:有益)?效果[^\n]*?[：。])"
         
@@ -695,7 +695,7 @@ class RuleBasedExtractor:
             
             summary = _clean_section_text(summary)
             effect = _clean_section_text(effect)
-            return summary or None, effect or None
+            return summary or "", effect or ""
             
         backup_pattern = r"(\[?\d{4}\]?\s*[^\[\n]*(?:本(?:发明|实用新型).*?(?:有益|效果|优点)|通过.*?实现.*?效果)[^\n]*)"
         backup_matches = list(re.finditer(backup_pattern, content))
@@ -706,10 +706,10 @@ class RuleBasedExtractor:
             
             summary = _clean_section_text(summary)
             effect = _clean_section_text(effect)
-            return summary or None, effect or None
+            return summary or "", effect or ""
             
         summary = _clean_section_text(content)
-        return summary or None, None
+        return summary or "", ""
 
     @staticmethod
     def _extract_brief_description(md_content: str) -> str:
@@ -717,11 +717,11 @@ class RuleBasedExtractor:
         pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
         match = re.search(pattern, md_content, re.DOTALL)
         if not match:
-            return None
+            return ""
 
         content = re.sub(r"\[\d{4}\]\s*", "", match.group(1)).strip()
         if not content:
-            return None
+            return ""
 
         # 优先在“附图标记说明”子区块提取，避免误吸收图解说明句
         marker_block_match = re.search(
@@ -758,7 +758,7 @@ class RuleBasedExtractor:
         if items:
             return "、".join(items)
 
-        return None
+        return ""
 
     @staticmethod
     def _extract_detailed_description(md_content: str) -> str:
@@ -783,4 +783,4 @@ class RuleBasedExtractor:
                 
             # 3. 去除首尾多余空白字符
             return content.strip()
-        return None
+        return ""
