@@ -34,11 +34,12 @@ class LLMBasedExtractor:
             json_data = self.llm_service.invoke_text_json(
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": cleaned_content},
+                    {"role": "user", "content": f"请解析以下专利文档：\n\n{cleaned_content}"},
                 ],
                 task_kind="patent_structuring_extract",
-                temperature=0.1,  # 低温度保持精确
+                temperature=0.0,
             )
+            json_data = self._normalize_llm_json_data(json_data)
 
             # 使用 Pydantic 进行结构校验和类型转换
             patent_obj = PatentDocument.model_validate(json_data)
@@ -61,106 +62,169 @@ class LLMBasedExtractor:
 
     @staticmethod
     def preprocess_patent_text(text: str) -> str:
-        """在输入给 LLM 前进行正则清洗，降低 LLM 认知负担并节约 Token"""
+        """多法域兼容的预处理清洗，降低 Token 消耗并移除干扰符"""
 
-        # 1. 移除专利局标准的段落号，例如 [0001], [0012] 等
-        text = re.sub(r'\[\d{4}\]\s*', '', text)
+        text = str(text or "")
+
+        # 1. 移除多法域常见段落号，不碰正文中的合法编号、范围或连字符
+        text = re.sub(r'(?:\[|【|<)\d{4}(?:\]|】|>)\s*', '', text)
+
+        # 2. 清理 HTML 表格标签与孤立页码/行号
+        text = re.sub(r'(?i)<br\s*/?>', '\n', text)
+        text = re.sub(r'(?i)</?(?:table|tr)>', '\n', text)
+        text = re.sub(r'(?i)</?(?:td|th)>', ' ', text)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'(?m)^\s*\d+\s*$', '', text)
+
+        # 3. 清理明显页眉/页脚噪声，但避免误删正常正文
+        text = re.sub(r'(?im)^\s*EUROPEAN SEARCH REPORT\s*$', '', text)
+        text = re.sub(r'(?im)^\s*ANNEX TO THE EUROPEAN SEARCH REPORT.*$', '', text)
+
+        # 4. 压缩空行与多余空白
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r'[ \t]+', ' ', text)
+        text = re.sub(r' *\n *', '\n', text)
 
         return text.strip()
 
+    @staticmethod
+    def _normalize_llm_json_data(json_data: dict) -> dict:
+        """
+        在保持核心字段严格校验的前提下，对 LLM 常见漏字段做最小归一化。
+        目标是避免非核心可空字段缺失导致整体失败。
+        """
+        if not isinstance(json_data, dict):
+            return {}
+
+        normalized = dict(json_data)
+        for key in ["bibliographic_data", "claims", "description", "drawings"]:
+            if key not in normalized or normalized[key] is None:
+                normalized[key] = [] if key in {"claims", "drawings"} else {}
+
+        bibliographic = dict(normalized.get("bibliographic_data") or {})
+        for field in [
+            "priority_date",
+            "publication_number",
+            "publication_date",
+            "abstract_figure",
+        ]:
+            if bibliographic.get(field) is None:
+                bibliographic[field] = ""
+        for field in ["ipc_classifications", "applicants", "inventors"]:
+            if bibliographic.get(field) is None:
+                bibliographic[field] = []
+        if bibliographic:
+            normalized["bibliographic_data"] = bibliographic
+
+        description = dict(normalized.get("description") or {})
+        for field in [
+            "technical_effect",
+            "brief_description_of_drawings",
+            "technical_field",
+            "background_art",
+            "summary_of_invention",
+            "detailed_description",
+        ]:
+            if description.get(field) is None:
+                description[field] = ""
+        if description:
+            normalized["description"] = description
+
+        for claim in normalized.get("claims", []):
+            if not isinstance(claim.get("parent_claim_ids"), list):
+                claim["parent_claim_ids"] = []
+            claim["claim_id"] = str(claim.get("claim_id", ""))
+
+        return normalized
+
     def _get_system_prompt(self):
-        return r"""你是一个精通专利文档结构的资深AI分析师。你的任务是将杂乱的Markdown专利文本解析为结构化、干净的JSON格式。
+        return r"""你是一个精通多法域（中、美、欧、日、韩）专利文本解析的资深AI工程师与法务专家。你的任务是将杂乱的 Markdown 专利文本解析为结构化、干净的 JSON。
 
-### 核心清洗指令 (Critical Cleaning Rules) - 必须严格执行！
-1. **全局去噪 (Noise Removal)**:
-   - 必须彻底删除所有类似 `[0001]`、`[0025]` 的段落编号。
-   - 必须删除所有的页码（如 "第1页/共5页"）、页眉、页脚信息。
-2. **权利要求清洗 (Claims Cleaning)**:
-   - `claim_text` 必须去除开头的序号和标点！(例如原文是 "1. 一种装置..." 或 "2、根据权利要求1...", 提取后必须变成 "一种装置..." 和 "根据权利要求1...")。
-   - `claim_id` 必须填写对应权利要求编号（字符串形式，如 "1"、"2"）。
-   - `parent_claim_ids` 仅用于从属权利要求：提取其直接引用的父权项编号数组（字符串数组）。
-   - 独立权利要求 `parent_claim_ids` 必须为 `[]`；从属权利要求若引用多个或区间（如“1或2”“1至3”）必须展开为完整数组。
-3. **附图标记说明 (Brief Description of Drawings) 提取规则**:
-   - 此字段**仅用于**提取类似 "1-定子，2-转子" 或 "101: 处理器" 的**部件标号说明**。
-   - **严禁**提取 "图1是...的示意图" 这类图解说明文字。
-   - 如果原文中根本没有部件标号说明列表，该字段**必须返回空字符串 `""`**，绝不可用图解说明文字充数。
-4. **附图标题清洗 (Drawing Captions)**:
-   - `drawings.caption` 必须去除开头的图号（如"图1"）及紧跟的谓语动词/连接词（如"为"、"是"、"示出"、"："）。例如原文"图1是装置结构图"，提取后必须为"装置结构图"。
-5. **附图抽取一致性规则 (Drawings Consistency)**:
-   - `drawings` 仅从“# 具体实施方式”章节后出现的附图区域提取，避免把摘要附图混入 `drawings`。
-   - 同一 `file_path` 绝不允许对应多个 `figure_label`（一张图只能一个图号）。
-   - 当附图图片数量与附图标题数量不一致时，允许同一 `figure_label` 出现多条记录（不同 `file_path`），用于表达同图号多图。
-6. **公式与特殊符号 (LaTeX Rules)**:
-   - 完整保留所有的 LaTeX 公式（`$$...$$` 或 `$...$`）。
-   - **JSON转义铁律**: 原文中所有的 LaTeX 反斜杠 `\` 必须转义为双反斜杠 `\\` (例如 `$120 \\mathrm{{mm}}$`)。
-7. **申请人清洗 (Applicants Cleaning)**:
-   - `applicants.name` 只能保留申请人主体名称，严禁混入地址文本。
-   - 若原文出现“申请人名称+地址”同一行粘连（例如“某公司地址100068...”），必须拆分：名称进入 `name`，地址进入 `address`。
-   - 若无法识别地址，`address` 必须返回空字符串 `""`，但 `name` 绝不能包含“地址...”串。
-8. **必填字符串字段铁律 (Required String Fields)**:
-   - 除明确允许为 `null` 的可选字段外，其余字段必须返回 JSON 字符串，绝不允许返回 `null`。
-   - 若原文缺少某个必填文本章节，必须返回空字符串 `""`，不要返回 `null`。
-   - 特别是 `description.technical_field`、`description.background_art`、`description.summary_of_invention`、`description.detailed_description` 必须始终为字符串。
-9. **字符串统一约定 (String Contract)**:
-   - 所有字符串字段一律使用字符串类型表达缺失值，统一返回空字符串 `""`。
-   - 不要为任何字符串字段返回 `null`，包括 `priority_date`、`publication_number`、`publication_date`、`abstract_figure`、`technical_effect`、`brief_description_of_drawings`、`drawings.caption`、`applicants.address`。
+### 一、多法域锚点识别指南（必须优先使用）
+面对不同国家的专利，请严格寻找以下锚点来提取信息，**切勿凭借常识臆造**：
+- **著录项目（INID Codes）**：(11)公开/公告号, (21)申请号, (22)申请日, (30)优先权, (51)IPC分类, (54)名称, (57)摘要, (71)/(73)申请人, (72)发明人, (74)代理机构。
+- **CN (中国)**：寻找`技术领域`、`背景技术`、`发明内容`、`附图说明`、`具体实施方式`。权利要求以 `1.` 开始。
+- **US (美国)**：寻找 `Pub. No.`、`Filed:`、`BACKGROUND`、`SUMMARY`、`BRIEF DESCRIPTION OF THE DRAWINGS`、`DETAILED DESCRIPTION`。权利要求以 `1.`、`2.` 并在句末有句号。
+- **EP (欧洲)**：寻找 `Application number:`、`Date of publication:`、`Description`、`Claims`。若出现 `Amended claims`，必须优先提取修正后的权利要求。
+- **JP (日本)**：寻找 `【特許公開番号】`、`【発明の名称】`、`【技術分野】`、`【背景技術】`、`【発明の概要】`、`【図面の簡単な説明】`。权利要求必定以 `【請求項X】` 标记。
+- **KR (韩国)**：寻找 `공개번호`、`출원번호`、`발명의 설명`、`청구항 1`。权利要求常以 `# 청구항 1` 标示。
 
-### 字段边界识别规则
-- **invention_title (标题字段)**: 对应 `(54)` 项，可能是“发明名称”/“实用新型名称”/“外观设计名称”，统一写入 `invention_title`。
-- **background_art (背景技术)**: 若原文无法识别该章节，返回 `""`，不得返回 `null`。
-- **summary_of_invention (发明内容)**: 仅保留技术方案本体，遇到"本发明的有益效果"或"技术效果"时必须截断。
-- **technical_effect (有益效果)**: 单独提取"有益效果"段落，若文中未明确写出，则返回 `""`。
-- **detailed_description (具体实施方式)**: 若原文无法识别该章节，返回 `""`，不得返回 `null`。
-- **claim_type (权利要求类型)**: 即使内容提到其他权利要求（如"一种用于权利要求1所述装置的方法"），只要不以"根据/如权利要求X所述"开头，就是独立(independent)权利要求。
-- **parent_claim_ids (父权项字段)**: 只表示直接父节点，不要自动展开祖先链。
+### 二、核心清洗与容错规则（禁止违反）
+1. **剔除噪点**：绝不能把 OCR 扫描识别出的 `(72)`、`FIG.1`、`[0001]`、`EUROPEAN SEARCH REPORT` 等标记本身当做字段值存入 JSON。
+2. **文本原样保留**：完整保留正文中的 LaTeX 公式（`$$...$$` 或 `$...$`）、化学分子式及特殊符号。
+3. **转义合法性**：反斜杠必须合法转义；JSON 中的反斜杠 `\` 必须正确转义为 `\\`。
 
-### 输出格式参考
-请严格按照以下结构输出：
-```json
+### 三、字段级强约束（Data Schema）
+1. 所有字符串字段禁止返回 `null`，若原文缺失必须返回 `""`（空字符串）。
+2. `applicants`：`name` 只能包含公司或个人名称；地址信息必须剥离到 `address`。如果无法确定地址，`address` 留空 `""`，**绝不可把地址混进名称**。
+3. `inventors`：仅保留人名字符串数组，剔除国籍、城市、邮编等冗余信息。
+4. `priority_date` / `publication_date` / `application_date`：提取并标准化为 `YYYY.MM.DD` 格式。
+
+### 四、权利要求 (Claims) 抽取深度规则
+这是最重要的部分，必须逐条准确解析：
+1. `claim_text`：**必须剔除开头的编号**（如去掉"1."或"【請求項1】"），保留完整的法律条款文本。
+2. `claim_type`：
+   - 如果文本明确引用了其他权利要求（包含 "according to claim", "any of claims", "The system of claim 1", "請求項1に記載の", "제1항에 있어서" 等），判定为 `"dependent"`。
+   - 否则为 `"independent"`。
+3. `parent_claim_ids`（**逻辑展开**）：
+   - 只能填写直接引用的父权项 ID（字符串数组）。
+   - **必须展开范围表达式**：如 "claims 1-3" -> `["1", "2", "3"]`；"請求項1から3" -> `["1", "2", "3"]`；"1 or 2" -> `["1", "2"]`。
+   - 若为独立权利要求，必须严格返回 `[]`。
+
+### 五、说明书 (Description) 抽取边界
+- `summary_of_invention` (发明内容)：仅保留技术方案。如果后半段明确出现“有益效果/发明效果/ADVANTAGEOUS EFFECTS”，请将其截断并填入 `technical_effect`。
+- `brief_description_of_drawings` (附图说明)：**仅提取“部件标号说明”列表**（例如：`1-壳体、2-齿轮`）。不要提取对图纸整体画面的描述语句。
+
+### 六、附图资源 (Drawings) 抽取规则
+- `caption`：去掉图号。例如 `图1是结构示意图` -> `结构示意图`；`FIG. 2 shows a view` -> `a view`。
+- `figure_label`：必须统一标准化为 `图{编号}`（如 `图1`、`图2A`），忽略原文是 FIG. 还是 図。
+- 同一 `file_path` 只能绑定一个 `figure_label`。摘要附图不得混入 `drawings` 主列表。若无附图，`drawings` 也必须返回空数组 `[]`。
+
+### 七、输出格式要求
+必须返回纯 JSON 对象，不要包含 markdown 代码块包裹（如 ```json...```），或者确保能被严格解析。格式如下：
 {
   "bibliographic_data": {
-    "application_number": "202310001234.5",
-    "application_date": "2023.01.01",
-    "priority_date": "",
-    "publication_number": "CN116793681A",
-    "publication_date": "2024.03.20",
-    "invention_title": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法（对应发明名称/实用新型名称/外观设计名称）",
+    "application_number": "...",
+    "application_date": "...",
+    "priority_date": "...",
+    "publication_number": "...",
+    "publication_date": "...",
+    "invention_title": "...",
     "ipc_classifications": ["G01K 7/36"],
-    "applicants": [{"name": "华中科技大学", "address": "湖北省武汉市..."}] ,
-    "inventors": ["张三", "李四"],
-    "agency": {"agency_name": "某专利中心", "agents": ["王五"]},
-    "abstract": "本发明公开了一种基于磁纳米粒子...",
-    "abstract_figure": ""
+    "applicants":[{"name": "...", "address": "..."}] ,
+    "inventors": ["..."],
+    "agency": {"agency_name": "...", "agents": ["..."]},
+    "abstract": "...",
+    "abstract_figure": "..."
   },
-  "claims": [
+  "claims":[
     {
       "claim_id": "1",
-      "claim_text": "一种基于磁纳米粒子法拉第磁光效应的温度测量方法，包括...",
+      "claim_text": "...",
       "claim_type": "independent",
       "parent_claim_ids": []
     },
     {
       "claim_id": "2",
-      "claim_text": "根据权利要求1所述的方法，其特征在于...",
+      "claim_text": "...",
       "claim_type": "dependent",
       "parent_claim_ids": ["1"]
     }
   ],
   "description": {
-    "technical_field": "本发明属于纳米材料测试技术领域...",
-    "background_art": "温度是反映生命活动状态的重要指标...",
-    "summary_of_invention": "针对现有技术的以上缺陷，本发明提供了一种...",
-    "technical_effect": "",
-    "brief_description_of_drawings": "",
-    "detailed_description": "为了使本发明的目的、技术方案及优点更加清楚明白..."
+    "technical_field": "...",
+    "background_art": "...",
+    "summary_of_invention": "...",
+    "technical_effect": "...",
+    "brief_description_of_drawings": "...",
+    "detailed_description": "..."
   },
-  "drawings": [
+  "drawings":[
     {
-      "file_path": "images/figure1.jpg",
+      "file_path": "images/fig1.jpg",
       "figure_label": "图1",
-      "caption": "法拉第磁光效应测温装置示意图"
+      "caption": "..."
     }
   ]
 }
-```
 """

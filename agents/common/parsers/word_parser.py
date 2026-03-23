@@ -1,7 +1,6 @@
 import os
 import time
 import zipfile
-import requests
 import shutil
 from pathlib import Path
 from loguru import logger
@@ -9,6 +8,7 @@ from loguru import logger
 # Import config
 from config import settings
 from agents.common.parsers.base import BaseParser
+from agents.common.utils.http import request_with_retry
 
 
 class OnlineWordParser(BaseParser):
@@ -61,8 +61,10 @@ class OnlineWordParser(BaseParser):
         url_batch = f"{self.base_url}/file-urls/batch"
         payload = {"files": [{"name": file_name}], "model_version": "vlm"}
 
-        resp = requests.post(
+        resp = request_with_retry(
+            "post",
             url_batch,
+            log_prefix="[在线Word解析器]",
             headers=self.headers,
             json=payload,
             timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,
@@ -83,7 +85,13 @@ class OnlineWordParser(BaseParser):
 
         # B. Upload Content (PUT)
         with open(file_path, "rb") as f:
-            put_resp = requests.put(upload_url, data=f, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
+            put_resp = request_with_retry(
+                "put",
+                upload_url,
+                log_prefix="[在线Word解析器]",
+                data=f,
+                timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,
+            )
 
             if put_resp.status_code != 200:
                 logger.error(f"OSS 上传失败 [{put_resp.status_code}]：{put_resp.text}")
@@ -98,7 +106,13 @@ class OnlineWordParser(BaseParser):
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            resp = requests.get(url, headers=self.headers, timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS)
+            resp = request_with_retry(
+                "get",
+                url,
+                log_prefix="[在线Word解析器]",
+                headers=self.headers,
+                timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,
+            )
             if resp.status_code != 200:
                 logger.warning(f"[在线Word解析器] 轮询状态检查失败：{resp.status_code}")
                 time.sleep(interval)
@@ -135,8 +149,10 @@ class OnlineWordParser(BaseParser):
 
         zip_path = output_dir / "result.zip"
 
-        with requests.get(
+        with request_with_retry(
+            "get",
             download_url,
+            log_prefix="[在线Word解析器]",
             stream=True,
             verify=False,
             timeout=settings.MINERU_REQUEST_TIMEOUT_SECONDS,

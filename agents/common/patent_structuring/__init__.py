@@ -33,13 +33,18 @@ def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
 
 def extract_structured_claims(md_content: str) -> List[Dict[str, Any]]:
     """
-    从新权利要求书文本中提取结构化权利要求：
-    从以 1. 开始的位置，直到文本结尾，按序号切分。
+    独立获取结构化权利要求，兼容中美欧日韩常见版式。
     """
     content = str(md_content or "").replace("\r\n", "\n")
-    start_match = re.search(r"(?m)^1\s*[\.．]\s*", content)
-    if not start_match:
-        return []
-    claims_section = content[start_match.start():]
     from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
+    if re.search(r"【請求項\d+】", content) or re.search(r"(?m)^#\s*청구항\s*\d+\s*$", content):
+        claims_section = content
+    elif re.search(r"(?ims)^#\s*Amended claims[^\n]*\n", content):
+        match = re.search(r"(?ims)^#\s*Amended claims[^\n]*\n([\s\S]*?)\Z", content)
+        claims_section = match.group(1) if match else ""
+    else:
+        start_match = re.search(r"(?m)^1\s*[\.．]\s*", content)
+        if not start_match:
+            return []
+        claims_section = content[start_match.start():]
     return RuleBasedExtractor.extract_structured_claims(claims_section)

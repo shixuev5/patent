@@ -202,6 +202,7 @@ def setup_logging(log_dir: str = None):
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="专利 AI 答复辅助Agent")
+    parser.add_argument("--task-id", help="复用既有任务ID与输出目录")
     parser.add_argument("--office-action", help="审查意见通知书文件路径 (PDF或Word格式)")
     parser.add_argument("--response", help="意见陈述书文件路径 (PDF或Word格式)")
     parser.add_argument("--claims", help="权利要求书文件路径 (PDF或Word格式)")
@@ -209,7 +210,7 @@ def main():
 
     args = parser.parse_args()
 
-    task_id = str(uuid.uuid4())[:8]
+    task_id = str(args.task_id or "").strip() or str(uuid.uuid4())[:8]
 
     # 设置输出目录
     output_dir = Path("output") / task_id

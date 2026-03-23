@@ -109,14 +109,12 @@ class OfficeActionExtractor:
         chapter_matches = list(re.finditer(chapter_pattern, markdown_content))
 
         if chapter_matches:
-            # 提取最后一个审查意见通知书的内容
+            # 提取最后一个审查意见通知书的内容。
+            # 注意正文内部可能包含 "# 权利要求..." 之类的子标题，不能据此截断；
+            # 这里只能截到“下一份审查意见通知书”或文件末尾。
             last_chapter = chapter_matches[-1]
             chapter_index = last_chapter.start()
             chapter_end = len(markdown_content)
-            # 查找下一个#标题或文件结束
-            next_chapter_match = re.search(r"\n#", markdown_content[chapter_index+1:])
-            if next_chapter_match:
-                chapter_end = chapter_index + 1 + next_chapter_match.start()
 
             section_content = markdown_content[chapter_index + len(last_chapter.group()):chapter_end].strip()
             logger.info(f"找到第{last_chapter.group(1)}次审查意见通知书章节，长度: {len(section_content)}")

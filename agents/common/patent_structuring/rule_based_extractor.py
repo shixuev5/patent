@@ -1,6 +1,9 @@
+import html
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 from loguru import logger
+
+from agents.common.patent_structuring.date_utils import parse_common_date_string
 
 class RuleBasedExtractor:
     """基于规则的专利文档结构化提取器"""
@@ -19,8 +22,8 @@ class RuleBasedExtractor:
         logger.info("规则抽取器开始解析专利文本")
 
         try:
-            # 统一换行符，避免不同操作系统的回车换行干扰正则匹配
-            md_content = md_content.replace("\r\n", "\n")
+            # 统一换行符/全角标点，并清理常见 OCR 断字噪声
+            md_content = RuleBasedExtractor._normalize_document_text(md_content)
 
             result = {
                 "bibliographic_data": RuleBasedExtractor._parse_bibliographic_data(md_content),
@@ -28,6 +31,8 @@ class RuleBasedExtractor:
                 "description": RuleBasedExtractor._parse_description(md_content),
                 "drawings": RuleBasedExtractor._parse_drawings(md_content),
             }
+            from agents.common.patent_structuring.models import PatentDocument
+            result = PatentDocument.model_validate(result).model_dump()
 
             logger.success("规则抽取器解析完成")
             return result
@@ -35,6 +40,80 @@ class RuleBasedExtractor:
         except Exception as e:
             logger.exception(f"规则抽取器解析失败: {e}")
             return {}
+
+    @staticmethod
+    def _normalize_document_text(md_content: str) -> str:
+        text = str(md_content or "").replace("\r\n", "\n")
+        text = text.replace("（", "(").replace("）", ")")
+        text = text.replace("：", ":")
+        text = re.sub(r"([A-Za-z])-\s*\d+\s+([A-Za-z])", r"\1\2", text)
+        text = re.sub(r"(?m)^\s*\d+\s*$", "", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _to_search_text(md_content: str) -> str:
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</?(?:table|tr)>", "\n", text)
+        text = re.sub(r"(?i)</?(?:td|th)>", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _clean_field_value(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n:;,.")
+
+    @staticmethod
+    def _find_first_group(text: str, patterns: List[str], flags: int = 0) -> str:
+        for pattern in patterns:
+            match = re.search(pattern, text, flags)
+            if match:
+                value = RuleBasedExtractor._clean_field_value(match.group(1))
+                if value:
+                    return value
+        return ""
+
+    @staticmethod
+    def _extract_date_value(text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return ""
+
+        normalized = parse_common_date_string(value)
+        if normalized:
+            return normalized
+
+        loose = re.search(r"(\d{4})\D{0,8}(\d{1,2})\D{0,8}(\d{1,2})", value)
+        if loose:
+            return RuleBasedExtractor._normalize_date(
+                f"{loose.group(1)}.{loose.group(2)}.{loose.group(3)}"
+            ) or ""
+
+        return ""
+
+    @staticmethod
+    def _extract_field_block(md_content: str, field_no: str) -> str:
+        text = RuleBasedExtractor._to_search_text(md_content)
+        pattern = rf"\({field_no}\)\s*([\s\S]*?)(?=\(\d+\)|#\s*\(\d+\)|\Z)"
+        match = re.search(pattern, text)
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _extract_section_by_headings(md_content: str, headings: List[str], next_headings: List[str]) -> str:
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        heading_pattern = "|".join(headings)
+        next_pattern = "|".join(next_headings)
+        pattern = rf"(?ims)(?:^|\n)(?:#\s*)?(?:{heading_pattern})\s*([\s\S]*?)(?=(?:^|\n)(?:#\s*)?(?:{next_pattern})\s*$|\Z)"
+        match = re.search(pattern, text)
+        if not match:
+            return ""
+        content = match.group(1).strip()
+        return re.sub(r"\[\d{4}\]\s*", "", content).strip()
 
     @staticmethod
     def _parse_bibliographic_data(md_content: str) -> dict:
@@ -59,27 +138,11 @@ class RuleBasedExtractor:
     def _parse_claims(md_content: str) -> list:
         """解析 claims (权利要求) 部分"""
         claims =[]
-        
-        # 1. 定位并截取仅属于权利要求的区域
-        # 为了避免匹配到前文内容，从 (57)摘要 之后开始寻找
-        abstract_match = re.search(r"\(57\)\s*摘要", md_content)
-        start_search_pos = abstract_match.end() if abstract_match else 0
-        
-        # 寻找真正的权利要求起点：行首的 1. 或 1．
-        start_match = re.search(r"(?m)^1\s*[\.．]\s*", md_content[start_search_pos:])
-        if not start_match:
+        claims_section = RuleBasedExtractor._extract_claims_section(md_content)
+        if not claims_section:
             return claims
-            
-        start_idx = start_search_pos + start_match.start()
-        
-        # 寻找权利要求终点：第一个 Markdown 标题（如 "# 一种基于..." 或 "# 技术领域"）
-        end_match = re.search(r"(?m)^#+\s+", md_content[start_idx:])
-        end_idx = start_idx + end_match.start() if end_match else len(md_content)
-            
-        # 截取纯净的权利要求段落
-        claims_section = md_content[start_idx:end_idx].strip()
 
-        # 2. 从限定的纯净文本中解析结构化权利要求
+        # 兼容中文/英文/日文/韩文 claim 标记
         for item in RuleBasedExtractor.extract_structured_claims(claims_section):
             claims.append({
                 "claim_id": item.get("claim_id", ""),
@@ -89,6 +152,82 @@ class RuleBasedExtractor:
             })
             
         return claims
+
+    @staticmethod
+    def _extract_claims_section(md_content: str) -> str:
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        search_cutoff = re.search(r"(?im)^#\s*(?:EUROPEAN SEARCH REPORT|ANNEX TO THE EUROPEAN SEARCH REPORT)\b", text)
+        if search_cutoff:
+            text = text[: search_cutoff.start()]
+
+        amended_match = re.search(
+            r"(?ims)^#\s*Amended claims[^\n]*\n([\s\S]*?)\Z",
+            text,
+        )
+        if amended_match:
+            return amended_match.group(1).strip()
+
+        jp_match = re.search(
+            r"【特許請求の範囲】([\s\S]*?)(?=【発明の詳細な説明】|\Z)",
+            text,
+        )
+        if jp_match:
+            return jp_match.group(1).strip()
+
+        kr_match = re.search(r"(?ims)^#\s*청구항\s*1\s*$([\s\S]*?)\Z", text)
+        if kr_match:
+            return kr_match.group(0).strip()
+
+        claims_heading = re.search(r"(?ims)^#\s*Claims\s*$([\s\S]*?)\Z", text)
+        if claims_heading:
+            return claims_heading.group(1).strip()
+
+        run_matches = list(re.finditer(r"(?m)^1\s*[\.．]\s*", text))
+        if not run_matches:
+            return ""
+        stop_pattern = (
+            r"(?im)^#\s*(?:技术领域|背景技术|发明内容|附图说明|具体实施方式|说明书|"
+            r"FIELD OF THE INVENTION|BACKGROUND|SUMMARY(?: OF THE INVENTION)?|"
+            r"BRIEF DESCRIPTION OF THE DRAWINGS|DETAILED DESCRIPTION(?: OF THE PREFERRED EMBODIMENTS OF THE INVENTION)?|"
+            r"【技術分野】|【背景技術】|【発明の概要】|【図面の簡単な説明】|【発明の詳細な説明】)\b"
+        )
+        best_section = ""
+        best_score = (-1, -1, 10**9)
+
+        for match in run_matches:
+            candidate = text[match.start() :]
+            stop_match = re.search(stop_pattern, candidate)
+            if stop_match:
+                candidate = candidate[: stop_match.start()]
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+
+            claim_ids = [
+                int(item.group(1))
+                for item in re.finditer(r"(?m)^\s*(\d+)\s*[\.．]\s*", candidate)
+            ]
+            if not claim_ids or claim_ids[0] != 1:
+                continue
+
+            consecutive = 0
+            expected = 1
+            for claim_id in claim_ids:
+                if claim_id == expected:
+                    consecutive += 1
+                    expected += 1
+                else:
+                    break
+
+            dependent_hits = len(re.findall(r"(?:根据|如)\s*权利要求", candidate))
+            score = (consecutive, dependent_hits, match.start())
+            if score[0] > best_score[0] or (score[0] == best_score[0] and score[1] > best_score[1]) or (
+                score[0] == best_score[0] and score[1] == best_score[1] and score[2] < best_score[2]
+            ):
+                best_section = candidate
+                best_score = score
+
+        return best_section
 
     @staticmethod
     def _parse_description(md_content: str) -> dict:
@@ -108,6 +247,7 @@ class RuleBasedExtractor:
         """解析 drawings (附图资源) 部分"""
         drawings =[]
         figure_captions = RuleBasedExtractor._extract_figure_captions(md_content)
+        abstract_figure = RuleBasedExtractor._extract_abstract_figure(md_content)
 
         # 仅提取“# 具体实施方式”到文末的附图区域，避免误纳入摘要附图。
         drawings_zone = RuleBasedExtractor._extract_drawings_zone(md_content)
@@ -175,17 +315,25 @@ class RuleBasedExtractor:
             image_match = re.search(r"!\[.*?\]\((.*?)\)", line)
             if image_match:
                 file_path = image_match.group(1).strip()
+                if abstract_figure and file_path == abstract_figure:
+                    i += 1
+                    continue
                 pending_images.append(file_path)
                 i += 1
                 continue
             
             # 支持字母和连接符图号（如图1A, 图2b）
-            label_match = re.match(r"^图\s*([0-9a-zA-Z\-]+)\s*$", re.sub(r"\[\d{4}\]\s*", "", line))
+            normalized_line = re.sub(r"\[\d{4}\]\s*", "", line)
+            label_match = re.match(r"^(?:图|FIG\.?|Fig\.?)\s*([0-9a-zA-Z\-()]+)\s*$", normalized_line, re.IGNORECASE)
+            if not label_match:
+                label_match = re.match(r"^【図\s*([0-9a-zA-Z\-()]+)】\s*$", normalized_line)
             if label_match:
                 labels: List[str] =[]
                 while i < len(lines):
                     current = re.sub(r"\[\d{4}\]\s*", "", lines[i]).strip()
-                    current_match = re.match(r"^图\s*([0-9a-zA-Z\-]+)\s*$", current)
+                    current_match = re.match(r"^(?:图|FIG\.?|Fig\.?)\s*([0-9a-zA-Z\-()]+)\s*$", current, re.IGNORECASE)
+                    if not current_match:
+                        current_match = re.match(r"^【図\s*([0-9a-zA-Z\-()]+)】\s*$", current)
                     if not current_match:
                         break
                     labels.append(current_match.group(1))
@@ -202,29 +350,46 @@ class RuleBasedExtractor:
     @staticmethod
     def _extract_drawings_zone(md_content: str) -> str:
         """
-        返回从“# 具体实施方式”标题后到文末的文本。
-        若未找到该标题，则返回空字符串。
+        返回摘要之后的附图区域文本。
+        优先从摘要后开始，避免把首页扫描图混入附图列表。
         """
-        match = re.search(r"#+\s*具体实施方式\s*([\s\S]*)$", md_content, re.DOTALL)
-        return match.group(1).strip() if match else ""
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        abstract_match = re.search(r"\(57\)", text)
+        start_idx = abstract_match.end() if abstract_match else 0
+        search_cutoff = re.search(r"(?im)^#\s*(?:EUROPEAN SEARCH REPORT|ANNEX TO THE EUROPEAN SEARCH REPORT)\b", text)
+        end_idx = search_cutoff.start() if search_cutoff else len(text)
+        return text[start_idx:end_idx].strip()
 
     @staticmethod
     def _extract_figure_captions(md_content: str) -> Dict[str, str]:
         """从附图说明提取 图号 -> 图题。"""
         figure_captions: Dict[str, str] = {}
-        brief_desc_pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
-        brief_desc_match = re.search(brief_desc_pattern, md_content, re.DOTALL)
-        if not brief_desc_match:
-            return figure_captions
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        brief_desc_text = RuleBasedExtractor._extract_section_by_headings(
+            text,
+            [r"附图说明", r"BRIEF DESCRIPTION OF THE DRAWINGS", r"【図面の簡単な説明】"],
+            [
+                r"具体实施方式",
+                r"DETAILED DESCRIPTION(?: OF THE PREFERRED EMBODIMENTS OF THE INVENTION)?",
+                r"【発明を実施するための形態】",
+                r"【符号の説明】",
+                r"Claims",
+            ],
+        )
+        if not brief_desc_text:
+            brief_desc_text = text
 
-        brief_desc_text = brief_desc_match.group(1)
         for raw_line in brief_desc_text.split("\n"):
             line = re.sub(r"\[\d{4}\]\s*", "", raw_line).strip()
             if not line:
                 continue
 
             # 支持图1表示/示出/为/是/: ... 等句式
-            head_match = re.search(r"^图\s*([0-9a-zA-Z\-]+)\s*(.*)$", line)
+            head_match = re.search(r"^图\s*([0-9a-zA-Z\-()]+)\s*(.*)$", line)
+            if not head_match:
+                head_match = re.search(r"^(?:FIG\.?|Figure)\s*([0-9A-Za-z\-()]+)\s*(.*)$", line, re.IGNORECASE)
+            if not head_match:
+                head_match = re.search(r"^【図\s*([0-9A-Za-z\-()]+)】\s*(.*)$", line)
             if not head_match:
                 continue
 
@@ -233,15 +398,29 @@ class RuleBasedExtractor:
             if not remainder:
                 continue
 
-            # 排除“图1的附图标记如下”及其变体等非图题行
-            if re.search(r"附图标记", remainder):
+            if re.search(r"附图标记|図面符号", remainder):
                 continue
 
-            caption = re.sub(r"^(?:是|为|示出|表示|[:：])+\s*", "", remainder).strip("；;。 ")
+            caption = re.sub(
+                r"^(?:(?:是|为|示出|表示|[:：]|is|shows?|illustrates?|depicts?|respectively show|を示す|である)\s*)+",
+                "",
+                remainder,
+                flags=re.IGNORECASE,
+            ).strip("；;。. ")
             if not caption:
                 continue
             if fig_num not in figure_captions:
                 figure_captions[fig_num] = caption
+
+            for sub_match in re.finditer(
+                r"图\s*(\d+)\s*的\s*\(([A-Za-z])\)\s*(?:为|是|示出|表示|[:：])\s*([^；;。]+)",
+                line,
+                re.IGNORECASE,
+            ):
+                sub_key = f"{sub_match.group(1)}({sub_match.group(2)})"
+                sub_caption = sub_match.group(3).strip("；;。. ")
+                if sub_caption and sub_key not in figure_captions:
+                    figure_captions[sub_key] = sub_caption
 
         return figure_captions
 
@@ -249,26 +428,43 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_application_number(md_content: str) -> str:
-        pattern = r"\(21\)\s*申请号\s*([^\s]+)"
-        match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else ""
+        text = RuleBasedExtractor._to_search_text(md_content)
+        return RuleBasedExtractor._find_first_group(
+            text,
+            [
+                r"\(21\)\s*(?:申请号|Application number|Appl\.?\s*No\.?|出願番号)\s*:?\s*([^\n]+)",
+                r"\(21\)\s*[^\n]{0,30}?([A-Za-z]*\d[\dA-Za-z./,\-() ]+)",
+            ],
+            re.IGNORECASE,
+        )
 
     @staticmethod
     def _extract_application_date(md_content: str) -> str:
-        pattern = r"\(22\)\s*申请日\s*(\d{4}\s*[\.\-]\s*\d{1,2}\s*[\.\-]\s*\d{1,2})"
-        match = re.search(pattern, md_content)
-        return match.group(1).replace(" ", "") if match else ""
+        text = RuleBasedExtractor._to_search_text(md_content)
+        raw = RuleBasedExtractor._find_first_group(
+            text,
+            [
+                r"\(22\)\s*(?:申请日|Date of filing|Filed|出願日)\s*:?\s*([^\n]+)",
+                r"\(22\)\s*([^\n]+)",
+            ],
+            re.IGNORECASE,
+        )
+        return RuleBasedExtractor._extract_date_value(raw)
 
     @staticmethod
     def _extract_priority_date(md_content: str) -> str:
-        block_pattern = r"\(30\)\s*优先权数据\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
-        block_match = re.search(block_pattern, md_content, re.DOTALL)
+        text = RuleBasedExtractor._to_search_text(md_content)
+        block_pattern = r"\(30\)\s*(?:优先权数据|Foreign Application Priority Data)?\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
+        block_match = re.search(block_pattern, text, re.DOTALL | re.IGNORECASE)
         search_text = block_match.group(1) if block_match else ""
 
         date_pattern = r"(\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2})"
         date_matches = re.findall(date_pattern, search_text)
         if not date_matches and block_match:
             date_matches = re.findall(date_pattern, block_match.group(0))
+        if not date_matches and search_text:
+            normalized = RuleBasedExtractor._extract_date_value(search_text)
+            return normalized if normalized else ""
         if not date_matches:
             return ""
 
@@ -285,42 +481,74 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_publication_number(md_content: str) -> str:
-        pattern = r"\((?:19|10|11)\)\s*(?:公开号|授权公告号|公告号)\s*([^\s]+)"
-        match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else ""
+        text = RuleBasedExtractor._to_search_text(md_content)
+        value = RuleBasedExtractor._find_first_group(
+            text,
+            [
+                r"(?m)^\s*\((?:10|11)\)\s*(?:公开号|授权公告号|公告号|Pub\.\s*No\.?|Publication\s+No\.?|Patent\s+No\.?|特許出願公開番号|公開番号)\s*:?\s*([^\n]+)",
+                r"(?m)^\s*\((?:10|11)\)\s*[^\n]{0,40}?([A-Za-z]{2}(?:[\s-]*\d[\dA-Za-z./,\-\s]*[A-Za-z0-9]))",
+            ],
+            re.IGNORECASE,
+        )
+        return RuleBasedExtractor._normalize_publication_number(value)
 
     @staticmethod
     def _extract_publication_date(md_content: str) -> str:
-        pattern = r"\((?:43|45)\)\s*(?:公开日|授权公告日|公告日)\s*(\d{4}\s*[\.\-]\s*\d{1,2}\s*[\.\-]\s*\d{1,2})"
-        match = re.search(pattern, md_content)
-        return match.group(1).replace(" ", "") if match else ""
+        text = RuleBasedExtractor._to_search_text(md_content)
+        raw = RuleBasedExtractor._find_first_group(
+            text,
+            [
+                r"\((?:43|45)\)\s*(?:公开日|授权公告日|公告日|Date of publication|Pub\.\s*Date|公開日)\s*:?\s*([^\n]+)",
+                r"\((?:43|45)\)\s*([^\n]+)",
+            ],
+            re.IGNORECASE,
+        )
+        return RuleBasedExtractor._extract_date_value(raw)
 
     @staticmethod
     def _extract_invention_title(md_content: str) -> str:
-        pattern = r"\(54\)\s*(?:发明名称|实用新型名称|外观设计名称)\s*\n*\s*([^\n#]+)"
-        match = re.search(pattern, md_content)
-        return match.group(1).strip() if match else ""
+        text = RuleBasedExtractor._to_search_text(md_content)
+        value = RuleBasedExtractor._find_first_group(
+            text,
+            [
+                r"\(54\)\s*(?:发明名称|实用新型名称|外观设计名称)\s*\n*\s*([^\n#]+)",
+                r"\(54\)\s*([^\n#]+)",
+            ],
+            re.IGNORECASE,
+        )
+        value = re.sub(r"^[\[【(].{0,20}?(?:名称|title)[^)\]】]{0,8}[)\]】]?\s*", "", value, flags=re.IGNORECASE)
+        return RuleBasedExtractor._clean_field_value(value)
 
     @staticmethod
     def _extract_ipc_classifications(md_content: str) -> list:
-        pattern = r"\(51\)\s*Int\s*\.\s*[Cc][LlIi1]\.?\s*([\s\S]*?)(?=(?:\(\d+\)|\([A-Z]{2,}\)|#|$))"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if not match:
-            return[]
+        ipc_blocks: List[str] = []
+        for field_no in ("51", "52"):
+            block = RuleBasedExtractor._extract_field_block(md_content, field_no)
+            if not block:
+                continue
+            ipc_blocks.append(block)
 
-        ipc_text = match.group(1).strip()
+        if not ipc_blocks:
+            return []
+
+        ipc_text = "\n".join(ipc_blocks)
+        ipc_text = re.sub(
+            r"(?i)\b(?:Int\s*\.\s*[Cc][LlIi1]\.?|IPC|International Patent Classification|U\.S\.\s*Cl\.?)\b\s*:?",
+            " ",
+            ipc_text,
+        )
         ipc_pattern = re.compile(
-            r"([A-Z])([0-9OIlL])([0-9OIlL])([A-Z])\s*([0-9OIlL]+)\s*/\s*([0-9OIlL]+)(?:\s*\(\d{4}\.\d{2}\))?",
+            r"([A-Z])\s*([0-9OIlL]{2})\s*([A-Z])\s*([0-9OIlL]+)\s*/\s*([0-9OIlL]+)(?:\s*\(\d{4}\.\d{2}\))?",
             re.IGNORECASE,
         )
-        ipc_codes =[]
+        ipc_codes = []
 
         for item in ipc_pattern.finditer(ipc_text):
             section = item.group(1).upper()
-            class_digits = RuleBasedExtractor._normalize_ocr_digits(item.group(2) + item.group(3))
-            subclass = item.group(4).upper()
-            main_group = RuleBasedExtractor._normalize_ocr_digits(item.group(5))
-            sub_group = RuleBasedExtractor._normalize_ocr_digits(item.group(6))
+            class_digits = RuleBasedExtractor._normalize_ocr_digits(item.group(2))
+            subclass = item.group(3).upper()
+            main_group = RuleBasedExtractor._normalize_ocr_digits(item.group(4))
+            sub_group = RuleBasedExtractor._normalize_ocr_digits(item.group(5))
 
             if not (class_digits.isdigit() and main_group.isdigit() and sub_group.isdigit()):
                 continue
@@ -334,12 +562,18 @@ class RuleBasedExtractor:
     @staticmethod
     def _extract_applicants(md_content: str) -> list:
         applicants =[]
-        pattern = r"\((?:71|73)\)\s*(?:申请人|专利权人)\s*([\s\S]*?)(?=\(\d+\)|#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if not match:
+        applicant_text = RuleBasedExtractor._extract_field_block(md_content, "71")
+        if not applicant_text:
+            applicant_text = RuleBasedExtractor._extract_field_block(md_content, "73")
+        if not applicant_text:
             return applicants
 
-        applicant_text = match.group(1).strip()
+        applicant_text = re.sub(
+            r"^(?:申请人|专利权人|Applicant(?:s)?|出願人)\s*:?\s*",
+            "",
+            applicant_text,
+            flags=re.IGNORECASE,
+        ).strip()
         lines =[line.strip() for line in applicant_text.split('\n') if line.strip()]
         if not lines:
             return applicants
@@ -445,6 +679,34 @@ class RuleBasedExtractor:
         }))
 
     @staticmethod
+    def _normalize_publication_number(value: str) -> str:
+        cleaned = RuleBasedExtractor._clean_field_value(value)
+        if not cleaned:
+            return ""
+
+        cleaned = re.sub(
+            r"^(?:Pub\.\s*No\.?|Publication\s+No\.?|Patent\s+No\.?|公开号|授权公告号|公告号|特許出願公開番号|公開番号)\s*:?\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r"\s*-\s*", "-", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" \t\r\n,;.")
+
+        core_match = re.search(
+            r"([A-Za-z]{2}(?:[\s-]*\d[\dA-Za-z./,\-\s]*[A-Za-z0-9]))",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if core_match:
+            cleaned = core_match.group(1).strip()
+
+        if not re.search(r"\d", cleaned):
+            return ""
+
+        return re.sub(r"\s{2,}", " ", cleaned)
+
+    @staticmethod
     def _normalize_date(text: str) -> str | None:
         cleaned = (text or "").strip()
         match = re.search(r"(\d{4})\s*[.\-/]\s*(\d{1,2})\s*[.\-/]\s*(\d{1,2})", cleaned)
@@ -477,27 +739,53 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_inventors(md_content: str) -> list:
-        pattern = r"\(72\)\s*发明人\s*([\s\S]*?)(?=(?:\(\d+\)|#|$))"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            inventor_text = match.group(1).strip()
+        inventor_text = RuleBasedExtractor._extract_field_block(md_content, "72")
+        if inventor_text:
+            inventor_text = re.sub(
+                r"^(?:发明人|Inventor(?:s)?|発明者|龚明者)\s*:?\s*",
+                "",
+                inventor_text,
+                flags=re.IGNORECASE,
+            ).strip()
             if "地址" in inventor_text:
                 inventor_text = inventor_text.split("地址")[0].strip()
-
+            if ";" in inventor_text:
+                inventors = []
+                for segment in inventor_text.split(";"):
+                    name = segment.strip()
+                    if "," in name:
+                        head = name.split(",", 1)[0].strip()
+                        if re.search(r"\([A-Z]{2}\)$", name) and head:
+                            name = head
+                    name = re.sub(r"\b\d{4,6}\b.*$", "", name).strip(" ,")
+                    if name and name not in inventors:
+                        inventors.append(name)
+                if inventors:
+                    return inventors
+            inventor_text = inventor_text.split("\n", 1)[0].strip()
+            inventor_text = re.sub(r"\b\d{4,6}\b.*$", "", inventor_text).strip(" ,")
+            if re.fullmatch(r"[A-Za-zÀ-ÿ'.\- ]+,\s*[A-Za-zÀ-ÿ'.\- ]+", inventor_text):
+                return [inventor_text]
             return RuleBasedExtractor._split_people(inventor_text)
         return[]
 
     @staticmethod
     def _extract_agency(md_content: str) -> dict:
-        pattern = r"\(74\)\s*专利代理机构\s*([^\n]+)"
-        match = re.search(pattern, md_content)
-        if match:
-            agency_raw = match.group(1).strip()
+        agency_block = RuleBasedExtractor._extract_field_block(md_content, "74")
+        if agency_block:
+            agency_block = agency_block.strip()
+            first_line = agency_block.split("\n", 1)[0]
+            agency_raw = re.sub(
+                r"^(?:专利代理机构|代理人|专利代理师|Representative|代理人)\s*:?\s*",
+                "",
+                first_line,
+                flags=re.IGNORECASE,
+            ).strip()
             agency_name = re.sub(r"\d{3,}$", "", agency_raw).strip()
 
             agents =[]
             agent_pattern = r"(?:专利代理师|代理人)\s*([^\n]+)"
-            agent_match = re.search(agent_pattern, md_content)
+            agent_match = re.search(agent_pattern, agency_block)
             if agent_match:
                 agents_raw = agent_match.group(1)
                 agents = RuleBasedExtractor._split_people(agents_raw)
@@ -507,23 +795,32 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_abstract(md_content: str) -> str:
-        pattern = r"\(57\)\s*摘要\s*([\s\S]*?)(?=^1\s*[\.．]\s*|#|$)"
-        match = re.search(pattern, md_content, flags=re.DOTALL | re.MULTILINE)
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        pattern = r"\(57\)\s*(?:摘要|ABSTRACT|【要約】)?\s*([\s\S]*?)(?=!\[|^#\s*(?:Claims|Description|Publication Classification|BRIEF DESCRIPTION OF THE DRAWINGS|DETAILED DESCRIPTION|청구항\s*1)|^【特許請求の範囲】|^1\s*[\.．]\s*|\Z)"
+        match = re.search(pattern, text, flags=re.DOTALL | re.MULTILINE | re.IGNORECASE)
         if match:
             abstract = match.group(1).strip()
             abstract = re.sub(r"!\[.*?\]\(.*?\)", "", abstract)
             abstract = re.sub(r"\s+", " ", abstract)
             return abstract.strip()
+        title_match = re.search(r"(?m)^\s*#\s*\(54\)\s*[^\n]+\n+\s*#?\s*\n+([\s\S]*?)(?=\n#\s|\n\(|\Z)", text)
+        if title_match:
+            abstract = title_match.group(1).strip()
+            abstract = re.sub(r"\s+", " ", abstract)
+            if len(abstract) >= 40:
+                return abstract
         return ""
 
     @staticmethod
     def _extract_abstract_figure(md_content: str) -> str:
-        pattern = r"\(57\)\s*摘要\s*([\s\S]*?)(?=^1\s*[\.．]\s*|#|$)"
-        match = re.search(pattern, md_content, flags=re.DOTALL | re.MULTILINE)
-        if match:
-            abstract_end = match.end()
-            search_end = min(abstract_end + 300, len(md_content))
-            after_abstract = md_content[abstract_end:search_end]
+        text = RuleBasedExtractor._normalize_document_text(md_content)
+        heading_match = re.search(r"\(57\)\s*(?:摘要|ABSTRACT|【要約】)?", text, flags=re.IGNORECASE)
+        if heading_match:
+            search_end = min(heading_match.end() + 500, len(text))
+            after_abstract = text[heading_match.end() : search_end]
+            heading_stop = re.search(r"(?m)^#\s+|^【特許請求の範囲】|^1\s*[\.．]\s*", after_abstract)
+            if heading_stop:
+                after_abstract = after_abstract[: heading_stop.start()]
             fig_match = re.search(r"!\[.*?\]\((.*?)\)", after_abstract)
             if fig_match:
                 return fig_match.group(1).strip()
@@ -541,17 +838,27 @@ class RuleBasedExtractor:
         if not claims_section:
             return claims
 
-        pattern = r"(?m)^(\d+)\s*[\.．]\s*([\s\S]*?)(?=(?:^\d+\s*[\.．]\s*)|\Z)"
-        matches = re.finditer(pattern, claims_section)
+        section = RuleBasedExtractor._normalize_document_text(claims_section)
+
+        if re.search(r"【請求項\d+】", section):
+            pattern = r"【請求項(\d+)】\s*([\s\S]*?)(?=【請求項\d+】|【発明の詳細な説明】|\Z)"
+        elif re.search(r"(?m)^#\s*청구항\s*\d+\s*$", section):
+            pattern = r"(?m)^#\s*청구항\s*(\d+)\s*$\s*([\s\S]*?)(?=^#\s*청구항\s*\d+\s*$|\Z)"
+        else:
+            pattern = r"(?m)^\s*(\d+)\s*[\.．]\s*([\s\S]*?)(?=(?:^\s*\d+\s*[\.．]\s*)|\Z)"
+
+        matches = re.finditer(pattern, section)
 
         for match in matches:
             claim_id = match.group(1).strip()
             claim_text = match.group(2).strip()
+            claim_text = re.sub(r"(?m)^\s*\d+\s*$", "", claim_text)
+            claim_text = re.sub(r"\s+", " ", claim_text).strip()
             if not claim_text:
                 continue
 
             claim_type = RuleBasedExtractor._classify_claim_type(claim_text)
-            parent_claim_ids = RuleBasedExtractor._extract_parent_claim_ids(claim_text, claim_type)
+            parent_claim_ids = RuleBasedExtractor._extract_parent_claim_ids(claim_text, claim_type, claim_id)
             claims.append({
                 "claim_id": claim_id,
                 "claim_text": claim_text,
@@ -572,12 +879,18 @@ class RuleBasedExtractor:
             return "dependent"
         if re.match(r"^\s*权利要求\s*\d+", text):
             return "dependent"
-        if text.startswith("一种"):
-            return "independent"
-        return "unknown"
+        if re.search(r"\bclaim\s+\d+\b", text, re.IGNORECASE):
+            return "dependent"
+        if re.search(r"\bpreceding claims?\b", text, re.IGNORECASE):
+            return "dependent"
+        if re.search(r"請求項\s*[0-9０-９]+", text):
+            return "dependent"
+        if re.search(r"제\s*[0-9０-９]+\s*항", text):
+            return "dependent"
+        return "independent"
 
     @staticmethod
-    def _extract_parent_claim_ids(claim_text: str, claim_type: str) -> List[str]:
+    def _extract_parent_claim_ids(claim_text: str, claim_type: str, claim_id: str = "") -> List[str]:
         """提取从属权利要求的直接父权项编号（不展开祖先）。"""
         if claim_type != "dependent":
             return []
@@ -585,6 +898,15 @@ class RuleBasedExtractor:
         text = str(claim_text or "").strip()
         if not text:
             return []
+
+        if re.search(
+            r"(?:any of the preceding claims|any preceding claim|前記請求項\d+から\d+|請求項\d+から\d+のいずれか1項|any of claims?\s+\d+\s*(?:to|-)\s*\d+)",
+            text,
+            re.IGNORECASE,
+        ) and str(claim_id).isdigit():
+            current_id = int(claim_id)
+            if current_id > 1 and re.search(r"preceding claims", text, re.IGNORECASE):
+                return [str(value) for value in range(1, current_id)]
 
         head_match = re.search(r"(其特征在于|其特征为|特征在于)", text)
         head_text = text[: head_match.start()] if head_match else text[:160]
@@ -595,6 +917,24 @@ class RuleBasedExtractor:
             for claim_id in RuleBasedExtractor._parse_claim_id_expression(expr):
                 if claim_id not in candidates:
                     candidates.append(claim_id)
+
+        for match in re.finditer(r"claims?\s+([0-9０-９,\-~～toandor\s]+)", head_text, re.IGNORECASE):
+            expr = match.group(1)
+            for parent_id in RuleBasedExtractor._parse_claim_id_expression(expr):
+                if parent_id not in candidates:
+                    candidates.append(parent_id)
+
+        for match in re.finditer(r"請求項([0-9０-９、,，又はまたは及びおよび\-~～から\s]+)", head_text):
+            expr = match.group(1)
+            for parent_id in RuleBasedExtractor._parse_claim_id_expression(expr):
+                if parent_id not in candidates:
+                    candidates.append(parent_id)
+
+        for match in re.finditer(r"제\s*([0-9０-９]+(?:\s*항)?(?:\s*(?:또는|및|내지)\s*제?\s*[0-9０-９]+\s*항?)*)", head_text):
+            expr = match.group(1)
+            for parent_id in RuleBasedExtractor._parse_claim_id_expression(expr):
+                if parent_id not in candidates:
+                    candidates.append(parent_id)
 
         if candidates:
             return candidates
@@ -615,9 +955,14 @@ class RuleBasedExtractor:
             return []
 
         text = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
-        text = re.sub(r"(所述|任意一项|任一项|任一|之一|中任一项|中任一|任意)", "", text)
-        text = text.replace("至", "-").replace("到", "-").replace("～", "-").replace("~", "-")
-        text = re.sub(r"[、，,;；]|及|和|或|与|以及", ",", text)
+        text = text.replace("至", "-").replace("到", "-").replace("～", "-").replace("~", "-").replace("から", "-").replace("내지", "-").replace("to", "-")
+        text = re.sub(r"[、，,;；]|及|和|或|与|以及|or|and|または|又は|および|及び|또는|및", ",", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"(所述|任意一项|任一项|任一|之一|中任一项|中任一|任意|請求項|claims?|claim|제|항|項|に記載の|に記載|記載の|いずれか1項|いずれか一項)",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
         text = re.sub(r"\s+", "", text)
         text = re.sub(r"[^0-9,\-]", "", text)
         if not text:
@@ -647,29 +992,68 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_technical_field(md_content: str) -> str:
-        pattern = r"#+\s*技术领域\s*([\s\S]*?)(?=#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            return re.sub(r"\[\d{4}\]\s*", "", match.group(1).strip())
-        return ""
+        return RuleBasedExtractor._extract_section_by_headings(
+            md_content,
+            [r"技术领域", r"FIELD OF THE INVENTION", r"【技術分野】"],
+            [
+                r"背景技术",
+                r"BACKGROUND",
+                r"【背景技術】",
+                r"发明内容",
+                r"SUMMARY OF THE INVENTION",
+                r"【発明の概要】",
+            ],
+        )
 
     @staticmethod
     def _extract_background_art(md_content: str) -> str:
-        pattern = r"#+\s*背景技术\s*([\s\S]*?)(?=#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            return re.sub(r"\[\d{4}\]\s*", "", match.group(1).strip())
-        return ""
+        return RuleBasedExtractor._extract_section_by_headings(
+            md_content,
+            [r"背景技术", r"BACKGROUND", r"【背景技術】"],
+            [
+                r"发明内容",
+                r"SUMMARY OF THE INVENTION",
+                r"【発明の概要】",
+                r"先行技術文献",
+                r"【先行技術文献】",
+            ],
+        )
 
     @staticmethod
     def _extract_summary_and_effect(md_content: str) -> tuple:
         """从发明内容中精准拆分 技术方案(summary) 与 技术效果(effect)"""
-        pattern = r"#+\s*(?:发明内容|实用新型内容|外观设计简要说明)\s*([\s\S]*?)(?=#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if not match:
+        content = RuleBasedExtractor._extract_section_by_headings(
+            md_content,
+            [
+                r"发明内容",
+                r"实用新型内容",
+                r"外观设计简要说明",
+                r"SUMMARY OF THE INVENTION",
+                r"【発明の概要】",
+            ],
+            [
+                r"附图说明",
+                r"BRIEF DESCRIPTION OF THE DRAWINGS",
+                r"【図面の簡単な説明】",
+                r"具体实施方式",
+                r"DETAILED DESCRIPTION(?: OF THE PREFERRED EMBODIMENTS OF THE INVENTION)?",
+                r"【発明を実施するための形態】",
+            ],
+        )
+        if not content and "【課題を解決するための手段】" in md_content:
+            summary = RuleBasedExtractor._extract_section_by_headings(
+                md_content,
+                [r"【課題を解決するための手段】"],
+                [r"【発明の効果】", r"【図面の簡単な説明】", r"【発明を実施するための形態】"],
+            )
+            effect = RuleBasedExtractor._extract_section_by_headings(
+                md_content,
+                [r"【発明の効果】"],
+                [r"【図面の簡単な説明】", r"【発明を実施するための形態】"],
+            )
+            return summary or "", effect or ""
+        if not content:
             return "", ""
-            
-        content = match.group(1).strip()
 
         def _clean_section_text(text: str) -> str:
             return re.sub(r"\[\d{4}\]\s*", "", str(text or "")).strip()
@@ -714,12 +1098,19 @@ class RuleBasedExtractor:
     @staticmethod
     def _extract_brief_description(md_content: str) -> str:
         """提取附图标记说明中的“标记-名称”，支持数字与字母数字标记。"""
-        pattern = r"#+\s*附图说明\s*([\s\S]*?)(?=#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if not match:
+        content = RuleBasedExtractor._extract_section_by_headings(
+            md_content,
+            [r"附图说明", r"【図面の簡単な説明】", r"BRIEF DESCRIPTION OF THE DRAWINGS"],
+            [
+                r"具体实施方式",
+                r"DETAILED DESCRIPTION(?: OF THE PREFERRED EMBODIMENTS OF THE INVENTION)?",
+                r"【発明を実施するための形態】",
+                r"【符号の説明】",
+            ],
+        )
+        if not content:
             return ""
-
-        content = re.sub(r"\[\d{4}\]\s*", "", match.group(1)).strip()
+        content = re.sub(r"\[\d{4}\]\s*", "", content).strip()
         if not content:
             return ""
 
@@ -762,25 +1153,20 @@ class RuleBasedExtractor:
 
     @staticmethod
     def _extract_detailed_description(md_content: str) -> str:
-        pattern = r"#+\s*具体实施方式\s*([\s\S]*?)(?=#|$)"
-        match = re.search(pattern, md_content, re.DOTALL)
-        if match:
-            content = match.group(1).strip()
-            
-            # 1. 剔除段首常见的 [0001] 等段落编号
-            content = re.sub(r"\[\d{4}\]\s*", "", content)
-            
-            # 2. 精准剥离文末的“附图+图号”区域，保留正文内的公式图片
-            # 正则解释：
-            # (?: ... )+$ 表示从文末倒推，匹配一个或多个以下组合，直到碰到正常正文为止
-            #   \s+                             匹配换行符、空格
-            #   !\[.*?\]\(.*?\)                 匹配Markdown图片
-            #   (?:^|\n)\s*图\s*[0-9a-zA-Z\-]+   匹配独立成行的图号（如：图1、图2A）
-            tail_pattern = r"(?:\s|!\[.*?\]\(.*?\)|(?:^|\n)\s*图\s*[0-9a-zA-Z\-]+)+$"
-            
-            # 仅替换掉文末的附图区，正文中间的 ![公式](...) 会安然无恙
-            content = re.sub(tail_pattern, "", content)
-                
-            # 3. 去除首尾多余空白字符
-            return content.strip()
-        return ""
+        content = RuleBasedExtractor._extract_section_by_headings(
+            md_content,
+            [
+                r"具体实施方式",
+                r"DETAILED DESCRIPTION(?: OF THE PREFERRED EMBODIMENTS OF THE INVENTION)?",
+                r"Description",
+                r"【発明を実施するための形態】",
+            ],
+            [r"Claims", r"【符号の説明】", r"EUROPEAN SEARCH REPORT"],
+        )
+        if not content:
+            return ""
+
+        content = re.sub(r"\[\d{4}\]\s*", "", content)
+        tail_pattern = r"(?:\s|!\[.*?\]\(.*?\)|(?:^|\n)\s*(?:图|FIG\.?|Fig\.?|【図)\s*[0-9a-zA-Z\-]+[】]?)+$"
+        content = re.sub(tail_pattern, "", content, flags=re.IGNORECASE)
+        return content.strip()

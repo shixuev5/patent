@@ -1,5 +1,6 @@
 from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
 from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
+from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
 
 
 def test_extract_brief_description_only_marker_entries() -> None:
@@ -301,3 +302,376 @@ def test_hybrid_check_missing_fields_requires_parent_claim_ids_for_dependent_cla
     }
     missing = extractor._check_missing_fields(patent_data)
     assert "claims[0].parent_claim_ids" in missing
+
+
+def test_parse_claims_prefers_ep_amended_claims_section() -> None:
+    md = """
+# Claims
+1. Driver identification system for rail vehicles comprising an original feature set.
+2. The system of claim 1, wherein a first parameter is configured.
+
+# Amended claims in accordance with Rule 137(2) EPC.
+
+1. Driver identification system for rail vehicles comprising:
+wherein the contactless reading device is further characterized in that it is powered by train batteries.
+2. The system of claim 1, wherein the driver data comprise the height of the driver.
+3. The system of claim 1 or 2, wherein the cabin comprises a driver desk.
+4. The system of any of the preceding claims, wherein the personal identification device comprises a smartphone.
+"""
+    claims = RuleBasedExtractor._parse_claims(md)
+    assert [claim["claim_id"] for claim in claims] == ["1", "2", "3", "4"]
+    assert "powered by train batteries" in claims[0]["claim_text"]
+    assert claims[1]["claim_type"] == "dependent"
+    assert claims[1]["parent_claim_ids"] == ["1"]
+    assert claims[2]["parent_claim_ids"] == ["1", "2"]
+    assert claims[3]["parent_claim_ids"] == ["1", "2", "3"]
+
+
+def test_extract_structured_claims_supports_japanese_markers() -> None:
+    claims_section = """
+【特許請求の範囲】
+【請求項1】
+タイヤに配設されており、タイヤの変形に関わる物理量を計測するセンサ部と、
+前記センサ部により計測された物理量に基づいて、経時的なタイヤの物性の変化を算出する物性変化算出部と、を備えるタイヤ劣化推定システム。
+【請求項2】
+前記センサ部は、歪を計測することを特徴とする請求項1に記載のタイヤ劣化推定システム。
+【請求項3】
+前記センサ部は、加速度を計測することを特徴とする請求項1または2に記載のタイヤ劣化推定システム。
+"""
+    claims = RuleBasedExtractor.extract_structured_claims(claims_section)
+    assert [claim["claim_id"] for claim in claims] == ["1", "2", "3"]
+    assert claims[0]["claim_type"] == "independent"
+    assert claims[1]["claim_type"] == "dependent"
+    assert claims[1]["parent_claim_ids"] == ["1"]
+    assert claims[2]["parent_claim_ids"] == ["1", "2"]
+
+
+def test_extract_structured_claims_supports_korean_markers() -> None:
+    claims_section = """
+# 청구항 1
+철도차량의 차체 무게중심측정장치.
+
+# 청구항 2
+제1항에 있어서, 상기 높이 조절이 가능한 가변수단이 유압실린더로 이루어진 것을 특징으로 하는 철도차량의 차체 무게중심측정장치.
+
+# 청구항 3
+제1항에 있어서, 상기 하부받침판 아래에 연결수단이 구비되어 있는 것을 특징으로 하는 철도차량의 차체 무게중심측정장치.
+
+# 청구항 4
+제3항에 있어서, 상기 연결수단이 걸림핀과 지지판으로 이루어진 것을 특징으로 하는 철도차량의 차체 무게중심측정장치.
+"""
+    claims = RuleBasedExtractor.extract_structured_claims(claims_section)
+    assert [claim["claim_id"] for claim in claims] == ["1", "2", "3", "4"]
+    assert claims[0]["claim_type"] == "independent"
+    assert claims[1]["parent_claim_ids"] == ["1"]
+    assert claims[3]["parent_claim_ids"] == ["3"]
+
+
+def test_extract_us_style_bibliographic_and_sections() -> None:
+    md = """
+(10) Pub. No.: US 2023/0403781 A1
+(43) Pub. Date: Dec. 14, 2023
+(54) DIELECTRIC BARRIER DISCHARGE PLASMA GENERATOR
+(71) Applicant: ASMPT Singapore Pte. Ltd., Singapore (SG)
+(72) Inventors: Jun QI, Hong Kong (CN); Hao MENG, Chengdu City (CN)
+(21) Appl. No.: 18/204,586
+(22) Filed: Jun. 1, 2023
+(30) Foreign Application Priority Data Jun.8,2022 (CN) 202210642604.0
+
+# (57) ABSTRACT
+A dielectric barrier discharge plasma generator includes a ground electrode.
+
+# DIELECTRIC BARRIER DISCHARGE PLASMA GENERATOR
+FIELD OF THE INVENTION
+The invention generally relates to plasma generation.
+
+# BACKGROUND
+Atmospheric pressure plasma has been used for many applications.
+
+# SUMMARY OF THE INVENTION
+It is thus an object of the invention to seek to provide an improved DBD plasma generator.
+
+# DETAILED DESCRIPTION OF THE PREFERRED EMBODIMENTS OF THE INVENTION
+FIG. 1 is a schematic cross-sectional view of a dielectric barrier discharge plasma generator.
+
+1. A dielectric barrier discharge plasma generator, the plasma generator comprising a ground electrode.
+2. The plasma generator according to claim 1, wherein the high voltage electrode includes a first conductive part.
+"""
+    result = RuleBasedExtractor.extract(md)
+    assert result["bibliographic_data"]["application_number"] == "18/204,586"
+    assert result["bibliographic_data"]["application_date"] == "2023.06.01"
+    assert result["bibliographic_data"]["publication_number"] == "US 2023/0403781 A1"
+    assert result["bibliographic_data"]["publication_date"] == "2023.12.14"
+    assert result["bibliographic_data"]["priority_date"] == "2022.06.08"
+    assert result["bibliographic_data"]["invention_title"] == "DIELECTRIC BARRIER DISCHARGE PLASMA GENERATOR"
+    assert result["bibliographic_data"]["applicants"][0]["name"] == "ASMPT Singapore Pte. Ltd., Singapore (SG)"
+    assert result["bibliographic_data"]["inventors"] == ["Jun QI", "Hao MENG"]
+    assert "plasma generation" in result["description"]["technical_field"]
+    assert "Atmospheric pressure plasma" in result["description"]["background_art"]
+    assert "improved DBD plasma generator" in result["description"]["summary_of_invention"]
+    assert "schematic cross-sectional view" in result["description"]["detailed_description"]
+    assert result["claims"][1]["claim_type"] == "dependent"
+    assert result["claims"][1]["parent_claim_ids"] == ["1"]
+
+
+def test_extract_publication_number_supports_kind_code_variants() -> None:
+    us_md = """
+(11) US-10234567-B2
+"""
+    ep_md = """
+(10) Pub. No.: EP1234567B1
+"""
+    spaced_md = """
+(10) Pub. No.: EP 3 379 496 A1
+"""
+    assert RuleBasedExtractor._extract_publication_number(us_md) == "US-10234567-B2"
+    assert RuleBasedExtractor._extract_publication_number(ep_md) == "EP1234567B1"
+    assert RuleBasedExtractor._extract_publication_number(spaced_md) == "EP 3 379 496 A1"
+
+
+def test_extract_publication_number_ignores_formula_and_axis_noise_without_header() -> None:
+    md = """
+(21)申请号 202310789004.1
+(22)申请日 2023.06.30
+(54)发明名称 光纤滑环动态检测装置
+[0059] 式(11)可进一步表示为：
+SEEGST算法如下所示。
+轴系II、轴系III同轴。
+"""
+    assert RuleBasedExtractor._extract_publication_number(md) == ""
+
+
+def test_extract_ipc_classifications_strips_version_suffix_and_normalizes_ocr_digits() -> None:
+    md = """
+(51) Int. Cl. G0IK 7/36 (2006.01); H01L 21/8242 (2013.01)
+(52) U.S. Cl. G0IK 7/36 (2006.01)
+"""
+    assert RuleBasedExtractor._extract_ipc_classifications(md) == ["G01K 7/36", "H01L 21/8242"]
+
+
+def test_extract_claims_section_prefers_actual_claim_run_over_numbered_summary_list() -> None:
+    md = """
+# 发明内容
+1. 本发明具有结构简单的优点。
+2. 本发明具有易安装的优点。
+
+1. 一种环保PVC复合膜气密性检测装置，其特征在于，包括检测台。
+2. 根据权利要求1所述的一种环保PVC复合膜气密性检测装置，其特征在于，还包括气泵。
+3. 根据权利要求2所述的一种环保PVC复合膜气密性检测装置，其特征在于，还包括密封盒。
+
+# 技术领域
+[0001] 本发明属于PVC复合膜技术领域。
+"""
+    claims = RuleBasedExtractor._parse_claims(md)
+    assert [claim["claim_id"] for claim in claims] == ["1", "2", "3"]
+    assert claims[1]["claim_type"] == "dependent"
+    assert claims[1]["parent_claim_ids"] == ["1"]
+
+
+def test_parse_drawings_supports_chinese_subfigure_labels_and_captions() -> None:
+    md = """
+(57)摘要
+摘要内容
+
+# 附图说明
+图3为网络结构图；图3的(a)为混合层的结构示意图；图3的(b)为多层感知机的结构示意图。
+
+# 具体实施方式
+![](images/f3a.jpg)
+图3(a)
+![](images/f3b.jpg)
+图3(b)
+"""
+    drawings = RuleBasedExtractor._parse_drawings(md)
+    assert [item["figure_label"] for item in drawings] == ["图3(a)", "图3(b)"]
+    assert drawings[0]["caption"] == "混合层的结构示意图"
+    assert drawings[1]["caption"] == "多层感知机的结构示意图"
+
+
+def test_rule_extractor_normalizes_date_output_format() -> None:
+    md = """
+(21) Appl. No.: 18/204,586
+(22) Filed: Jun. 1, 2023
+(30) Foreign Application Priority Data Jun.8,2022 (CN) 202210642604.0
+(10) Pub. No.: US 2023/0403781 A1
+(43) Pub. Date: Dec. 14, 2023
+(54) DIELECTRIC BARRIER DISCHARGE PLASMA GENERATOR
+(71) Applicant: ASMPT Singapore Pte. Ltd., Singapore (SG)
+(72) Inventors: Jun QI, Hong Kong (CN)
+# (57) ABSTRACT
+abstract
+1. A dielectric barrier discharge plasma generator.
+"""
+    result = RuleBasedExtractor.extract(md)
+    assert result["bibliographic_data"]["application_date"] == "2023.06.01"
+    assert result["bibliographic_data"]["priority_date"] == "2022.06.08"
+    assert result["bibliographic_data"]["publication_date"] == "2023.12.14"
+
+
+def test_extract_figure_captions_and_drawings_support_english_labels() -> None:
+    md = """
+(57) ABSTRACT
+Short abstract.
+![](images/abstract.jpg)
+
+![](images/f1.jpg)
+FIG. 1
+![](images/f2.jpg)
+FIG. 2B
+
+# BRIEF DESCRIPTION OF THE DRAWINGS
+FIG. 1 is a schematic cross-sectional view of a dielectric barrier discharge plasma generator.
+FIG. 2B shows a perspective view of a high voltage electrode and a resiliently deformable mechanism.
+
+# DETAILED DESCRIPTION OF THE PREFERRED EMBODIMENTS OF THE INVENTION
+Embodiments of the present invention are described below.
+"""
+    captions = RuleBasedExtractor._extract_figure_captions(md)
+    drawings = RuleBasedExtractor._parse_drawings(md)
+    assert captions["1"] == "a schematic cross-sectional view of a dielectric barrier discharge plasma generator"
+    assert captions["2B"] == "a perspective view of a high voltage electrode and a resiliently deformable mechanism"
+    assert [item["file_path"] for item in drawings] == ["images/f1.jpg", "images/f2.jpg"]
+    assert [item["figure_label"] for item in drawings] == ["图1", "图2B"]
+
+
+def test_hybrid_quality_issues_detects_polluted_multilingual_result() -> None:
+    extractor = HybridExtractor.__new__(HybridExtractor)
+    md = """
+(57) ABSTRACT
+Abstract text exists.
+# BACKGROUND
+Background text exists.
+"""
+    patent_data = {
+        "bibliographic_data": {
+            "application_number": "123",
+            "application_date": "2023.01.01",
+            "invention_title": "(72) Inventors: John Smith",
+            "ipc_classifications": ["G01M 17/02"],
+            "applicants": [
+                {"name": "(74)代理人100105924", "address": ""},
+                {"name": "【請求項1】", "address": ""},
+                {"name": "Publication Classification", "address": ""},
+                {"name": "FIG. 1", "address": ""},
+                {"name": "청구항 1", "address": ""},
+                {"name": "Applicant spillover", "address": ""},
+            ],
+            "inventors": ["John Smith"],
+            "abstract": "",
+        },
+        "claims": [
+            {
+                "claim_id": "1",
+                "claim_text": "A system ![](images/a.jpg)",
+                "claim_type": "independent",
+                "parent_claim_ids": [],
+            }
+        ],
+        "description": {
+            "technical_field": "",
+            "background_art": "Background text exists.",
+            "summary_of_invention": "",
+            "detailed_description": "",
+        },
+    }
+    issues = extractor._check_quality_issues(md, patent_data)
+    assert "bibliographic_data.invention_title.polluted" in issues
+    assert "bibliographic_data.applicants.abnormally_many" in issues
+    assert "bibliographic_data.abstract.missing_despite_marker" in issues
+    assert "claims[0].contains_unprocessed_image" in issues
+
+
+def test_hybrid_quality_issues_detects_numeric_and_address_like_bibliographic_noise() -> None:
+    extractor = HybridExtractor.__new__(HybridExtractor)
+    issues = extractor._check_quality_issues(
+        "(57) ABSTRACT\ntext",
+        {
+            "bibliographic_data": {
+                "application_number": "x",
+                "application_date": "2020.01.01",
+                "invention_title": "Title",
+                "ipc_classifications": ["A01B 1/00"],
+                "applicants": [
+                    {"name": "000003148", "address": ""},
+                    {"name": "兵庫県伊丹市藤ノ木2丁目2番13号", "address": ""},
+                ],
+                "inventors": ["Name"],
+                "agency": {"agency_name": "", "agents": ["100105924"]},
+                "abstract": "ok",
+            },
+            "claims": [],
+            "description": {},
+        },
+    )
+    assert "bibliographic_data.applicants[0].name.invalid_chars" in issues
+    assert "bibliographic_data.applicants[1].name.is_actually_address" in issues
+    assert "bibliographic_data.agency.agents[0].invalid_chars" in issues
+
+
+def test_llm_prompt_mentions_multijurisdictional_formats() -> None:
+    prompt = LLMBasedExtractor.__new__(LLMBasedExtractor)._get_system_prompt()
+    assert "中、美、欧、日、韩" in prompt
+    assert "DETAILED DESCRIPTION" in prompt
+    assert "【請求項1】" in prompt
+    assert "청구항 1" in prompt
+    assert "Amended claims" in prompt
+
+
+def test_llm_prompt_preserves_strict_field_and_drawing_constraints() -> None:
+    prompt = LLMBasedExtractor.__new__(LLMBasedExtractor)._get_system_prompt()
+    assert "所有字符串字段禁止返回 `null`" in prompt
+    assert "application_date" in prompt
+    assert "同一 `file_path` 只能绑定一个 `figure_label`" in prompt
+    assert "摘要附图不得混入 `drawings` 主列表" in prompt
+    assert "反斜杠必须合法转义" in prompt
+    assert "The system of claim 1" in prompt
+    assert "`drawings` 也必须返回空数组 `[]`" in prompt
+
+
+def test_llm_preprocess_preserves_meaningful_hyphens_and_ranges() -> None:
+    text = """
+EP 3 379 496 A1
+US 2023/0403781 A1
+claims 1-3
+[0001]
+<0002>
+【0003】
+"""
+    cleaned = LLMBasedExtractor.preprocess_patent_text(text)
+    assert "EP 3 379 496 A1" in cleaned
+    assert "US 2023/0403781 A1" in cleaned
+    assert "claims 1-3" in cleaned
+    assert "[0001]" not in cleaned
+    assert "<0002>" not in cleaned
+    assert "【0003】" not in cleaned
+
+
+def test_llm_json_normalizer_fills_optional_missing_fields() -> None:
+    extractor = LLMBasedExtractor.__new__(LLMBasedExtractor)
+    normalized = extractor._normalize_llm_json_data(
+        {
+            "bibliographic_data": {
+                "application_number": "123",
+                "application_date": "2023.01.01",
+                "invention_title": "Title",
+                "ipc_classifications": [],
+                "applicants": [],
+                "inventors": [],
+                "abstract": "abs",
+                "abstract_figure": None,
+            },
+            "claims": [],
+            "description": {
+                "technical_field": "",
+                "background_art": "",
+                "summary_of_invention": "",
+                "detailed_description": "",
+                "technical_effect": None,
+                "brief_description_of_drawings": None,
+            },
+        }
+    )
+    assert normalized["drawings"] == []
+    assert normalized["bibliographic_data"]["abstract_figure"] == ""
+    assert normalized["description"]["technical_effect"] == ""
+    assert normalized["description"]["brief_description_of_drawings"] == ""

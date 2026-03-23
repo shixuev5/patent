@@ -55,6 +55,8 @@ class LLMService:
         "technical_means_generation": {"tier": "large", "thinking": True},
         "technical_effect_verification": {"tier": "large", "thinking": True},
         "oar_dispute_extraction": {"tier": "large", "thinking": True},
+        "oar_applicant_argument_extraction": {"tier": "large", "thinking": True},
+        "oar_dispute_oa_matching": {"tier": "large", "thinking": True},
         "oar_amendment_tracking": {"tier": "large", "thinking": True},
         "oar_support_basis_check": {"tier": "large", "thinking": True},
         "oar_evidence_verification": {"tier": "large", "thinking": True},

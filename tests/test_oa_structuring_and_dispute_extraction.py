@@ -26,6 +26,27 @@ def test_office_action_extractor_extracts_reliable_paragraph_fields() -> None:
     assert paragraph.evaluation == ParagraphEvaluation.NEGATIVE
 
 
+def test_office_action_extractor_keeps_body_after_internal_heading() -> None:
+    markdown_content = """申请号：202211444126.9
+
+# 第 一 次 审 查 意 见 通 知 书
+
+本申请要求保护一种载人火车控制系统。
+
+# 权利要求 1-7 不具备专利法第二十二条第三款规定的创造性
+
+1、独立权利要求1相对于对比文件1和对比文件2不具备创造性，因此不能被授予专利权。
+2、权利要求2-3是从属权利要求，在引用的权利要求不具备创造性的基础上，也不具备创造性。
+"""
+
+    office_action = OfficeActionExtractor().extract(markdown_content)
+
+    assert len(office_action.paragraphs) == 2
+    assert office_action.paragraphs[0].claim_ids == ["1"]
+    assert office_action.paragraphs[0].cited_doc_ids == ["D1", "D2"]
+    assert office_action.paragraphs[1].claim_ids == ["2", "3"]
+
+
 def test_dispute_extraction_uses_two_stage_pipeline() -> None:
     class _StubLLM:
         def __init__(self):

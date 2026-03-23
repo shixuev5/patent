@@ -3,8 +3,11 @@
 定义专利文档的结构化数据模型，用于验证和格式化解析结果
 """
 
+import re
 from typing import Any, List, Optional, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from agents.common.patent_structuring.date_utils import parse_common_date_string
 
 
 class PatentStructuringBaseModel(BaseModel):
@@ -19,6 +22,24 @@ class PatentStructuringBaseModel(BaseModel):
             if field_info.annotation is str and field_name in normalized and normalized[field_name] is None:
                 normalized[field_name] = ""
         return normalized
+
+    @classmethod
+    def _normalize_date_string(cls, value: Any) -> Any:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        normalized = parse_common_date_string(text)
+        if normalized:
+            return normalized
+
+        match = re.search(r"\((\d{4})\.(\d{1,2})\.(\d{1,2})\)", text)
+        if match:
+            year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                return f"{year:04d}.{month:02d}.{day:02d}"
+
+        return text
 
 
 class EntityInfo(PatentStructuringBaseModel):
@@ -44,6 +65,12 @@ class BibliographicData(PatentStructuringBaseModel):
     agency: Optional[PatentAgency] = Field(None, description="专利代理机构与代理人")
     abstract: str = Field(..., description="摘要纯文本")
     abstract_figure: str = Field("", description="摘要附图的图片链接；缺失时为空字符串")
+
+    @field_validator("application_date", "priority_date", "publication_date", mode="before")
+    @classmethod
+    def _normalize_date_fields(cls, value: Any) -> str:
+        normalized = cls._normalize_date_string(value)
+        return str(normalized or "")
 
 
 class PatentClaim(PatentStructuringBaseModel):
