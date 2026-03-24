@@ -273,6 +273,33 @@ def _normalize_pn(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _strip_filename_suffix(filename: Any) -> Optional[str]:
+    cleaned = str(filename or "").strip()
+    if not cleaned:
+        return None
+    suffix = Path(cleaned).suffix
+    if suffix:
+        cleaned = cleaned[: -len(suffix)]
+    cleaned = cleaned.strip()
+    return cleaned or None
+
+
+def _build_task_title(
+    task_type: str,
+    *,
+    pn: Any = None,
+    filename: Any = None,
+) -> str:
+    normalized_pn = _normalize_pn(pn)
+    if normalized_pn:
+        return normalized_pn
+
+    cleaned_filename = _strip_filename_suffix(filename)
+    if task_type == TaskType.AI_REPLY.value:
+        return cleaned_filename or "AI 答复任务"
+    return cleaned_filename or "未命名任务"
+
+
 def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -> Optional[str]:
     resolved_pn = _normalize_pn(pn)
     if not resolved_pn:
@@ -514,7 +541,11 @@ async def run_patent_analysis_task(
                     }
                     task_manager.complete_task(task_id, output_files=output_files)
                     if resolved_pn and resolved_pn != (pn or ""):
-                        task_manager.storage.update_task(task_id, pn=resolved_pn)
+                        task_manager.storage.update_task(
+                            task_id,
+                            pn=resolved_pn,
+                            title=_build_task_title(TaskType.PATENT_ANALYSIS.value, pn=resolved_pn),
+                        )
                     if hasattr(task_manager.storage, "record_patent_analysis"):
                         try:
                             task_manager.storage.record_patent_analysis(resolved_pn, normalized_input_sha256)
@@ -701,7 +732,11 @@ async def run_patent_analysis_task(
             pipeline_pn = str(result.get("resolved_pn", "")).strip()
             final_pn = pipeline_pn or (pn or "") or task_id
             if final_pn and final_pn != (pn or ""):
-                task_manager.storage.update_task(task_id, pn=final_pn)
+                task_manager.storage.update_task(
+                    task_id,
+                    pn=final_pn,
+                    title=_build_task_title(TaskType.PATENT_ANALYSIS.value, pn=final_pn),
+                )
 
             output_files = {
                 "pdf": output_pdf,
@@ -1037,7 +1072,11 @@ async def run_ai_review_task(
             pipeline_pn = str(result.get("resolved_pn", "")).strip()
             final_pn = pipeline_pn or (pn or "") or task_id
             if final_pn and final_pn != (pn or ""):
-                task_manager.storage.update_task(task_id, pn=final_pn)
+                task_manager.storage.update_task(
+                    task_id,
+                    pn=final_pn,
+                    title=_build_task_title(TaskType.AI_REVIEW.value, pn=final_pn),
+                )
 
             pdf_bytes = await asyncio.to_thread(_read_local_pdf_bytes, output_pdf)
             if not pdf_bytes:
@@ -1346,8 +1385,12 @@ async def run_ai_reply_task(
             )
         existing_task = task_manager.get_task(task_id)
         existing_pn = _normalize_pn(getattr(existing_task, "pn", "") if existing_task else "")
+        title_updates: Dict[str, Any] = {}
         if resolved_pn and resolved_pn != existing_pn:
-            task_manager.storage.update_task(task_id, pn=resolved_pn)
+            title_updates["pn"] = resolved_pn
+            title_updates["title"] = _build_task_title(TaskType.AI_REPLY.value, pn=resolved_pn)
+        if title_updates:
+            task_manager.storage.update_task(task_id, **title_updates)
         final_pn = resolved_pn or existing_pn
 
         output_files: Dict[str, str] = {"pdf": pdf_path}
@@ -1526,7 +1569,7 @@ async def create_task(
             owner_id=current_user.user_id,
             task_type=task_type,
             pn=pn,
-            title=patentNumber or (file.filename if file else "未命名任务"),
+            title=_build_task_title(task_type, pn=pn, filename=file.filename if file else None),
         )
         emit_system_log(
             category="task_execution",
@@ -1618,7 +1661,7 @@ async def create_task(
         owner_id=current_user.user_id,
         task_type=task_type,
         pn=None,
-        title=f"AI 答复任务 - {officeActionFile.filename or '未命名文件'}",
+        title=_build_task_title(task_type, filename=officeActionFile.filename),
     )
     emit_system_log(
         category="task_execution",

@@ -63,6 +63,19 @@ const buildTaskStorageKey = (mode: AuthMode, userId: string): string => {
   return `${STORAGE_KEY_PREFIX}${mode}:${userId}`
 }
 
+const stripFilenameSuffix = (filename?: string | null): string => {
+  const cleaned = String(filename || '').trim()
+  if (!cleaned) return ''
+  return cleaned.replace(/\.[^.]+$/, '').trim()
+}
+
+const buildTaskTitle = (input: CreateTaskInput): string => {
+  if (input.taskType === 'patent_analysis' || input.taskType === 'ai_review') {
+    return input.patentNumber?.trim() || stripFilenameSuffix(input.file?.name) || '未命名任务'
+  }
+  return stripFilenameSuffix(input.officeActionFile?.name) || 'AI 答复任务'
+}
+
 const toTaskFromServer = (serverTask: any): Task => ({
   id: generateId(),
   backendId: serverTask.id,
@@ -244,6 +257,7 @@ export const useTaskStore = defineStore('tasks', {
       const normalized = normalizeStatus(serverTask?.status || taskRef.status)
       taskRef.status = normalized
       taskRef.taskType = normalizeTaskType(serverTask?.taskType || taskRef.taskType)
+      if (typeof serverTask?.title === 'string' && serverTask.title.trim()) taskRef.title = serverTask.title
       if (typeof serverTask?.progress === 'number') taskRef.progress = serverTask.progress
       if (typeof serverTask?.step === 'string' && serverTask.step) taskRef.currentStep = serverTask.step
       if (typeof serverTask?.pn === 'string' && serverTask.pn) taskRef.pn = serverTask.pn
@@ -632,9 +646,7 @@ export const useTaskStore = defineStore('tasks', {
       const task: Task = {
         id: generateId(),
         taskType: input.taskType,
-        title: isPatentLike
-          ? input.patentNumber || input.file?.name || '未命名任务'
-          : input.officeActionFile.name || 'AI 答复任务',
+        title: buildTaskTitle(input),
         pn: isPatentLike ? input.patentNumber?.trim() || undefined : undefined,
         status: 'pending',
         progress: 0,

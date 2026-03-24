@@ -95,6 +95,17 @@ def test_create_ai_reply_task_allows_empty_claim_uploads(monkeypatch, tmp_path) 
     assert task is not None
     input_files = task.metadata.get("input_files", [])
     assert [item["file_type"] for item in input_files] == ["office_action", "response"]
+    assert task.title == "oa"
+
+
+def test_ai_reply_title_prefers_publication_number_when_resolved() -> None:
+    title = tasks_route._build_task_title("ai_reply", pn="cn123456a", filename="oa.docx")
+    assert title == "CN123456A"
+
+
+def test_patent_like_title_uses_file_stem_without_suffix() -> None:
+    title = tasks_route._build_task_title("patent_analysis", filename="CN123456A.pdf")
+    assert title == "CN123456A"
 
 
 def test_create_ai_reply_task_rejects_legacy_claims_file_field(monkeypatch, tmp_path) -> None:
