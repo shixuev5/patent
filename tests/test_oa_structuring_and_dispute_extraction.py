@@ -16,6 +16,7 @@ def test_office_action_extractor_extracts_reliable_paragraph_fields() -> None:
     office_action = OfficeActionExtractor().extract(markdown_content)
 
     assert office_action.application_number == "202211411308.6"
+    assert office_action.current_notice_round == 1
     assert len(office_action.paragraphs) == 1
 
     paragraph = office_action.paragraphs[0]
@@ -41,10 +42,57 @@ def test_office_action_extractor_keeps_body_after_internal_heading() -> None:
 
     office_action = OfficeActionExtractor().extract(markdown_content)
 
+    assert office_action.current_notice_round == 1
     assert len(office_action.paragraphs) == 2
     assert office_action.paragraphs[0].claim_ids == ["1"]
     assert office_action.paragraphs[0].cited_doc_ids == ["D1", "D2"]
     assert office_action.paragraphs[1].claim_ids == ["2", "3"]
+
+
+def test_office_action_extractor_uses_latest_notice_body_for_round_and_comparison_docs() -> None:
+    markdown_content = """申请号：202211444126.9
+
+# 第 一 次 审 查 意 见 通 知 书
+
+1、权利要求1相对于对比文件3(CN201010101U)不具备创造性。
+
+# 第二次审查意见通知书
+
+1、权利要求1相对于对比文件1(CN101010101A)不具备创造性。另，对比文件1(CN101010101A)已经公开对应基础结构；对比文件2(ISO 12345《环境测试方法（修订版）》)公开了相关试验条件。
+"""
+
+    office_action = OfficeActionExtractor().extract(markdown_content)
+
+    assert office_action.current_notice_round == 2
+    assert [doc.document_id for doc in office_action.comparison_documents] == ["D1", "D2"]
+    assert office_action.comparison_documents[0].document_number == "CN101010101A"
+    assert office_action.comparison_documents[1].document_number == "ISO 12345《环境测试方法（修订版）》"
+    assert office_action.paragraphs[0].cited_doc_ids == ["D1", "D2"]
+
+
+def test_office_action_extractor_falls_back_to_table_when_body_has_no_comparison_doc() -> None:
+    markdown_content = """申请号：202211444126.9
+
+# 第二次审查意见通知书
+
+对比文件(其编号在今后的审查过程中继续沿用)：
+<table>
+<tr><td>序号</td><td>对比文件</td><td>公开日</td></tr>
+<tr><td>1</td><td>CN104567890A</td><td>2015-01-01</td></tr>
+<tr><td>2</td><td>ISO 9988</td><td></td></tr>
+</table>
+
+1、权利要求1不具备创造性。
+"""
+
+    office_action = OfficeActionExtractor().extract(markdown_content)
+
+    assert office_action.current_notice_round == 2
+    assert [doc.document_id for doc in office_action.comparison_documents] == ["D1", "D2"]
+    assert office_action.comparison_documents[0].document_number == "CN104567890A"
+    assert office_action.comparison_documents[0].publication_date == "2015-01-01"
+    assert office_action.comparison_documents[1].document_number == "ISO 9988"
+    assert office_action.comparison_documents[1].publication_date is None
 
 
 def test_dispute_extraction_uses_two_stage_pipeline() -> None:

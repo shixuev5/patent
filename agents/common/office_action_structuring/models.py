@@ -39,5 +39,6 @@ class OfficeActionParagraph(BaseModel):
 class OfficeAction(BaseModel):
     """审查意见通知书结构化数据"""
     application_number: str = Field(..., description="原专利申请号")
+    current_notice_round: int = Field(..., description="当前上传通知书轮次，如 1/2/3")
     comparison_documents: List[ComparisonDocument] = Field(default_factory=list, description="对比文件列表")
     paragraphs: List[OfficeActionParagraph] = Field(default_factory=list, description="审查意见通知书段落内容")

@@ -74,7 +74,8 @@ def test_evidence_verification_runs_disputes_in_parallel(monkeypatch) -> None:
         ],
     }
 
-    result = node._verify_evidence(disputes, prepared_materials)
+    claims = [{"claim_id": "1", "claim_text": "一种装置"}]
+    result = node._verify_evidence(disputes, prepared_materials, claims)
     assert len(result) == 3
     assert tracker["max_active"] >= 2
 
@@ -334,7 +335,8 @@ def test_common_knowledge_verification_runs_disputes_in_parallel(monkeypatch) ->
         "local_retrieval": {"enabled": False},
     }
 
-    result = node._verify_common_knowledge(disputes, prepared_materials)
+    claims = [{"claim_id": "1", "claim_text": "一种装置"}]
+    result = node._verify_common_knowledge(disputes, prepared_materials, claims)
     assert len(result) == 2
     assert tracker["max_active"] >= 2
 
@@ -381,7 +383,8 @@ def test_topup_search_verification_runs_tasks_in_parallel(monkeypatch) -> None:
         "local_retrieval": {"enabled": False},
     }
 
-    result = node._verify_topup(topup_tasks, prepared_materials)
+    claims = [{"claim_id": "1", "claim_text": "一种装置"}]
+    result = node._verify_topup(topup_tasks, prepared_materials, claims)
     assert len(result.get("disputes", [])) == 3
     assert len(result.get("evidence_assessments", [])) == 3
     assert tracker["max_active"] >= 2

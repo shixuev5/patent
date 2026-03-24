@@ -1,6 +1,6 @@
 """
 文档处理节点
-负责解析输入文件（包括审查意见通知书、意见陈述书、权利要求书）为markdown格式，并对审查意见通知书进行结构化提取
+负责解析输入文件（包括审查意见通知书、意见陈述书、不同版本权利要求书）为markdown格式，并对审查意见通知书进行结构化提取
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -98,7 +98,7 @@ class DocumentProcessingNode:
 
             # 使用缓存运行文档处理
             processed_result = cache.run_step(
-                "process_documents_v3",
+                "process_documents_v4",
                 self._process_documents,
                 state.input_files,
                 state.output_dir
@@ -107,9 +107,13 @@ class DocumentProcessingNode:
             # 更新状态
             updates["parsed_files"] = processed_result["parsed_files"]
             updates["office_action"] = processed_result["office_action"]
-            updates["claims_new_structured"] = [
+            updates["claims_previous_structured"] = [
                 item if isinstance(item, StructuredClaim) else StructuredClaim(**item)
-                for item in processed_result.get("claims_new_structured", [])
+                for item in processed_result.get("claims_previous_structured", [])
+            ]
+            updates["claims_current_structured"] = [
+                item if isinstance(item, StructuredClaim) else StructuredClaim(**item)
+                for item in processed_result.get("claims_current_structured", [])
             ]
             updates["progress"] = 30.0
             updates["status"] = "completed"
@@ -141,7 +145,8 @@ class DocumentProcessingNode:
         """
         parsed_files = []
         office_action_data = None
-        claims_new_structured = []
+        claims_previous_structured = []
+        claims_current_structured = []
 
         max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, max(len(input_files), 1)))
         parse_results = [None] * len(input_files)
@@ -170,15 +175,20 @@ class DocumentProcessingNode:
                 office_action_data = self.extract_office_action_structured_data(parsed_file.markdown_path)
                 self._validate_office_action_data(office_action_data)
                 logger.info("成功提取审查意见结构化数据")
-            elif parsed_file.file_type == "claims":
-                logger.info("开始结构化提取新权利要求")
-                claims_new_structured = extract_structured_claims(parsed_file.content)
-                logger.info(f"提取到 {len(claims_new_structured)} 条新权利要求")
+            elif parsed_file.file_type == "claims_previous":
+                logger.info("开始结构化提取上一版权利要求")
+                claims_previous_structured = extract_structured_claims(parsed_file.content)
+                logger.info(f"提取到 {len(claims_previous_structured)} 条上一版权利要求")
+            elif parsed_file.file_type == "claims_current":
+                logger.info("开始结构化提取当前最新权利要求")
+                claims_current_structured = extract_structured_claims(parsed_file.content)
+                logger.info(f"提取到 {len(claims_current_structured)} 条当前最新权利要求")
 
         return {
             "parsed_files": parsed_files,
             "office_action": office_action_data,
-            "claims_new_structured": claims_new_structured,
+            "claims_previous_structured": claims_previous_structured,
+            "claims_current_structured": claims_current_structured,
         }
 
     def _parse_single_file(self, input_file, output_dir: str):
@@ -214,3 +224,6 @@ class DocumentProcessingNode:
         application_number = str(office_action_data.get("application_number", "")).strip()
         if not application_number:
             raise ValueError("审查意见未解析出原专利号(application_number)")
+        current_notice_round = int(office_action_data.get("current_notice_round", 0) or 0)
+        if current_notice_round <= 0:
+            raise ValueError("审查意见未解析出有效轮次(current_notice_round)")

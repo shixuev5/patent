@@ -9,14 +9,16 @@ from typing import Any, Dict, List
 
 def build_final_report_markdown(report: Dict[str, Any]) -> str:
     summary = _item_get(report, "summary", {}) or {}
+    notice_context = _item_get(report, "notice_context", {}) or {}
     amendment_review = _item_get(report, "amendment_review", {}) or {}
     disputes = _item_get(report, "disputes", []) or []
-    second_notice = _item_get(report, "second_office_action_notice", {}) or {}
+    next_notice = _item_get(report, "next_office_action_notice", {}) or {}
 
     total_disputes = _as_int(_item_get(summary, "total_disputes", 0))
     assessed_disputes = _as_int(_item_get(summary, "assessed_disputes", 0))
     unassessed_disputes = _as_int(_item_get(summary, "unassessed_disputes", 0))
-    second_points = _as_int(_item_get(summary, "second_office_action_points", 0))
+    next_notice_round = _as_int(_item_get(notice_context, "next_notice_round", 0))
+    next_points = _as_int(_item_get(summary, "next_office_action_points", 0))
 
     rebuttal_distribution = _item_get(summary, "rebuttal_type_distribution", {}) or {}
     verdict_distribution = _item_get(summary, "verdict_distribution", {}) or {}
@@ -92,7 +94,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
         _conclusion_card(
             "核查进度",
             f"{assessed_disputes}/{total_disputes} 项已核查",
-            f"待核查 {unassessed_disputes} 项；二通可复用要点 {second_points} 项",
+            f"待核查 {unassessed_disputes} 项；下一通可复用要点 {next_points} 项",
         )
     )
     lines.append(
@@ -144,7 +146,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append("</div>")
     lines.append("")
 
-    second_notice_items = _item_get(second_notice, "items", []) or []
+    next_notice_items = _item_get(next_notice, "items", []) or []
 
     lines.append("## 3. 争论点数据总表")
     lines.append("")
@@ -156,9 +158,9 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(_render_ai_assessment_table(disputes))
     lines.append("")
 
-    lines.append("## 5. 二次审查意见通知书要点")
+    lines.append(f"## 5. {_next_notice_heading(next_notice_round)}")
     lines.append("")
-    lines.append(_render_second_notice_argument_blocks(disputes, second_notice_items))
+    lines.append(_render_next_notice_argument_blocks(disputes, next_notice_items))
     lines.append("")
 
     return "\n".join(lines)
@@ -168,6 +170,12 @@ def _item_get(item: Any, key: str, default=None):
     if isinstance(item, dict):
         return item.get(key, default)
     return getattr(item, key, default)
+
+
+def _next_notice_heading(next_notice_round: int) -> str:
+    if next_notice_round > 0:
+        return f"第 {next_notice_round} 次审查意见通知书要点"
+    return "下一次审查意见通知书要点"
 
 
 def _examiner_type_label(raw_type: str) -> str:
@@ -362,12 +370,12 @@ def _render_ai_assessment_table(disputes: List[Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_second_notice_argument_blocks(disputes: List[Any], second_notice_items: List[Any]) -> str:
+def _render_next_notice_argument_blocks(disputes: List[Any], next_notice_items: List[Any]) -> str:
     if not disputes:
         return '<div class="oar-opinion-empty">当前无可展示的申请人意见陈述。</div>'
 
     rejection_reason_by_dispute: Dict[str, str] = {}
-    for item in second_notice_items or []:
+    for item in next_notice_items or []:
         dispute_id = str(_item_get(item, "dispute_id", "")).strip()
         rejection_reason = str(_item_get(item, "final_examiner_rejection_reason", "")).strip()
         if dispute_id and rejection_reason:

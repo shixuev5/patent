@@ -32,13 +32,21 @@ class AmendmentTrackingNode:
         try:
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v5",
+                "track_amendment_v6",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
-                self._state_get(state, "claims_new_structured",[]),
+                self._state_get(state, "claims_previous_structured", []),
+                self._state_get(state, "claims_current_structured", []),
             )
 
-            updates["claims_old_structured"] = result.get("claims_old_structured",[])
+            updates["claims_old_structured"] = [
+                item if isinstance(item, StructuredClaim) else StructuredClaim(**item)
+                for item in result.get("claims_old_structured", [])
+            ]
+            updates["claims_effective_structured"] = [
+                item if isinstance(item, StructuredClaim) else StructuredClaim(**item)
+                for item in result.get("claims_effective_structured", [])
+            ]
             updates["has_claim_amendment"] = result["has_claim_amendment"]
             updates["added_features"] =[
                 item if isinstance(item, AddedFeature) else AddedFeature(**item)
@@ -58,23 +66,27 @@ class AmendmentTrackingNode:
 
         return updates
 
-    def _track_amendment(self, prepared_materials, new_claims) -> Dict[str, Any]:
+    def _track_amendment(self, prepared_materials, previous_claims, current_claims) -> Dict[str, Any]:
         prepared = self._to_dict(prepared_materials)
-        old_claims = self._extract_old_claims(prepared)
-        new_claims_list =[self._to_dict(item) for item in (new_claims or [])]
+        previous_claims_list = [self._to_dict(item) for item in (previous_claims or [])]
+        current_claims_list = [self._to_dict(item) for item in (current_claims or [])]
+        current_notice_round = self._extract_current_notice_round(prepared)
+        old_claims = self._resolve_old_claims(prepared, previous_claims_list, current_notice_round)
+        effective_claims = current_claims_list or old_claims
 
-        # 未提供新权利要求文件，直接视为无修改
-        if not new_claims_list:
+        if not current_claims_list:
             return {
                 "claims_old_structured": old_claims,
+                "claims_effective_structured": effective_claims,
                 "has_claim_amendment": False,
                 "added_features":[],
             }
 
-        structured_diff = self._build_structured_diff(old_claims, new_claims_list)
+        structured_diff = self._build_structured_diff(old_claims, effective_claims)
         if not structured_diff.get("has_changes", False):
             return {
                 "claims_old_structured": old_claims,
+                "claims_effective_structured": effective_claims,
                 "has_claim_amendment": False,
                 "added_features":[],
             }
@@ -94,6 +106,7 @@ class AmendmentTrackingNode:
         
         return {
             "claims_old_structured": old_claims,
+            "claims_effective_structured": effective_claims,
             "has_claim_amendment": normalized["has_claim_amendment"],
             "added_features": normalized["added_features"],
         }
@@ -282,7 +295,7 @@ class AmendmentTrackingNode:
 
         return sorted([str(item).strip() for item in claim_ids if str(item).strip()], key=_key)
 
-    def _extract_old_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _extract_original_patent_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
         original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
         patent_data = self._to_dict(original_patent.get("data", {}))
         claims_raw = patent_data.get("claims",[])
@@ -297,8 +310,27 @@ class AmendmentTrackingNode:
                 "claim_id": claim_id,
                 "claim_text": str(claim.get("claim_text", "")).strip(),
                 "claim_type": str(claim.get("claim_type", "unknown")).strip() or "unknown",
+                "parent_claim_ids": self._sort_claim_ids(claim.get("parent_claim_ids", []) or []),
             })
         return claims
+
+    def _resolve_old_claims(
+        self,
+        prepared_materials: Dict[str, Any],
+        previous_claims: List[Dict[str, Any]],
+        current_notice_round: int,
+    ) -> List[Dict[str, Any]]:
+        if current_notice_round >= 2 and previous_claims:
+            return previous_claims
+        return self._extract_original_patent_claims(prepared_materials)
+
+    def _extract_current_notice_round(self, prepared_materials: Dict[str, Any]) -> int:
+        office_action = self._to_dict(prepared_materials.get("office_action", {}))
+        try:
+            current_notice_round = int(office_action.get("current_notice_round", 0) or 0)
+        except Exception:
+            return 0
+        return max(current_notice_round, 0)
 
     def _state_get(self, state: Any, key: str, default=None):
         if isinstance(state, dict):

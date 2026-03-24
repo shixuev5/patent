@@ -4,7 +4,7 @@
 """
 
 import re
-from typing import List
+from typing import List, Optional, Tuple
 from agents.common.office_action_structuring.models import (
     OfficeAction,
     ComparisonDocument,
@@ -46,12 +46,31 @@ class OfficeActionExtractor:
         Returns:
             结构化的审查意见通知书数据
         """
+        current_notice_round, section_content = self._extract_latest_notice_section(markdown_content)
         office_action = OfficeAction(
             application_number=self._extract_application_number(markdown_content),
-            comparison_documents=self._extract_comparison_documents(markdown_content),
-            paragraphs=self._extract_paragraphs(markdown_content)
+            current_notice_round=current_notice_round,
+            comparison_documents=self._extract_comparison_documents(section_content),
+            paragraphs=self._extract_paragraphs(section_content),
         )
         return office_action
+
+    def _extract_latest_notice_section(self, markdown_content: str) -> Tuple[int, str]:
+        """提取最新一份审查意见通知书的轮次与正文区段。"""
+        chapter_pattern = r"# 第\s*([0-9一二三四五六七八九十百零〇两]+)\s*次\s*审\s*查\s*意\s*见\s*通\s*知\s*书"
+        chapter_matches = list(re.finditer(chapter_pattern, markdown_content))
+        if not chapter_matches:
+            raise ValueError("未识别审查意见通知书轮次(current_notice_round)")
+
+        last_chapter = chapter_matches[-1]
+        round_raw = str(last_chapter.group(1) or "").strip()
+        current_notice_round = self._parse_legal_number(round_raw)
+        if current_notice_round is None or current_notice_round <= 0:
+            raise ValueError(f"审查意见通知书轮次非法: {round_raw}")
+
+        section_content = markdown_content[last_chapter.end():].strip()
+        logger.info(f"识别到第{current_notice_round}次审查意见通知书章节，长度: {len(section_content)}")
+        return current_notice_round, section_content
 
     def _extract_application_number(self, markdown_content: str) -> str:
         """提取原专利申请号"""
@@ -64,90 +83,135 @@ class OfficeActionExtractor:
         logger.warning("未找到申请号")
         return ""
 
-    def _extract_comparison_documents(self, markdown_content: str) -> List[ComparisonDocument]:
+    def _extract_comparison_documents(self, section_content: str) -> List[ComparisonDocument]:
         """提取对比文件列表"""
-        comparison_documents = []
+        comparison_documents = self._extract_comparison_documents_from_body(section_content)
+        if comparison_documents:
+            logger.info(f"正文共提取到 {len(comparison_documents)} 个对比文件")
+            return comparison_documents
 
-        # 查找对比文件表格
-        table_pattern = r"对比文件\(其编号在今后的审查过程中继续沿用\)：?\s*<table>(.*?)</table>"
-        table_match = re.search(table_pattern, markdown_content, re.DOTALL)
-
-        if table_match:
-            table_content = table_match.group(1)
-
-            # 提取表格行
-            row_pattern = r"<tr>(.*?)</tr>"
-            rows = re.findall(row_pattern, table_content, re.DOTALL)
-
-            if len(rows) > 1:  # 第一行是表头，从第二行开始提取数据
-                for row in rows[1:]:
-                    # 提取单元格内容
-                    cell_pattern = r"<td>(.*?)</td>"
-                    cells = re.findall(cell_pattern, row, re.DOTALL)
-
-                    if len(cells) >= 3:
-                        document_index = len(comparison_documents) + 1
-                        document_number = cells[1].strip()
-                        is_patent = is_patent_document(document_number)
-                        doc = ComparisonDocument(
-                            document_id=f"D{document_index}",
-                            document_number=document_number,
-                            is_patent=is_patent,
-                            publication_date=cells[2].strip() if cells[2].strip() else None,
-                        )
-                        comparison_documents.append(doc)
-
-        logger.info(f"共提取到 {len(comparison_documents)} 个对比文件")
+        comparison_documents = self._extract_comparison_documents_from_table(section_content)
+        logger.info(f"表格兜底共提取到 {len(comparison_documents)} 个对比文件")
         return comparison_documents
 
-    def _extract_paragraphs(self, markdown_content: str) -> List[OfficeActionParagraph]:
+    def _extract_comparison_documents_from_body(self, section_content: str) -> List[ComparisonDocument]:
+        comparison_documents: List[ComparisonDocument] = []
+        seen_doc_ids = set()
+        pattern = re.compile(r"对比文件\s*([0-9０-９]+)\s*([（(])")
+
+        for match in pattern.finditer(section_content or ""):
+            raw_index = self._normalize_digits(match.group(1))
+            if not raw_index.isdigit():
+                continue
+            document_id = f"D{int(raw_index)}"
+            if document_id in seen_doc_ids:
+                continue
+
+            end_index = self._find_matching_bracket(section_content, match.end())
+            if end_index is None:
+                continue
+
+            document_number = self._clean_embedded_text(section_content[match.end():end_index])
+            if not document_number:
+                continue
+
+            comparison_documents.append(
+                ComparisonDocument(
+                    document_id=document_id,
+                    document_number=document_number,
+                    is_patent=is_patent_document(document_number),
+                    publication_date=None,
+                )
+            )
+            seen_doc_ids.add(document_id)
+        return comparison_documents
+
+    def _extract_comparison_documents_from_table(self, section_content: str) -> List[ComparisonDocument]:
+        comparison_documents: List[ComparisonDocument] = []
+        table_pattern = r"对比文件(?:\(其编号在今后的审查过程中继续沿用\)|（其编号在今后的审查过程中继续沿用）)：?\s*<table>(.*?)</table>"
+        table_match = re.search(table_pattern, section_content, re.DOTALL)
+        if not table_match:
+            return comparison_documents
+
+        table_content = table_match.group(1)
+        row_pattern = r"<tr>(.*?)</tr>"
+        rows = re.findall(row_pattern, table_content, re.DOTALL)
+        if len(rows) <= 1:
+            return comparison_documents
+
+        for row in rows[1:]:
+            cell_pattern = r"<td>(.*?)</td>"
+            cells = re.findall(cell_pattern, row, re.DOTALL)
+            if len(cells) < 3:
+                continue
+
+            document_index = len(comparison_documents) + 1
+            document_number = self._clean_embedded_text(cells[1])
+            if not document_number:
+                continue
+
+            comparison_documents.append(
+                ComparisonDocument(
+                    document_id=f"D{document_index}",
+                    document_number=document_number,
+                    is_patent=is_patent_document(document_number),
+                    publication_date=self._clean_embedded_text(cells[2]) or None,
+                )
+            )
+        return comparison_documents
+
+    def _extract_paragraphs(self, section_content: str) -> List[OfficeActionParagraph]:
         """提取审查意见通知书章节的段落内容"""
         paragraphs = []
+        paragraph_pattern = r"(\d+)\s*[、.]\s*(.*?)(?=\n\s*\d+\s*[、.]\s*|\n#|\Z)"
+        matches = re.finditer(paragraph_pattern, section_content, re.DOTALL)
 
-        # 查找最后一个# 第x次审查意见通知书的位置
-        chapter_pattern = r"# 第\s*([一二三四五六七八九十]+)\s*次\s*审\s*查\s*意\s*见\s*通\s*知\s*书"
-        chapter_matches = list(re.finditer(chapter_pattern, markdown_content))
+        for match in matches:
+            content = match.group(2).strip()
 
-        if chapter_matches:
-            # 提取最后一个审查意见通知书的内容。
-            # 注意正文内部可能包含 "# 权利要求..." 之类的子标题，不能据此截断；
-            # 这里只能截到“下一份审查意见通知书”或文件末尾。
-            last_chapter = chapter_matches[-1]
-            chapter_index = last_chapter.start()
-            chapter_end = len(markdown_content)
+            if "基于上述理由" in content:
+                content = content.split("基于上述理由")[0].strip()
 
-            section_content = markdown_content[chapter_index + len(last_chapter.group()):chapter_end].strip()
-            logger.info(f"找到第{last_chapter.group(1)}次审查意见通知书章节，长度: {len(section_content)}")
+            if not content:
+                continue
 
-            # 提取段落内容（以数字+.或数字+、开头的段落）
-            paragraph_pattern = r"(\d+)\s*[、.]\s*(.*?)(?=\n\s*\d+\s*[、.]\s*|\n#|\Z)"
-            matches = re.finditer(paragraph_pattern, section_content, re.DOTALL)
+            paragraph_index = len(paragraphs) + 1
+            legal_basis = self._extract_legal_basis(content)
+            paragraphs.append(OfficeActionParagraph(
+                paragraph_id=f"Claim{paragraph_index}",
+                claim_ids=self._extract_claim_ids(content),
+                legal_basis=legal_basis,
+                issue_types=self._map_issue_types(legal_basis, content),
+                cited_doc_ids=self._extract_cited_doc_ids(content),
+                evaluation=self._determine_evaluation(content),
+                content=content
+            ))
 
-            for match in matches:
-                content = match.group(2).strip()
-
-                # 最后一段只提取到“基于上述理由”之前的内容
-                if "基于上述理由" in content:
-                    content = content.split("基于上述理由")[0].strip()
-
-                if content:
-                    paragraph_index = len(paragraphs) + 1
-                    legal_basis = self._extract_legal_basis(content)
-                    paragraphs.append(OfficeActionParagraph(
-                        paragraph_id=f"Claim{paragraph_index}",
-                        claim_ids=self._extract_claim_ids(content),
-                        legal_basis=legal_basis,
-                        issue_types=self._map_issue_types(legal_basis, content),
-                        cited_doc_ids=self._extract_cited_doc_ids(content),
-                        evaluation=self._determine_evaluation(content),
-                        content=content
-                    ))
-
-            logger.info(f"共提取到 {len(paragraphs)} 个段落")
-        else:
-            logger.warning("未找到审查意见通知书章节")
-
+        logger.info(f"共提取到 {len(paragraphs)} 个段落")
         return paragraphs
+
+    def _find_matching_bracket(self, text: str, start_index: int) -> Optional[int]:
+        depth = 1
+        for index in range(start_index, len(text)):
+            char = text[index]
+            if char in {"(", "（"}:
+                depth += 1
+            elif char in {")", "）"}:
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    def _clean_embedded_text(self, text: str) -> str:
+        cleaned = re.sub(r"<[^>]+>", " ", str(text or ""))
+        cleaned = self._normalize_digits(cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip(" \t\r\n，,；;。")
+
+    def _normalize_digits(self, text: str) -> str:
+        value = str(text or "")
+        translation = str.maketrans("０１２３４５６７８９", "0123456789")
+        return value.translate(translation)
 
     def _extract_claim_ids(self, content: str) -> List[str]:
         """提取段落中关联的权利要求编号，兼容单点与区间表达（如 1-3）。"""

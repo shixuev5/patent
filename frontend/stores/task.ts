@@ -689,7 +689,8 @@ export const useTaskStore = defineStore('tasks', {
         } else {
           formData.append('officeActionFile', input.officeActionFile)
           formData.append('responseFile', input.responseFile)
-          if (input.claimsFile) formData.append('claimsFile', input.claimsFile)
+          if (input.previousClaimsFile) formData.append('previousClaimsFile', input.previousClaimsFile)
+          if (input.currentClaimsFile) formData.append('currentClaimsFile', input.currentClaimsFile)
           input.comparisonDocs?.forEach((doc) => formData.append('comparisonDocs', doc))
         }
 

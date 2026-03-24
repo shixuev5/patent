@@ -11,7 +11,7 @@ from threading import Event
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from loguru import logger
 
@@ -1495,17 +1495,23 @@ async def list_tasks(current_user: CurrentUser = Depends(_get_current_user)):
 
 @router.post("/api/tasks", response_model=TaskResponse)
 async def create_task(
+    request: Request,
     taskType: Optional[str] = Form(None),
     patentNumber: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     officeActionFile: Optional[UploadFile] = File(None),
     responseFile: Optional[UploadFile] = File(None),
-    claimsFile: Optional[UploadFile] = File(None),
+    previousClaimsFile: Optional[UploadFile] = File(None),
+    currentClaimsFile: Optional[UploadFile] = File(None),
     comparisonDocs: Optional[List[UploadFile]] = File(None),
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     task_type = _normalize_task_type(taskType)
     _enforce_daily_quota(current_user.user_id, task_type=task_type)
+
+    form_keys = set((await request.form()).keys())
+    if "claimsFile" in form_keys:
+        raise HTTPException(status_code=400, detail="claimsFile 已废弃，请改用 previousClaimsFile 或 currentClaimsFile。")
 
     if task_type in {TaskType.PATENT_ANALYSIS.value, TaskType.AI_REVIEW.value}:
         if not patentNumber and not file:
@@ -1601,8 +1607,10 @@ async def create_task(
 
     _validate_file_suffix(officeActionFile, {".pdf", ".docx"}, "审查意见通知书")
     _validate_file_suffix(responseFile, {".pdf", ".docx"}, "意见陈述书")
-    if claimsFile:
-        _validate_file_suffix(claimsFile, {".pdf", ".docx"}, "权利要求书")
+    if previousClaimsFile:
+        _validate_file_suffix(previousClaimsFile, {".pdf", ".docx"}, "上一版权利要求书")
+    if currentClaimsFile:
+        _validate_file_suffix(currentClaimsFile, {".pdf", ".docx"}, "当前最新权利要求书")
     for doc in comparisonDocs or []:
         _validate_file_suffix(doc, {".pdf", ".docx"}, "对比文件")
 
@@ -1623,7 +1631,8 @@ async def create_task(
         payload={
             "office_action_file": officeActionFile.filename,
             "response_file": responseFile.filename,
-            "claims_file": claimsFile.filename if claimsFile else None,
+            "previous_claims_file": previousClaimsFile.filename if previousClaimsFile else None,
+            "current_claims_file": currentClaimsFile.filename if currentClaimsFile else None,
             "comparison_doc_count": len(comparisonDocs or []),
         },
     )
@@ -1652,14 +1661,25 @@ async def create_task(
             }
         )
 
-        if claimsFile:
-            claims_path = await _save_upload_file(task.id, claimsFile, "office_action", "claims")
-            saved_paths.append(claims_path)
+        if previousClaimsFile:
+            previous_claims_path = await _save_upload_file(task.id, previousClaimsFile, "office_action", "claims_previous")
+            saved_paths.append(previous_claims_path)
             input_files.append(
                 {
-                    "file_type": "claims",
-                    "original_name": claimsFile.filename or "claims.pdf",
-                    "stored_path": claims_path,
+                    "file_type": "claims_previous",
+                    "original_name": previousClaimsFile.filename or "claims_previous.pdf",
+                    "stored_path": previous_claims_path,
+                }
+            )
+
+        if currentClaimsFile:
+            current_claims_path = await _save_upload_file(task.id, currentClaimsFile, "office_action", "claims_current")
+            saved_paths.append(current_claims_path)
+            input_files.append(
+                {
+                    "file_type": "claims_current",
+                    "original_name": currentClaimsFile.filename or "claims_current.pdf",
+                    "stored_path": current_claims_path,
                 }
             )
 

@@ -45,10 +45,11 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v7",
+                "verify_topup_v8",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
+                self._state_get(state, "claims_effective_structured", []),
             )
 
             updates["disputes"] =[
@@ -72,11 +73,11 @@ class TopupSearchVerificationNode:
 
         return updates
 
-    def _verify_topup(self, topup_tasks, prepared_materials):
+    def _verify_topup(self, topup_tasks, prepared_materials, claims_structured):
         tasks =[self._to_dict(item) for item in (topup_tasks or [])]
         prepared = self._to_dict(prepared_materials)
 
-        claims = self._extract_claims(prepared)
+        claims = self._normalize_claims(claims_structured)
         comparison_docs = self._build_comparison_docs(prepared)
         priority_date = self._extract_priority_date(prepared)
         local_retriever = self._build_local_retriever(prepared)
@@ -652,13 +653,8 @@ feature_text: {feature_text}
             return json.dumps(data, ensure_ascii=False)
         return ""
 
-    def _extract_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
-        original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
-        patent_data = self._to_dict(original_patent.get("data", {}))
-        claims = patent_data.get("claims",[])
-        if not isinstance(claims, list):
-            return []
-        return[self._to_dict(claim) for claim in claims]
+    def _normalize_claims(self, claims_structured: List[Any]) -> List[Dict[str, Any]]:
+        return [self._to_dict(claim) for claim in (claims_structured or []) if self._to_dict(claim)]
 
     def _extract_priority_date(self, prepared_materials: Dict[str, Any]) -> str:
         original_patent = self._to_dict(prepared_materials.get("original_patent", {}))

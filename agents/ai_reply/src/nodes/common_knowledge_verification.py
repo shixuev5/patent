@@ -39,10 +39,11 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v6",
+                "verify_common_knowledge_v7",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
+                self._state_get(state, "claims_old_structured", []),
             )
 
             if not assessments:
@@ -69,13 +70,14 @@ class CommonKnowledgeVerificationNode:
         self,
         disputes: List[Any],
         prepared_materials: Any,
+        claims_structured: List[Any],
     ) -> List[Dict[str, Any]]:
         common_knowledge_disputes = self._get_common_knowledge_disputes(disputes)
         if not common_knowledge_disputes:
             return []
 
         prepared = self._to_dict(prepared_materials)
-        claims = self._extract_claims(prepared)
+        claims = self._normalize_claims(claims_structured)
         priority_date = self._extract_priority_date(prepared)
         local_retriever = self._build_local_retriever(prepared)
         local_doc_ids = self._extract_comparison_doc_ids(prepared)
@@ -234,13 +236,8 @@ class CommonKnowledgeVerificationNode:
                 common_knowledge_disputes.append(dispute)
         return common_knowledge_disputes
 
-    def _extract_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
-        original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
-        patent_data = self._to_dict(original_patent.get("data", {}))
-        claims = patent_data.get("claims", [])
-        if not isinstance(claims, list):
-            return []
-        return [self._to_dict(claim) for claim in claims]
+    def _normalize_claims(self, claims_structured: List[Any]) -> List[Dict[str, Any]]:
+        return [self._to_dict(claim) for claim in (claims_structured or []) if self._to_dict(claim)]
 
     def _get_claim_text(self, dispute: Dict[str, Any], claims: List[Dict[str, Any]]) -> str:
         texts: List[str] = []

@@ -10,7 +10,7 @@ def test_dispute_extraction_normalize_claim_ids() -> None:
     assert node._normalize_claim_ids("权利要求2-4及权利要求6") == ["2", "3", "4", "6"]
 
 
-def test_report_generation_collect_second_notice_with_claim_ids() -> None:
+def test_report_generation_collect_next_notice_with_claim_ids() -> None:
     node = ReportGenerationNode()
     disputes = [
         {
@@ -25,7 +25,7 @@ def test_report_generation_collect_second_notice_with_claim_ids() -> None:
             },
         }
     ]
-    items = node._collect_second_office_action_items(
+    items = node._collect_next_office_action_items(
         disputes,
         {"DSP_A": "经审查，相关权利要求仍不具备创造性。"},
     )
@@ -50,7 +50,7 @@ def test_report_generation_raise_when_missing_rejection_reason() -> None:
         }
     ]
     try:
-        node._collect_second_office_action_items(disputes, {})
+        node._collect_next_office_action_items(disputes, {})
         assert False, "expected ValueError"
     except ValueError as exc:
         assert "examiner_rejection_rationale" in str(exc)
@@ -72,7 +72,7 @@ def test_report_generation_raise_when_missing_final_rejection_reason() -> None:
         }
     ]
     try:
-        node._collect_second_office_action_items(disputes, {})
+        node._collect_next_office_action_items(disputes, {})
         assert False, "expected ValueError"
     except ValueError as exc:
         assert "drafted final reason" in str(exc)

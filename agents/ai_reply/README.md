@@ -4,7 +4,7 @@
 
 `ai_reply` 是一个基于 LangGraph 的 AI 答复辅助工作流，目标是：
 
-1. 解析审查意见通知书、意见陈述书、权利要求书、对比文件。
+1. 解析审查意见通知书、意见陈述书、不同版本权利要求书、对比文件。
 2. 识别争辩焦点并分流到不同核查路径。
 3. 生成统一 JSON 报告，并渲染为 Markdown / PDF。
 
@@ -21,7 +21,7 @@
 5. 审查策略分流（复用历史评述 / 补充检索）
 6. 争辩焦点抽取
 7. 三路验证（证据核查 / 公知常识核查 / 补充检索核查）
-8. 汇总、生成二通建议语句、输出最终报告
+8. 汇总、生成下一通审查意见通知书要点、输出最终报告
 
 ---
 
@@ -31,7 +31,8 @@
 
 - `office_action`：审查意见通知书（PDF / DOCX）
 - `response`：意见陈述书（PDF / DOCX）
-- `claims`：权利要求书（PDF / DOCX，可选）
+- `claims_previous`：上一版权利要求书（PDF / DOCX，可选）
+- `claims_current`：当前最新权利要求书（PDF / DOCX，可选）
 - `comparison_doc`：非专利对比文件（PDF，可多份）
 
 ## 3.2 主要输出
@@ -79,8 +80,8 @@ flowchart TD
 1. `document_processing`
    - 将输入文件解析为 Markdown。
    - 对 `office_action` 做结构化提取。
-   - 校验 `office_action.application_number` 必须存在，否则节点失败。
-   - 对 `claims` 做结构化提取（新权利要求）。
+   - 校验 `office_action.application_number` 与 `office_action.current_notice_round` 必须存在，否则节点失败。
+   - 对 `claims_previous`、`claims_current` 分别做结构化提取。
 
 2. `patent_retrieval`
    - 对原申请号和专利型对比文件执行下载+解析+结构化提取。
@@ -172,8 +173,8 @@ flowchart TD
 
 ### 核心逻辑
 
-1. 从 `prepared_materials` 提取：
-   - 原权利要求文本
+1. 从状态与 `prepared_materials` 提取：
+   - 当前 OA 审查所针对的权利要求文本（`claims_old_structured`）
    - 对比文件内容映射（`document_id -> content`）
 2. 按 `supporting_docs.doc_id` 组合对争议分组，复用同一组文档上下文。
 3. 对每个争议调用 LLM，输出：
@@ -276,7 +277,7 @@ flowchart TD
 1. 生成 `amendment_review`
 2. 将 `disputes` 与 `evidence_assessments` 按 `dispute_id` 合并
 3. 统计 `summary`（争议总数、已核查数、裁决分布、反驳类型分布）
-4. 生成 `second_office_action_notice`
+4. 生成 `next_office_action_notice`
    - 仅收集 `verdict=APPLICANT_CORRECT` 的争议
    - 使用 `examiner_rejection_rationale` 作为中间逻辑要点，经统一润色后生成 `final_examiner_rejection_reason`
 
@@ -290,7 +291,8 @@ flowchart TD
 python -m agents.ai_reply.main \
   --office-action /path/to/office_action.pdf \
   --response /path/to/response.pdf \
-  --claims /path/to/claims.pdf \
+  --claims-previous /path/to/claims_previous.pdf \
+  --claims-current /path/to/claims_current.pdf \
   --comparison-docs /path/to/non_patent1.pdf,/path/to/non_patent2.pdf
 ```
 

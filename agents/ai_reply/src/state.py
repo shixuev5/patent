@@ -11,7 +11,7 @@ import operator
 class InputFile(BaseModel):
     """输入文件信息"""
     file_path: str = Field(..., description="文件路径")
-    file_type: str = Field(..., description="文件类型: office_action, response, claims, comparison_doc")
+    file_type: str = Field(..., description="文件类型: office_action, response, claims_previous, claims_current, comparison_doc")
     file_name: str = Field(..., description="文件名")
 
 
@@ -189,6 +189,7 @@ class PreparedOfficeActionParagraph(BaseModel):
 class PreparedOfficeAction(BaseModel):
     """整理后的审查意见通知书数据"""
     application_number: str = Field("", description="原申请号")
+    current_notice_round: int = Field(0, description="当前上传通知书轮次")
     paragraphs: List[PreparedOfficeActionParagraph] = Field(default_factory=list, description="段落列表")
 
 
@@ -203,7 +204,8 @@ class PreparedMaterials(BaseModel):
     comparison_documents: List[PreparedComparisonDocument] = Field(default_factory=list)
     office_action: PreparedOfficeAction = Field(default_factory=PreparedOfficeAction)
     response: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
-    claims: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
+    claims_previous: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
+    claims_current: PreparedTextDocument = Field(default_factory=PreparedTextDocument)
     local_retrieval: Dict[str, Any] = Field(
         default_factory=dict,
         description="任务级本地检索元信息（索引路径、版本、参数等）",
@@ -227,8 +229,10 @@ class WorkflowState(BaseModel):
     # 争辩焦点和统一核查结果 - 使用 operator.add 合并列表
     disputes: Annotated[List[Dispute], operator.add] = Field(default_factory=list, description="争辩焦点列表")
     evidence_assessments: Annotated[List[EvidenceAssessment], operator.add] = Field(default_factory=list, description="核查结果（事实核查与公知常识核查统一结构）")
-    claims_old_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="原权利要求结构化列表")
-    claims_new_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="新权利要求结构化列表")
+    claims_previous_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="上一版权利要求结构化列表")
+    claims_current_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前最新权利要求结构化列表")
+    claims_old_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前OA审查所针对的权利要求结构化列表")
+    claims_effective_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前生效权利要求结构化列表")
     has_claim_amendment: bool = Field(False, description="是否存在权利要求修改")
     added_features: Annotated[List[AddedFeature], operator.add] = Field(default_factory=list, description="新增特征列表")
     support_findings: Annotated[List[SupportFinding], operator.add] = Field(default_factory=list, description="新增特征支持依据核查结果")

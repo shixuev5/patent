@@ -12,6 +12,16 @@ from agents.ai_reply.src.utils import get_node_cache
 from agents.common.utils.serialization import to_jsonable, item_get
 
 
+def _to_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return {}
+
+
 class ReportGenerationNode:
     """报告生成节点"""
 
@@ -32,7 +42,7 @@ class ReportGenerationNode:
             cache = get_node_cache(self.config, "report_generation")
 
             # 使用缓存运行报告生成
-            report = cache.run_step("generate_report_v4", self._generate_report, state)
+            report = cache.run_step("generate_report_v5", self._generate_report, state)
 
             # 保存到文件
             output_path = self._save_report(report, state)
@@ -60,10 +70,16 @@ class ReportGenerationNode:
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
         early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
+        current_notice_round = self._extract_current_notice_round(state)
+        next_notice_round = current_notice_round + 1
 
         report = {
             "task_id": item_get(state, "task_id", ""),
             "status": "early_rejected" if early_rejection_reason else "completed",
+            "notice_context": {
+                "current_notice_round": current_notice_round,
+                "next_notice_round": next_notice_round,
+            },
             "amendment_review": {
                 "has_claim_amendment": bool(item_get(state, "has_claim_amendment", False)),
                 "added_matter_risk": bool(item_get(state, "added_matter_risk", False)),
@@ -96,11 +112,11 @@ class ReportGenerationNode:
 
         # 添加汇总信息
         report["summary"] = self._generate_summary(report["disputes"])
-        second_notice_items = self._collect_second_office_action_items(report["disputes"], drafted_rejection_reasons)
-        report["summary"]["second_office_action_points"] = len(second_notice_items)
-        report["second_office_action_notice"] = {
-            "text": self._build_second_office_action_text(second_notice_items),
-            "items": second_notice_items,
+        next_notice_items = self._collect_next_office_action_items(report["disputes"], drafted_rejection_reasons)
+        report["summary"]["next_office_action_points"] = len(next_notice_items)
+        report["next_office_action_notice"] = {
+            "text": self._build_next_office_action_text(next_notice_items),
+            "items": next_notice_items,
         }
 
         return report
@@ -150,12 +166,12 @@ class ReportGenerationNode:
             "verdict_distribution": verdict_distribution,
         }
 
-    def _collect_second_office_action_items(
+    def _collect_next_office_action_items(
         self,
         disputes: List[Dict[str, Any]],
         drafted_rejection_reasons: Dict[str, str],
-    ) -> List[Dict[str, str]]:
-        """收集可用于二次审查意见通知书的驳回说理点。"""
+    ) -> List[Dict[str, Any]]:
+        """收集可用于下一通审查意见通知书的驳回说理点。"""
         items: List[Dict[str, str]] = []
         for dispute in disputes:
             evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
@@ -185,8 +201,8 @@ class ReportGenerationNode:
             })
         return items
 
-    def _build_second_office_action_text(self, items: List[Dict[str, str]]) -> str:
-        """将驳回说理点汇总为一段可直接用于二次审查意见通知书的文本。"""
+    def _build_next_office_action_text(self, items: List[Dict[str, str]]) -> str:
+        """将驳回说理点汇总为一段可直接用于下一通审查意见通知书的文本。"""
         if not items:
             return ""
 
@@ -205,6 +221,17 @@ class ReportGenerationNode:
             + "；".join(clauses)
             + "。"
         )
+
+    def _extract_current_notice_round(self, state: Any) -> int:
+        prepared = _to_dict(item_get(state, "prepared_materials", {}))
+        office_action = _to_dict(prepared.get("office_action", {}))
+        try:
+            current_notice_round = int(office_action.get("current_notice_round", 0) or 0)
+        except Exception:
+            return 0
+        if current_notice_round <= 0:
+            raise ValueError("report_generation 数据非法: 缺少有效的 current_notice_round")
+        return current_notice_round
 
     def _save_report(self, report: Dict[str, Any], state) -> Path:
         """保存报告到文件"""

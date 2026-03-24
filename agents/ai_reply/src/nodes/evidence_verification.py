@@ -34,10 +34,11 @@ class EvidenceVerificationNode:
         try:
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence_v5",
+                "verify_evidence_v6",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
+                self._state_get(state, "claims_old_structured", []),
             )
 
             if not assessments:
@@ -60,13 +61,13 @@ class EvidenceVerificationNode:
 
         return updates
 
-    def _verify_evidence(self, disputes, prepared_materials):
+    def _verify_evidence(self, disputes, prepared_materials, claims_structured):
         document_disputes = self._get_document_based_disputes(disputes)
         if not document_disputes:
             return []
 
         prepared = self._to_dict(prepared_materials)
-        claims = self._extract_claims(prepared)
+        claims = self._normalize_claims(claims_structured)
         comparison_doc_map = self._build_comparison_doc_map(prepared)
         local_retriever = self._build_local_retriever(prepared)
         grouped_disputes = self._group_disputes_by_docs(document_disputes)
@@ -160,13 +161,8 @@ class EvidenceVerificationNode:
                 document_disputes.append(dispute)
         return document_disputes
 
-    def _extract_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
-        original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
-        patent_data = self._to_dict(original_patent.get("data", {}))
-        claims = patent_data.get("claims", [])
-        if not isinstance(claims, list):
-            return []
-        return [self._to_dict(claim) for claim in claims]
+    def _normalize_claims(self, claims_structured: List[Any]) -> List[Dict[str, Any]]:
+        return [self._to_dict(claim) for claim in (claims_structured or []) if self._to_dict(claim)]
 
     def _build_comparison_doc_map(self, prepared_materials: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         comparison_doc_map: Dict[str, Dict[str, Any]] = {}

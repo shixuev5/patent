@@ -9,11 +9,15 @@ from agents.common.rendering.report_render import markdown_to_html_document
 
 def _sample_report() -> dict:
     return {
+        "notice_context": {
+            "current_notice_round": 2,
+            "next_notice_round": 3,
+        },
         "summary": {
             "total_disputes": 2,
             "assessed_disputes": 2,
             "unassessed_disputes": 0,
-            "second_office_action_points": 1,
+            "next_office_action_points": 1,
             "rebuttal_type_distribution": {
                 "fact_dispute": 1,
                 "logic_dispute": 1,
@@ -87,7 +91,7 @@ def _sample_report() -> dict:
                 },
             },
         ],
-        "second_office_action_notice": {
+        "next_office_action_notice": {
             "text": "旧整段文本不应作为第 5 部分主展示内容。",
             "items": [
                 {
@@ -134,6 +138,7 @@ def test_build_final_report_markdown_renders_argument_blocks_for_section_five() 
     assert "审查员认为：" in content
     assert "未提取到申请人详细意见陈述。" in content
     assert "旧整段文本不应作为第 5 部分主展示内容。" not in content
+    assert "第 3 次审查意见通知书要点" in content
     assert "\n> " not in content
 
 

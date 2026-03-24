@@ -33,7 +33,7 @@ class DataPreparationNode:
             cache = get_node_cache(self.config, "data_preparation")
 
             prepared_materials = cache.run_step(
-                "prepare_materials_v2",
+                "prepare_materials_v3",
                 self._prepare_materials,
                 self._state_get(state, "office_action"),
                 self._state_get(state, "parsed_files", []),
@@ -98,7 +98,6 @@ class DataPreparationNode:
             })
 
         response_content = self._get_parsed_content(parsed_files, "response")
-        claims_content = self._get_parsed_content(parsed_files, "claims")
 
         prepared_materials = {
             "original_patent": {
@@ -108,13 +107,17 @@ class DataPreparationNode:
             "comparison_documents": normalized_comparison_documents,
             "office_action": {
                 "application_number": application_number,
+                "current_notice_round": int(office_action.get("current_notice_round", 0) or 0),
                 "paragraphs": office_action.get("paragraphs", [])
             },
             "response": {
                 "content": response_content
             },
-            "claims": {
-                "content": claims_content
+            "claims_previous": {
+                "content": self._get_parsed_content(parsed_files, "claims_previous")
+            },
+            "claims_current": {
+                "content": self._get_parsed_content(parsed_files, "claims_current")
             },
             "local_retrieval": {},
         }

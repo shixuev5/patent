@@ -216,8 +216,9 @@ def main():
     parser.add_argument("--task-id", help="复用既有任务ID与输出目录")
     parser.add_argument("--office-action", help="审查意见通知书文件路径 (PDF或Word格式)")
     parser.add_argument("--response", help="意见陈述书文件路径 (PDF或Word格式)")
-    parser.add_argument("--claims", help="权利要求书文件路径 (PDF或Word格式)")
-    parser.add_argument("--comparison-docs", help="对比文件路径，多个文件用逗号分隔 (PDF格式)")
+    parser.add_argument("--claims-previous", help="上一版权利要求书文件路径 (PDF或Word格式)")
+    parser.add_argument("--claims-current", help="当前最新权利要求书文件路径 (PDF或Word格式)")
+    parser.add_argument("--comparison-docs", help="对比文件路径，多个文件用逗号分隔 (PDF或Word格式)")
 
     args = parser.parse_args()
 
@@ -259,14 +260,25 @@ def main():
             file_name=os.path.basename(file_path)
         ))
 
-    if args.claims:
-        file_path = args.claims
+    if args.claims_previous:
+        file_path = args.claims_previous
         if not os.path.exists(file_path):
-            task_logger.error(f"权利要求书文件不存在: {file_path}")
+            task_logger.error(f"上一版权利要求书文件不存在: {file_path}")
             return 1
         input_files.append(InputFile(
             file_path=file_path,
-            file_type="claims",
+            file_type="claims_previous",
+            file_name=os.path.basename(file_path)
+        ))
+
+    if args.claims_current:
+        file_path = args.claims_current
+        if not os.path.exists(file_path):
+            task_logger.error(f"当前最新权利要求书文件不存在: {file_path}")
+            return 1
+        input_files.append(InputFile(
+            file_path=file_path,
+            file_type="claims_current",
             file_name=os.path.basename(file_path)
         ))
 

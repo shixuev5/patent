@@ -160,19 +160,43 @@
           </div>
         </div>
 
+        <p class="text-xs leading-5 text-amber-700">
+          系统会自动识别当前上传 OA 的轮次，并生成下一通审查意见通知书要点。
+        </p>
+
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">权利要求书（可选，.pdf/.docx）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">上一版权利要求书（可选，.pdf/.docx）</label>
             <input
-              ref="claimsInput"
+              ref="previousClaimsInput"
               type="file"
               accept=".pdf,.docx"
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
-              @change="onClaimsChange"
+              @change="onPreviousClaimsChange"
             />
-            <p v-if="claimsFile" class="mt-2 text-xs text-slate-500">{{ claimsFile.name }}</p>
+            <p class="mt-2 text-xs leading-5 text-amber-700">
+              如果要生成三通/四通，对应当前 OA 已经是二通/三通，建议上传上一版权利要求。
+            </p>
+            <p v-if="previousClaimsFile" class="mt-1 text-xs text-slate-500">{{ previousClaimsFile.name }}</p>
           </div>
 
+          <div>
+            <label class="mb-2 block text-sm font-medium text-slate-700">当前最新权利要求书（可选，.pdf/.docx）</label>
+            <input
+              ref="currentClaimsInput"
+              type="file"
+              accept=".pdf,.docx"
+              class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+              @change="onCurrentClaimsChange"
+            />
+            <p class="mt-2 text-xs leading-5 text-amber-700">
+              若本轮未再修改权利要求，可不上传当前最新版本。
+            </p>
+            <p v-if="currentClaimsFile" class="mt-1 text-xs text-slate-500">{{ currentClaimsFile.name }}</p>
+          </div>
+        </div>
+
+        <div class="grid gap-4 sm:grid-cols-1">
           <div>
             <label class="mb-2 block text-sm font-medium text-slate-700">对比文件（可选，多文件，.pdf/.docx）</label>
             <input
@@ -184,7 +208,7 @@
               @change="onComparisonChange"
             />
             <p class="mt-2 text-xs leading-5 text-amber-700">
-              只需要上传非专利文件（如标准、论文、技术手册等）。
+              若最新 OA 正文引用了非专利文件（如标准、论文、技术手册等），请上传本次实际涉及的全部对应文件；专利文献无需上传。
             </p>
             <p v-if="comparisonDocs.length" class="mt-1 text-xs text-slate-500">已选择 {{ comparisonDocs.length }} 个文件</p>
           </div>
@@ -227,12 +251,14 @@ const patentFileInput = ref<HTMLInputElement>()
 
 const officeActionFile = ref<File | null>(null)
 const responseFile = ref<File | null>(null)
-const claimsFile = ref<File | null>(null)
+const previousClaimsFile = ref<File | null>(null)
+const currentClaimsFile = ref<File | null>(null)
 const comparisonDocs = ref<File[]>([])
 
 const officeActionInput = ref<HTMLInputElement>()
 const responseInput = ref<HTMLInputElement>()
-const claimsInput = ref<HTMLInputElement>()
+const previousClaimsInput = ref<HTMLInputElement>()
+const currentClaimsInput = ref<HTMLInputElement>()
 const comparisonInput = ref<HTMLInputElement>()
 
 const patentNumberPattern = /^[A-Z]{2}\d{5,12}[A-Z0-9]{1,2}$/
@@ -338,19 +364,34 @@ const onResponseChange = (event: Event) => {
   responseFile.value = selected
 }
 
-const onClaimsChange = (event: Event) => {
+const onPreviousClaimsChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   const selected = target.files?.[0]
   if (!selected) {
-    claimsFile.value = null
+    previousClaimsFile.value = null
     return
   }
   if (!isSupportedDoc(selected)) {
-    taskStore.showGlobalNotice('error', '权利要求书仅支持 PDF 或 DOCX。')
+    taskStore.showGlobalNotice('error', '上一版权利要求书仅支持 PDF 或 DOCX。')
     target.value = ''
     return
   }
-  claimsFile.value = selected
+  previousClaimsFile.value = selected
+}
+
+const onCurrentClaimsChange = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const selected = target.files?.[0]
+  if (!selected) {
+    currentClaimsFile.value = null
+    return
+  }
+  if (!isSupportedDoc(selected)) {
+    taskStore.showGlobalNotice('error', '当前最新权利要求书仅支持 PDF 或 DOCX。')
+    target.value = ''
+    return
+  }
+  currentClaimsFile.value = selected
 }
 
 const onComparisonChange = (event: Event) => {
@@ -409,7 +450,8 @@ const submitOfficeActionTask = async () => {
     taskType: 'ai_reply',
     officeActionFile: officeActionFile.value,
     responseFile: responseFile.value,
-    claimsFile: claimsFile.value || undefined,
+    previousClaimsFile: previousClaimsFile.value || undefined,
+    currentClaimsFile: currentClaimsFile.value || undefined,
     comparisonDocs: comparisonDocs.value,
   }
 
@@ -419,11 +461,13 @@ const submitOfficeActionTask = async () => {
     if (result.ok) {
       officeActionFile.value = null
       responseFile.value = null
-      claimsFile.value = null
+      previousClaimsFile.value = null
+      currentClaimsFile.value = null
       comparisonDocs.value = []
       if (officeActionInput.value) officeActionInput.value.value = ''
       if (responseInput.value) responseInput.value.value = ''
-      if (claimsInput.value) claimsInput.value.value = ''
+      if (previousClaimsInput.value) previousClaimsInput.value.value = ''
+      if (currentClaimsInput.value) currentClaimsInput.value.value = ''
       if (comparisonInput.value) comparisonInput.value.value = ''
       taskStore.showGlobalNotice('success', result.message || 'AI 答复任务已创建，正在处理。')
     } else {

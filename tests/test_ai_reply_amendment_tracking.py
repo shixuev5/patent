@@ -46,3 +46,76 @@ def test_build_structured_diff_returns_full_changed_claim_pairs() -> None:
         "1": "一种连接器，包括壳体和滑块。",
         "2": "根据权利要求1所述的连接器，还包括弹性件。",
     }
+
+
+def test_track_amendment_uses_original_claims_for_first_notice() -> None:
+    node = AmendmentTrackingNode()
+    prepared_materials = {
+        "original_patent": {
+            "data": {
+                "claims": [
+                    {"claim_id": "1", "claim_text": "一种装置，包括模块A。"},
+                ]
+            }
+        },
+        "office_action": {"current_notice_round": 1},
+    }
+
+    result = node._track_amendment(prepared_materials, previous_claims=[], current_claims=[])
+
+    assert result["has_claim_amendment"] is False
+    assert result["claims_old_structured"] == [
+        {
+            "claim_id": "1",
+            "claim_text": "一种装置，包括模块A。",
+            "claim_type": "unknown",
+            "parent_claim_ids": [],
+        }
+    ]
+    assert result["claims_effective_structured"] == result["claims_old_structured"]
+
+
+def test_track_amendment_uses_previous_claims_for_multi_notice() -> None:
+    node = AmendmentTrackingNode()
+    prepared_materials = {
+        "original_patent": {
+            "data": {
+                "claims": [
+                    {"claim_id": "1", "claim_text": "一种装置，包括模块A。"},
+                ]
+            }
+        },
+        "office_action": {"current_notice_round": 2},
+    }
+    previous_claims = [
+        {"claim_id": "1", "claim_text": "一种装置，包括模块A和模块B。", "claim_type": "independent", "parent_claim_ids": []}
+    ]
+
+    result = node._track_amendment(prepared_materials, previous_claims=previous_claims, current_claims=[])
+
+    assert result["has_claim_amendment"] is False
+    assert result["claims_old_structured"] == previous_claims
+    assert result["claims_effective_structured"] == previous_claims
+
+
+def test_track_amendment_falls_back_to_original_when_previous_missing_for_multi_notice() -> None:
+    node = AmendmentTrackingNode()
+    prepared_materials = {
+        "original_patent": {
+            "data": {
+                "claims": [
+                    {"claim_id": "1", "claim_text": "一种装置，包括模块A。"},
+                ]
+            }
+        },
+        "office_action": {"current_notice_round": 3},
+    }
+    current_claims = [
+        {"claim_id": "1", "claim_text": "一种装置，包括模块A和模块C。", "claim_type": "independent", "parent_claim_ids": []}
+    ]
+
+    result = node._track_amendment(prepared_materials, previous_claims=[], current_claims=current_claims)
+
+    assert result["claims_old_structured"][0]["claim_text"] == "一种装置，包括模块A。"
+    assert result["claims_effective_structured"] == current_claims
+    assert result["has_claim_amendment"] is True

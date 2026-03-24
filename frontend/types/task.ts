@@ -30,7 +30,8 @@ export type CreateTaskInput =
       taskType: 'ai_reply';
       officeActionFile: File;
       responseFile: File;
-      claimsFile?: File;
+      previousClaimsFile?: File;
+      currentClaimsFile?: File;
       comparisonDocs?: File[];
     };
 

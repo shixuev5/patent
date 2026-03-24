@@ -13,6 +13,7 @@ def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypat
     node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
     office_action = {
         "application_number": "CNAPP1",
+        "current_notice_round": 1,
         "paragraphs": [],
         "comparison_documents": [
             {
@@ -31,7 +32,7 @@ def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypat
             "content": "文献标题A\n这是一段用于测试本地全文检索的非专利文本内容。",
         },
         {"file_type": "response", "content": "答复内容"},
-        {"file_type": "claims", "content": "权利要求内容"},
+        {"file_type": "claims_current", "content": "权利要求内容"},
     ]
 
     prepared = node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
@@ -114,8 +115,9 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
         "comparison_documents": [],
         "local_retrieval": {"enabled": False},
     }
+    claims = [{"claim_id": "1", "claim_text": "一种定位装置"}]
 
-    assessments = node._verify_common_knowledge(disputes, prepared)
+    assessments = node._verify_common_knowledge(disputes, prepared, claims)
     assert len(assessments) == 1
     trace = assessments[0]["trace"]
     assert "local_retrieval" in trace
