@@ -24,7 +24,7 @@ class ReportGenerationNode:
         updates = {
             "current_node": "report_generation",
             "status": "running",
-            "progress": 90.0
+            "progress": 93.0
         }
 
         try:

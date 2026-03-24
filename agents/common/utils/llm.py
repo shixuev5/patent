@@ -62,6 +62,7 @@ class LLMService:
         "oar_evidence_verification": {"tier": "large", "thinking": True},
         "oar_common_knowledge_verification": {"tier": "large", "thinking": True},
         "oar_topup_search_verification": {"tier": "large", "thinking": True},
+        "oar_rejection_drafting": {"tier": "large", "thinking": True},
         "vision_ocr_correction": {"tier": "default", "thinking": True},
         "vision_single_figure_explain": {"tier": "default", "thinking": True},
         "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},
