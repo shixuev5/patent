@@ -148,17 +148,12 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
 
     next_notice_items = _item_get(next_notice, "items", []) or []
 
-    lines.append("## 3. 争论点数据总表")
+    lines.append("## 3. 争论点总表与AI判断")
     lines.append("")
-    lines.append(_render_dispute_data_table(disputes))
-    lines.append("")
-
-    lines.append("## 4. 争论点 AI 判断总表")
-    lines.append("")
-    lines.append(_render_ai_assessment_table(disputes))
+    lines.append(_render_dispute_overview_table(disputes))
     lines.append("")
 
-    lines.append(f"## 5. {_next_notice_heading(next_notice_round)}")
+    lines.append(f"## 4. {_next_notice_heading(next_notice_round)}")
     lines.append("")
     lines.append(_render_next_notice_argument_blocks(disputes, next_notice_items))
     lines.append("")
@@ -212,13 +207,14 @@ def _format_claim_ids(value: Any) -> str:
     return ",".join(claim_ids)
 
 
-def _render_dispute_data_table(disputes: List[Any]) -> str:
+def _render_dispute_overview_table(disputes: List[Any]) -> str:
     lines = [
-        '<table class="oar-layered-table oar-layered-table-data">',
+        '<table class="oar-layered-table oar-layered-table-overview">',
         "<colgroup>",
         '<col style="width: 40px;">',
         '<col style="width: 96px;">',
         "<col>",
+        '<col style="width: 132px;">',
         '<col style="width: 132px;">',
         "</colgroup>",
         "<thead>",
@@ -227,6 +223,7 @@ def _render_dispute_data_table(disputes: List[Any]) -> str:
         '<th class="oar-col-claims">权利要求</th>',
         '<th class="oar-col-feature">争议特征</th>',
         '<th class="oar-col-type">审查员依据类型</th>',
+        '<th class="oar-col-verdict">AI判断</th>',
         "</tr>",
         "</thead>",
     ]
@@ -236,13 +233,15 @@ def _render_dispute_data_table(disputes: List[Any]) -> str:
                 "<tbody>",
                 "<tr>",
                 '<td class="oar-index-cell">1</td>',
-                '<td class="oar-layered-cell" colspan="3">',
+                '<td class="oar-layered-cell" colspan="4">',
                 _layered_summary_html(
-                    "oar-layered-grid-data",
-                    ["-", "无争议点", "-"],
+                    "oar-layered-grid-overview",
+                    ["-", "无争议点", "-", _verdict_badge_html("未核查", "UNASSESSED")],
                     [
                         _detail_text_html("审查员理由：", "-"),
                         _detail_text_html("申请人理由：", "-"),
+                        _detail_text_html("AI理由：", "-"),
+                        _detail_text_html("AI依据：", "-"),
                     ],
                 ),
                 "</td>",
@@ -267,18 +266,29 @@ def _render_dispute_data_table(disputes: List[Any]) -> str:
             _item_get(_item_get(dispute, "applicant_opinion", {}) or {}, "reasoning", ""),
             default="-",
         )
+        evidence_assessment = _item_get(dispute, "evidence_assessment", None)
+        assessment = _item_get(evidence_assessment, "assessment", {}) if evidence_assessment else {}
+        verdict = str(_item_get(assessment, "verdict", "")).strip()
+        if verdict in {"APPLICANT_CORRECT", "EXAMINER_CORRECT", "INCONCLUSIVE"}:
+            ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="-")
+            ai_basis_html = _render_ai_basis_html(evidence_assessment)
+        else:
+            ai_reason = "该争议点尚未完成核查。"
+            ai_basis_html = _html_text("-")
         lines.extend(
             [
                 '<tbody class="oar-layered-group">',
                 "<tr>",
                 f'<td class="oar-index-cell">{index}</td>',
-                '<td class="oar-layered-cell" colspan="3">',
+                '<td class="oar-layered-cell" colspan="4">',
                 _layered_summary_html(
-                    "oar-layered-grid-data",
-                    [claim_label, feature_text, examiner_type],
+                    "oar-layered-grid-overview",
+                    [claim_label, feature_text, examiner_type, _verdict_badge_html(_verdict_label(verdict), verdict)],
                     [
                         _detail_text_html("审查员理由：", examiner_reasoning),
                         _detail_text_html("申请人理由：", applicant_reasoning),
+                        _detail_text_html("AI理由：", ai_reason),
+                        _detail_block_html("AI依据：", ai_basis_html, extra_class="oar-detail-block-evidence"),
                     ],
                 ),
                 "</td>",
@@ -287,85 +297,6 @@ def _render_dispute_data_table(disputes: List[Any]) -> str:
             ]
         )
     lines.append("</table>")
-    return "\n".join(lines)
-
-
-def _render_ai_assessment_table(disputes: List[Any]) -> str:
-    lines = [
-        '<table class="oar-layered-table oar-layered-table-ai">',
-        "<colgroup>",
-        '<col style="width: 40px;">',
-        '<col style="width: 96px;">',
-        "<col>",
-        '<col style="width: 132px;">',
-        "</colgroup>",
-        "<thead>",
-        "<tr>",
-        '<th class="oar-col-index">序号</th>',
-        '<th class="oar-col-claims">权利要求</th>',
-        '<th class="oar-col-feature">争议特征</th>',
-        '<th class="oar-col-verdict">AI判断</th>',
-        "</tr>",
-        "</thead>",
-    ]
-    if not disputes:
-        lines.extend(
-            [
-                "<tbody>",
-                "<tr>",
-                '<td class="oar-index-cell">1</td>',
-                '<td class="oar-layered-cell" colspan="3">',
-                _layered_summary_html(
-                    "oar-layered-grid-ai",
-                    ["-", "无争议点", "-"],
-                    [
-                        _detail_text_html("AI理由：", "-"),
-                        _detail_text_html("AI依据：", "-"),
-                    ],
-                ),
-                "</td>",
-                "</tr>",
-                "</tbody>",
-            ]
-        )
-        lines.append("</table>")
-        return "\n".join(lines)
-
-    for index, dispute in enumerate(disputes, start=1):
-        claim_label = _format_claim_ids(_item_get(dispute, "claim_ids", [])) or "-"
-        feature_text = _text_or_default(_item_get(dispute, "feature_text", ""), default="-")
-        evidence_assessment = _item_get(dispute, "evidence_assessment", None)
-        assessment = _item_get(evidence_assessment, "assessment", {}) if evidence_assessment else {}
-        verdict = str(_item_get(assessment, "verdict", "")).strip()
-
-        if verdict in {"APPLICANT_CORRECT", "EXAMINER_CORRECT", "INCONCLUSIVE"}:
-            ai_verdict = _verdict_label(verdict)
-            ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="-")
-            ai_basis_html = _render_ai_basis_html(evidence_assessment)
-        else:
-            ai_verdict = "未核查"
-            ai_reason = "该争议点尚未完成核查。"
-            ai_basis_html = _html_text("-")
-
-        lines.extend(
-            [
-                '<tbody class="oar-layered-group">',
-                "<tr>",
-                f'<td class="oar-index-cell">{index}</td>',
-                '<td class="oar-layered-cell" colspan="3">',
-                _layered_summary_html(
-                    "oar-layered-grid-ai",
-                    [claim_label, feature_text, ai_verdict],
-                    [
-                        _detail_text_html("AI理由：", ai_reason),
-                        _detail_block_html("AI依据：", ai_basis_html),
-                    ],
-                ),
-                "</td>",
-                "</tr>",
-                "</tbody>",
-            ]
-        )
     lines.append("</table>")
     return "\n".join(lines)
 
@@ -479,9 +410,12 @@ def _detail_text_html(label: str, value: Any) -> str:
     return _detail_block_html(label, _html_text(value))
 
 
-def _detail_block_html(label: str, body_html: str) -> str:
+def _detail_block_html(label: str, body_html: str, extra_class: str = "") -> str:
+    class_attr = "oar-detail-block"
+    if extra_class:
+        class_attr += f" {extra_class}"
     return (
-        '<div class="oar-detail-block">'
+        f'<div class="{class_attr}">'
         f'<div class="oar-detail-label">{_escape_text(label)}</div>'
         f'<div class="oar-detail-body">{body_html}</div>'
         "</div>"
@@ -490,7 +424,7 @@ def _detail_block_html(label: str, body_html: str) -> str:
 
 def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_blocks: List[str]) -> str:
     cell_html = "".join(
-        f'<div class="oar-grid-summary-cell">{_html_text(value)}</div>'
+        value if str(value).startswith("<") else f'<div class="oar-grid-summary-cell">{_html_text(value)}</div>'
         for value in summary_cells
     )
     details_html = "".join(detail_blocks)
@@ -516,6 +450,21 @@ def _evidence_line_html(label: str, value: Any) -> str:
         '<div class="oar-evidence-line">'
         f'<span class="oar-evidence-line-label">{_escape_text(label)}</span>'
         f'<span class="oar-evidence-line-text">{_html_text(value)}</span>'
+        "</div>"
+    )
+
+
+def _verdict_badge_html(label: str, verdict: str) -> str:
+    verdict_class_map = {
+        "APPLICANT_CORRECT": "oar-verdict-badge-applicant",
+        "EXAMINER_CORRECT": "oar-verdict-badge-examiner",
+        "INCONCLUSIVE": "oar-verdict-badge-inconclusive",
+        "UNASSESSED": "oar-verdict-badge-unassessed",
+    }
+    class_name = verdict_class_map.get(str(verdict).strip(), "oar-verdict-badge-unassessed")
+    return (
+        f'<div class="oar-grid-summary-cell oar-grid-summary-cell-verdict">'
+        f'<span class="oar-verdict-badge {class_name}">{_escape_text(label)}</span>'
         "</div>"
     )
 

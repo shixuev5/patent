@@ -19,6 +19,18 @@ OAR_REPORT_CSS = DEFAULT_REPORT_CSS + """
     --oar-surface-soft: #f8fafc;
     --oar-surface-tint: #f0f9ff;
     --oar-surface-tint-strong: #ecfeff;
+    --oar-success-bg: #ecfdf3;
+    --oar-success-border: #16a34a;
+    --oar-success-text: #166534;
+    --oar-danger-bg: #fef2f2;
+    --oar-danger-border: #dc2626;
+    --oar-danger-text: #991b1b;
+    --oar-warn-bg: #fff7ed;
+    --oar-warn-border: #ea580c;
+    --oar-warn-text: #9a3412;
+    --oar-neutral-bg: #f1f5f9;
+    --oar-neutral-border: #64748b;
+    --oar-neutral-text: #334155;
 }
 
 body {
@@ -185,6 +197,18 @@ th, td {
     table-layout: fixed;
 }
 
+.oar-layered-table thead {
+    border-bottom: 1px solid var(--oar-border);
+}
+
+.oar-layered-table thead tr {
+    border-bottom: 1px solid var(--oar-border);
+}
+
+.oar-layered-table thead th {
+    border-bottom: 1px solid var(--oar-border);
+}
+
 .oar-col-index {
     width: 40px;
 }
@@ -227,8 +251,9 @@ th, td {
 }
 
 .oar-layered-grid-data,
-.oar-layered-grid-ai {
-    grid-template-columns: 96px minmax(0, 1fr) 132px;
+.oar-layered-grid-ai,
+.oar-layered-grid-overview {
+    grid-template-columns: 96px minmax(0, 1fr) 132px 132px;
 }
 
 .oar-grid-summary-cell {
@@ -240,6 +265,59 @@ th, td {
 
 .oar-grid-summary-cell:last-of-type {
     border-right: none;
+}
+
+.oar-grid-summary-cell-verdict {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    padding: 6px 8px;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
+.oar-verdict-badge {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    text-align: center;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1.5px solid transparent;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.1px;
+    line-height: 1.25;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+    box-sizing: border-box;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.oar-verdict-badge-applicant {
+    background: var(--oar-success-bg);
+    border-color: var(--oar-success-border);
+    color: var(--oar-success-text);
+}
+
+.oar-verdict-badge-examiner {
+    background: var(--oar-danger-bg);
+    border-color: var(--oar-danger-border);
+    color: var(--oar-danger-text);
+}
+
+.oar-verdict-badge-inconclusive {
+    background: var(--oar-warn-bg);
+    border-color: var(--oar-warn-border);
+    color: var(--oar-warn-text);
+}
+
+.oar-verdict-badge-unassessed {
+    background: var(--oar-neutral-bg);
+    border-color: var(--oar-neutral-border);
+    color: var(--oar-neutral-text);
 }
 
 .oar-grid-detail {
@@ -267,6 +345,10 @@ th, td {
     line-height: 1.75;
 }
 
+.oar-detail-block:not(.oar-detail-block-evidence) .oar-detail-body {
+    text-indent: 2em;
+}
+
 .oar-evidence-list {
     display: block;
 }
@@ -275,6 +357,10 @@ th, td {
     margin-top: 10px;
     padding-top: 10px;
     border-top: 1px dashed var(--oar-border);
+}
+
+.oar-evidence-item {
+    padding-left: 1.25em;
 }
 
 .oar-evidence-head {
@@ -319,6 +405,7 @@ th, td {
 .oar-opinion-paragraph {
     line-height: 1.85;
     color: var(--oar-ink);
+    text-indent: 2em;
 }
 
 .oar-opinion-paragraph + .oar-opinion-paragraph {

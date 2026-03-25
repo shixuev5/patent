@@ -108,16 +108,18 @@ def _sample_report() -> dict:
 def test_build_final_report_markdown_renders_layered_tables_without_truncation() -> None:
     content = build_final_report_markdown(_sample_report())
 
-    assert '<table class="oar-layered-table oar-layered-table-data">' in content
-    assert '<table class="oar-layered-table oar-layered-table-ai">' in content
-    assert 'class="oar-layered-cell" colspan="3"' in content
-    assert 'class="oar-layered-grid oar-layered-grid-data"' in content
-    assert 'class="oar-layered-grid oar-layered-grid-ai"' in content
+    assert '<table class="oar-layered-table oar-layered-table-overview">' in content
+    assert 'class="oar-layered-cell" colspan="4"' in content
+    assert 'class="oar-layered-grid oar-layered-grid-overview"' in content
     assert '<col style="width: 40px;">' in content
     assert '<col style="width: 96px;">' in content
     assert '<col style="width: 132px;">' in content
-    assert 'colspan="3"' in content
+    assert 'colspan="4"' in content
     assert 'rowspan="2"' not in content
+    assert "审查员依据类型" in content
+    assert "AI判断" in content
+    assert 'class="oar-verdict-badge oar-verdict-badge-applicant"' in content
+    assert 'class="oar-verdict-badge oar-verdict-badge-inconclusive"' in content
     assert "FEATURE_END" in content
     assert "EXAM_END" in content
     assert "APP_END" in content
@@ -139,6 +141,7 @@ def test_build_final_report_markdown_renders_argument_blocks_for_section_five() 
     assert "未提取到申请人详细意见陈述。" in content
     assert "旧整段文本不应作为第 5 部分主展示内容。" not in content
     assert "第 3 次审查意见通知书要点" in content
+    assert "## 4. 第 3 次审查意见通知书要点" in content
     assert "\n> " not in content
 
 
@@ -151,8 +154,8 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
         enable_echarts=False,
     )
 
-    assert '<table class="oar-layered-table oar-layered-table-data">' in html_doc
-    assert '<table class="oar-layered-table oar-layered-table-ai">' in html_doc
+    assert '<table class="oar-layered-table oar-layered-table-overview">' in html_doc
     assert 'class="oar-opinion-block"' in html_doc
-    assert 'colspan="3"' in html_doc
+    assert 'colspan="4"' in html_doc
+    assert 'class="oar-verdict-badge oar-verdict-badge-applicant"' in html_doc
     assert "<blockquote>" not in html_doc
