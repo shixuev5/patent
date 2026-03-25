@@ -24,7 +24,7 @@ class RejectionDraftingNode:
         updates = {
             "current_node": "rejection_drafting",
             "status": "running",
-            "progress": 92.0,
+            "progress": 89.0,
         }
 
         try:
@@ -38,11 +38,11 @@ class RejectionDraftingNode:
             if drafted:
                 updates["drafted_rejection_reasons"] = drafted
                 updates["status"] = "completed"
-                updates["progress"] = 93.0
+                updates["progress"] = 91.0
                 logger.info(f"完成 {len(drafted)} 项正式驳回正文生成")
             else:
                 updates["status"] = "completed"
-                updates["progress"] = 93.0
+                updates["progress"] = 91.0
                 logger.info("无需要统一润色的驳回项")
         except Exception as e:
             logger.error(f"统一驳回正文生成失败: {e}")
@@ -64,6 +64,9 @@ class RejectionDraftingNode:
 
         drafting_items: List[Dict[str, Any]] = []
         for dispute in disputes or []:
+            origin = str(self._item_get(dispute, "origin", "response_dispute")).strip() or "response_dispute"
+            if origin != "response_dispute":
+                continue
             dispute_id = str(self._item_get(dispute, "dispute_id", "")).strip()
             if not dispute_id:
                 continue

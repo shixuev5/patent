@@ -17,7 +17,8 @@ class VerificationJoinNode:
         logger.info("进入验证汇合节点")
 
         updates = {
-            "current_node": "verification_join"
+            "current_node": "verification_join",
+            "progress": 88.0,
         }
 
         if self._state_get(state, "status") == "failed":
@@ -42,7 +43,7 @@ class VerificationJoinNode:
             return updates
 
         updates["status"] = "completed"
-        updates["progress"] = 90.0
+        updates["progress"] = 88.0
         logger.info("验证分支汇总完成")
         return updates
 

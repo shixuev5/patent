@@ -29,7 +29,7 @@ class FinalReportRenderNode:
         updates = {
             "current_node": "final_report_render",
             "status": "running",
-            "progress": 95.0,
+            "progress": 98.0,
         }
 
         try:

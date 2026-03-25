@@ -9,16 +9,20 @@ from typing import Any, Dict, List
 
 def build_final_report_markdown(report: Dict[str, Any]) -> str:
     summary = _item_get(report, "summary", {}) or {}
-    notice_context = _item_get(report, "notice_context", {}) or {}
-    amendment_review = _item_get(report, "amendment_review", {}) or {}
-    disputes = _item_get(report, "disputes", []) or []
-    next_notice = _item_get(report, "next_office_action_notice", {}) or {}
+    amendment_section = _item_get(report, "amendment_section", {}) or {}
+    response_dispute_section = _item_get(report, "response_dispute_section", {}) or {}
+    response_reply_section = _item_get(report, "response_reply_section", {}) or {}
+    claim_review_section = _item_get(report, "claim_review_section", {}) or {}
+
+    disputes = _item_get(response_dispute_section, "items", []) or []
+    reply_items = _item_get(response_reply_section, "items", []) or []
+    claim_reviews = _item_get(claim_review_section, "items", []) or []
+    change_items = _item_get(amendment_section, "change_items", []) or []
 
     total_disputes = _as_int(_item_get(summary, "total_disputes", 0))
     assessed_disputes = _as_int(_item_get(summary, "assessed_disputes", 0))
     unassessed_disputes = _as_int(_item_get(summary, "unassessed_disputes", 0))
-    next_notice_round = _as_int(_item_get(notice_context, "next_notice_round", 0))
-    next_points = _as_int(_item_get(summary, "next_office_action_points", 0))
+    response_reply_points = _as_int(_item_get(summary, "response_reply_points", 0))
 
     rebuttal_distribution = _item_get(summary, "rebuttal_type_distribution", {}) or {}
     verdict_distribution = _item_get(summary, "verdict_distribution", {}) or {}
@@ -55,11 +59,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
             confidence_low += 1
 
     confidence_known_total = confidence_high + confidence_mid + confidence_low
-    avg_confidence = (
-        sum(confidence_values) / max(len(confidence_values), 1)
-        if confidence_values
-        else -1.0
-    )
+    avg_confidence = sum(confidence_values) / len(confidence_values) if confidence_values else -1.0
 
     dominant_verdict_name, dominant_verdict_value = _max_label_value(
         [
@@ -94,7 +94,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
         _conclusion_card(
             "核查进度",
             f"{assessed_disputes}/{total_disputes} 项已核查",
-            f"待核查 {unassessed_disputes} 项；下一通可复用要点 {next_points} 项",
+            f"待核查 {unassessed_disputes} 项；申请人答复要点 {response_reply_points} 项",
         )
     )
     lines.append(
@@ -127,35 +127,43 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(
         _risk_card(
             "是否存在权利要求修改",
-            _bool_label(_item_get(amendment_review, "has_claim_amendment", False)),
+            _bool_label(_item_get(amendment_section, "has_claim_amendment", False)),
         )
     )
     lines.append(
         _risk_card(
             "是否存在新增超范围风险",
-            _bool_label(_item_get(amendment_review, "added_matter_risk", False)),
+            _bool_label(_item_get(amendment_section, "added_matter_risk", False)),
         )
     )
     lines.append(
         _risk_card(
             "可提前驳回原因",
-            _cell(_item_get(amendment_review, "early_rejection_reason", "") or "无"),
+            _cell(_item_get(amendment_section, "early_rejection_reason", "") or "无"),
             wide=True,
         )
     )
     lines.append("</div>")
     lines.append("")
 
-    next_notice_items = _item_get(next_notice, "items", []) or []
+    lines.append("## 3. 权利要求变更表")
+    lines.append("")
+    lines.append(_render_change_items_table(change_items))
+    lines.append("")
 
-    lines.append("## 3. 争论点总表与AI判断")
+    lines.append("## 4. 当前生效权利要求逐条评述")
+    lines.append("")
+    lines.append(_render_claim_review_blocks(claim_reviews))
+    lines.append("")
+
+    lines.append("## 5. 争论点总表与AI判断")
     lines.append("")
     lines.append(_render_dispute_overview_table(disputes))
     lines.append("")
 
-    lines.append(f"## 4. {_next_notice_heading(next_notice_round)}")
+    lines.append("## 6. 针对申请人意见陈述的答复")
     lines.append("")
-    lines.append(_render_next_notice_argument_blocks(disputes, next_notice_items))
+    lines.append(_render_response_reply_blocks(disputes, reply_items))
     lines.append("")
 
     return "\n".join(lines)
@@ -167,28 +175,35 @@ def _item_get(item: Any, key: str, default=None):
     return getattr(item, key, default)
 
 
-def _next_notice_heading(next_notice_round: int) -> str:
-    if next_notice_round > 0:
-        return f"第 {next_notice_round} 次审查意见通知书要点"
-    return "下一次审查意见通知书要点"
+def _bool_label(value: Any) -> str:
+    return "是" if bool(value) else "否"
 
 
-def _examiner_type_label(raw_type: str) -> str:
-    mapping = {
-        "document_based": "文献对比",
-        "common_knowledge_based": "公知常识",
-        "mixed_basis": "混合依据",
-    }
-    return mapping.get(str(raw_type).strip(), "未知")
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
 
 
-def _verdict_label(verdict: str) -> str:
-    mapping = {
-        "APPLICANT_CORRECT": "申请人正确",
-        "EXAMINER_CORRECT": "审查员正确",
-        "INCONCLUSIVE": "结论不确定",
-    }
-    return mapping.get(str(verdict).strip(), "未核查")
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _escape_text(value: Any) -> str:
+    return html.escape(str(value or ""), quote=False)
+
+
+def _text_or_default(value: Any, default: str = "-") -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _html_text(value: Any, default: str = "-") -> str:
+    return _escape_text(_text_or_default(value, default)).replace("\n", "<br>")
 
 
 def _format_claim_ids(value: Any) -> str:
@@ -200,11 +215,226 @@ def _format_claim_ids(value: Any) -> str:
             continue
         for piece in re.split(r"[，,\s]+", text):
             part = piece.strip()
-            if not part or not part.isdigit():
-                continue
-            if part not in claim_ids:
+            if part and part.isdigit() and part not in claim_ids:
                 claim_ids.append(part)
     return ",".join(claim_ids)
+
+
+def _max_label_value(candidates: List[tuple[str, int]]) -> tuple[str, int]:
+    valid = list(candidates) or [("无", 0)]
+    valid.sort(key=lambda item: (item[1], item[0]), reverse=True)
+    return valid[0]
+
+
+def _pct_text(value: int, total: int) -> str:
+    if total <= 0:
+        return "0.0%"
+    return f"{(value / total) * 100:.1f}%"
+
+
+def _confidence_pct_text(value: float) -> str:
+    if value < 0:
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _conclusion_card(title: str, primary: str, secondary: str) -> str:
+    return (
+        '<div class="oar-conclusion-card">'
+        f'<div class="oar-conclusion-title">{_html_text(title, default="")}</div>'
+        f'<div class="oar-conclusion-primary">{_html_text(primary, default="-")}</div>'
+        f'<div class="oar-conclusion-secondary">{_html_text(secondary, default="-")}</div>'
+        "</div>"
+    )
+
+
+def _risk_card(label: str, value_html: str, wide: bool = False) -> str:
+    class_name = "oar-risk-card"
+    if wide:
+        class_name += " oar-risk-card-wide"
+    return (
+        f'<div class="{class_name}">'
+        f'<div class="oar-risk-label">{_html_text(label, default="")}</div>'
+        f'<div class="oar-risk-value">{value_html}</div>'
+        "</div>"
+    )
+
+
+def _cell(value: Any) -> str:
+    return _html_text(value, default="-")
+
+
+def _change_source_label(source_type: str, source_claim_ids: List[str]) -> str:
+    source_type = str(source_type).strip()
+    if source_type == "claim":
+        claim_label = ",".join(source_claim_ids) if source_claim_ids else "-"
+        return f"权项上提（来源权利要求 {claim_label}）"
+    if source_type == "spec":
+        return "说明书补入"
+    return "未知"
+
+
+def _verdict_label(verdict: str) -> str:
+    mapping = {
+        "APPLICANT_CORRECT": "申请人正确",
+        "EXAMINER_CORRECT": "审查员正确",
+        "INCONCLUSIVE": "结论不确定",
+    }
+    return mapping.get(str(verdict).strip(), "未核查")
+
+
+def _verdict_badge_html(label: str, verdict: str) -> str:
+    verdict_key = str(verdict).strip()
+    if verdict_key == "APPLICANT_CORRECT":
+        class_name = "oar-verdict-badge oar-verdict-badge-applicant"
+    elif verdict_key == "EXAMINER_CORRECT":
+        class_name = "oar-verdict-badge oar-verdict-badge-examiner"
+    elif verdict_key == "INCONCLUSIVE":
+        class_name = "oar-verdict-badge oar-verdict-badge-inconclusive"
+    else:
+        class_name = "oar-verdict-badge oar-verdict-badge-unassessed"
+    return f'<span class="{class_name}">{_html_text(label, default="未核查")}</span>'
+
+
+def _detail_text_html(label: str, value: Any) -> str:
+    return _detail_block_html(label, _html_text(value))
+
+
+def _detail_block_html(label: str, body_html: str, extra_class: str = "") -> str:
+    class_attr = "oar-detail-block"
+    if extra_class:
+        class_attr += f" {extra_class}"
+    return (
+        f'<div class="{class_attr}">'
+        f'<div class="oar-detail-label">{_escape_text(label)}</div>'
+        f'<div class="oar-detail-body">{body_html}</div>'
+        "</div>"
+    )
+
+
+def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_blocks: List[str]) -> str:
+    parts = [f'<div class="oar-layered-grid {grid_class}">']
+    for index, cell in enumerate(summary_cells, start=1):
+        cell_class = "oar-grid-summary-cell"
+        if index == len(summary_cells):
+            cell_class += " oar-grid-summary-cell-verdict"
+        parts.append(f'<div class="{cell_class}">{cell}</div>')
+    parts.append('<div class="oar-grid-detail">')
+    parts.extend(detail_blocks)
+    parts.append("</div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _render_change_items_table(change_items: List[Any]) -> str:
+    lines = [
+        '<table class="oar-layered-table oar-layered-table-overview">',
+        "<colgroup>",
+        '<col style="width: 40px;">',
+        '<col style="width: 96px;">',
+        "<col>",
+        '<col style="width: 132px;">',
+        '<col style="width: 132px;">',
+        "</colgroup>",
+        "<thead>",
+        "<tr>",
+        '<th class="oar-col-index">序号</th>',
+        '<th class="oar-col-claims">目标权利要求</th>',
+        '<th class="oar-col-feature">变更特征</th>',
+        '<th class="oar-col-type">来源类型</th>',
+        '<th class="oar-col-verdict">AI判断</th>',
+        "</tr>",
+        "</thead>",
+    ]
+    if not change_items:
+        lines.extend(
+            [
+                "<tbody>",
+                "<tr>",
+                '<td class="oar-index-cell">1</td>',
+                '<td class="oar-layered-cell" colspan="4">',
+                _layered_summary_html(
+                    "oar-layered-grid-overview",
+                    ["-", "无权利要求变更", "-", _verdict_badge_html("未核查", "UNASSESSED")],
+                    [
+                        _detail_text_html("AI理由：", "-"),
+                        _detail_text_html("AI依据：", "-"),
+                        _detail_text_html("最终审查结论：", "-"),
+                    ],
+                ),
+                "</td>",
+                "</tr>",
+                "</tbody>",
+                "</table>",
+            ]
+        )
+        return "\n".join(lines)
+
+    for index, item in enumerate(change_items, start=1):
+        claim_label = _format_claim_ids(_item_get(item, "target_claim_ids", [])) or "-"
+        feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
+        source_claim_ids = _item_get(item, "source_claim_ids", []) or []
+        source_label = _change_source_label(_item_get(item, "source_type", ""), source_claim_ids)
+        assessment = _item_get(item, "assessment", {}) or {}
+        verdict = str(_item_get(assessment, "verdict", "")).strip()
+        ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="该变更项尚未完成核查。")
+        final_review_reason = _text_or_default(_item_get(item, "final_review_reason", ""), default="-")
+        evidence_html = _render_ai_basis_html({"evidence": _item_get(item, "evidence", []) or []})
+
+        lines.extend(
+            [
+                '<tbody class="oar-layered-group">',
+                "<tr>",
+                f'<td class="oar-index-cell">{index}</td>',
+                '<td class="oar-layered-cell" colspan="4">',
+                _layered_summary_html(
+                    "oar-layered-grid-overview",
+                    [claim_label, feature_text, _html_text(source_label), _verdict_badge_html(_verdict_label(verdict), verdict)],
+                    [
+                        _detail_text_html("AI理由：", ai_reason),
+                        _detail_block_html("AI依据：", evidence_html, extra_class="oar-detail-block-evidence"),
+                        _detail_text_html("最终审查结论：", final_review_reason),
+                    ],
+                ),
+                "</td>",
+                "</tr>",
+                "</tbody>",
+            ]
+        )
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _review_mode_label(review_mode: str) -> str:
+    mapping = {
+        "reused_oa": "复用原评述",
+        "response_based": "结合申请人意见答复",
+        "amendment_based": "结合权利要求修改评判",
+        "mixed": "修改评判 + 申请人意见答复",
+    }
+    return mapping.get(str(review_mode).strip(), "逐条评述")
+
+
+def _render_claim_review_blocks(claim_reviews: List[Any]) -> str:
+    if not claim_reviews:
+        return '<div class="oar-opinion-empty">当前无可展示的权利要求逐条评述。</div>'
+
+    blocks: List[str] = []
+    for item in claim_reviews:
+        claim_id = str(_item_get(item, "claim_id", "")).strip() or "-"
+        claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="未提取到权利要求文本。")
+        review_mode = _review_mode_label(str(_item_get(item, "review_mode", "")).strip())
+        review_text = _text_or_default(_item_get(item, "review_text", ""), default="当前未提取到可复用的权利要求评述。")
+        blocks.extend(
+            [
+                '<div class="oar-opinion-block">',
+                f'<div class="oar-opinion-title">{_html_text(f"权利要求 {claim_id}｜{review_mode}", default="")}</div>',
+                _argument_paragraph_html("权利要求文本：", claim_text),
+                _argument_paragraph_html("审查评述：", review_text),
+                "</div>",
+            ]
+        )
+    return "\n".join(blocks)
 
 
 def _render_dispute_overview_table(disputes: List[Any]) -> str:
@@ -247,9 +477,9 @@ def _render_dispute_overview_table(disputes: List[Any]) -> str:
                 "</td>",
                 "</tr>",
                 "</tbody>",
+                "</table>",
             ]
         )
-        lines.append("</table>")
         return "\n".join(lines)
 
     for index, dispute in enumerate(disputes, start=1):
@@ -297,31 +527,30 @@ def _render_dispute_overview_table(disputes: List[Any]) -> str:
             ]
         )
     lines.append("</table>")
-    lines.append("</table>")
     return "\n".join(lines)
 
 
-def _render_next_notice_argument_blocks(disputes: List[Any], next_notice_items: List[Any]) -> str:
+def _render_response_reply_blocks(disputes: List[Any], reply_items: List[Any]) -> str:
     if not disputes:
         return '<div class="oar-opinion-empty">当前无可展示的申请人意见陈述。</div>'
 
-    rejection_reason_by_dispute: Dict[str, str] = {}
-    for item in next_notice_items or []:
-        dispute_id = str(_item_get(item, "dispute_id", "")).strip()
-        rejection_reason = str(_item_get(item, "final_examiner_rejection_reason", "")).strip()
-        if dispute_id and rejection_reason:
-            rejection_reason_by_dispute[dispute_id] = rejection_reason
+    reply_map = {
+        str(_item_get(item, "dispute_id", "")).strip(): item
+        for item in reply_items or []
+        if str(_item_get(item, "dispute_id", "")).strip()
+    }
 
     blocks: List[str] = []
     for index, dispute in enumerate(disputes, start=1):
         dispute_id = str(_item_get(dispute, "dispute_id", "")).strip()
+        reply_item = reply_map.get(dispute_id, {})
         claim_label = _format_claim_ids(_item_get(dispute, "claim_ids", [])) or "-"
         feature_text = _text_or_default(_item_get(dispute, "feature_text", ""), default="未提取争议特征")
         applicant_reasoning = _text_or_default(
             _item_get(_item_get(dispute, "applicant_opinion", {}) or {}, "reasoning", ""),
             default="未提取到申请人详细意见陈述。",
         )
-        rejection_reason = rejection_reason_by_dispute.get(dispute_id, "")
+        final_reason = _text_or_default(_item_get(reply_item, "final_examiner_rejection_reason", ""), default="")
         title = f"第 {index} 项｜权利要求 {claim_label}｜争议特征：{feature_text}"
 
         blocks.extend(
@@ -331,11 +560,20 @@ def _render_next_notice_argument_blocks(disputes: List[Any], next_notice_items: 
                 _argument_paragraph_html("申请人指出：", applicant_reasoning),
             ]
         )
-        if rejection_reason:
-            blocks.append(_argument_paragraph_html("审查员认为：", rejection_reason))
+        if final_reason:
+            blocks.append(_argument_paragraph_html("审查员答复：", final_reason))
         blocks.append("</div>")
 
     return "\n".join(blocks)
+
+
+def _examiner_type_label(raw_type: str) -> str:
+    mapping = {
+        "document_based": "文献对比",
+        "common_knowledge_based": "公知常识",
+        "mixed_basis": "混合依据",
+    }
+    return mapping.get(str(raw_type).strip(), "未知")
 
 
 def _render_ai_basis_html(evidence_assessment: Any) -> str:
@@ -374,64 +612,11 @@ def _render_ai_basis_html(evidence_assessment: Any) -> str:
     return "".join(basis_parts)
 
 
-def _bool_label(value: Any) -> str:
-    return "是" if bool(value) else "否"
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return 0
-
-
-def _as_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def _escape_text(value: Any) -> str:
-    return html.escape(str(value or ""), quote=False)
-
-
-def _html_text(value: Any, default: str = "-") -> str:
-    text = _text_or_default(value, default=default)
-    return _escape_text(text).replace("\n", "<br>")
-
-
-def _text_or_default(value: Any, default: str = "-") -> str:
-    text = str(value or "").strip()
-    return text or default
-
-
-def _detail_text_html(label: str, value: Any) -> str:
-    return _detail_block_html(label, _html_text(value))
-
-
-def _detail_block_html(label: str, body_html: str, extra_class: str = "") -> str:
-    class_attr = "oar-detail-block"
-    if extra_class:
-        class_attr += f" {extra_class}"
+def _evidence_line_html(label: str, value: str) -> str:
     return (
-        f'<div class="{class_attr}">'
-        f'<div class="oar-detail-label">{_escape_text(label)}</div>'
-        f'<div class="oar-detail-body">{body_html}</div>'
-        "</div>"
-    )
-
-
-def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_blocks: List[str]) -> str:
-    cell_html = "".join(
-        value if str(value).startswith("<") else f'<div class="oar-grid-summary-cell">{_html_text(value)}</div>'
-        for value in summary_cells
-    )
-    details_html = "".join(detail_blocks)
-    return (
-        f'<div class="oar-layered-grid {grid_class}">'
-        f"{cell_html}"
-        f'<div class="oar-grid-detail">{details_html}</div>'
+        '<div class="oar-evidence-line">'
+        f'<span class="oar-evidence-line-label">{_escape_text(label)}</span>'
+        f'{_html_text(value, default="-")}'
         "</div>"
     )
 
@@ -440,76 +625,6 @@ def _argument_paragraph_html(label: str, value: Any) -> str:
     return (
         '<div class="oar-opinion-paragraph">'
         f'<span class="oar-opinion-label">{_escape_text(label)}</span>'
-        f'<span class="oar-opinion-text">{_html_text(value)}</span>'
-        "</div>"
-    )
-
-
-def _evidence_line_html(label: str, value: Any) -> str:
-    return (
-        '<div class="oar-evidence-line">'
-        f'<span class="oar-evidence-line-label">{_escape_text(label)}</span>'
-        f'<span class="oar-evidence-line-text">{_html_text(value)}</span>'
-        "</div>"
-    )
-
-
-def _verdict_badge_html(label: str, verdict: str) -> str:
-    verdict_class_map = {
-        "APPLICANT_CORRECT": "oar-verdict-badge-applicant",
-        "EXAMINER_CORRECT": "oar-verdict-badge-examiner",
-        "INCONCLUSIVE": "oar-verdict-badge-inconclusive",
-        "UNASSESSED": "oar-verdict-badge-unassessed",
-    }
-    class_name = verdict_class_map.get(str(verdict).strip(), "oar-verdict-badge-unassessed")
-    return (
-        f'<div class="oar-grid-summary-cell oar-grid-summary-cell-verdict">'
-        f'<span class="oar-verdict-badge {class_name}">{_escape_text(label)}</span>'
-        "</div>"
-    )
-
-
-def _cell(value: Any) -> str:
-    text = str(value or "-")
-    text = text.replace("\n", "<br>").replace("|", "\\|")
-    return text
-
-
-def _pct_text(value: int, total: int) -> str:
-    safe_total = max(int(total), 1)
-    safe_value = min(max(int(value), 0), safe_total)
-    pct = (safe_value / safe_total) * 100.0
-    return f"{pct:.1f}%"
-
-
-def _confidence_pct_text(value: float) -> str:
-    if value < 0:
-        return "-"
-    bounded = max(0.0, min(1.0, value))
-    return f"{bounded * 100:.1f}%"
-
-
-def _max_label_value(items: List[tuple[str, int]]) -> tuple[str, int]:
-    if not items:
-        return "-", 0
-    return max(items, key=lambda pair: pair[1])
-
-
-def _risk_card(label: str, value: str, wide: bool = False) -> str:
-    classes = "oar-risk-card oar-risk-card-wide" if wide else "oar-risk-card"
-    return (
-        f'<div class="{classes}">'
-        f'<div class="oar-risk-label">{_cell(label)}</div>'
-        f'<div class="oar-risk-value">{_cell(value)}</div>'
-        "</div>"
-    )
-
-
-def _conclusion_card(title: str, primary: str, secondary: str) -> str:
-    return (
-        '<div class="oar-conclusion-card">'
-        f'<div class="oar-conclusion-title">{_cell(title)}</div>'
-        f'<div class="oar-conclusion-primary">{_cell(primary)}</div>'
-        f'<div class="oar-conclusion-secondary">{_cell(secondary)}</div>'
+        f'{_html_text(value, default="-")}'
         "</div>"
     )

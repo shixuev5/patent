@@ -52,7 +52,9 @@ class ApplicantOpinion(BaseModel):
 class Dispute(BaseModel):
     """争辩焦点数据"""
     dispute_id: str = Field(..., description="争议项唯一标识")
+    origin: str = Field("response_dispute", description="争议来源: response_dispute/amendment_review")
     source_argument_id: str = Field("", description="来源申请人论点编号")
+    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 feature_id")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     feature_text: str = Field(..., description="特征描述文本")
     examiner_opinion: ExaminerOpinion = Field(..., description="审查员观点")
@@ -115,7 +117,9 @@ class EvidenceAssessmentTrace(BaseModel):
 class EvidenceAssessment(BaseModel):
     """事实核查结果（新结构）"""
     dispute_id: str = Field(..., description="争议项唯一标识")
+    origin: str = Field("response_dispute", description="核查结果来源: response_dispute/amendment_review")
     source_argument_id: str = Field("", description="来源申请人论点编号")
+    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 feature_id")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     claim_text: str = Field(default="", description="原权利要求文本")
     feature_text: str = Field(default="", description="争议技术特征")
@@ -151,6 +155,18 @@ class SupportFinding(BaseModel):
     support_found: bool = Field(False, description="是否找到原始支持依据")
     support_basis: str = Field("", description="支持依据描述")
     risk: str = Field("", description="风险说明")
+
+
+class ClaimReviewItem(BaseModel):
+    """逐条权利要求评述结果"""
+    claim_id: str = Field(..., description="权利要求编号")
+    claim_text: str = Field("", description="权利要求文本")
+    review_mode: str = Field(
+        "reused_oa",
+        description="评述来源模式: reused_oa/response_based/amendment_based/mixed",
+    )
+    review_text: str = Field("", description="最终生成的正式评述文本")
+    source_summary: Dict[str, Any] = Field(default_factory=dict, description="调试用来源摘要")
 
 
 class ErrorInfo(BaseModel):
@@ -243,6 +259,10 @@ class WorkflowState(BaseModel):
     drafted_rejection_reasons: Dict[str, str] = Field(
         default_factory=dict,
         description="统一润色后的正式驳回正文，按 dispute_id 索引",
+    )
+    claim_reviews: Annotated[List[ClaimReviewItem], operator.add] = Field(
+        default_factory=list,
+        description="逐条权利要求评述结果",
     )
 
     # 最终报告

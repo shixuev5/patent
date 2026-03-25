@@ -190,6 +190,8 @@ def test_dispute_extraction_uses_two_stage_pipeline() -> None:
     ]
     assert len(disputes) == 1
     assert disputes[0]["source_argument_id"] == "ARG_1"
+    assert disputes[0]["origin"] == "response_dispute"
+    assert disputes[0]["source_feature_id"] == ""
     assert disputes[0]["claim_ids"] == ["1"]
     assert disputes[0]["feature_text"] == "环境模拟箱"
     assert disputes[0]["examiner_opinion"]["type"] == "mixed_basis"

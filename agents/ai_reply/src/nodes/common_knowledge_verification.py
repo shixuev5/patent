@@ -696,7 +696,9 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
 
         return {
             "dispute_id": str(dispute.get("dispute_id", f"DSP_{claim_key}_{feature_text[:8]}")),
+            "origin": str(dispute.get("origin", "response_dispute")).strip() or "response_dispute",
             "source_argument_id": str(dispute.get("source_argument_id", "")).strip(),
+            "source_feature_id": str(dispute.get("source_feature_id", "")).strip(),
             "claim_ids": claim_ids,
             "claim_text": claim_text,
             "feature_text": feature_text,

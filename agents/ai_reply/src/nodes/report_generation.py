@@ -1,15 +1,17 @@
 """
 报告生成节点
-生成最终的 JSON 格式报告
+生成最终的 JSON 格式报告。
 """
 
 import json
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 from loguru import logger
+
 from agents.ai_reply.src.utils import get_node_cache
-from agents.common.utils.serialization import to_jsonable, item_get
+from agents.common.utils.serialization import item_get, to_jsonable
 
 
 def _to_dict(value: Any) -> Dict[str, Any]:
@@ -34,44 +36,46 @@ class ReportGenerationNode:
         updates = {
             "current_node": "report_generation",
             "status": "running",
-            "progress": 93.0
+            "progress": 95.0,
         }
 
         try:
-            # 获取节点缓存
             cache = get_node_cache(self.config, "report_generation")
-
-            # 使用缓存运行报告生成
-            report = cache.run_step("generate_report_v5", self._generate_report, state)
-
-            # 保存到文件
+            report = cache.run_step("generate_report_v6", self._generate_report, state)
             output_path = self._save_report(report, state)
 
-            # 更新状态
             updates["final_report"] = report
-            updates["progress"] = 95.0
+            updates["progress"] = 97.0
             updates["status"] = "completed"
-
             logger.info(f"报告已生成: {output_path}")
-
-        except Exception as e:
-            logger.error(f"报告生成节点执行失败: {e}")
+        except Exception as exc:
+            logger.error(f"报告生成节点执行失败: {exc}")
             updates["errors"] = [{
                 "node_name": "report_generation",
-                "error_message": str(e),
-                "error_type": "report_generation_error"
+                "error_message": str(exc),
+                "error_type": "report_generation_error",
             }]
             updates["status"] = "failed"
 
         return updates
 
     def _generate_report(self, state) -> Dict[str, Any]:
-        """生成最终报告"""
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
+        claim_reviews = to_jsonable(item_get(state, "claim_reviews", []))
         early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
         current_notice_round = self._extract_current_notice_round(state)
         next_notice_round = current_notice_round + 1
+
+        disputes = [self._serialize_dispute(item, evidence_map) for item in item_get(state, "disputes", []) or []]
+        response_disputes = [item for item in disputes if str(item.get("origin", "")).strip() == "response_dispute"]
+        amendment_disputes = [item for item in disputes if str(item.get("origin", "")).strip() == "amendment_review"]
+        response_reply_items = self._build_response_reply_items(response_disputes, drafted_rejection_reasons)
+        change_items = self._build_change_items(
+            added_features=item_get(state, "added_features", []),
+            support_findings=item_get(state, "support_findings", []),
+            amendment_disputes=amendment_disputes,
+        )
 
         report = {
             "task_id": item_get(state, "task_id", ""),
@@ -80,50 +84,51 @@ class ReportGenerationNode:
                 "current_notice_round": current_notice_round,
                 "next_notice_round": next_notice_round,
             },
-            "amendment_review": {
+            "summary": self._generate_summary(response_disputes, response_reply_items),
+            "amendment_section": {
                 "has_claim_amendment": bool(item_get(state, "has_claim_amendment", False)),
                 "added_matter_risk": bool(item_get(state, "added_matter_risk", False)),
                 "early_rejection_reason": early_rejection_reason,
                 "added_features": to_jsonable(item_get(state, "added_features", [])),
                 "support_findings": to_jsonable(item_get(state, "support_findings", [])),
-                "reuse_oa_tasks": to_jsonable(item_get(state, "reuse_oa_tasks", [])),
-                "topup_tasks": to_jsonable(item_get(state, "topup_tasks", [])),
+                "change_items": change_items,
             },
-            "disputes": []
+            "claim_review_section": {
+                "items": claim_reviews,
+            },
+            "response_dispute_section": {
+                "items": response_disputes,
+            },
+            "response_reply_section": {
+                "items": response_reply_items,
+            },
         }
-
-        # 遍历所有争议点
-        for dispute in item_get(state, "disputes", []):
-            dispute_id = item_get(dispute, "dispute_id", "")
-            claim_ids = self._normalize_claim_ids(item_get(dispute, "claim_ids", []))
-            feature_text = item_get(dispute, "feature_text", "")
-
-            # 构建争议点报告
-            dispute_report = {
-                "dispute_id": dispute_id,
-                "claim_ids": claim_ids,
-                "feature_text": feature_text,
-                "examiner_opinion": to_jsonable(item_get(dispute, "examiner_opinion", {})),
-                "applicant_opinion": to_jsonable(item_get(dispute, "applicant_opinion", {})),
-                "evidence_assessment": to_jsonable(evidence_map.get(dispute_id)),
-            }
-
-            report["disputes"].append(dispute_report)
-
-        # 添加汇总信息
-        report["summary"] = self._generate_summary(report["disputes"])
-        next_notice_items = self._collect_next_office_action_items(report["disputes"], drafted_rejection_reasons)
-        report["summary"]["next_office_action_points"] = len(next_notice_items)
-        report["next_office_action_notice"] = {
-            "text": self._build_next_office_action_text(next_notice_items),
-            "items": next_notice_items,
-        }
-
         return report
 
-    def _generate_summary(self, disputes: list) -> Dict[str, Any]:
-        """生成汇总信息"""
-        total = len(disputes)
+    def _serialize_dispute(
+        self,
+        dispute: Any,
+        evidence_map: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        dispute_id = str(item_get(dispute, "dispute_id", "")).strip()
+        return {
+            "dispute_id": dispute_id,
+            "origin": str(item_get(dispute, "origin", "response_dispute")).strip() or "response_dispute",
+            "source_argument_id": str(item_get(dispute, "source_argument_id", "")).strip(),
+            "source_feature_id": str(item_get(dispute, "source_feature_id", "")).strip(),
+            "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
+            "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
+            "examiner_opinion": to_jsonable(item_get(dispute, "examiner_opinion", {})),
+            "applicant_opinion": to_jsonable(item_get(dispute, "applicant_opinion", {})),
+            "evidence_assessment": to_jsonable(evidence_map.get(dispute_id)),
+        }
+
+    def _generate_summary(
+        self,
+        response_disputes: List[Dict[str, Any]],
+        response_reply_items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        total = len(response_disputes)
         assessed = 0
 
         verdict_distribution = {
@@ -137,20 +142,20 @@ class ReportGenerationNode:
             "unknown": 0,
         }
 
-        for dispute in disputes:
+        for dispute in response_disputes:
             applicant_opinion = item_get(dispute, "applicant_opinion", {}) or {}
-            rebuttal_type = item_get(applicant_opinion, "type", "")
+            rebuttal_type = str(item_get(applicant_opinion, "type", "")).strip()
             if rebuttal_type in rebuttal_type_distribution:
                 rebuttal_type_distribution[rebuttal_type] += 1
             else:
                 rebuttal_type_distribution["unknown"] += 1
 
-            evidence_assessment = dispute.get("evidence_assessment")
+            evidence_assessment = item_get(dispute, "evidence_assessment", None)
             if not evidence_assessment:
                 continue
 
             assessed += 1
-            verdict = item_get(item_get(evidence_assessment, "assessment", {}), "verdict", "")
+            verdict = str(item_get(item_get(evidence_assessment, "assessment", {}), "verdict", "")).strip()
             if verdict == "APPLICANT_CORRECT":
                 verdict_distribution["applicant_correct"] += 1
             elif verdict == "EXAMINER_CORRECT":
@@ -162,73 +167,76 @@ class ReportGenerationNode:
             "total_disputes": total,
             "assessed_disputes": assessed,
             "unassessed_disputes": max(total - assessed, 0),
+            "response_reply_points": sum(
+                1 for item in response_reply_items if str(item.get("final_examiner_rejection_reason", "")).strip()
+            ),
             "rebuttal_type_distribution": rebuttal_type_distribution,
             "verdict_distribution": verdict_distribution,
         }
 
-    def _collect_next_office_action_items(
+    def _build_response_reply_items(
         self,
-        disputes: List[Dict[str, Any]],
+        response_disputes: List[Dict[str, Any]],
         drafted_rejection_reasons: Dict[str, str],
     ) -> List[Dict[str, Any]]:
-        """收集可用于下一通审查意见通知书的驳回说理点。"""
-        items: List[Dict[str, str]] = []
-        for dispute in disputes:
-            evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
-            assessment = item_get(evidence_assessment, "assessment", {}) or {}
-            verdict = str(item_get(assessment, "verdict", "")).strip()
-            if verdict not in {"APPLICANT_CORRECT", "EXAMINER_CORRECT"}:
-                continue
-
-            if verdict == "APPLICANT_CORRECT":
-                rationale = str(item_get(assessment, "examiner_rejection_rationale", "")).strip()
-            else:
-                rationale = str(item_get(assessment, "reasoning", "")).strip()
-            if not rationale:
-                dispute_id = str(item_get(dispute, "dispute_id", "")).strip() or "<unknown_dispute>"
-                if verdict == "APPLICANT_CORRECT":
-                    raise ValueError(
-                        f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_rationale"
-                    )
-                raise ValueError(
-                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=EXAMINER_CORRECT 但缺少 assessment.reasoning"
-                )
+        items: List[Dict[str, Any]] = []
+        for dispute in response_disputes:
             dispute_id = str(item_get(dispute, "dispute_id", "")).strip()
             final_reason = str(drafted_rejection_reasons.get(dispute_id, "")).strip()
-            if not final_reason:
-                raise ValueError(
-                    f"report_generation 数据非法: dispute_id={dispute_id} verdict={verdict} 但缺少 drafted final reason"
-                )
-
-            items.append({
-                "dispute_id": dispute_id,
-                "verdict": verdict,
-                "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
-                "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
-                "final_examiner_rejection_reason": final_reason,
-            })
+            items.append(
+                {
+                    "dispute_id": dispute_id,
+                    "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
+                    "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
+                    "applicant_opinion": to_jsonable(item_get(dispute, "applicant_opinion", {})),
+                    "final_examiner_rejection_reason": final_reason,
+                }
+            )
         return items
 
-    def _build_next_office_action_text(self, items: List[Dict[str, str]]) -> str:
-        """将驳回说理点汇总为一段可直接用于下一通审查意见通知书的文本。"""
-        if not items:
-            return ""
+    def _build_change_items(
+        self,
+        added_features: List[Any],
+        support_findings: List[Any],
+        amendment_disputes: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        support_map = {
+            str(item_get(item, "feature_id", "")).strip(): to_jsonable(item)
+            for item in support_findings or []
+            if str(item_get(item, "feature_id", "")).strip()
+        }
+        dispute_map = {
+            str(item.get("source_feature_id", "")).strip(): item
+            for item in amendment_disputes
+            if str(item.get("source_feature_id", "")).strip()
+        }
 
-        clauses: List[str] = []
-        for index, item in enumerate(items, start=1):
-            claim_ids = self._normalize_claim_ids(item.get("claim_ids", []))
-            claim_label = "、".join(claim_ids) if claim_ids else "未标注权利要求"
-            feature_text = item.get("feature_text", "") or "未提取争议特征"
-            reason = item.get("final_examiner_rejection_reason", "").strip().rstrip("。；;")
-            clauses.append(
-                f"关于第{index}项核查结论（权利要求{claim_label}，争议特征“{feature_text}”），{reason}"
+        items: List[Dict[str, Any]] = []
+        for feature in added_features or []:
+            feature_id = str(item_get(feature, "feature_id", "")).strip()
+            dispute = dispute_map.get(feature_id, {})
+            evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
+            assessment = item_get(evidence_assessment, "assessment", {}) or {}
+            items.append(
+                {
+                    "feature_id": feature_id,
+                    "feature_text": str(item_get(feature, "feature_text", "")).strip(),
+                    "target_claim_ids": self._normalize_claim_ids(item_get(feature, "target_claim_ids", [])),
+                    "source_type": str(item_get(feature, "source_type", "")).strip(),
+                    "source_claim_ids": self._normalize_claim_ids(item_get(feature, "source_claim_ids", [])),
+                    "support_finding": support_map.get(feature_id, {}),
+                    "assessment": to_jsonable(assessment),
+                    "evidence": to_jsonable(item_get(evidence_assessment, "evidence", [])),
+                    "final_review_reason": self._build_amendment_final_reason(assessment),
+                }
             )
+        return items
 
-        return (
-            "经对申请人意见陈述书与现有证据再次审查，本局形成如下进一步审查意见："
-            + "；".join(clauses)
-            + "。"
-        )
+    def _build_amendment_final_reason(self, assessment: Dict[str, Any]) -> str:
+        verdict = str(item_get(assessment, "verdict", "")).strip()
+        if verdict == "APPLICANT_CORRECT":
+            return str(item_get(assessment, "examiner_rejection_rationale", "")).strip()
+        return str(item_get(assessment, "reasoning", "")).strip()
 
     def _extract_current_notice_round(self, state: Any) -> int:
         prepared = _to_dict(item_get(state, "prepared_materials", {}))
@@ -242,27 +250,26 @@ class ReportGenerationNode:
         return current_notice_round
 
     def _save_report(self, report: Dict[str, Any], state) -> Path:
-        """保存报告到文件"""
         output_dir = Path(item_get(state, "output_dir"))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         output_path = output_dir / "final_report.json"
-
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(to_jsonable(report), f, ensure_ascii=False, indent=2)
-
         return output_path
 
     def _build_evidence_map(self, evidence_assessments: list) -> Dict[str, Dict[str, Any]]:
-        """按 dispute_id 索引核查结果。"""
         result: Dict[str, Dict[str, Any]] = {}
         for item in evidence_assessments or []:
-            dispute_id = item_get(item, "dispute_id", "")
+            dispute_id = str(item_get(item, "dispute_id", "")).strip()
             if not dispute_id:
                 continue
             result[dispute_id] = {
+                "origin": str(item_get(item, "origin", "response_dispute")).strip() or "response_dispute",
+                "source_argument_id": str(item_get(item, "source_argument_id", "")).strip(),
+                "source_feature_id": str(item_get(item, "source_feature_id", "")).strip(),
                 "claim_ids": self._normalize_claim_ids(item_get(item, "claim_ids", [])),
-                "claim_text": item_get(item, "claim_text", ""),
+                "claim_text": str(item_get(item, "claim_text", "")).strip(),
                 "assessment": to_jsonable(item_get(item, "assessment", {})),
                 "evidence": to_jsonable(item_get(item, "evidence", [])),
                 "trace": to_jsonable(item_get(item, "trace", {})),
@@ -278,8 +285,8 @@ class ReportGenerationNode:
                 continue
             for piece in re.split(r"[，,\s]+", text):
                 part = piece.strip()
-                if not part or not part.isdigit():
+                if not part:
                     continue
-                if part not in claim_ids:
+                if part.isdigit() and part not in claim_ids:
                     claim_ids.append(part)
         return claim_ids

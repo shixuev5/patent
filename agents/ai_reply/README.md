@@ -246,8 +246,8 @@ flowchart TD
    - `assessment`
    - `evidence`
 4. 同时更新两个状态字段：
-   - `disputes[]`（新增 TOPUP 争议）
-   - `evidence_assessments[]`（新增 TOPUP 核查结果）
+   - `disputes[]`（新增 `origin=amendment_review` 的修改评判项）
+   - `evidence_assessments[]`（新增对应的修改评判核查结果）
 
 ### 严格约束
 
@@ -274,12 +274,19 @@ flowchart TD
 
 `report_generation` 负责：
 
-1. 生成 `amendment_review`
-2. 将 `disputes` 与 `evidence_assessments` 按 `dispute_id` 合并
-3. 统计 `summary`（争议总数、已核查数、裁决分布、反驳类型分布）
-4. 生成 `next_office_action_notice`
-   - 仅收集 `verdict=APPLICANT_CORRECT` 的争议
-   - 使用 `examiner_rejection_rationale` 作为中间逻辑要点，经统一润色后生成 `final_examiner_rejection_reason`
+1. 生成 `summary`
+   - 仅统计 `origin=response_dispute` 的真正争论点
+   - 输出争议总数、已核查数、裁决分布、反驳类型分布、申请人答复要点数
+2. 生成 `amendment_section`
+   - 包含修改风险概览
+   - 包含 `change_items`，逐项展示新增/修改特征的 AI 评判、理由、证据与最终审查结论
+3. 生成 `claim_review_section`
+   - 基于 `claim_review_drafting` 的结果，按当前生效权利要求逐条输出正式评述
+4. 生成 `response_dispute_section`
+   - 只保留 `origin=response_dispute` 的争论点及其 AI 核查结果
+5. 生成 `response_reply_section`
+   - 只保留针对申请人意见陈述的正式答复文本
+   - 由 `rejection_drafting` 输出的 `final_examiner_rejection_reason` 组装而成
 
 ---
 

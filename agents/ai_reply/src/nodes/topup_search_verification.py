@@ -211,6 +211,9 @@ class TopupSearchVerificationNode:
         applicant_opinion = parsed["applicant_opinion"]
         dispute = {
             "dispute_id": dispute_id,
+            "origin": "amendment_review",
+            "source_argument_id": "",
+            "source_feature_id": task_id,
             "claim_ids": claim_ids,
             "feature_text": feature_text,
             "examiner_opinion": examiner_opinion,
@@ -218,6 +221,9 @@ class TopupSearchVerificationNode:
         }
         assessment = {
             "dispute_id": dispute_id,
+            "origin": "amendment_review",
+            "source_argument_id": "",
+            "source_feature_id": task_id,
             "claim_ids": claim_ids,
             "claim_text": claim_text,
             "feature_text": feature_text,

@@ -15,15 +15,13 @@ from agents.ai_reply.src.state import WorkflowState, InputFile, WorkflowConfig
 from agents.ai_reply.src.nodes.document_processing import DocumentProcessingNode
 from agents.ai_reply.src.nodes.patent_retrieval import PatentRetrievalNode
 from agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
-from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
-from agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
-from agents.ai_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
-from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
+from agents.ai_reply.src.nodes.analysis_parallel import AnalysisParallelNode
 from agents.ai_reply.src.nodes.evidence_verification import EvidenceVerificationNode
 from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 from agents.ai_reply.src.nodes.verification_join import VerificationJoinNode
 from agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
+from agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingNode
 from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
 from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
 from agents.ai_reply.src.edges import handle_error
@@ -55,15 +53,13 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_node("document_processing", DocumentProcessingNode(config), retry_policy=retry_policy)
     workflow.add_node("patent_retrieval", PatentRetrievalNode(config), retry_policy=retry_policy)
     workflow.add_node("data_preparation", DataPreparationNode(config), retry_policy=retry_policy)
-    workflow.add_node("amendment_tracking", AmendmentTrackingNode(config), retry_policy=retry_policy)
-    workflow.add_node("support_basis_check", SupportBasisCheckNode(config), retry_policy=retry_policy)
-    workflow.add_node("amendment_strategy", AmendmentStrategyNode(config), retry_policy=retry_policy)
-    workflow.add_node("dispute_extraction", DisputeExtractionNode(config), retry_policy=retry_policy)
+    workflow.add_node("analysis_parallel", AnalysisParallelNode(config), retry_policy=retry_policy)
     workflow.add_node("evidence_verification", EvidenceVerificationNode(config), retry_policy=retry_policy)
     workflow.add_node("common_knowledge_verification", CommonKnowledgeVerificationNode(config), retry_policy=retry_policy)
     workflow.add_node("topup_search_verification", TopupSearchVerificationNode(config), retry_policy=retry_policy)
     workflow.add_node("verification_join", VerificationJoinNode(config), retry_policy=retry_policy)
     workflow.add_node("rejection_drafting", RejectionDraftingNode(config), retry_policy=retry_policy)
+    workflow.add_node("claim_review_drafting", ClaimReviewDraftingNode(config), retry_policy=retry_policy)
     workflow.add_node("report_generation", ReportGenerationNode(config), retry_policy=retry_policy)
     workflow.add_node("final_report_render", FinalReportRenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
@@ -94,9 +90,12 @@ def create_workflow(config: WorkflowConfig = None):
             return item.get(key, default)
         return getattr(item, key, default)
 
-    def route_from_dispute_extraction(state):
+    def route_from_analysis_parallel(state):
         if state.status == "failed":
             return "failed"
+
+        if _item_get(state, "early_rejection_reason", "") or _item_get(state, "added_matter_risk", False):
+            return "report_generation"
 
         has_document_based_dispute = False
         has_common_knowledge_dispute = False
@@ -124,32 +123,15 @@ def create_workflow(config: WorkflowConfig = None):
             return next_nodes[0]
         return next_nodes
 
-    def route_from_amendment_strategy(state):
-        if state.status == "failed":
-            return "failed"
-        if _item_get(state, "early_rejection_reason", "") or _item_get(state, "added_matter_risk", False):
-            return "report_generation"
-        return "dispute_extraction"
-
     # 为所有单向节点绑定统一的条件路由
     workflow.add_conditional_edges("patent_retrieval", create_router("data_preparation"), {"failed": "handle_error", "data_preparation": "data_preparation"})
-    workflow.add_conditional_edges("data_preparation", create_router("amendment_tracking"), {"failed": "handle_error", "amendment_tracking": "amendment_tracking"})
-    workflow.add_conditional_edges("amendment_tracking", create_router("support_basis_check"), {"failed": "handle_error", "support_basis_check": "support_basis_check"})
-    workflow.add_conditional_edges("support_basis_check", create_router("amendment_strategy"), {"failed": "handle_error", "amendment_strategy": "amendment_strategy"})
+    workflow.add_conditional_edges("data_preparation", create_router("analysis_parallel"), {"failed": "handle_error", "analysis_parallel": "analysis_parallel"})
     workflow.add_conditional_edges(
-        "amendment_strategy",
-        route_from_amendment_strategy,
+        "analysis_parallel",
+        route_from_analysis_parallel,
         {
             "failed": "handle_error",
-            "dispute_extraction": "dispute_extraction",
             "report_generation": "report_generation",
-        }
-    )
-    workflow.add_conditional_edges(
-        "dispute_extraction",
-        route_from_dispute_extraction,
-        {
-            "failed": "handle_error",
             "evidence_verification": "evidence_verification",
             "common_knowledge_verification": "common_knowledge_verification",
             "topup_search_verification": "topup_search_verification",
@@ -167,6 +149,11 @@ def create_workflow(config: WorkflowConfig = None):
     )
     workflow.add_conditional_edges(
         "rejection_drafting",
+        create_router("claim_review_drafting"),
+        {"failed": "handle_error", "claim_review_drafting": "claim_review_drafting"},
+    )
+    workflow.add_conditional_edges(
+        "claim_review_drafting",
         create_router("report_generation"),
         {"failed": "handle_error", "report_generation": "report_generation"},
     )

@@ -405,7 +405,9 @@ class DisputeExtractionNode:
                             claim_ids,
                             feature_text,
                         ),
+                        "origin": "response_dispute",
                         "source_argument_id": str(dispute.get("source_argument_id", "")).strip(),
+                        "source_feature_id": "",
                         "claim_ids": claim_ids,
                         "feature_text": feature_text,
                         "examiner_opinion": {

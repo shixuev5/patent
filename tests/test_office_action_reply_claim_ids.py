@@ -10,117 +10,91 @@ def test_dispute_extraction_normalize_claim_ids() -> None:
     assert node._normalize_claim_ids("权利要求2-4及权利要求6") == ["2", "3", "4", "6"]
 
 
-def test_report_generation_collect_next_notice_with_claim_ids() -> None:
+def test_report_generation_builds_response_reply_items_with_claim_ids() -> None:
     node = ReportGenerationNode()
     disputes = [
         {
             "dispute_id": "DSP_A",
+            "origin": "response_dispute",
             "claim_ids": ["1", "3"],
             "feature_text": "特征A",
-            "evidence_assessment": {
-                "assessment": {
-                    "verdict": "APPLICANT_CORRECT",
-                    "examiner_rejection_rationale": "结合D1公开内容与常规技术推演，相关权利要求仍可能不具备创造性。",
-                }
-            },
+            "applicant_opinion": {"reasoning": "申请人认为 D1 未公开特征A。"},
         }
     ]
-    items = node._collect_next_office_action_items(
+
+    items = node._build_response_reply_items(
         disputes,
         {"DSP_A": "经审查，相关权利要求仍不具备创造性。"},
     )
+
     assert len(items) == 1
     assert items[0]["claim_ids"] == ["1", "3"]
     assert items[0]["final_examiner_rejection_reason"] == "经审查，相关权利要求仍不具备创造性。"
 
 
-def test_report_generation_collect_next_notice_for_examiner_correct() -> None:
+def test_report_generation_summary_excludes_amendment_reviews() -> None:
     node = ReportGenerationNode()
-    disputes = [
+    response_disputes = [
         {
-            "dispute_id": "DSP_EX",
-            "claim_ids": ["2"],
-            "feature_text": "特征EX",
-            "evidence_assessment": {
-                "assessment": {
-                    "verdict": "EXAMINER_CORRECT",
-                    "reasoning": "D2 已经公开该特征，申请人意见不能推翻原驳回结论。",
-                    "examiner_rejection_rationale": "",
-                }
-            },
+            "dispute_id": "DSP_R",
+            "origin": "response_dispute",
+            "applicant_opinion": {"type": "fact_dispute"},
+            "evidence_assessment": {"assessment": {"verdict": "EXAMINER_CORRECT"}},
         }
     ]
-    items = node._collect_next_office_action_items(
-        disputes,
-        {"DSP_EX": "经审查，对比文件D2已公开该特征，因此相关权利要求仍不具备创造性。"},
+    response_reply_items = [{"dispute_id": "DSP_R", "final_examiner_rejection_reason": "维持驳回。"}]
+
+    summary = node._generate_summary(response_disputes, response_reply_items)
+
+    assert summary["total_disputes"] == 1
+    assert summary["assessed_disputes"] == 1
+    assert summary["response_reply_points"] == 1
+    assert summary["verdict_distribution"]["examiner_correct"] == 1
+
+
+def test_report_generation_builds_change_items_by_feature_id() -> None:
+    node = ReportGenerationNode()
+
+    items = node._build_change_items(
+        added_features=[
+            {
+                "feature_id": "F1",
+                "feature_text": "新增特征A",
+                "target_claim_ids": ["2"],
+                "source_type": "claim",
+                "source_claim_ids": ["5"],
+            }
+        ],
+        support_findings=[
+            {
+                "feature_id": "F1",
+                "support_found": True,
+                "support_basis": "说明书第3页",
+            }
+        ],
+        amendment_disputes=[
+            {
+                "dispute_id": "TOPUP_F1",
+                "origin": "amendment_review",
+                "source_feature_id": "F1",
+                "evidence_assessment": {
+                    "assessment": {
+                        "verdict": "APPLICANT_CORRECT",
+                        "reasoning": "证据不足。",
+                        "examiner_rejection_rationale": "结合D1仍可维持驳回。",
+                    },
+                    "evidence": [
+                        {"doc_id": "D1", "quote": "q1", "analysis": "a1"},
+                    ],
+                },
+            }
+        ],
     )
+
     assert len(items) == 1
-    assert items[0]["claim_ids"] == ["2"]
-    assert items[0]["final_examiner_rejection_reason"] == "经审查，对比文件D2已公开该特征，因此相关权利要求仍不具备创造性。"
-
-
-def test_report_generation_raise_when_missing_rejection_reason() -> None:
-    node = ReportGenerationNode()
-    disputes = [
-        {
-            "dispute_id": "DSP_B",
-            "claim_ids": ["2"],
-            "feature_text": "特征B",
-            "evidence_assessment": {
-                "assessment": {
-                    "verdict": "APPLICANT_CORRECT",
-                    "examiner_rejection_rationale": "",
-                }
-            },
-        }
-    ]
-    try:
-        node._collect_next_office_action_items(disputes, {})
-        assert False, "expected ValueError"
-    except ValueError as exc:
-        assert "examiner_rejection_rationale" in str(exc)
-
-
-def test_report_generation_raise_when_examiner_correct_missing_reasoning() -> None:
-    node = ReportGenerationNode()
-    disputes = [
-        {
-            "dispute_id": "DSP_EX_MISS",
-            "claim_ids": ["5"],
-            "feature_text": "特征EX_MISS",
-            "evidence_assessment": {
-                "assessment": {
-                    "verdict": "EXAMINER_CORRECT",
-                    "reasoning": "",
-                    "examiner_rejection_rationale": "",
-                }
-            },
-        }
-    ]
-    try:
-        node._collect_next_office_action_items(disputes, {})
-        assert False, "expected ValueError"
-    except ValueError as exc:
-        assert "EXAMINER_CORRECT" in str(exc)
-
-
-def test_report_generation_raise_when_missing_final_rejection_reason() -> None:
-    node = ReportGenerationNode()
-    disputes = [
-        {
-            "dispute_id": "DSP_C",
-            "claim_ids": ["2"],
-            "feature_text": "特征C",
-            "evidence_assessment": {
-                "assessment": {
-                    "verdict": "APPLICANT_CORRECT",
-                    "examiner_rejection_rationale": "结合D2与常规设计推演仍可维持驳回。",
-                }
-            },
-        }
-    ]
-    try:
-        node._collect_next_office_action_items(disputes, {})
-        assert False, "expected ValueError"
-    except ValueError as exc:
-        assert "drafted final reason" in str(exc)
+    assert items[0]["feature_id"] == "F1"
+    assert items[0]["target_claim_ids"] == ["2"]
+    assert items[0]["source_claim_ids"] == ["5"]
+    assert items[0]["support_finding"]["support_basis"] == "说明书第3页"
+    assert items[0]["assessment"]["verdict"] == "APPLICANT_CORRECT"
+    assert items[0]["final_review_reason"] == "结合D1仍可维持驳回。"
