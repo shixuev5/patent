@@ -70,6 +70,20 @@ def test_office_action_extractor_uses_latest_notice_body_for_round_and_compariso
     assert office_action.paragraphs[0].cited_doc_ids == ["D1", "D2"]
 
 
+def test_office_action_extractor_extracts_application_number_from_online_word_markdown_header() -> None:
+    markdown_content = """<table><tr><td colspan="2">申请号或专利号:202110546646.X 发文序号:</td></tr></table>
+
+# 第 二 次 审 查 意 见 通 知 书
+
+1、权利要求1不具备专利法第二十二条第三款规定的创造性。
+"""
+
+    office_action = OfficeActionExtractor().extract(markdown_content)
+
+    assert office_action.application_number == "202110546646.X"
+    assert office_action.current_notice_round == 2
+
+
 def test_office_action_extractor_falls_back_to_table_when_body_has_no_comparison_doc() -> None:
     markdown_content = """申请号：202211444126.9
 

@@ -74,12 +74,18 @@ class OfficeActionExtractor:
 
     def _extract_application_number(self, markdown_content: str) -> str:
         """提取原专利申请号"""
-        pattern = r"申请号：?\s*([A-Z0-9.]+)"
-        match = re.search(pattern, markdown_content)
-        if match:
-            application_number = match.group(1).strip()
-            logger.info(f"提取到申请号: {application_number}")
-            return application_number
+        patterns = [
+            r"申请号(?:或专利号)?\s*[:：]\s*([A-Z0-9.]+)",
+            r"申请号(?:或专利号)?\s+([A-Z0-9.]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, markdown_content or "", re.IGNORECASE)
+            if not match:
+                continue
+            application_number = match.group(1).strip().strip("，,；;。")
+            if application_number:
+                logger.info(f"提取到申请号: {application_number}")
+                return application_number
         logger.warning("未找到申请号")
         return ""
 
