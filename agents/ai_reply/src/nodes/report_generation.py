@@ -177,24 +177,32 @@ class ReportGenerationNode:
             evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
             assessment = item_get(evidence_assessment, "assessment", {}) or {}
             verdict = str(item_get(assessment, "verdict", "")).strip()
-            if verdict != "APPLICANT_CORRECT":
+            if verdict not in {"APPLICANT_CORRECT", "EXAMINER_CORRECT"}:
                 continue
 
-            rationale = str(item_get(assessment, "examiner_rejection_rationale", "")).strip()
+            if verdict == "APPLICANT_CORRECT":
+                rationale = str(item_get(assessment, "examiner_rejection_rationale", "")).strip()
+            else:
+                rationale = str(item_get(assessment, "reasoning", "")).strip()
             if not rationale:
                 dispute_id = str(item_get(dispute, "dispute_id", "")).strip() or "<unknown_dispute>"
+                if verdict == "APPLICANT_CORRECT":
+                    raise ValueError(
+                        f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_rationale"
+                    )
                 raise ValueError(
-                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 examiner_rejection_rationale"
+                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=EXAMINER_CORRECT 但缺少 assessment.reasoning"
                 )
             dispute_id = str(item_get(dispute, "dispute_id", "")).strip()
             final_reason = str(drafted_rejection_reasons.get(dispute_id, "")).strip()
             if not final_reason:
                 raise ValueError(
-                    f"report_generation 数据非法: dispute_id={dispute_id} verdict=APPLICANT_CORRECT 但缺少 drafted final reason"
+                    f"report_generation 数据非法: dispute_id={dispute_id} verdict={verdict} 但缺少 drafted final reason"
                 )
 
             items.append({
                 "dispute_id": dispute_id,
+                "verdict": verdict,
                 "claim_ids": self._normalize_claim_ids(item_get(dispute, "claim_ids", [])),
                 "feature_text": str(item_get(dispute, "feature_text", "")).strip(),
                 "final_examiner_rejection_reason": final_reason,

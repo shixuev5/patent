@@ -34,6 +34,31 @@ def test_report_generation_collect_next_notice_with_claim_ids() -> None:
     assert items[0]["final_examiner_rejection_reason"] == "经审查，相关权利要求仍不具备创造性。"
 
 
+def test_report_generation_collect_next_notice_for_examiner_correct() -> None:
+    node = ReportGenerationNode()
+    disputes = [
+        {
+            "dispute_id": "DSP_EX",
+            "claim_ids": ["2"],
+            "feature_text": "特征EX",
+            "evidence_assessment": {
+                "assessment": {
+                    "verdict": "EXAMINER_CORRECT",
+                    "reasoning": "D2 已经公开该特征，申请人意见不能推翻原驳回结论。",
+                    "examiner_rejection_rationale": "",
+                }
+            },
+        }
+    ]
+    items = node._collect_next_office_action_items(
+        disputes,
+        {"DSP_EX": "经审查，对比文件D2已公开该特征，因此相关权利要求仍不具备创造性。"},
+    )
+    assert len(items) == 1
+    assert items[0]["claim_ids"] == ["2"]
+    assert items[0]["final_examiner_rejection_reason"] == "经审查，对比文件D2已公开该特征，因此相关权利要求仍不具备创造性。"
+
+
 def test_report_generation_raise_when_missing_rejection_reason() -> None:
     node = ReportGenerationNode()
     disputes = [
@@ -54,6 +79,29 @@ def test_report_generation_raise_when_missing_rejection_reason() -> None:
         assert False, "expected ValueError"
     except ValueError as exc:
         assert "examiner_rejection_rationale" in str(exc)
+
+
+def test_report_generation_raise_when_examiner_correct_missing_reasoning() -> None:
+    node = ReportGenerationNode()
+    disputes = [
+        {
+            "dispute_id": "DSP_EX_MISS",
+            "claim_ids": ["5"],
+            "feature_text": "特征EX_MISS",
+            "evidence_assessment": {
+                "assessment": {
+                    "verdict": "EXAMINER_CORRECT",
+                    "reasoning": "",
+                    "examiner_rejection_rationale": "",
+                }
+            },
+        }
+    ]
+    try:
+        node._collect_next_office_action_items(disputes, {})
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "EXAMINER_CORRECT" in str(exc)
 
 
 def test_report_generation_raise_when_missing_final_rejection_reason() -> None:
