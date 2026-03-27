@@ -41,7 +41,7 @@ class ReportGenerationNode:
 
         try:
             cache = get_node_cache(self.config, "report_generation")
-            report = cache.run_step("generate_report_v6", self._generate_report, state)
+            report = cache.run_step("generate_report_v7", self._generate_report, state)
             output_path = self._save_report(report, state)
 
             updates["final_report"] = report
@@ -64,6 +64,7 @@ class ReportGenerationNode:
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
         claim_reviews = to_jsonable(item_get(state, "claim_reviews", []))
         early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
+        application_number = self._extract_application_number(state)
         current_notice_round = self._extract_current_notice_round(state)
         next_notice_round = current_notice_round + 1
 
@@ -78,13 +79,23 @@ class ReportGenerationNode:
         )
 
         report = {
+            "title": self._build_report_title(application_number, current_notice_round),
             "task_id": item_get(state, "task_id", ""),
             "status": "early_rejected" if early_rejection_reason else "completed",
             "notice_context": {
+                "application_number": application_number,
                 "current_notice_round": current_notice_round,
                 "next_notice_round": next_notice_round,
             },
-            "summary": self._generate_summary(response_disputes, response_reply_items),
+            "summary": self._generate_summary(
+                response_disputes=response_disputes,
+                response_reply_items=response_reply_items,
+                application_number=application_number,
+                current_notice_round=current_notice_round,
+                early_rejection_reason=early_rejection_reason,
+                has_claim_amendment=bool(item_get(state, "has_claim_amendment", False)),
+                added_matter_risk=bool(item_get(state, "added_matter_risk", False)),
+            ),
             "amendment_section": {
                 "has_claim_amendment": bool(item_get(state, "has_claim_amendment", False)),
                 "added_matter_risk": bool(item_get(state, "added_matter_risk", False)),
@@ -127,6 +138,11 @@ class ReportGenerationNode:
         self,
         response_disputes: List[Dict[str, Any]],
         response_reply_items: List[Dict[str, Any]],
+        application_number: str,
+        current_notice_round: int,
+        early_rejection_reason: str,
+        has_claim_amendment: bool,
+        added_matter_risk: bool,
     ) -> Dict[str, Any]:
         total = len(response_disputes)
         assessed = 0
@@ -164,6 +180,18 @@ class ReportGenerationNode:
                 verdict_distribution["inconclusive"] += 1
 
         return {
+            "application_number": application_number,
+            "current_notice_round": current_notice_round,
+            "overall_conclusion": self._build_overall_conclusion(
+                verdict_distribution=verdict_distribution,
+                assessed_disputes=assessed,
+                early_rejection_reason=early_rejection_reason,
+            ),
+            "amendment_strategy": self._build_amendment_strategy(
+                has_claim_amendment=has_claim_amendment,
+                added_matter_risk=added_matter_risk,
+                early_rejection_reason=early_rejection_reason,
+            ),
             "total_disputes": total,
             "assessed_disputes": assessed,
             "unassessed_disputes": max(total - assessed, 0),
@@ -248,6 +276,53 @@ class ReportGenerationNode:
         if current_notice_round <= 0:
             raise ValueError("report_generation 数据非法: 缺少有效的 current_notice_round")
         return current_notice_round
+
+    def _extract_application_number(self, state: Any) -> str:
+        prepared = _to_dict(item_get(state, "prepared_materials", {}))
+        office_action = _to_dict(prepared.get("office_action", {}))
+        return str(office_action.get("application_number", "")).strip()
+
+    def _build_report_title(self, application_number: str, current_notice_round: int) -> str:
+        suffix = f"第{current_notice_round}通" if current_notice_round > 0 else "未知轮次"
+        if application_number:
+            return f"AI答复报告_{application_number}_{suffix}"
+        return f"AI答复报告_{suffix}"
+
+    def _build_overall_conclusion(
+        self,
+        verdict_distribution: Dict[str, int],
+        assessed_disputes: int,
+        early_rejection_reason: str,
+    ) -> str:
+        if early_rejection_reason:
+            return "存在可提前驳回事由"
+        if assessed_disputes <= 0:
+            return "暂无可用核查结论"
+
+        applicant_correct = int(verdict_distribution.get("applicant_correct", 0) or 0)
+        examiner_correct = int(verdict_distribution.get("examiner_correct", 0) or 0)
+        inconclusive = int(verdict_distribution.get("inconclusive", 0) or 0)
+        if applicant_correct > examiner_correct:
+            return "申请人主要争点更占优"
+        if examiner_correct > applicant_correct:
+            return "审查员主要争点更占优"
+        if inconclusive == assessed_disputes:
+            return "现有争点暂无法形成明确结论"
+        return "双方争点暂时相持"
+
+    def _build_amendment_strategy(
+        self,
+        has_claim_amendment: bool,
+        added_matter_risk: bool,
+        early_rejection_reason: str,
+    ) -> str:
+        if early_rejection_reason:
+            return "可提前驳回"
+        if not has_claim_amendment:
+            return "无权利要求修改"
+        if added_matter_risk:
+            return "修改存在超范围风险"
+        return "修改可继续进入实质审查"
 
     def _save_report(self, report: Dict[str, Any], state) -> Path:
         output_dir = Path(item_get(state, "output_dir"))

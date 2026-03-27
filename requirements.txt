@@ -109,6 +109,7 @@ pdfminer-six==20260107
 pdftext==0.6.3
 pillow==11.3.0
 playwright==1.57.0
+pypandoc-binary==1.17
 polars==1.36.1
 polars-runtime-32==1.36.1
 prettytable==3.17.0

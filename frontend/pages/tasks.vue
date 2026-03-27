@@ -133,12 +133,12 @@
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="mb-2 block text-sm font-medium text-slate-700">
-              <span class="mr-1 text-rose-500">*</span>审查意见通知书（.pdf/.docx）
+              <span class="mr-1 text-rose-500">*</span>审查意见通知书（.pdf/.doc/.docx）
             </label>
             <input
               ref="officeActionInput"
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.doc,.docx"
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onOfficeActionChange"
             />
@@ -147,12 +147,12 @@
 
           <div>
             <label class="mb-2 block text-sm font-medium text-slate-700">
-              <span class="mr-1 text-rose-500">*</span>意见陈述书（.pdf/.docx）
+              <span class="mr-1 text-rose-500">*</span>意见陈述书（.pdf/.doc/.docx）
             </label>
             <input
               ref="responseInput"
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.doc,.docx"
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onResponseChange"
             />
@@ -166,11 +166,11 @@
 
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">上一版权利要求书（可选，.pdf/.docx）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">上一版权利要求书（可选，.pdf/.doc/.docx）</label>
             <input
               ref="previousClaimsInput"
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.doc,.docx"
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onPreviousClaimsChange"
             />
@@ -181,11 +181,11 @@
           </div>
 
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">当前最新权利要求书（可选，.pdf/.docx）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">当前最新权利要求书（可选，.pdf/.doc/.docx）</label>
             <input
               ref="currentClaimsInput"
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.doc,.docx"
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onCurrentClaimsChange"
             />
@@ -198,11 +198,11 @@
 
         <div class="grid gap-4 sm:grid-cols-1">
           <div>
-            <label class="mb-2 block text-sm font-medium text-slate-700">对比文件（可选，多文件，.pdf/.docx）</label>
+            <label class="mb-2 block text-sm font-medium text-slate-700">对比文件（可选，多文件，.pdf/.doc/.docx）</label>
             <input
               ref="comparisonInput"
               type="file"
-              accept=".pdf,.docx"
+              accept=".pdf,.doc,.docx"
               multiple
               class="block w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
               @change="onComparisonChange"
@@ -320,7 +320,7 @@ const modeTitle = computed(() => {
 
 const isSupportedDoc = (file: File): boolean => {
   const name = file.name.toLowerCase()
-  return name.endsWith('.pdf') || name.endsWith('.docx')
+  return name.endsWith('.pdf') || name.endsWith('.doc') || name.endsWith('.docx')
 }
 
 const onPatentFileChange = (event: Event) => {
@@ -345,7 +345,7 @@ const onOfficeActionChange = (event: Event) => {
   const selected = target.files?.[0]
   if (!selected) return
   if (!isSupportedDoc(selected)) {
-    taskStore.showGlobalNotice('error', '审查意见通知书仅支持 PDF 或 DOCX。')
+    taskStore.showGlobalNotice('error', '审查意见通知书仅支持 PDF、DOC 或 DOCX。')
     target.value = ''
     return
   }
@@ -357,7 +357,7 @@ const onResponseChange = (event: Event) => {
   const selected = target.files?.[0]
   if (!selected) return
   if (!isSupportedDoc(selected)) {
-    taskStore.showGlobalNotice('error', '意见陈述书仅支持 PDF 或 DOCX。')
+    taskStore.showGlobalNotice('error', '意见陈述书仅支持 PDF、DOC 或 DOCX。')
     target.value = ''
     return
   }
@@ -372,7 +372,7 @@ const onPreviousClaimsChange = (event: Event) => {
     return
   }
   if (!isSupportedDoc(selected)) {
-    taskStore.showGlobalNotice('error', '上一版权利要求书仅支持 PDF 或 DOCX。')
+    taskStore.showGlobalNotice('error', '上一版权利要求书仅支持 PDF、DOC 或 DOCX。')
     target.value = ''
     return
   }
@@ -387,7 +387,7 @@ const onCurrentClaimsChange = (event: Event) => {
     return
   }
   if (!isSupportedDoc(selected)) {
-    taskStore.showGlobalNotice('error', '当前最新权利要求书仅支持 PDF 或 DOCX。')
+    taskStore.showGlobalNotice('error', '当前最新权利要求书仅支持 PDF、DOC 或 DOCX。')
     target.value = ''
     return
   }
@@ -404,7 +404,7 @@ const onComparisonChange = (event: Event) => {
 
   const unsupported = files.find((file) => !isSupportedDoc(file))
   if (unsupported) {
-    taskStore.showGlobalNotice('error', `不支持文件：${unsupported.name}，仅支持 PDF 或 DOCX。`)
+    taskStore.showGlobalNotice('error', `不支持文件：${unsupported.name}，仅支持 PDF、DOC 或 DOCX。`)
     target.value = ''
     comparisonDocs.value = []
     return

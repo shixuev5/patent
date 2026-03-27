@@ -1,9 +1,15 @@
-import os
+import shutil
+import subprocess
 import time
 import zipfile
-import shutil
 from pathlib import Path
+
 from loguru import logger
+
+try:
+    import pypandoc
+except ImportError:  # pragma: no cover - exercised via fallback paths in tests
+    pypandoc = None
 
 # Import config
 from config import settings
@@ -199,11 +205,101 @@ class OnlineWordParser(BaseParser):
         return target_md
 
 
+class LocalWordParser(BaseParser):
+    """Parse Word files locally via pandoc, using LibreOffice as a .doc pre-converter."""
+
+    _SOFFICE_CANDIDATES = (
+        "soffice",
+        "/usr/bin/soffice",
+        "/usr/local/bin/soffice",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    )
+
+    def parse(self, file_path: Path, output_dir: Path) -> Path:
+        suffix = file_path.suffix.lower()
+        if suffix not in {".doc", ".docx"}:
+            raise ValueError(f"LocalWordParser does not support: {suffix}")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target_md = output_dir / "raw.md"
+        media_dir = output_dir / "images"
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        source_path = file_path
+        if suffix == ".doc":
+            logger.info(f"[本地Word解析器] 先将 DOC 转换为 DOCX：{file_path}")
+            source_path = self._convert_doc_to_docx(file_path, output_dir)
+        else:
+            logger.info(f"[本地Word解析器] 开始本地解析 DOCX：{file_path}")
+
+        self._convert_docx_to_markdown(source_path, target_md, media_dir)
+        if not target_md.exists() or target_md.stat().st_size == 0:
+            raise RuntimeError(f"Pandoc conversion did not produce markdown: {target_md}")
+
+        logger.success(f"[本地Word解析器] 解析成功，MD 已保存至：{target_md}")
+        return target_md
+
+    def _convert_doc_to_docx(self, doc_path: Path, output_dir: Path) -> Path:
+        soffice_binary = self._resolve_soffice_binary()
+        conversion_dir = output_dir / "libreoffice_tmp"
+        conversion_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            soffice_binary,
+            "--headless",
+            "--convert-to",
+            "docx",
+            "--outdir",
+            str(conversion_dir),
+            str(doc_path),
+        ]
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            message = stderr or stdout or f"exit code {result.returncode}"
+            raise RuntimeError(f"LibreOffice failed to convert .doc to .docx: {message}")
+
+        converted_path = conversion_dir / f"{doc_path.stem}.docx"
+        if not converted_path.exists():
+            raise FileNotFoundError(f"LibreOffice did not create expected DOCX: {converted_path}")
+        return converted_path
+
+    def _convert_docx_to_markdown(self, source_path: Path, target_md: Path, media_dir: Path) -> None:
+        if pypandoc is None:
+            raise RuntimeError("pypandoc is not installed")
+
+        pypandoc.convert_file(
+            str(source_path),
+            to="gfm",
+            format="docx",
+            outputfile=str(target_md),
+            extra_args=[f"--extract-media={media_dir}"],
+        )
+
+    def _resolve_soffice_binary(self) -> str:
+        for candidate in self._SOFFICE_CANDIDATES:
+            resolved = shutil.which(candidate) if "/" not in candidate else candidate
+            if resolved and Path(resolved).exists():
+                return str(resolved)
+        raise FileNotFoundError("LibreOffice soffice binary not found")
+
+
 class WordParser(BaseParser):
     """
-    Factory class that routes to Online parser for Word document parsing.
+    Factory class that prefers local parsing and falls back to the online parser.
     """
     @staticmethod
-    def parse(docx_path: Path, output_dir: Path) -> Path:
-        logger.info("使用在线 Word 解析器（Mineru 接口）")
-        return OnlineWordParser().parse(docx_path, output_dir)
+    def parse(file_path: Path, output_dir: Path) -> Path:
+        try:
+            logger.info("优先使用本地 Word 解析器（pandoc / LibreOffice）")
+            return LocalWordParser().parse(file_path, output_dir)
+        except Exception as exc:
+            logger.warning(f"本地 Word 解析失败，回退在线解析：{exc}")
+            logger.info("使用在线 Word 解析器（Mineru 接口）")
+            return OnlineWordParser().parse(file_path, output_dir)

@@ -48,7 +48,7 @@ class DocumentProcessingNode:
         if file_path.suffix.lower() == '.pdf':
             logger.info(f"解析PDF文件: {file_path}")
             return str(PDFParser.parse(file_path, output_dir))
-        elif file_path.suffix.lower() == '.docx':
+        elif file_path.suffix.lower() in {'.doc', '.docx'}:
             logger.info(f"解析Word文件: {file_path}")
             return str(WordParser.parse(file_path, output_dir))
         else:

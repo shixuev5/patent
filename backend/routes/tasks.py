@@ -1648,14 +1648,14 @@ async def create_task(
     if not officeActionFile or not responseFile:
         raise HTTPException(status_code=400, detail="AI 答复任务必须上传审查意见通知书和意见陈述书。")
 
-    _validate_file_suffix(officeActionFile, {".pdf", ".docx"}, "审查意见通知书")
-    _validate_file_suffix(responseFile, {".pdf", ".docx"}, "意见陈述书")
+    _validate_file_suffix(officeActionFile, {".pdf", ".doc", ".docx"}, "审查意见通知书")
+    _validate_file_suffix(responseFile, {".pdf", ".doc", ".docx"}, "意见陈述书")
     if previousClaimsFile:
-        _validate_file_suffix(previousClaimsFile, {".pdf", ".docx"}, "上一版权利要求书")
+        _validate_file_suffix(previousClaimsFile, {".pdf", ".doc", ".docx"}, "上一版权利要求书")
     if currentClaimsFile:
-        _validate_file_suffix(currentClaimsFile, {".pdf", ".docx"}, "当前最新权利要求书")
+        _validate_file_suffix(currentClaimsFile, {".pdf", ".doc", ".docx"}, "当前最新权利要求书")
     for doc in comparisonDocs or []:
-        _validate_file_suffix(doc, {".pdf", ".docx"}, "对比文件")
+        _validate_file_suffix(doc, {".pdf", ".doc", ".docx"}, "对比文件")
 
     task = task_manager.create_task(
         owner_id=current_user.user_id,

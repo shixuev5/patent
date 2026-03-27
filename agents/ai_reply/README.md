@@ -29,11 +29,11 @@
 
 ## 3.1 输入文件类型
 
-- `office_action`：审查意见通知书（PDF / DOCX）
-- `response`：意见陈述书（PDF / DOCX）
-- `claims_previous`：上一版权利要求书（PDF / DOCX，可选）
-- `claims_current`：当前最新权利要求书（PDF / DOCX，可选）
-- `comparison_doc`：非专利对比文件（PDF，可多份）
+- `office_action`：审查意见通知书（PDF / DOC / DOCX）
+- `response`：意见陈述书（PDF / DOC / DOCX）
+- `claims_previous`：上一版权利要求书（PDF / DOC / DOCX，可选）
+- `claims_current`：当前最新权利要求书（PDF / DOC / DOCX，可选）
+- `comparison_doc`：非专利对比文件（PDF / DOC / DOCX，可多份）
 
 ## 3.2 主要输出
 
@@ -79,6 +79,8 @@ flowchart TD
 
 1. `document_processing`
    - 将输入文件解析为 Markdown。
+   - Word 文件默认走本地优先解析：`.docx -> pypandoc_binary`，`.doc -> LibreOffice 转 .docx -> pypandoc_binary`。
+   - 本地 Word 解析失败时自动回退到 Mineru 在线解析。
    - 对 `office_action` 做结构化提取。
    - 校验 `office_action.application_number` 与 `office_action.current_notice_round` 必须存在，否则节点失败。
    - 对 `claims_previous`、`claims_current` 分别做结构化提取。

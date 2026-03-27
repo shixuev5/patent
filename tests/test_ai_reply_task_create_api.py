@@ -53,11 +53,11 @@ def test_create_ai_reply_task_accepts_new_claim_fields(monkeypatch, tmp_path) ->
         tasks_route.create_task(
             request=_FakeRequest(keys=["taskType", "officeActionFile", "responseFile", "previousClaimsFile", "currentClaimsFile"]),
             taskType="ai_reply",
-            officeActionFile=_upload("oa.pdf"),
+            officeActionFile=_upload("oa.doc"),
             responseFile=_upload("response.docx"),
             previousClaimsFile=_upload("previous_claims.pdf"),
-            currentClaimsFile=_upload("current_claims.docx"),
-            comparisonDocs=[_upload("comparison_1.pdf")],
+            currentClaimsFile=_upload("current_claims.doc"),
+            comparisonDocs=[_upload("comparison_1.doc")],
             current_user=CurrentUser(user_id="authing:user-1"),
         )
     )
@@ -127,3 +127,24 @@ def test_create_ai_reply_task_rejects_legacy_claims_file_field(monkeypatch, tmp_
 
     assert exc_info.value.status_code == 400
     assert "claimsFile 已废弃" in str(exc_info.value.detail)
+
+
+def test_create_ai_reply_task_rejects_unsupported_suffix(monkeypatch, tmp_path) -> None:
+    _mount_task_manager(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            tasks_route.create_task(
+                request=_FakeRequest(keys=["taskType", "officeActionFile", "responseFile"]),
+                taskType="ai_reply",
+                officeActionFile=_upload("oa.txt"),
+                responseFile=_upload("response.doc"),
+                previousClaimsFile=None,
+                currentClaimsFile=None,
+                comparisonDocs=None,
+                current_user=CurrentUser(user_id="authing:user-4"),
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "仅支持 .doc/.docx/.pdf 格式" in str(exc_info.value.detail)

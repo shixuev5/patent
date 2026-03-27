@@ -14,6 +14,7 @@ dependencies = [
     "paddleocr>=3.3.2",
     "paddlepaddle>=3.2.2",
     "playwright>=1.57.0",
+    "pypandoc-binary>=1.17",
     "pydantic>=2.11.10",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",

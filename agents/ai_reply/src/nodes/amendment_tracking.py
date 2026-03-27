@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
-from agents.ai_reply.src.state import AddedFeature
+from agents.ai_reply.src.state import AddedFeature, StructuredClaim
 from agents.ai_reply.src.utils import get_node_cache
 
 
