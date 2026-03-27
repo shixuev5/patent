@@ -3,6 +3,7 @@
 生成最终的 JSON 格式报告。
 """
 
+from difflib import SequenceMatcher
 import json
 import re
 from pathlib import Path
@@ -41,7 +42,7 @@ class ReportGenerationNode:
 
         try:
             cache = get_node_cache(self.config, "report_generation")
-            report = cache.run_step("generate_report_v7", self._generate_report, state)
+            report = cache.run_step("generate_report_v8", self._generate_report, state)
             output_path = self._save_report(report, state)
 
             updates["final_report"] = report
@@ -242,13 +243,21 @@ class ReportGenerationNode:
         items: List[Dict[str, Any]] = []
         for feature in added_features or []:
             feature_id = str(item_get(feature, "feature_id", "")).strip()
+            feature_text = str(item_get(feature, "feature_text", "")).strip()
+            feature_before_text = str(item_get(feature, "feature_before_text", "")).strip()
+            feature_after_text = str(item_get(feature, "feature_after_text", "")).strip() or feature_text
+            if not feature_text:
+                feature_text = feature_after_text
             dispute = dispute_map.get(feature_id, {})
             evidence_assessment = item_get(dispute, "evidence_assessment", {}) or {}
             assessment = item_get(evidence_assessment, "assessment", {}) or {}
             items.append(
                 {
                     "feature_id": feature_id,
-                    "feature_text": str(item_get(feature, "feature_text", "")).strip(),
+                    "feature_text": feature_text,
+                    "feature_before_text": feature_before_text,
+                    "feature_after_text": feature_after_text,
+                    "contains_added_text": self._change_contains_added_text(feature_before_text, feature_after_text),
                     "target_claim_ids": self._normalize_claim_ids(item_get(feature, "target_claim_ids", [])),
                     "source_type": str(item_get(feature, "source_type", "")).strip(),
                     "source_claim_ids": self._normalize_claim_ids(item_get(feature, "source_claim_ids", [])),
@@ -259,6 +268,24 @@ class ReportGenerationNode:
                 }
             )
         return items
+
+    def _change_contains_added_text(self, before_text: str, after_text: str) -> bool:
+        before_tokens = self._tokenize_change_text(before_text)
+        after_tokens = self._tokenize_change_text(after_text)
+        if not after_tokens:
+            return False
+
+        matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
+        for tag, _, _, start_after, end_after in matcher.get_opcodes():
+            if tag in {"insert", "replace"} and after_tokens[start_after:end_after]:
+                return True
+        return False
+
+    def _tokenize_change_text(self, text: Any) -> List[str]:
+        value = str(text or "")
+        if not value:
+            return []
+        return re.findall(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value)
 
     def _build_amendment_final_reason(self, assessment: Dict[str, Any]) -> str:
         verdict = str(item_get(assessment, "verdict", "")).strip()

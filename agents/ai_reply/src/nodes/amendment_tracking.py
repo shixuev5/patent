@@ -32,7 +32,7 @@ class AmendmentTrackingNode:
         try:
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v6",
+                "track_amendment_v7",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
                 self._state_get(state, "claims_previous_structured", []),
@@ -125,6 +125,9 @@ class AmendmentTrackingNode:
 2. **提炼新增技术特征（added_features）**
    - `feature_text` 必须是技术上语义完整的句子或短句，不能是零碎词语。
    - 如果同一权项中的多个零碎修改共同组成了一个完整的技术动作或结构关系，必须将它们合并成一个完整通顺的 `feature_text`。
+   - 同时必须输出该条变更对应的旧片段 `feature_before_text` 与新片段 `feature_after_text`，用于报告中的单条特征 diff 展示。
+   - 若属于纯新增，`feature_before_text` 置空字符串，`feature_after_text` 必须等于或覆盖 `feature_text`。
+   - 若属于替换/改写，`feature_before_text` 与 `feature_after_text` 都必须填写，且二者只覆盖这条特征自身，不要输出整条权利要求全文。
 
 3. **判定特征来源（source_type）**
    - 必须全局检索提供的 `full_old_claims_context`（旧权利要求全文本）。
@@ -141,6 +144,8 @@ class AmendmentTrackingNode:
     {
       "feature_id": "F1", // 从 F1, F2 开始依次编号
       "feature_text": "完整的技术特征描述（如：第二弹性件的一端与滑块连接，另一端与壳体内壁连接）",
+      "feature_before_text": "该变更项在旧权利要求中的对应旧片段；若为纯新增则为空字符串",
+      "feature_after_text": "该变更项在新权利要求中的对应新片段；应等于或覆盖 feature_text",
       "target_claim_ids":["1", "3"], // 该特征被添加到了哪些新权利要求中（字符串数组）
       "source_type": "claim", // 必须且只能是 "claim" 或 "spec"
       "source_claim_ids": ["4", "5"] // 如果是 claim，填写原权项编号；如果是 spec，必须为空数组[]
@@ -159,7 +164,8 @@ class AmendmentTrackingNode:
 【分析提示】
 1. `changed_claims_pairs` 是代码层面已粗筛出的“确有文本差异，且不是纯重编号/平移”的权项对。
 2. 请直接对比每组 `old_text` 与 `new_text`，提炼真正新增或实质修改的完整技术特征。
-3. 请务必核对 `full_old_claims_context`。如果某个新特征的实质内容在任一旧权利要求中已经出现过，即使表达有微调，也应判定为 `claim`；只有在旧权利要求中完全找不到时，才判定为 `spec`。
+3. 每条 `added_features` 都要按“单条特征粒度”补充 `feature_before_text` 与 `feature_after_text`，不要返回整条权利要求全文。
+4. 请务必核对 `full_old_claims_context`。如果某个新特征的实质内容在任一旧权利要求中已经出现过，即使表达有微调，也应判定为 `claim`；只有在旧权利要求中完全找不到时，才判定为 `spec`。
 
 【差异数据】
 {json.dumps(structured_diff, ensure_ascii=False, indent=2)}"""
@@ -184,6 +190,12 @@ class AmendmentTrackingNode:
             feature = self._to_dict(item)
             feature_id = str(feature.get("feature_id", "")).strip()
             feature_text = str(feature.get("feature_text", "")).strip()
+            feature_before_text = str(feature.get("feature_before_text", "")).strip()
+            feature_after_text = str(feature.get("feature_after_text", "")).strip()
+            if not feature_after_text:
+                feature_after_text = feature_text
+            if not feature_text:
+                feature_text = feature_after_text
             if not feature_id or not feature_text:
                 raise ValueError("amendment_tracking 输出非法 added_features 项，缺少 feature_id 或 feature_text")
 
@@ -210,6 +222,8 @@ class AmendmentTrackingNode:
             features.append({
                 "feature_id": feature_id,
                 "feature_text": feature_text,
+                "feature_before_text": feature_before_text,
+                "feature_after_text": feature_after_text,
                 "target_claim_ids": target_claim_ids,
                 "source_type": source_type,
                 "source_claim_ids": source_claim_ids,

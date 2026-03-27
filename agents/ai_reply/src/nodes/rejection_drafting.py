@@ -30,7 +30,7 @@ class RejectionDraftingNode:
         try:
             cache = get_node_cache(self.config, "rejection_drafting")
             drafted = cache.run_step(
-                "draft_rejection_reasons_v2",
+                "draft_rejection_reasons_v3",
                 self._draft_rejection_reasons,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "evidence_assessments", []),

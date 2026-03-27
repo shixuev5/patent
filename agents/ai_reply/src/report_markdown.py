@@ -2,9 +2,10 @@
 最终报告 Markdown 组装（纯函数，无外部依赖副作用）。
 """
 
+from difflib import SequenceMatcher
 import html
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 
 def build_final_report_markdown(report: Dict[str, Any]) -> str:
@@ -264,14 +265,37 @@ def _cell(value: Any) -> str:
     return _html_text(value, default="-")
 
 
-def _change_source_label(source_type: str, source_claim_ids: List[str]) -> str:
+def _change_source_tag_label(source_type: str) -> str:
     source_type = str(source_type).strip()
     if source_type == "claim":
-        claim_label = ",".join(source_claim_ids) if source_claim_ids else "-"
-        return f"权项上提（来源权利要求 {claim_label}）"
+        return "权项上提"
     if source_type == "spec":
         return "说明书补入"
-    return "未知"
+    return "未知来源"
+
+
+def _change_claims_html(target_claim_ids: Any, source_type: str, source_claim_ids: List[str]) -> str:
+    claim_label = _format_claim_ids(target_claim_ids) or "-"
+    source_type = str(source_type).strip()
+    if source_type == "claim":
+        source_label = _format_claim_ids(source_claim_ids) or "-"
+        main_text = f"{claim_label}（来源权利要求 {source_label}）"
+    else:
+        main_text = claim_label
+    tag_label = _change_source_tag_label(source_type)
+    tag_class = "oar-change-source-tag"
+    if source_type == "claim":
+        tag_class += " oar-change-source-tag-claim"
+    elif source_type == "spec":
+        tag_class += " oar-change-source-tag-spec"
+    else:
+        tag_class += " oar-change-source-tag-unknown"
+    return (
+        '<div class="oar-change-claims">'
+        f'<div class="oar-change-claims-main">{_html_text(main_text)}</div>'
+        f'<div><span class="{tag_class}">{_html_text(tag_label, default="未知来源")}</span></div>'
+        "</div>"
+    )
 
 
 def _verdict_label(verdict: str) -> str:
@@ -319,9 +343,10 @@ def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_bloc
         if index == len(summary_cells):
             cell_class += " oar-grid-summary-cell-verdict"
         parts.append(f'<div class="{cell_class}">{cell}</div>')
-    parts.append('<div class="oar-grid-detail">')
-    parts.extend(detail_blocks)
-    parts.append("</div>")
+    if detail_blocks:
+        parts.append('<div class="oar-grid-detail">')
+        parts.extend(detail_blocks)
+        parts.append("</div>")
     parts.append("</div>")
     return "".join(parts)
 
@@ -331,9 +356,8 @@ def _render_change_items_table(change_items: List[Any]) -> str:
         '<table class="oar-layered-table oar-layered-table-overview">',
         "<colgroup>",
         '<col style="width: 40px;">',
-        '<col style="width: 96px;">',
+        '<col style="width: 176px;">',
         "<col>",
-        '<col style="width: 132px;">',
         '<col style="width: 132px;">',
         "</colgroup>",
         "<thead>",
@@ -341,7 +365,6 @@ def _render_change_items_table(change_items: List[Any]) -> str:
         '<th class="oar-col-index">序号</th>',
         '<th class="oar-col-claims">目标权利要求</th>',
         '<th class="oar-col-feature">变更特征</th>',
-        '<th class="oar-col-type">来源类型</th>',
         '<th class="oar-col-verdict">AI判断</th>',
         "</tr>",
         "</thead>",
@@ -352,15 +375,11 @@ def _render_change_items_table(change_items: List[Any]) -> str:
                 "<tbody>",
                 "<tr>",
                 '<td class="oar-index-cell">1</td>',
-                '<td class="oar-layered-cell" colspan="4">',
+                '<td class="oar-layered-cell" colspan="3">',
                 _layered_summary_html(
-                    "oar-layered-grid-overview",
-                    ["-", "无权利要求变更", "-", _verdict_badge_html("未核查", "UNASSESSED")],
-                    [
-                        _detail_text_html("AI理由：", "-"),
-                        _detail_text_html("AI依据：", "-"),
-                        _detail_text_html("最终审查结论：", "-"),
-                    ],
+                    "oar-layered-grid-change",
+                    [_html_text("-"), _html_text("无权利要求变更"), ""],
+                    [],
                 ),
                 "</td>",
                 "</tr>",
@@ -371,30 +390,51 @@ def _render_change_items_table(change_items: List[Any]) -> str:
         return "\n".join(lines)
 
     for index, item in enumerate(change_items, start=1):
-        claim_label = _format_claim_ids(_item_get(item, "target_claim_ids", [])) or "-"
         feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
+        feature_before_text = str(_item_get(item, "feature_before_text", "")).strip()
+        feature_after_text = str(_item_get(item, "feature_after_text", "")).strip() or feature_text
         source_claim_ids = _item_get(item, "source_claim_ids", []) or []
-        source_label = _change_source_label(_item_get(item, "source_type", ""), source_claim_ids)
+        source_type = str(_item_get(item, "source_type", "")).strip()
+        claims_html = _change_claims_html(_item_get(item, "target_claim_ids", []), source_type, source_claim_ids)
+        feature_html, inferred_contains_added_text = _change_feature_diff_html(
+            feature_before_text,
+            feature_after_text,
+            feature_text,
+        )
+        contains_added_text_raw = _item_get(item, "contains_added_text", None)
+        contains_added_text = (
+            inferred_contains_added_text
+            if contains_added_text_raw is None
+            else bool(contains_added_text_raw)
+        )
         assessment = _item_get(item, "assessment", {}) or {}
         verdict = str(_item_get(assessment, "verdict", "")).strip()
-        ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="该变更项尚未完成核查。")
-        final_review_reason = _text_or_default(_item_get(item, "final_review_reason", ""), default="-")
-        evidence_html = _render_ai_basis_html({"evidence": _item_get(item, "evidence", []) or []})
+        show_ai = contains_added_text and verdict in {"APPLICANT_CORRECT", "EXAMINER_CORRECT", "INCONCLUSIVE"}
+        detail_blocks: List[str] = []
+        if show_ai:
+            ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="-")
+            final_review_reason = _text_or_default(_item_get(item, "final_review_reason", ""), default="-")
+            evidence_html = _render_ai_basis_html({"evidence": _item_get(item, "evidence", []) or []})
+            detail_blocks = [
+                _detail_text_html("AI理由：", ai_reason),
+                _detail_block_html("AI依据：", evidence_html, extra_class="oar-detail-block-evidence"),
+                _detail_text_html("最终审查结论：", final_review_reason),
+            ]
 
         lines.extend(
             [
                 '<tbody class="oar-layered-group">',
                 "<tr>",
                 f'<td class="oar-index-cell">{index}</td>',
-                '<td class="oar-layered-cell" colspan="4">',
+                '<td class="oar-layered-cell" colspan="3">',
                 _layered_summary_html(
-                    "oar-layered-grid-overview",
-                    [claim_label, feature_text, _html_text(source_label), _verdict_badge_html(_verdict_label(verdict), verdict)],
+                    "oar-layered-grid-change",
                     [
-                        _detail_text_html("AI理由：", ai_reason),
-                        _detail_block_html("AI依据：", evidence_html, extra_class="oar-detail-block-evidence"),
-                        _detail_text_html("最终审查结论：", final_review_reason),
+                        claims_html,
+                        feature_html,
+                        _verdict_badge_html(_verdict_label(verdict), verdict) if show_ai else "",
                     ],
+                    detail_blocks,
                 ),
                 "</td>",
                 "</tr>",
@@ -403,6 +443,53 @@ def _render_change_items_table(change_items: List[Any]) -> str:
         )
     lines.append("</table>")
     return "\n".join(lines)
+
+
+def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: str) -> Tuple[str, bool]:
+    before_tokens = _tokenize_change_text(before_text)
+    after_tokens = _tokenize_change_text(after_text)
+    if not before_tokens and not after_tokens:
+        text = _escape_text(_text_or_default(fallback_text, default="-"))
+        return f'<div class="oar-change-diff">{text}</div>', False
+
+    parts: List[str] = []
+    contains_added_text = False
+    matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
+    for tag, start_before, end_before, start_after, end_after in matcher.get_opcodes():
+        if tag == "equal":
+            parts.append(_render_diff_tokens(before_tokens[start_before:end_before]))
+        elif tag == "delete":
+            parts.append(f'<span class="oar-change-del">{_render_diff_tokens(before_tokens[start_before:end_before])}</span>')
+        elif tag == "insert":
+            added_chunk = _render_diff_tokens(after_tokens[start_after:end_after])
+            if added_chunk:
+                contains_added_text = True
+                parts.append(f'<span class="oar-change-add">{added_chunk}</span>')
+        elif tag == "replace":
+            deleted_chunk = _render_diff_tokens(before_tokens[start_before:end_before])
+            added_chunk = _render_diff_tokens(after_tokens[start_after:end_after])
+            if deleted_chunk:
+                parts.append(f'<span class="oar-change-del">{deleted_chunk}</span>')
+            if added_chunk:
+                contains_added_text = True
+                parts.append(f'<span class="oar-change-add">{added_chunk}</span>')
+
+    if not parts:
+        text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
+        return f'<div class="oar-change-diff">{text}</div>', False
+
+    return f'<div class="oar-change-diff">{"".join(parts)}</div>', contains_added_text
+
+
+def _render_diff_tokens(tokens: List[str]) -> str:
+    return "".join(_escape_text(token) for token in tokens)
+
+
+def _tokenize_change_text(text: Any) -> List[str]:
+    value = str(text or "")
+    if not value:
+        return []
+    return re.findall(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value)
 
 
 def _review_mode_label(review_mode: str) -> str:

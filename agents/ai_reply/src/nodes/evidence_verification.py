@@ -34,7 +34,7 @@ class EvidenceVerificationNode:
         try:
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
-                "verify_evidence_v6",
+                "verify_evidence_v7",
                 self._verify_evidence,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),

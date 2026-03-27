@@ -39,7 +39,7 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v7",
+                "verify_common_knowledge_v8",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),

@@ -51,12 +51,12 @@ class DisputeExtractionNode:
                 return updates
 
             applicant_arguments = cache.run_step(
-                "extract_applicant_arguments_v1",
+                "extract_applicant_arguments_v2",
                 self._extract_applicant_arguments,
                 prepared_materials,
             )
             valid_disputes = cache.run_step(
-                "match_disputes_with_oa_v1",
+                "match_disputes_with_oa_v2",
                 self._match_and_validate_disputes,
                 prepared_materials,
                 applicant_arguments,
@@ -172,6 +172,7 @@ class DisputeExtractionNode:
 3. 客观无偏差：在总结 reasoning 和 core_conflict 时，必须使用第三人称的客观陈述（如“申请人主张...”、“申请人指出...”），不附加任何主观评判。
 4. 忽略形式内容：直接跳过寒暄、请求继续审查、联系方式、修改说明（如“将权2并入权1”）等非争辩性内容。
 5. 精准原文引用：`source_quote` 必须从原文档中逐字摘抄最核心的反驳原话，严禁改写或脑补。
+6. 排除空泛总结：对于仅以一句话笼统声称“其余/剩余从属权利要求也具备创造性”“从权进一步限定，因此同样具备显著进步”等结论性表述，如果没有说明具体区别特征、对比文件缺失、结合启示/动机或技术效果，则不属于实质性反驳论点，必须忽略，不得提取。
 
 【字段定义与分类标准】
 - argument_type（只能是以下两者之一）：

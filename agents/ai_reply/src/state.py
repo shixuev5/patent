@@ -142,6 +142,8 @@ class AddedFeature(BaseModel):
     """新增特征"""
     feature_id: str = Field(..., description="新增特征编号，如 New_F1")
     feature_text: str = Field(..., description="新增特征文本")
+    feature_before_text: str = Field("", description="该变更项对应的旧版本特征片段")
+    feature_after_text: str = Field("", description="该变更项对应的新版本特征片段")
     target_claim_ids: List[str] = Field(default_factory=list, description="目标权利要求编号列表")
     source_type: str = Field("spec", description="来源类型：claim/spec")
     source_claim_ids: List[str] = Field(default_factory=list, description="若来自原权利要求，则记录来源权利要求编号")

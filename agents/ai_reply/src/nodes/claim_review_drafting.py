@@ -31,7 +31,7 @@ class ClaimReviewDraftingNode:
         try:
             cache = get_node_cache(self.config, "claim_review_drafting")
             claim_reviews = cache.run_step(
-                "draft_claim_reviews_v1",
+                "draft_claim_reviews_v2",
                 self._draft_claim_reviews,
                 self._state_get(state, "claims_effective_structured", []),
                 self._state_get(state, "prepared_materials", {}),

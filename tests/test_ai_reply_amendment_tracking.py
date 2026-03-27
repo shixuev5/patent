@@ -48,6 +48,39 @@ def test_build_structured_diff_returns_full_changed_claim_pairs() -> None:
     }
 
 
+def test_normalize_tracking_result_supports_feature_diff_fields_and_legacy_defaults() -> None:
+    node = AmendmentTrackingNode()
+
+    normalized = node._normalize_tracking_result(
+        {
+            "has_claim_amendment": True,
+            "added_features": [
+                {
+                    "feature_id": "F1",
+                    "feature_text": "第一弹簧与壳体连接",
+                    "feature_before_text": "弹簧与壳体连接",
+                    "feature_after_text": "第一弹簧与壳体连接",
+                    "target_claim_ids": ["1"],
+                    "source_type": "spec",
+                    "source_claim_ids": [],
+                },
+                {
+                    "feature_id": "F2",
+                    "feature_text": "第二弹簧与滑块连接",
+                    "target_claim_ids": ["2"],
+                    "source_type": "claim",
+                    "source_claim_ids": ["5"],
+                },
+            ],
+        }
+    )
+
+    assert normalized["added_features"][0]["feature_before_text"] == "弹簧与壳体连接"
+    assert normalized["added_features"][0]["feature_after_text"] == "第一弹簧与壳体连接"
+    assert normalized["added_features"][1]["feature_before_text"] == ""
+    assert normalized["added_features"][1]["feature_after_text"] == "第二弹簧与滑块连接"
+
+
 def test_track_amendment_uses_original_claims_for_first_notice() -> None:
     node = AmendmentTrackingNode()
     prepared_materials = {

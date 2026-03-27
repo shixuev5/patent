@@ -245,6 +245,14 @@ def test_applicant_arguments_do_not_dedupe() -> None:
     assert [item["argument_id"] for item in arguments] == ["ARG_1", "ARG_2"]
 
 
+def test_applicant_argument_prompt_requires_skipping_conclusory_remaining_dependent_claim_statements() -> None:
+    node = DisputeExtractionNode()
+    prompt = node._build_applicant_argument_system_prompt()
+
+    assert "其余/剩余从属权利要求也具备创造性" in prompt
+    assert "必须忽略，不得提取" in prompt
+
+
 def test_oa_matching_prompt_does_not_include_comparison_docs() -> None:
     node = DisputeExtractionNode()
     prompt = node._build_oa_matching_user_prompt(
