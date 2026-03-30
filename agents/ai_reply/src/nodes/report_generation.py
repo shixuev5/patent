@@ -63,7 +63,7 @@ class ReportGenerationNode:
     def _generate_report(self, state) -> Dict[str, Any]:
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
-        claim_reviews = to_jsonable(item_get(state, "claim_reviews", []))
+        review_units = to_jsonable(item_get(state, "review_units", []))
         early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
         application_number = self._extract_application_number(state)
         current_notice_round = self._extract_current_notice_round(state)
@@ -106,7 +106,7 @@ class ReportGenerationNode:
                 "change_items": change_items,
             },
             "claim_review_section": {
-                "items": claim_reviews,
+                "items": review_units,
             },
             "response_dispute_section": {
                 "items": response_disputes,

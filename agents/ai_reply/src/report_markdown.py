@@ -17,7 +17,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
 
     disputes = _item_get(response_dispute_section, "items", []) or []
     reply_items = _item_get(response_reply_section, "items", []) or []
-    claim_reviews = _item_get(claim_review_section, "items", []) or []
+    review_units = _item_get(claim_review_section, "items", []) or []
     change_items = _item_get(amendment_section, "change_items", []) or []
 
     total_disputes = _as_int(_item_get(summary, "total_disputes", 0))
@@ -152,9 +152,9 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(_render_change_items_table(change_items))
     lines.append("")
 
-    lines.append("## 4. 当前生效权利要求逐条评述")
+    lines.append("## 4. 基于上一轮审查意见的重组评述")
     lines.append("")
-    lines.append(_render_claim_review_blocks(claim_reviews))
+    lines.append(_render_review_unit_blocks(review_units))
     lines.append("")
 
     lines.append("## 5. 争论点总表与AI判断")
@@ -492,32 +492,50 @@ def _tokenize_change_text(text: Any) -> List[str]:
     return re.findall(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value)
 
 
-def _review_mode_label(review_mode: str) -> str:
+def _review_unit_type_label(unit_type: str) -> str:
     mapping = {
-        "reused_oa": "复用原评述",
-        "response_based": "结合申请人意见答复",
-        "amendment_based": "结合权利要求修改评判",
-        "mixed": "修改评判 + 申请人意见答复",
+        "reused_oa": "复用原OA",
+        "split_from_group": "拆分自原组合评述",
+        "merged_into_independent": "并入独权评述",
+        "supplemented_new": "新增补充评述",
     }
-    return mapping.get(str(review_mode).strip(), "逐条评述")
+    return mapping.get(str(unit_type).strip(), "重组评述")
 
 
-def _render_claim_review_blocks(claim_reviews: List[Any]) -> str:
-    if not claim_reviews:
-        return '<div class="oar-opinion-empty">当前无可展示的权利要求逐条评述。</div>'
+def _claim_snapshot_text(claim_snapshots: List[Any]) -> str:
+    segments: List[str] = []
+    for item in claim_snapshots or []:
+        claim_id = str(_item_get(item, "claim_id", "")).strip()
+        claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="")
+        if claim_id:
+            segments.append(f"权利要求{claim_id}：{claim_text}")
+    return "\n".join(segments) or "未提取到权利要求文本。"
+
+
+def _source_paragraph_text(source_paragraph_ids: List[Any]) -> str:
+    values = [str(item).strip() for item in (source_paragraph_ids or []) if str(item).strip()]
+    return "、".join(values) if values else "无可复用原OA段落"
+
+
+def _render_review_unit_blocks(review_units: List[Any]) -> str:
+    if not review_units:
+        return '<div class="oar-opinion-empty">当前无可展示的重组评述。</div>'
 
     blocks: List[str] = []
-    for item in claim_reviews:
-        claim_id = str(_item_get(item, "claim_id", "")).strip() or "-"
-        claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="未提取到权利要求文本。")
-        review_mode = _review_mode_label(str(_item_get(item, "review_mode", "")).strip())
-        review_text = _text_or_default(_item_get(item, "review_text", ""), default="当前未提取到可复用的权利要求评述。")
+    for item in review_units:
+        title = _text_or_default(_item_get(item, "title", ""), default="重组评述")
+        claim_label = _format_claim_ids(_item_get(item, "display_claim_ids", [])) or "-"
+        unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
+        source_paragraphs = _source_paragraph_text(_item_get(item, "source_paragraph_ids", []))
+        claim_text = _claim_snapshot_text(_item_get(item, "claim_snapshots", []) or [])
+        review_text = _text_or_default(_item_get(item, "review_text", ""), default="当前未提取到可复用的审查评述。")
         blocks.extend(
             [
                 '<div class="oar-opinion-block">',
-                f'<div class="oar-opinion-title">{_html_text(f"权利要求 {claim_id}｜{review_mode}", default="")}</div>',
-                _argument_paragraph_html("权利要求文本：", claim_text),
-                _argument_paragraph_html("审查评述：", review_text),
+                f'<div class="oar-opinion-title">{_html_text(f"{title}｜当前权利要求 {claim_label}｜{unit_type}", default="")}</div>',
+                _argument_paragraph_html("来源OA段落：", source_paragraphs),
+                _argument_paragraph_html("当前权利要求文本：", claim_text),
+                _argument_paragraph_html("重组评述：", review_text),
                 "</div>",
             ]
         )

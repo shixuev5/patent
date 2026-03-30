@@ -9,7 +9,6 @@ from agents.common.office_action_structuring.models import (
     OfficeAction,
     ComparisonDocument,
     OfficeActionParagraph,
-    ParagraphEvaluation,
 )
 from agents.ai_reply.src.utils import is_patent_document
 from loguru import logger
@@ -17,24 +16,6 @@ from loguru import logger
 
 class OfficeActionExtractor:
     """审查意见通知书结构化提取器"""
-
-    _ISSUE_TYPE_MAPPING = {
-        "A22.2": "新颖性",
-        "A22.3": "创造性",
-        "A22.4": "实用性",
-        "A26.3": "公开不充分",
-        "A26.4": "清楚/支持",
-        "A31.1": "单一性",
-        "A33": "修改超范围",
-        "R20": "说明书形式问题",
-        "R20.1": "清楚",
-        "R22": "权利要求书形式问题",
-        "R23": "权利要求书形式问题",
-        "R24": "权利要求书形式问题",
-        "R25": "权利要求书形式问题",
-        "R57.1": "修改不予接受",
-        "R57.3": "修改不予接受",
-    }
 
     def extract(self, markdown_content: str) -> OfficeAction:
         """
@@ -184,14 +165,10 @@ class OfficeActionExtractor:
                 continue
 
             paragraph_index = len(paragraphs) + 1
-            legal_basis = self._extract_legal_basis(content)
             paragraphs.append(OfficeActionParagraph(
                 paragraph_id=f"Claim{paragraph_index}",
                 claim_ids=self._extract_claim_ids(content),
-                legal_basis=legal_basis,
-                issue_types=self._map_issue_types(legal_basis, content),
                 cited_doc_ids=self._extract_cited_doc_ids(content),
-                evaluation=self._determine_evaluation(content),
                 content=content
             ))
 
@@ -251,43 +228,6 @@ class OfficeActionExtractor:
 
         return claim_ids
 
-    def _extract_legal_basis(self, content: str) -> List[str]:
-        """提取法律依据，输出标准化编码，如 A22.3 / R20.1。"""
-        results = set()
-        pattern = r"(专利法|实施细则)第\s*([0-9一二三四五六七八九十百零〇两]+)\s*条(?:\s*第\s*([0-9一二三四五六七八九十百零〇两]+)\s*款)?"
-        for law_type, article_raw, clause_raw in re.findall(pattern, content or ""):
-            article = self._parse_legal_number(article_raw)
-            clause = self._parse_legal_number(clause_raw) if clause_raw else None
-            if article is None:
-                continue
-            short_name = "A" if law_type == "专利法" else "R"
-            basis = f"{short_name}{article}" + (f".{clause}" if clause is not None else "")
-            results.add(basis)
-        return sorted(results)
-
-    def _map_issue_types(self, legal_basis: List[str], content: str) -> List[str]:
-        """基于法条映射并用关键词补偿缺陷类型。"""
-        issues = {
-            self._ISSUE_TYPE_MAPPING[basis]
-            for basis in (legal_basis or [])
-            if basis in self._ISSUE_TYPE_MAPPING
-        }
-        if issues:
-            return sorted(issues)
-
-        keyword_map = {
-            "新颖性": r"不(?:具备|具有)新颖性",
-            "创造性": r"不(?:具备|具有)创造性",
-            "清楚": r"不清楚|不简要",
-            "支持": r"得不到说明书的支持|不符合专利法第26条第4款",
-            "修改超范围": r"不符合专利法第33条|超出原说明书和权利要求书记载的范围",
-            "公开不充分": r"不符合专利法第26条第3款",
-        }
-        for label, pattern in keyword_map.items():
-            if re.search(pattern, content or ""):
-                issues.add(label)
-        return sorted(issues)
-
     def _extract_cited_doc_ids(self, content: str) -> List[str]:
         """提取段落中明确提及的 D 文献编号。"""
         doc_ids = set()
@@ -299,36 +239,6 @@ class OfficeActionExtractor:
             for value in re.findall(pattern, content or ""):
                 doc_ids.add(f"D{int(value)}")
         return sorted(doc_ids, key=lambda item: int(item[1:]))
-
-    def _determine_evaluation(self, content: str) -> ParagraphEvaluation:
-        text = str(content or "").strip()
-        if not text:
-            return ParagraphEvaluation.UNKNOWN
-
-        positive_patterns = [
-            r"未发现.{0,8}(?:不符合|缺陷|驳回理由)",
-            r"具备(?:新颖性|创造性|工业实用性)",
-            r"符合(?:专利法|实施细则)",
-        ]
-        if any(re.search(pattern, text) for pattern in positive_patterns):
-            if all(keyword not in text for keyword in ["不具备", "不具有", "不符合", "不能被授予"]):
-                return ParagraphEvaluation.POSITIVE
-
-        negative_keywords = [
-            "不具备",
-            "不具有",
-            "不符合",
-            "不清楚",
-            "得不到",
-            "修改超出",
-            "不能被授予",
-            "将被驳回",
-            "不予接受",
-        ]
-        if any(keyword in text for keyword in negative_keywords):
-            return ParagraphEvaluation.NEGATIVE
-
-        return ParagraphEvaluation.NEUTRAL
 
     def _parse_legal_number(self, value: str) -> int | None:
         text = str(value or "").strip()

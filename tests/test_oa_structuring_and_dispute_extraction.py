@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
-from agents.common.office_action_structuring.models import ParagraphEvaluation
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 
 
@@ -21,10 +20,7 @@ def test_office_action_extractor_extracts_reliable_paragraph_fields() -> None:
 
     paragraph = office_action.paragraphs[0]
     assert paragraph.claim_ids == ["1", "2", "3"]
-    assert paragraph.legal_basis == ["A22.3"]
-    assert paragraph.issue_types == ["创造性"]
     assert paragraph.cited_doc_ids == ["D1", "D2"]
-    assert paragraph.evaluation == ParagraphEvaluation.NEGATIVE
 
 
 def test_office_action_extractor_keeps_body_after_internal_heading() -> None:
@@ -170,10 +166,7 @@ def test_dispute_extraction_uses_two_stage_pipeline() -> None:
                 {
                     "paragraph_id": "Claim1",
                     "claim_ids": ["1"],
-                    "legal_basis": ["A22.3"],
-                    "issue_types": ["创造性"],
                     "cited_doc_ids": ["D1", "D2"],
-                    "evaluation": "negative",
                     "content": "对于上述区别技术特征，审查员认为 D1 与 D2 结合并辅以常规设置即可得到环境模拟箱。",
                 }
             ]
@@ -265,10 +258,7 @@ def test_oa_matching_prompt_does_not_include_comparison_docs() -> None:
                     {
                         "paragraph_id": "Claim1",
                         "claim_ids": ["1"],
-                        "legal_basis": ["A22.3"],
-                        "issue_types": ["创造性"],
                         "cited_doc_ids": ["D1"],
-                        "evaluation": "negative",
                         "content": "审查员认为 D1 公开了相关特征。",
                     }
                 ]

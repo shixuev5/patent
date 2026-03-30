@@ -277,10 +277,7 @@ class DisputeExtractionNode:
                 {
                     "paragraph_id": paragraph.get("paragraph_id", ""),
                     "claim_ids": paragraph.get("claim_ids", []),
-                    "legal_basis": paragraph.get("legal_basis", []),
-                    "issue_types": paragraph.get("issue_types", []),
                     "cited_doc_ids": paragraph.get("cited_doc_ids", []),
-                    "evaluation": str(paragraph.get("evaluation", "unknown")).strip() or "unknown",
                     "content": paragraph.get("content", ""),
                 }
             )

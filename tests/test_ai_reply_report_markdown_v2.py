@@ -85,16 +85,28 @@ def _sample_report() -> dict:
         "claim_review_section": {
             "items": [
                 {
-                    "claim_id": "1",
-                    "claim_text": "一种装置，其特征在于，包括模块A。",
-                    "review_mode": "amendment_based",
+                    "unit_id": "P1",
+                    "unit_type": "reused_oa",
+                    "source_paragraph_ids": ["P1"],
+                    "display_claim_ids": ["1"],
+                    "anchor_claim_id": "1",
+                    "title": "权利要求1",
                     "review_text": "关于权利要求1，经审查，修改后的限定未能克服创造性缺陷 CLAIM_REVIEW_1_END",
+                    "claim_snapshots": [
+                        {"claim_id": "1", "claim_text": "一种装置，其特征在于，包括模块A。"},
+                    ],
                 },
                 {
-                    "claim_id": "2",
-                    "claim_text": "根据权利要求1所述的装置，其特征在于，还包括模块B。",
-                    "review_mode": "response_based",
-                    "review_text": "关于权利要求2，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
+                    "unit_id": "M1",
+                    "unit_type": "merged_into_independent",
+                    "source_paragraph_ids": ["P2"],
+                    "display_claim_ids": ["1"],
+                    "anchor_claim_id": "1",
+                    "title": "权利要求1（并入原从权评述）",
+                    "review_text": "关于权利要求1，结合原从权并入后的内容，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
+                    "claim_snapshots": [
+                        {"claim_id": "1", "claim_text": "一种装置，其特征在于，包括模块A和模块B。"},
+                    ],
                 },
             ]
         },
@@ -188,7 +200,7 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     content = build_final_report_markdown(_sample_report())
 
     assert "## 3. 权利要求变更表" in content
-    assert "## 4. 当前生效权利要求逐条评述" in content
+    assert "## 4. 基于上一轮审查意见的重组评述" in content
     assert "## 5. 争论点总表与AI判断" in content
     assert "## 6. 针对申请人意见陈述的答复" in content
     assert "变更特征_ONLY_IN_SECTION3" in content
@@ -213,8 +225,10 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
 
     assert "CLAIM_REVIEW_1_END" in content
     assert "CLAIM_REVIEW_2_END" in content
-    assert "权利要求文本：" in content
-    assert "审查评述：" in content
+    assert "来源OA段落：" in content
+    assert "当前权利要求文本：" in content
+    assert "重组评述：" in content
+    assert "并入独权评述" in content
     assert 'class="oar-opinion-block"' in content
     assert "申请人指出：" in content
     assert "审查员答复：" in content

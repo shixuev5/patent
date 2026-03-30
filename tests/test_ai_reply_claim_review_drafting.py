@@ -2,37 +2,37 @@ from agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingN
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 
 
-def test_claim_review_drafting_builds_materials_for_all_review_modes(monkeypatch) -> None:
+def test_claim_review_drafting_restructures_units_by_previous_oa(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
 
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
         user_prompt = messages[1]["content"]
-        assert '"claim_id": "1"' in user_prompt
-        assert '"oa_materials": [' in user_prompt
-        assert '"claim_id": "2"' in user_prompt
-        assert '"response_materials": [' in user_prompt
-        assert '"claim_id": "3"' in user_prompt
-        assert '"amendment_materials": [' in user_prompt
+        assert '"unit_id": "P1"' not in user_prompt
+        assert '"unit_type": "reused_oa"' not in user_prompt
+        assert '"unit_id": "MERGED_1"' in user_prompt
+        assert '"unit_type": "merged_into_independent"' in user_prompt
+        assert '"unit_id": "NEW_F4"' in user_prompt
+        assert '"unit_type": "supplemented_new"' in user_prompt
         assert '"claim_id": "4"' in user_prompt
-        assert '"review_mode": "mixed"' in user_prompt
         return {
             "items": [
-                {"claim_id": "1", "review_text": "权利要求1评述"},
-                {"claim_id": "2", "review_text": "权利要求2评述"},
-                {"claim_id": "3", "review_text": "权利要求3评述"},
-                {"claim_id": "4", "review_text": "权利要求4评述"},
+                {"unit_id": "MERGED_1", "review_text": "权利要求2并入权利要求1后的评述"},
+                {"unit_id": "NEW_F4", "review_text": "权利要求4新增补充评述"},
             ]
         }
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
 
-    result = node._draft_claim_reviews(
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "1", "claim_text": "旧权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "2", "claim_text": "旧权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "3", "claim_text": "旧权3", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+        ],
         claims_effective_structured=[
-            {"claim_id": "1", "claim_text": "权利要求1文本"},
-            {"claim_id": "2", "claim_text": "权利要求2文本"},
-            {"claim_id": "3", "claim_text": "权利要求3文本"},
-            {"claim_id": "4", "claim_text": "权利要求4文本"},
+            {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "4", "claim_text": "新权4", "claim_type": "dependent", "parent_claim_ids": ["1"]},
         ],
         prepared_materials={
             "office_action": {
@@ -40,130 +40,188 @@ def test_claim_review_drafting_builds_materials_for_all_review_modes(monkeypatch
                     {
                         "paragraph_id": "P1",
                         "claim_ids": ["1"],
-                        "evaluation": "negative",
                         "content": "OA 对权利要求1的原文评述",
-                    }
+                    },
+                    {
+                        "paragraph_id": "P2",
+                        "claim_ids": ["2", "3"],
+                        "content": "OA 对权利要求2-3的组合评述",
+                    },
                 ]
             }
         },
         added_features=[
             {
-                "feature_id": "F3",
-                "feature_text": "新增特征3",
-                "target_claim_ids": ["3"],
-                "source_type": "spec",
-                "source_claim_ids": [],
+                "feature_id": "F2",
+                "feature_text": "将旧权2并入权1的新增特征",
+                "target_claim_ids": ["1"],
+                "source_type": "claim",
+                "source_claim_ids": ["2"],
             },
             {
                 "feature_id": "F4",
-                "feature_text": "新增特征4",
+                "feature_text": "权利要求4新增特征",
                 "target_claim_ids": ["4"],
-                "source_type": "claim",
-                "source_claim_ids": ["2"],
+                "source_type": "spec",
+                "source_claim_ids": [],
             },
         ],
         disputes=[
             {
-                "dispute_id": "DSP_2",
+                "dispute_id": "DSP_1",
                 "origin": "response_dispute",
-                "claim_ids": ["2"],
-                "feature_text": "争议特征2",
-                "applicant_opinion": {"reasoning": "申请人对权利要求2提出意见"},
+                "claim_ids": ["1"],
+                "feature_text": "争议特征1",
+                "applicant_opinion": {"reasoning": "申请人对权利要求1提出意见"},
             },
             {
-                "dispute_id": "TOPUP_F3",
+                "dispute_id": "TOPUP_F2",
                 "origin": "amendment_review",
-                "source_feature_id": "F3",
-                "claim_ids": ["3"],
-                "feature_text": "新增特征3",
-            },
-            {
-                "dispute_id": "DSP_4",
-                "origin": "response_dispute",
-                "claim_ids": ["4"],
-                "feature_text": "争议特征4",
-                "applicant_opinion": {"reasoning": "申请人对权利要求4提出意见"},
+                "source_feature_id": "F2",
+                "claim_ids": ["1"],
+                "feature_text": "将旧权2并入权1的新增特征",
             },
             {
                 "dispute_id": "TOPUP_F4",
                 "origin": "amendment_review",
                 "source_feature_id": "F4",
                 "claim_ids": ["4"],
-                "feature_text": "新增特征4",
+                "feature_text": "权利要求4新增特征",
             },
         ],
         evidence_assessments=[
             {
-                "dispute_id": "DSP_2",
+                "dispute_id": "DSP_1",
                 "origin": "response_dispute",
-                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "权利要求2维持驳回", "examiner_rejection_rationale": ""},
+                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "权利要求1维持驳回", "examiner_rejection_rationale": ""},
             },
             {
-                "dispute_id": "TOPUP_F3",
+                "dispute_id": "TOPUP_F2",
                 "origin": "amendment_review",
-                "source_feature_id": "F3",
-                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "新增特征3不足以授权", "examiner_rejection_rationale": ""},
-                "evidence": [{"doc_id": "D1", "quote": "q3", "analysis": "a3"}],
-            },
-            {
-                "dispute_id": "DSP_4",
-                "origin": "response_dispute",
-                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "权利要求4答复不能成立", "examiner_rejection_rationale": ""},
+                "source_feature_id": "F2",
+                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "并入特征不足以授权", "examiner_rejection_rationale": ""},
             },
             {
                 "dispute_id": "TOPUP_F4",
                 "origin": "amendment_review",
                 "source_feature_id": "F4",
-                "assessment": {"verdict": "APPLICANT_CORRECT", "reasoning": "新增特征4提升有限", "examiner_rejection_rationale": "结合D2仍可维持驳回"},
-                "evidence": [{"doc_id": "D2", "quote": "q4", "analysis": "a4"}],
+                "assessment": {"verdict": "INCONCLUSIVE", "reasoning": "需要补充检索", "examiner_rejection_rationale": ""},
             },
         ],
-        drafted_rejection_reasons={
-            "DSP_2": "权利要求2正式答复",
-            "DSP_4": "权利要求4正式答复",
-        },
+        drafted_rejection_reasons={"DSP_1": "权利要求1正式答复"},
     )
 
-    assert [item["claim_id"] for item in result] == ["1", "2", "3", "4"]
-    assert [item["review_mode"] for item in result] == [
-        "reused_oa",
-        "response_based",
-        "amendment_based",
-        "mixed",
-    ]
-    assert result[0]["source_summary"]["oa_paragraph_ids"] == ["P1"]
-    assert result[1]["source_summary"]["response_dispute_ids"] == ["DSP_2"]
-    assert result[2]["source_summary"]["amendment_feature_ids"] == ["F3"]
-    assert result[3]["source_summary"]["response_dispute_ids"] == ["DSP_4"]
-    assert result[3]["source_summary"]["amendment_feature_ids"] == ["F4"]
+    assert [item["unit_id"] for item in result] == ["P1", "MERGED_1", "NEW_F4"]
+    assert [item["unit_type"] for item in result] == ["reused_oa", "merged_into_independent", "supplemented_new"]
+    assert result[0]["display_claim_ids"] == ["1"]
+    assert result[0]["review_text"] == "OA 对权利要求1的原文评述"
+    assert result[0]["source_summary"]["added_feature_ids"] == []
+    assert result[1]["display_claim_ids"] == ["1"]
+    assert result[1]["source_paragraph_ids"] == ["P2"]
+    assert result[1]["source_summary"]["merged_source_claim_ids"] == ["2"]
+    assert result[1]["source_summary"]["added_feature_ids"] == ["F2"]
+    assert result[2]["display_claim_ids"] == ["4"]
+    assert result[2]["source_summary"]["added_feature_ids"] == ["F4"]
 
 
-def test_claim_review_drafting_returns_placeholder_without_materials(monkeypatch) -> None:
+def test_claim_review_drafting_drops_deleted_oa_units_without_replacement(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
 
     def _fail(*args, **kwargs):
-        raise AssertionError("LLM should not be called when no drafting materials exist")
+        raise AssertionError("LLM should not be called when all OA units are deleted")
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fail)
 
-    result = node._draft_claim_reviews(
-        claims_effective_structured=[{"claim_id": "1", "claim_text": "权利要求1文本"}],
-        prepared_materials={"office_action": {"paragraphs": []}},
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "2", "claim_text": "旧权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {
+                        "paragraph_id": "P2",
+                        "claim_ids": ["2"],
+                        "content": "OA 对权利要求2的原文评述",
+                    },
+                ]
+            }
+        },
         added_features=[],
         disputes=[],
         evidence_assessments=[],
         drafted_rejection_reasons={},
     )
 
+    assert result == []
+
+
+def test_claim_review_drafting_keeps_reused_oa_out_of_llm_even_with_response_materials(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Pure reused OA unit should not call LLM")
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fail)
+
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "1", "claim_text": "旧权1", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {
+                        "paragraph_id": "P1",
+                        "claim_ids": ["1"],
+                        "content": "OA 对权利要求1的原文评述",
+                    },
+                ]
+            }
+        },
+        added_features=[],
+        disputes=[
+            {
+                "dispute_id": "DSP_1",
+                "origin": "response_dispute",
+                "claim_ids": ["1"],
+                "feature_text": "争议特征1",
+                "applicant_opinion": {"reasoning": "申请人意见"},
+            },
+        ],
+        evidence_assessments=[
+            {
+                "dispute_id": "DSP_1",
+                "origin": "response_dispute",
+                "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "维持驳回", "examiner_rejection_rationale": ""},
+            },
+        ],
+        drafted_rejection_reasons={"DSP_1": "正式答复"},
+    )
+
     assert result == [
         {
-            "claim_id": "1",
-            "claim_text": "权利要求1文本",
-            "review_mode": "reused_oa",
-            "review_text": "当前未提取到可复用的权利要求评述。",
+            "unit_id": "P1",
+            "unit_type": "reused_oa",
+            "source_paragraph_ids": ["P1"],
+            "display_claim_ids": ["1"],
+            "anchor_claim_id": "1",
+            "title": "权利要求1",
+            "review_text": "OA 对权利要求1的原文评述",
+            "claim_snapshots": [
+                {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent"},
+            ],
             "source_summary": {
-                "oa_paragraph_ids": [],
-                "response_dispute_ids": [],
+                "source_paragraph_ids": ["P1"],
+                "merged_source_claim_ids": [],
+                "added_feature_ids": [],
+                "response_dispute_ids": ["DSP_1"],
                 "amendment_feature_ids": [],
             },
         }

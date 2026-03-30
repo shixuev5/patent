@@ -159,15 +159,19 @@ class SupportFinding(BaseModel):
     risk: str = Field("", description="风险说明")
 
 
-class ClaimReviewItem(BaseModel):
-    """逐条权利要求评述结果"""
-    claim_id: str = Field(..., description="权利要求编号")
-    claim_text: str = Field("", description="权利要求文本")
-    review_mode: str = Field(
+class ReviewUnit(BaseModel):
+    """基于上一轮OA重组后的评述单元"""
+    unit_id: str = Field(..., description="评述单元唯一标识")
+    unit_type: str = Field(
         "reused_oa",
-        description="评述来源模式: reused_oa/response_based/amendment_based/mixed",
+        description="单元类型: reused_oa/split_from_group/merged_into_independent/supplemented_new",
     )
+    source_paragraph_ids: List[str] = Field(default_factory=list, description="来源OA段落编号")
+    display_claim_ids: List[str] = Field(default_factory=list, description="当前展示的权利要求编号列表")
+    anchor_claim_id: str = Field("", description="排序锚点权利要求编号")
+    title: str = Field("", description="展示标题")
     review_text: str = Field("", description="最终生成的正式评述文本")
+    claim_snapshots: List[Dict[str, Any]] = Field(default_factory=list, description="关联权利要求快照")
     source_summary: Dict[str, Any] = Field(default_factory=dict, description="调试用来源摘要")
 
 
@@ -197,10 +201,7 @@ class PreparedOfficeActionParagraph(BaseModel):
     """整理后的审查意见段落"""
     paragraph_id: str = Field("", description="段落编号")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求编号列表")
-    legal_basis: List[str] = Field(default_factory=list, description="法律依据列表")
-    issue_types: List[str] = Field(default_factory=list, description="缺陷类型列表")
     cited_doc_ids: List[str] = Field(default_factory=list, description="明确引用的对比文件编号")
-    evaluation: str = Field("unknown", description="段落结论倾向：negative/positive/neutral/unknown")
     content: str = Field("", description="段落内容")
 
 
@@ -262,9 +263,9 @@ class WorkflowState(BaseModel):
         default_factory=dict,
         description="统一润色后的正式驳回正文，按 dispute_id 索引",
     )
-    claim_reviews: Annotated[List[ClaimReviewItem], operator.add] = Field(
+    review_units: Annotated[List[ReviewUnit], operator.add] = Field(
         default_factory=list,
-        description="逐条权利要求评述结果",
+        description="基于上一轮OA重组后的评述单元",
     )
 
     # 最终报告
