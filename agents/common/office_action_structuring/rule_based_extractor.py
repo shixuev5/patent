@@ -199,34 +199,29 @@ class OfficeActionExtractor:
         return value.translate(translation)
 
     def _extract_claim_ids(self, content: str) -> List[str]:
-        """提取段落中关联的权利要求编号，兼容单点与区间表达（如 1-3）。"""
-        claim_ids: List[str] = []
+        """仅提取段落中第一次出现的权利要求编号，兼容单点与区间表达（如 1-3）。"""
+        normalized_content = self._normalize_digits(content)
         claim_keyword_pattern = r"权\s*利\s*要\s*求"
+        first_pattern = re.compile(
+            rf"{claim_keyword_pattern}\s*(\d+)(?:\s*(?:-|－|—|~|～|至|到)\s*(\d+))?"
+        )
+        match = first_pattern.search(normalized_content)
+        if not match:
+            return []
 
-        # 1. 提取区间表达：权利要求1-3 / 权利要求1至3 / 权利要求1到3 / 权利要求1~3
-        range_pattern = rf"{claim_keyword_pattern}\s*(\d+)\s*(?:-|－|—|~|～|至|到)\s*(\d+)"
-        for start_raw, end_raw in re.findall(range_pattern, content):
-            try:
-                start = int(start_raw)
-                end = int(end_raw)
-            except ValueError:
-                continue
-            if start <= 0 or end <= 0:
-                continue
-            low, high = (start, end) if start <= end else (end, start)
-            for value in range(low, high + 1):
-                claim_id = str(value)
-                if claim_id not in claim_ids:
-                    claim_ids.append(claim_id)
+        start_raw = match.group(1)
+        end_raw = match.group(2)
+        start = int(start_raw)
+        if start <= 0:
+            return []
+        if not end_raw:
+            return [str(start)]
 
-        # 2. 提取单个表达：权利要求1
-        single_pattern = rf"{claim_keyword_pattern}\s*(\d+)"
-        for claim_raw in re.findall(single_pattern, content):
-            claim_id = str(int(claim_raw))
-            if claim_id not in claim_ids:
-                claim_ids.append(claim_id)
-
-        return claim_ids
+        end = int(end_raw)
+        if end <= 0:
+            return [str(start)]
+        low, high = (start, end) if start <= end else (end, start)
+        return [str(value) for value in range(low, high + 1)]
 
     def _extract_cited_doc_ids(self, content: str) -> List[str]:
         """提取段落中明确提及的 D 文献编号。"""

@@ -532,16 +532,57 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
     )
 
 
+def _review_unit_visible_claim_ids(unit: Any, seen_claim_ids: set[str]) -> List[str]:
+    claim_ids: List[str] = []
+    for claim_id in _normalize_claim_id_list(_item_get(unit, "display_claim_ids", [])):
+        if claim_id not in claim_ids:
+            claim_ids.append(claim_id)
+    for snapshot in _item_get(unit, "claim_snapshots", []) or []:
+        claim_id = str(_item_get(snapshot, "claim_id", "")).strip()
+        if claim_id.isdigit() and claim_id not in claim_ids:
+            claim_ids.append(claim_id)
+
+    visible_claim_ids = [claim_id for claim_id in claim_ids if claim_id not in seen_claim_ids]
+    if visible_claim_ids:
+        seen_claim_ids.update(visible_claim_ids)
+        return visible_claim_ids
+    return claim_ids
+
+
+def _normalize_claim_id_list(value: Any) -> List[str]:
+    claim_ids: List[str] = []
+    candidates = value if isinstance(value, list) else [value]
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for piece in re.split(r"[，,\s]+", text):
+            part = piece.strip()
+            if part and part.isdigit() and part not in claim_ids:
+                claim_ids.append(part)
+    return claim_ids
+
+
 def _render_review_unit_blocks(review_units: List[Any]) -> str:
     if not review_units:
         return '<div class="oar-opinion-empty">当前无可展示的重组评述。</div>'
 
     blocks: List[str] = []
+    seen_claim_ids: set[str] = set()
     for item in review_units:
-        title = _text_or_default(_item_get(item, "title", ""), default="重组评述")
-        claim_label = _format_claim_ids(_item_get(item, "display_claim_ids", [])) or "-"
+        visible_claim_ids = _review_unit_visible_claim_ids(item, seen_claim_ids)
+        title = (
+            "、".join(f"权利要求{claim_id}" for claim_id in visible_claim_ids)
+            or _text_or_default(_item_get(item, "title", ""), default="重组评述")
+        )
+        claim_label = ",".join(visible_claim_ids) or "-"
         unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
-        claim_text_html = _claim_snapshot_html(_item_get(item, "claim_snapshots", []) or [])
+        claim_snapshots = [
+            snapshot
+            for snapshot in (_item_get(item, "claim_snapshots", []) or [])
+            if str(_item_get(snapshot, "claim_id", "")).strip() in set(visible_claim_ids)
+        ]
+        claim_text_html = _claim_snapshot_html(claim_snapshots)
         review_before_text = str(_item_get(item, "review_before_text", "")).strip()
         review_text = str(_item_get(item, "review_text", "")).strip()
         review_diff_html, _ = _change_feature_diff_html(

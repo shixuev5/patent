@@ -283,3 +283,68 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert "CLAIM_REVIEW_1_END" in html_doc
     assert "CHANGE_FINAL_END" in html_doc
     assert "<blockquote>" not in html_doc
+
+
+def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_sequence() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "U1",
+                    "unit_type": "reused_oa",
+                    "display_claim_ids": ["1"],
+                    "title": "权利要求1",
+                    "claim_snapshots": [
+                        {"claim_id": "1", "claim_before_text": "", "claim_text": "权1文本。"},
+                    ],
+                    "review_before_text": "",
+                    "review_text": "权1评述。",
+                },
+                {
+                    "unit_id": "U2",
+                    "unit_type": "reused_oa",
+                    "display_claim_ids": ["8", "1"],
+                    "title": "权利要求8、权利要求1",
+                    "claim_snapshots": [
+                        {"claim_id": "8", "claim_before_text": "", "claim_text": "权8文本。"},
+                        {"claim_id": "1", "claim_before_text": "", "claim_text": "不应重复展示的权1文本。"},
+                    ],
+                    "review_before_text": "",
+                    "review_text": "权8评述。",
+                },
+                {
+                    "unit_id": "U3",
+                    "unit_type": "reused_oa",
+                    "display_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "9"],
+                    "title": "权利要求1、权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9",
+                    "claim_snapshots": [
+                        {"claim_id": "1", "claim_before_text": "", "claim_text": "不应展示的权1文本。"},
+                        {"claim_id": "2", "claim_before_text": "", "claim_text": "权2文本。"},
+                        {"claim_id": "3", "claim_before_text": "", "claim_text": "权3文本。"},
+                        {"claim_id": "4", "claim_before_text": "", "claim_text": "权4文本。"},
+                        {"claim_id": "5", "claim_before_text": "", "claim_text": "权5文本。"},
+                        {"claim_id": "6", "claim_before_text": "", "claim_text": "权6文本。"},
+                        {"claim_id": "7", "claim_before_text": "", "claim_text": "权7文本。"},
+                        {"claim_id": "9", "claim_before_text": "", "claim_text": "权9文本。"},
+                    ],
+                    "review_before_text": "",
+                    "review_text": "权9评述。",
+                },
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "当前权利要求 8,1" not in content
+    assert "当前权利要求 1,2,3,4,5,6,7,9" not in content
+    assert "权利要求8｜当前权利要求 8｜复用原OA" in content
+    assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜当前权利要求 2,3,4,5,6,7,9｜复用原OA" in content
+    assert "不应重复展示的权1文本。" not in content
+    assert "不应展示的权1文本。" not in content
+    assert "权8文本。" in content
+    assert "权9文本。" in content
