@@ -318,7 +318,7 @@ python -m agents.ai_reply.main \
 ## 11. 关键环境变量
 
 - `PDF_PARSER`：PDF 解析器（默认 `local`）
-- `OPENALEX_API_KEY` / `OPENALEX_BASE_URL`：学术证据检索
+- `OPENALEX_API_KEYS` / `OPENALEX_BASE_URL`：学术证据检索（支持多 key 轮换，多个 key 可用逗号/分号/换行分隔）
 - `TAVILY_API_KEYS` / `TAVILY_BASE_URL`：网页证据检索（支持多 key 轮换，单 key 也使用该变量，超限自动切换）
 - `ZHIHUIYA_*`：专利下载账号参数
 

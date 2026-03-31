@@ -21,11 +21,12 @@ class ExternalEvidenceAggregator:
     """统一外部检索聚合器。"""
 
     def __init__(self):
-        self.openalex_api_key = os.getenv("OPENALEX_API_KEY", "").strip()
+        self.openalex_api_keys = self._load_api_keys("OPENALEX_API_KEYS")
+        self._openalex_key_cursor = 0
         self.openalex_base_url = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org/works").strip()
         self.openalex_email = os.getenv("OPENALEX_EMAIL", "").strip()
 
-        self.tavily_api_keys = self._load_tavily_api_keys()
+        self.tavily_api_keys = self._load_api_keys("TAVILY_API_KEYS")
         self._tavily_key_cursor = 0
         self.tavily_base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com/search").strip()
 
@@ -127,31 +128,12 @@ class ExternalEvidenceAggregator:
         results: List[Dict[str, Any]] = []
 
         for query in queries:
-            params: Dict[str, Any] = {
-                "search": query,
-                "per-page": per_query,
-            }
-
-            filters: List[str] = []
-            if priority_date:
-                filters.append(f"to_publication_date:{priority_date}")
-            if filters:
-                params["filter"] = ",".join(filters)
-            if self.openalex_api_key:
-                params["api_key"] = self.openalex_api_key
-            if self.openalex_email:
-                params["mailto"] = self.openalex_email
-
-            try:
-                response = requests.get(
-                    self.openalex_base_url,
-                    params=params,
-                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                response.raise_for_status()
-                data = response.json()
-            except Exception as ex:
-                logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
+            data = self._openalex_search_with_key_rotation(
+                query=query,
+                priority_date=priority_date,
+                per_query=per_query,
+            )
+            if not data:
                 continue
 
             for item in data.get("results", []) or []:
@@ -271,17 +253,90 @@ class ExternalEvidenceAggregator:
 
         return results
 
-    def _load_tavily_api_keys(self) -> List[str]:
-        raw_multi = os.getenv("TAVILY_API_KEYS", "").strip()
+    def _load_api_keys(self, *env_names: str) -> List[str]:
         keys: List[str] = []
 
-        if raw_multi:
-            for key in re.split(r"[,\n;]+", raw_multi):
+        for env_name in env_names:
+            raw_value = os.getenv(env_name, "").strip()
+            if not raw_value:
+                continue
+            for key in re.split(r"[,\n;]+", raw_value):
                 value = key.strip()
                 if value and value not in keys:
                     keys.append(value)
 
         return keys
+
+    def _openalex_search_with_key_rotation(
+        self,
+        query: str,
+        priority_date: Optional[str],
+        per_query: int,
+    ) -> Dict[str, Any]:
+        base_params: Dict[str, Any] = {
+            "search": query,
+            "per-page": per_query,
+        }
+        filters: List[str] = []
+        if priority_date:
+            filters.append(f"to_publication_date:{priority_date}")
+        if filters:
+            base_params["filter"] = ",".join(filters)
+        if self.openalex_email:
+            base_params["mailto"] = self.openalex_email
+
+        if not self.openalex_api_keys:
+            try:
+                response = requests.get(
+                    self.openalex_base_url,
+                    params=base_params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                return self._safe_json(response)
+            except Exception as ex:
+                logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
+                return {}
+
+        total_keys = len(self.openalex_api_keys)
+        start_index = self._openalex_key_cursor
+        for offset in range(total_keys):
+            index = (start_index + offset) % total_keys
+            api_key = self.openalex_api_keys[index]
+            params = dict(base_params)
+            params["api_key"] = api_key
+            try:
+                response = requests.get(
+                    self.openalex_base_url,
+                    params=params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = self._safe_json(response)
+            except Exception as ex:
+                logger.warning(f"OpenAlex 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+
+            if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
+                logger.warning(
+                    f"OpenAlex key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}"
+                )
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+
+            if status_code >= 400:
+                logger.warning(
+                    f"OpenAlex 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
+                )
+                return {}
+
+            self._openalex_key_cursor = index
+            return data
+
+        logger.warning(f"OpenAlex 所有 key 均不可用，query={query[:100]}")
+        return {}
 
     def _tavily_search_with_key_rotation(self, query: str, per_query: int) -> Dict[str, Any]:
         total_keys = len(self.tavily_api_keys)
@@ -349,6 +404,25 @@ class ExternalEvidenceAggregator:
             "exceed",
             "limit reached",
             "insufficient",
+            "too many requests",
+        ]
+        return any(keyword in message for keyword in limit_keywords)
+
+    def _is_openalex_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
+        if status_code == 429:
+            return True
+        message_parts = [
+            response_text,
+            str(data.get("error", "")),
+            str(data.get("message", "")),
+            str(data.get("detail", "")),
+        ]
+        message = " ".join(part.lower() for part in message_parts if part)
+        limit_keywords = [
+            "rate limit",
+            "quota",
+            "exceed",
+            "limit reached",
             "too many requests",
         ]
         return any(keyword in message for keyword in limit_keywords)
