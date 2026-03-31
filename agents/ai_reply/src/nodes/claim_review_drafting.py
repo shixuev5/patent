@@ -30,7 +30,7 @@ class ClaimReviewDraftingNode:
         try:
             cache = get_node_cache(self.config, "claim_review_drafting")
             review_units = cache.run_step(
-                "draft_review_units_v1",
+                "draft_review_units_v2",
                 self._draft_review_units,
                 self._state_get(state, "claims_old_structured", []),
                 self._state_get(state, "claims_effective_structured", []),
@@ -138,7 +138,7 @@ class ClaimReviewDraftingNode:
                             display_claim_ids=[claim_id],
                             anchor_claim_id=claim_id,
                             oa_materials=[self._paragraph_material(paragraph, [claim_id], paragraph_claim_ids)],
-                            claim_snapshots=self._build_claim_snapshots([claim_id], effective_map),
+                            claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
                             paragraph_order=paragraph_order.get(paragraph_id, 0),
                         )
                     )
@@ -153,7 +153,7 @@ class ClaimReviewDraftingNode:
                         display_claim_ids=plain_display_ids,
                         anchor_claim_id=anchor_claim_id,
                         oa_materials=[self._paragraph_material(paragraph, plain_display_ids, paragraph_claim_ids)],
-                        claim_snapshots=self._build_claim_snapshots(plain_display_ids, effective_map),
+                        claim_snapshots=self._build_claim_snapshots(plain_display_ids, effective_map, old_map),
                         paragraph_order=paragraph_order.get(paragraph_id, 0),
                     )
                 )
@@ -173,7 +173,7 @@ class ClaimReviewDraftingNode:
                         display_claim_ids=[target_claim_id],
                         anchor_claim_id=target_claim_id,
                         oa_materials=[],
-                        claim_snapshots=self._build_claim_snapshots([target_claim_id], effective_map),
+                        claim_snapshots=self._build_claim_snapshots([target_claim_id], effective_map, old_map),
                         paragraph_order=paragraph_order.get(paragraph_id, 0),
                     )
                     merged_unit_by_anchor[target_claim_id] = merged_unit
@@ -217,7 +217,7 @@ class ClaimReviewDraftingNode:
                     display_claim_ids=target_claim_ids,
                     anchor_claim_id=anchor_claim_id,
                     oa_materials=[],
-                    claim_snapshots=self._build_claim_snapshots(target_claim_ids, effective_map),
+                    claim_snapshots=self._build_claim_snapshots(target_claim_ids, effective_map, old_map),
                     paragraph_order=self._insertion_order_for_claim(anchor_claim_id, effective_claims, paragraph_candidates),
                 )
             new_unit["source_summary"]["added_feature_ids"].append(feature_id)
@@ -238,7 +238,7 @@ class ClaimReviewDraftingNode:
                     display_claim_ids=[claim_id],
                     anchor_claim_id=claim_id,
                     oa_materials=[],
-                    claim_snapshots=self._build_claim_snapshots([claim_id], effective_map),
+                    claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
                     paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
                 )
             )
@@ -271,6 +271,10 @@ class ClaimReviewDraftingNode:
                 if str(item.get("feature_id", "")).strip()
             ]
             unit["source_summary"] = source_summary
+            unit["review_before_text"] = self._build_direct_review_text(unit.get("oa_materials", []))
+
+            if self._should_upgrade_to_evidence_restructured(unit, response_materials, amendment_materials):
+                unit["unit_type"] = "evidence_restructured"
 
             if not unit["oa_materials"] and not response_materials and not amendment_materials:
                 finalized[unit["unit_id"]] = self._finalize_unit(
@@ -295,6 +299,7 @@ class ClaimReviewDraftingNode:
                     "display_claim_ids": display_claim_ids,
                     "anchor_claim_id": unit["anchor_claim_id"],
                     "source_summary": source_summary,
+                    "review_before_text": unit.get("review_before_text", ""),
                     "claim_snapshots": unit["claim_snapshots"],
                     "oa_materials": unit["oa_materials"],
                     "response_materials": response_materials,
@@ -323,9 +328,18 @@ class ClaimReviewDraftingNode:
         amendment_materials: List[Dict[str, Any]],
     ) -> bool:
         unit_type = str(unit.get("unit_type", "")).strip()
-        if unit_type in {"split_from_group", "merged_into_independent", "supplemented_new"}:
+        if unit_type in {"split_from_group", "merged_into_independent", "supplemented_new", "evidence_restructured"}:
             return True
         return False
+
+    def _should_upgrade_to_evidence_restructured(
+        self,
+        unit: Dict[str, Any],
+        response_materials: List[Dict[str, Any]],
+        amendment_materials: List[Dict[str, Any]],
+    ) -> bool:
+        unit_type = str(unit.get("unit_type", "")).strip()
+        return unit_type == "reused_oa" and bool(response_materials or amendment_materials)
 
     def _build_direct_review_text(self, oa_materials: List[Dict[str, Any]]) -> str:
         contents: List[str] = []
@@ -376,6 +390,7 @@ class ClaimReviewDraftingNode:
             "display_claim_ids": display_claim_ids,
             "anchor_claim_id": anchor_claim_id,
             "title": self._build_unit_title(display_claim_ids),
+            "review_before_text": self._build_direct_review_text(oa_materials),
             "oa_materials": oa_materials,
             "claim_snapshots": claim_snapshots,
             "source_summary": {
@@ -403,15 +418,18 @@ class ClaimReviewDraftingNode:
         self,
         claim_ids: List[str],
         effective_map: Dict[str, Dict[str, Any]],
+        old_map: Dict[str, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         snapshots: List[Dict[str, Any]] = []
         for claim_id in claim_ids:
             claim = effective_map.get(claim_id, {})
             if not claim:
                 continue
+            old_claim = old_map.get(claim_id, {})
             snapshots.append(
                 {
                     "claim_id": claim_id,
+                    "claim_before_text": str(old_claim.get("claim_text", "")).strip(),
                     "claim_text": str(claim.get("claim_text", "")).strip(),
                     "claim_type": str(claim.get("claim_type", "")).strip() or "unknown",
                 }
@@ -574,6 +592,8 @@ class ClaimReviewDraftingNode:
   申请人将原从权的特征并入了独权。你需要将原独权的评述逻辑与原从权（或新增特征）的评述逻辑自然融合。句式建议参考：“关于修改后的权利要求X，其包含了原权利要求Y的附加技术特征...基于对原权利要求X和Y的审查意见，该权利要求仍然不具备/具备...” 依据评估素材给出明确结论。
 - type = "supplemented_new" (新增或修改特征)：
   原OA中没有该评述。你必须完全依赖 amendment_materials 或 response_materials 中的审查员评估结论（assessment_reasoning 和 verdict）来撰写。清晰指出新增特征是什么，以及它为何不能/能够克服先前的缺陷。
+- type = "evidence_restructured" (结合证据重组)：
+  该单元原本存在对应 OA 评述，但当前又关联了 response_materials 或 amendment_materials。你必须以 oa_materials 为评述骨架，结合 assessment_reasoning、verdict、final_examiner_rejection_reason、examiner_rejection_rationale 等素材重组出新的正式评述，确保结论与当前核查结果一致，不能只重复原 OA 原文。
 - type = "reused_oa" (复用原OA)：
   在原意不变的基础上，结合当前最新的权利要求序号，对语言进行梳理和润色，确保在新语境下通顺。
 
@@ -641,6 +661,7 @@ JSON 格式规范如下：
             "display_claim_ids": self._normalize_claim_ids(unit.get("display_claim_ids", [])),
             "anchor_claim_id": str(unit.get("anchor_claim_id", "")).strip(),
             "title": str(unit.get("title", "")).strip() or self._build_unit_title(unit.get("display_claim_ids", [])),
+            "review_before_text": str(unit.get("review_before_text", "")).strip(),
             "review_text": review_text,
             "claim_snapshots": [self._to_dict(item) for item in (unit.get("claim_snapshots", []) or [])],
             "source_summary": self._to_dict(unit.get("source_summary", {})),

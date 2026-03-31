@@ -164,12 +164,13 @@ class ReviewUnit(BaseModel):
     unit_id: str = Field(..., description="评述单元唯一标识")
     unit_type: str = Field(
         "reused_oa",
-        description="单元类型: reused_oa/split_from_group/merged_into_independent/supplemented_new",
+        description="单元类型: reused_oa/split_from_group/merged_into_independent/supplemented_new/evidence_restructured",
     )
     source_paragraph_ids: List[str] = Field(default_factory=list, description="来源OA段落编号")
     display_claim_ids: List[str] = Field(default_factory=list, description="当前展示的权利要求编号列表")
     anchor_claim_id: str = Field("", description="排序锚点权利要求编号")
     title: str = Field("", description="展示标题")
+    review_before_text: str = Field("", description="上一轮评述基线文本")
     review_text: str = Field("", description="最终生成的正式评述文本")
     claim_snapshots: List[Dict[str, Any]] = Field(default_factory=list, description="关联权利要求快照")
     source_summary: Dict[str, Any] = Field(default_factory=dict, description="调试用来源摘要")

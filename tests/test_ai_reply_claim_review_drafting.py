@@ -8,15 +8,18 @@ def test_claim_review_drafting_restructures_units_by_previous_oa(monkeypatch) ->
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
         user_prompt = messages[1]["content"]
-        assert '"unit_id": "P1"' not in user_prompt
-        assert '"unit_type": "reused_oa"' not in user_prompt
+        assert '"unit_id": "P1"' in user_prompt
+        assert '"unit_type": "evidence_restructured"' in user_prompt
         assert '"unit_id": "MERGED_1"' in user_prompt
         assert '"unit_type": "merged_into_independent"' in user_prompt
         assert '"unit_id": "NEW_F4"' in user_prompt
         assert '"unit_type": "supplemented_new"' in user_prompt
+        assert '"review_before_text": "OA 对权利要求1的原文评述"' in user_prompt
+        assert '"claim_before_text": "旧权1"' in user_prompt
         assert '"claim_id": "4"' in user_prompt
         return {
             "items": [
+                {"unit_id": "P1", "review_text": "结合证据重组后的权利要求1评述"},
                 {"unit_id": "MERGED_1", "review_text": "权利要求2并入权利要求1后的评述"},
                 {"unit_id": "NEW_F4", "review_text": "权利要求4新增补充评述"},
             ]
@@ -112,15 +115,22 @@ def test_claim_review_drafting_restructures_units_by_previous_oa(monkeypatch) ->
     )
 
     assert [item["unit_id"] for item in result] == ["P1", "MERGED_1", "NEW_F4"]
-    assert [item["unit_type"] for item in result] == ["reused_oa", "merged_into_independent", "supplemented_new"]
+    assert [item["unit_type"] for item in result] == ["evidence_restructured", "merged_into_independent", "supplemented_new"]
     assert result[0]["display_claim_ids"] == ["1"]
-    assert result[0]["review_text"] == "OA 对权利要求1的原文评述"
+    assert result[0]["review_before_text"] == "OA 对权利要求1的原文评述"
+    assert result[0]["review_text"] == "结合证据重组后的权利要求1评述"
+    assert result[0]["claim_snapshots"] == [
+        {"claim_id": "1", "claim_before_text": "旧权1", "claim_text": "新权1", "claim_type": "independent"},
+    ]
     assert result[0]["source_summary"]["added_feature_ids"] == []
+    assert result[0]["source_summary"]["response_dispute_ids"] == ["DSP_1"]
     assert result[1]["display_claim_ids"] == ["1"]
     assert result[1]["source_paragraph_ids"] == ["P2"]
+    assert result[1]["review_before_text"] == "OA 对权利要求2-3的组合评述"
     assert result[1]["source_summary"]["merged_source_claim_ids"] == ["2"]
     assert result[1]["source_summary"]["added_feature_ids"] == ["F2"]
     assert result[2]["display_claim_ids"] == ["4"]
+    assert result[2]["review_before_text"] == "当前未提取到可复用的审查评述。"
     assert result[2]["source_summary"]["added_feature_ids"] == ["F4"]
 
 
@@ -159,13 +169,21 @@ def test_claim_review_drafting_drops_deleted_oa_units_without_replacement(monkey
     assert result == []
 
 
-def test_claim_review_drafting_keeps_reused_oa_out_of_llm_even_with_response_materials(monkeypatch) -> None:
+def test_claim_review_drafting_upgrades_reused_oa_to_evidence_restructured(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
 
-    def _fail(*args, **kwargs):
-        raise AssertionError("Pure reused OA unit should not call LLM")
+    def _fake_invoke_text_json(messages, task_kind, temperature):
+        assert task_kind == "oar_claim_review_drafting"
+        user_prompt = messages[1]["content"]
+        assert '"unit_type": "evidence_restructured"' in user_prompt
+        assert '"review_before_text": "OA 对权利要求1的原文评述"' in user_prompt
+        return {
+            "items": [
+                {"unit_id": "P1", "review_text": "根据核查结果重组后的权利要求1评述"},
+            ]
+        }
 
-    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fail)
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
 
     result = node._draft_review_units(
         claims_old_structured=[
@@ -208,20 +226,77 @@ def test_claim_review_drafting_keeps_reused_oa_out_of_llm_even_with_response_mat
     assert result == [
         {
             "unit_id": "P1",
-            "unit_type": "reused_oa",
+            "unit_type": "evidence_restructured",
             "source_paragraph_ids": ["P1"],
             "display_claim_ids": ["1"],
             "anchor_claim_id": "1",
             "title": "权利要求1",
-            "review_text": "OA 对权利要求1的原文评述",
+            "review_before_text": "OA 对权利要求1的原文评述",
+            "review_text": "根据核查结果重组后的权利要求1评述",
             "claim_snapshots": [
-                {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent"},
+                {"claim_id": "1", "claim_before_text": "旧权1", "claim_text": "新权1", "claim_type": "independent"},
             ],
             "source_summary": {
                 "source_paragraph_ids": ["P1"],
                 "merged_source_claim_ids": [],
                 "added_feature_ids": [],
                 "response_dispute_ids": ["DSP_1"],
+                "amendment_feature_ids": [],
+            },
+        }
+    ]
+
+
+def test_claim_review_drafting_keeps_pure_reused_oa_out_of_llm(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Pure reused OA unit should not call LLM")
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fail)
+
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "1", "claim_text": "旧权1", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {
+                        "paragraph_id": "P1",
+                        "claim_ids": ["1"],
+                        "content": "OA 对权利要求1的原文评述",
+                    },
+                ]
+            }
+        },
+        added_features=[],
+        disputes=[],
+        evidence_assessments=[],
+        drafted_rejection_reasons={},
+    )
+
+    assert result == [
+        {
+            "unit_id": "P1",
+            "unit_type": "reused_oa",
+            "source_paragraph_ids": ["P1"],
+            "display_claim_ids": ["1"],
+            "anchor_claim_id": "1",
+            "title": "权利要求1",
+            "review_before_text": "OA 对权利要求1的原文评述",
+            "review_text": "OA 对权利要求1的原文评述",
+            "claim_snapshots": [
+                {"claim_id": "1", "claim_before_text": "旧权1", "claim_text": "新权1", "claim_type": "independent"},
+            ],
+            "source_summary": {
+                "source_paragraph_ids": ["P1"],
+                "merged_source_claim_ids": [],
+                "added_feature_ids": [],
+                "response_dispute_ids": [],
                 "amendment_feature_ids": [],
             },
         }

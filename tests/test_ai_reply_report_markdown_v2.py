@@ -86,28 +86,42 @@ def _sample_report() -> dict:
             "items": [
                 {
                     "unit_id": "P1",
-                    "unit_type": "reused_oa",
+                    "unit_type": "evidence_restructured",
                     "source_paragraph_ids": ["P1"],
                     "display_claim_ids": ["1"],
                     "anchor_claim_id": "1",
                     "title": "权利要求1",
-                    "review_text": "关于权利要求1，经审查，修改后的限定未能克服创造性缺陷 CLAIM_REVIEW_1_END",
+                    "review_before_text": "关于权利要求1，旧评述基线 REVIEW_BEFORE_ONLY",
                     "claim_snapshots": [
-                        {"claim_id": "1", "claim_text": "一种装置，其特征在于，包括模块A。"},
+                        {
+                            "claim_id": "1",
+                            "claim_before_text": "一种装置，其特征在于，包括旧模块A CLAIM_BEFORE_ONLY。",
+                            "claim_text": "一种装置，其特征在于，包括新模块A CLAIM_AFTER_ONLY。",
+                        },
                     ],
+                    "review_text": "关于权利要求1，经审查，结合新证据后的重组评述 CLAIM_REVIEW_1_END",
                 },
                 {
                     "unit_id": "M1",
-                    "unit_type": "reused_oa",
+                    "unit_type": "supplemented_new",
                     "source_paragraph_ids": ["Claim4"],
                     "display_claim_ids": ["4", "5"],
                     "anchor_claim_id": "4",
                     "title": "权利要求4、权利要求5",
-                    "review_text": "关于权利要求4-5，结合原从权内容，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
+                    "review_before_text": "",
                     "claim_snapshots": [
-                        {"claim_id": "4", "claim_text": "根据权利要求1所述的一种装置，其特征在于，包括模块A和模块B。"},
-                        {"claim_id": "5", "claim_text": "根据权利要求4所述的一种装置，其特征在于，包括模块C和模块D。"},
+                        {
+                            "claim_id": "4",
+                            "claim_before_text": "",
+                            "claim_text": "根据权利要求1所述的一种装置，其特征在于，包括模块A和模块B。 CLAIM4_ADD_ONLY",
+                        },
+                        {
+                            "claim_id": "5",
+                            "claim_before_text": "",
+                            "claim_text": "根据权利要求4所述的一种装置，其特征在于，包括模块C和模块D。 CLAIM5_ADD_ONLY",
+                        },
                     ],
+                    "review_text": "关于权利要求4-5，结合原从权内容，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
                 },
             ]
         },
@@ -226,9 +240,15 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
 
     assert "CLAIM_REVIEW_1_END" in content
     assert "CLAIM_REVIEW_2_END" in content
+    assert "结合证据重组" in content
     assert "来源OA段落：" not in content
     assert "当前权利要求文本：" in content
     assert "重组评述：" in content
+    assert 'oar-change-del">CLAIM_BEFORE_ONLY' in content
+    assert 'oar-change-add">CLAIM_AFTER_ONLY' in content
+    assert 'oar-change-del">REVIEW_BEFORE_ONLY' in content
+    assert 'oar-change-add">CLAIM_REVIEW_1_END' in content
+    assert 'oar-change-add">根据权利要求1所述的一种装置' in content
     assert "权利要求4" in content
     assert "权利要求5" in content
     assert 'class="oar-opinion-block"' in content
@@ -257,6 +277,9 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert 'class="oar-change-add"' in html_doc
     assert 'class="oar-change-del"' in html_doc
     assert 'class="oar-change-source-tag oar-change-source-tag-spec"' in html_doc
+    assert "结合证据重组" in html_doc
+    assert "CLAIM_BEFORE_ONLY" in html_doc
+    assert "CLAIM_AFTER_ONLY" in html_doc
     assert "CLAIM_REVIEW_1_END" in html_doc
     assert "CHANGE_FINAL_END" in html_doc
     assert "<blockquote>" not in html_doc

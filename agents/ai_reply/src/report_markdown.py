@@ -498,6 +498,7 @@ def _review_unit_type_label(unit_type: str) -> str:
         "split_from_group": "拆分自原组合评述",
         "merged_into_independent": "并入独权评述",
         "supplemented_new": "新增补充评述",
+        "evidence_restructured": "结合证据重组",
     }
     return mapping.get(str(unit_type).strip(), "重组评述")
 
@@ -506,14 +507,16 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
     items: List[str] = []
     for item in claim_snapshots or []:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
+        claim_before_text = str(_item_get(item, "claim_before_text", "")).strip()
         claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="")
         if not claim_id:
             continue
+        claim_diff_html, _ = _change_feature_diff_html(claim_before_text, claim_text, claim_text)
         items.extend(
             [
                 '<div class="oar-claim-snapshot-item">',
                 f'<div class="oar-claim-snapshot-head">{_escape_text(f"权利要求{claim_id}")}</div>',
-                f'<div class="oar-claim-snapshot-body">{_escape_text(claim_text)}</div>',
+                f'<div class="oar-claim-snapshot-body">{claim_diff_html}</div>',
                 "</div>",
             ]
         )
@@ -539,13 +542,19 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
         claim_label = _format_claim_ids(_item_get(item, "display_claim_ids", [])) or "-"
         unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
         claim_text_html = _claim_snapshot_html(_item_get(item, "claim_snapshots", []) or [])
-        review_text = _text_or_default(_item_get(item, "review_text", ""), default="当前未提取到可复用的审查评述。")
+        review_before_text = str(_item_get(item, "review_before_text", "")).strip()
+        review_text = str(_item_get(item, "review_text", "")).strip()
+        review_diff_html, _ = _change_feature_diff_html(
+            review_before_text,
+            review_text,
+            "当前未提取到可复用的审查评述。",
+        )
         blocks.extend(
             [
                 '<div class="oar-opinion-block">',
                 f'<div class="oar-opinion-title">{_html_text(f"{title}｜当前权利要求 {claim_label}｜{unit_type}", default="")}</div>',
                 claim_text_html,
-                _argument_paragraph_html("重组评述：", review_text),
+                _argument_paragraph_html_with_body("重组评述：", review_diff_html),
                 "</div>",
             ]
         )
@@ -737,9 +746,13 @@ def _evidence_line_html(label: str, value: str) -> str:
 
 
 def _argument_paragraph_html(label: str, value: Any) -> str:
+    return _argument_paragraph_html_with_body(label, _html_text(value, default="-"))
+
+
+def _argument_paragraph_html_with_body(label: str, body_html: str) -> str:
     return (
         '<div class="oar-opinion-paragraph">'
         f'<div class="oar-opinion-label">{_escape_text(label)}</div>'
-        f'<div class="oar-opinion-body">{_html_text(value, default="-")}</div>'
+        f'<div class="oar-opinion-body">{body_html}</div>'
         "</div>"
     )
