@@ -502,19 +502,31 @@ def _review_unit_type_label(unit_type: str) -> str:
     return mapping.get(str(unit_type).strip(), "重组评述")
 
 
-def _claim_snapshot_text(claim_snapshots: List[Any]) -> str:
-    segments: List[str] = []
+def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
+    items: List[str] = []
     for item in claim_snapshots or []:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
         claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="")
-        if claim_id:
-            segments.append(f"权利要求{claim_id}：{claim_text}")
-    return "\n".join(segments) or "未提取到权利要求文本。"
+        if not claim_id:
+            continue
+        items.extend(
+            [
+                '<div class="oar-claim-snapshot-item">',
+                f'<div class="oar-claim-snapshot-head">{_escape_text(f"权利要求{claim_id}")}</div>',
+                f'<div class="oar-claim-snapshot-body">{_escape_text(claim_text)}</div>',
+                "</div>",
+            ]
+        )
 
+    if not items:
+        items.append('<div class="oar-claim-snapshot-empty">未提取到权利要求文本。</div>')
 
-def _source_paragraph_text(source_paragraph_ids: List[Any]) -> str:
-    values = [str(item).strip() for item in (source_paragraph_ids or []) if str(item).strip()]
-    return "、".join(values) if values else "无可复用原OA段落"
+    return (
+        '<div class="oar-opinion-paragraph oar-opinion-paragraph-claims">'
+        f'<div class="oar-opinion-label">{_escape_text("当前权利要求文本：")}</div>'
+        f'<div class="oar-claim-snapshot-list">{"".join(items)}</div>'
+        "</div>"
+    )
 
 
 def _render_review_unit_blocks(review_units: List[Any]) -> str:
@@ -526,15 +538,13 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
         title = _text_or_default(_item_get(item, "title", ""), default="重组评述")
         claim_label = _format_claim_ids(_item_get(item, "display_claim_ids", [])) or "-"
         unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
-        source_paragraphs = _source_paragraph_text(_item_get(item, "source_paragraph_ids", []))
-        claim_text = _claim_snapshot_text(_item_get(item, "claim_snapshots", []) or [])
+        claim_text_html = _claim_snapshot_html(_item_get(item, "claim_snapshots", []) or [])
         review_text = _text_or_default(_item_get(item, "review_text", ""), default="当前未提取到可复用的审查评述。")
         blocks.extend(
             [
                 '<div class="oar-opinion-block">',
                 f'<div class="oar-opinion-title">{_html_text(f"{title}｜当前权利要求 {claim_label}｜{unit_type}", default="")}</div>',
-                _argument_paragraph_html("来源OA段落：", source_paragraphs),
-                _argument_paragraph_html("当前权利要求文本：", claim_text),
+                claim_text_html,
                 _argument_paragraph_html("重组评述：", review_text),
                 "</div>",
             ]
@@ -729,7 +739,7 @@ def _evidence_line_html(label: str, value: str) -> str:
 def _argument_paragraph_html(label: str, value: Any) -> str:
     return (
         '<div class="oar-opinion-paragraph">'
-        f'<span class="oar-opinion-label">{_escape_text(label)}</span>'
-        f'{_html_text(value, default="-")}'
+        f'<div class="oar-opinion-label">{_escape_text(label)}</div>'
+        f'<div class="oar-opinion-body">{_html_text(value, default="-")}</div>'
         "</div>"
     )

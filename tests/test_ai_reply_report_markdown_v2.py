@@ -98,14 +98,15 @@ def _sample_report() -> dict:
                 },
                 {
                     "unit_id": "M1",
-                    "unit_type": "merged_into_independent",
-                    "source_paragraph_ids": ["P2"],
-                    "display_claim_ids": ["1"],
-                    "anchor_claim_id": "1",
-                    "title": "权利要求1（并入原从权评述）",
-                    "review_text": "关于权利要求1，结合原从权并入后的内容，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
+                    "unit_type": "reused_oa",
+                    "source_paragraph_ids": ["Claim4"],
+                    "display_claim_ids": ["4", "5"],
+                    "anchor_claim_id": "4",
+                    "title": "权利要求4、权利要求5",
+                    "review_text": "关于权利要求4-5，结合原从权内容，经审查，对申请人意见不予采纳 CLAIM_REVIEW_2_END",
                     "claim_snapshots": [
-                        {"claim_id": "1", "claim_text": "一种装置，其特征在于，包括模块A和模块B。"},
+                        {"claim_id": "4", "claim_text": "根据权利要求1所述的一种装置，其特征在于，包括模块A和模块B。"},
+                        {"claim_id": "5", "claim_text": "根据权利要求4所述的一种装置，其特征在于，包括模块C和模块D。"},
                     ],
                 },
             ]
@@ -225,11 +226,14 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
 
     assert "CLAIM_REVIEW_1_END" in content
     assert "CLAIM_REVIEW_2_END" in content
-    assert "来源OA段落：" in content
+    assert "来源OA段落：" not in content
     assert "当前权利要求文本：" in content
     assert "重组评述：" in content
-    assert "并入独权评述" in content
+    assert "权利要求4" in content
+    assert "权利要求5" in content
     assert 'class="oar-opinion-block"' in content
+    assert 'class="oar-claim-snapshot-list"' in content
+    assert 'class="oar-claim-snapshot-item"' in content
     assert "申请人指出：" in content
     assert "审查员答复：" in content
     assert "未提取到申请人详细意见陈述。" in content
@@ -248,6 +252,7 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
 
     assert '<table class="oar-layered-table oar-layered-table-overview">' in html_doc
     assert 'class="oar-opinion-block"' in html_doc
+    assert 'class="oar-claim-snapshot-list"' in html_doc
     assert 'class="oar-verdict-badge oar-verdict-badge-applicant"' in html_doc
     assert 'class="oar-change-add"' in html_doc
     assert 'class="oar-change-del"' in html_doc

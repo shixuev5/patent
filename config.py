@@ -76,7 +76,6 @@ class Settings:
 
     # --- 通用本地检索（可复用于 ai_reply / patent_analysis）---
     LOCAL_RETRIEVAL_ENABLED = os.getenv("LOCAL_RETRIEVAL_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-    LOCAL_RETRIEVAL_BACKEND = os.getenv("LOCAL_RETRIEVAL_BACKEND", "sqlite_fts5").strip() or "sqlite_fts5"
     LOCAL_RETRIEVAL_CHUNK_CHARS = max(200, int(os.getenv("LOCAL_RETRIEVAL_CHUNK_CHARS", "600")))
     LOCAL_RETRIEVAL_CHUNK_OVERLAP = max(0, int(os.getenv("LOCAL_RETRIEVAL_CHUNK_OVERLAP", "120")))
     LOCAL_RETRIEVAL_CANDIDATE_K = max(4, int(os.getenv("LOCAL_RETRIEVAL_CANDIDATE_K", "24")))
@@ -84,6 +83,14 @@ class Settings:
     LOCAL_RETRIEVAL_CONTEXT_K = max(1, int(os.getenv("LOCAL_RETRIEVAL_CONTEXT_K", "6")))
     LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS = max(400, int(os.getenv("LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS", "2200")))
     LOCAL_RETRIEVAL_MAX_QUOTE_CHARS = max(80, int(os.getenv("LOCAL_RETRIEVAL_MAX_QUOTE_CHARS", "180")))
+    LOCAL_RETRIEVAL_EMBEDDING_API_KEY = os.getenv("LOCAL_RETRIEVAL_EMBEDDING_API_KEY", "").strip()
+    LOCAL_RETRIEVAL_EMBEDDING_BASE_URL = os.getenv("LOCAL_RETRIEVAL_EMBEDDING_BASE_URL", "").strip()
+    LOCAL_RETRIEVAL_EMBEDDING_MODEL = (
+        os.getenv("LOCAL_RETRIEVAL_EMBEDDING_MODEL", "text-embedding-v4").strip() or "text-embedding-v4"
+    )
+    LOCAL_RETRIEVAL_SQLITE_VEC_EXTENSION_PATH = os.getenv(
+        "LOCAL_RETRIEVAL_SQLITE_VEC_EXTENSION_PATH", ""
+    ).strip()
     
     # --- PaddleOCR ---
     OCR_API_KEY = os.getenv("OCR_API_KEY", "")  

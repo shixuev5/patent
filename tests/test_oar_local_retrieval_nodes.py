@@ -3,12 +3,43 @@ from pathlib import Path
 from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
 from agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
 from agents.ai_reply.src.state import WorkflowConfig
+from agents.common.retrieval import LocalEvidenceRetriever
 from config import settings
 
 
+class _FakeEmbeddingProvider:
+    embedding_dim = 6
+
+    def encode_queries(self, texts):
+        return [self._encode(text) for text in texts]
+
+    def encode_passages(self, texts):
+        return [self._encode(text) for text in texts]
+
+    def _encode(self, text):
+        value = str(text or "").lower()
+        vector = [0.0] * self.embedding_dim
+        for idx, token in enumerate(["文献", "test", "local", "retrieval", "锁定", "structure"]):
+            if token in value:
+                vector[idx % self.embedding_dim] += 1.0
+        if not any(vector):
+            vector[0] = 1.0
+        norm = sum(item * item for item in vector) ** 0.5
+        return [item / norm for item in vector]
+
+
+def _patch_fake_embeddings(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
+    monkeypatch.setattr(
+        LocalEvidenceRetriever,
+        "_build_embedding_provider",
+        lambda self: _FakeEmbeddingProvider(),
+    )
+
+
 def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
     monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", True)
-    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_BACKEND", "sqlite_fts5")
 
     node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
     office_action = {
@@ -40,9 +71,12 @@ def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypat
     assert local_meta.get("enabled") is True
     assert int(local_meta.get("chunk_count", 0)) > 0
     assert Path(str(local_meta.get("index_path", ""))).exists()
+    assert local_meta.get("embedding_model") == "fake/bge-m3"
 
 
 def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+
     class StubLLM:
         def __init__(self):
             self.messages = []
@@ -121,6 +155,8 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     assert len(assessments) == 1
     trace = assessments[0]["trace"]
     assert "local_retrieval" in trace
+    assert "lexical_hits" in trace["local_retrieval"]
+    assert "dense_hits" in trace["local_retrieval"]
 
     call_messages = node.llm_service.messages[0]
     evidence_messages = [item["content"] for item in call_messages if "证据卡" in item.get("content", "")]

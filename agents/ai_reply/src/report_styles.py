@@ -465,18 +465,51 @@ th, td {
 }
 
 .oar-opinion-paragraph {
-    line-height: 1.85;
     color: var(--oar-ink);
-    text-indent: 2em;
 }
 
 .oar-opinion-paragraph + .oar-opinion-paragraph {
     margin-top: 12px;
 }
 
+.oar-opinion-paragraph-claims {
+    text-indent: 0;
+}
+
 .oar-opinion-label {
+    display: block;
     font-weight: 700;
     color: var(--oar-accent-strong);
+}
+
+.oar-opinion-body {
+    margin-top: 6px;
+    line-height: 1.85;
+    color: var(--oar-ink);
+    text-indent: 2em;
+}
+
+.oar-claim-snapshot-list {
+    margin-top: 10px;
+}
+
+.oar-claim-snapshot-item + .oar-claim-snapshot-item {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed rgba(148, 163, 184, 0.38);
+}
+
+.oar-claim-snapshot-head {
+    font-weight: 700;
+    color: var(--oar-ink);
+    margin-bottom: 4px;
+}
+
+.oar-claim-snapshot-body,
+.oar-claim-snapshot-empty {
+    line-height: 1.82;
+    color: var(--oar-ink);
+    text-indent: 2em;
 }
 
 .oar-opinion-empty {

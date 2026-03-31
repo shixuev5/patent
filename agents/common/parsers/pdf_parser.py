@@ -1,8 +1,8 @@
 import os
 import time
 import zipfile
-import requests
 import shutil
+import re
 from pathlib import Path
 from loguru import logger
 
@@ -33,44 +33,23 @@ class LocalPDFParser(BaseParser):
         logger.info(f"[本地解析器] 开始解析：{pdf_path}")
 
         try:
-            # 1. Read file
             pdf_bytes = read_fn(str(pdf_path))
-
-            # 2. Prepare environment
             local_md_dir = output_dir
             local_image_dir = output_dir / "images"
             local_md_dir.mkdir(parents=True, exist_ok=True)
             local_image_dir.mkdir(parents=True, exist_ok=True)
-
             logger.info(f"[本地解析器] 输出目录已设置：{local_md_dir}")
 
-            image_writer = FileBasedDataWriter(str(local_image_dir))
-            md_writer = FileBasedDataWriter(str(local_md_dir))
-
-            # 3. Setup backend
-            backend = get_vlm_engine(inference_engine="auto", is_async=False)
-            parse_method = "hybrid_auto"
-
-            # 4. Hybrid Analyze
-            middle_json, infer_result, _vlm_ocr_enable = hybrid_doc_analyze(
-                pdf_bytes,
-                image_writer=image_writer,
-                backend=backend,
-                parse_method=parse_method,
-                language="ch",
-                inline_formula_enable=True,
-                server_url=None,
+            md_content = LocalPDFParser._parse_with_language_fallback(
+                pdf_bytes=pdf_bytes,
+                output_dir=local_md_dir,
+                image_dir=local_image_dir,
+                pdf_name=pdf_name,
             )
 
-            pdf_info = middle_json["pdf_info"]
-
-            # 5. Generate Markdown
-            img_rel_dir = "images"  # Relative path for MD
-            md_content = vlm_union_make(pdf_info, MakeMode.MM_MD, img_rel_dir)
-
-            md_file_name = f"raw.md" # Standardize name to raw.md as expected by pipeline
+            md_writer = FileBasedDataWriter(str(local_md_dir))
+            md_file_name = "raw.md"
             md_writer.write_string(md_file_name, md_content)
-
             final_md_path = Path(local_md_dir) / md_file_name
 
             if not final_md_path.exists():
@@ -83,6 +62,57 @@ class LocalPDFParser(BaseParser):
         except Exception as e:
             logger.exception(f"[本地解析器] PDF 解析失败：{e}")
             raise e
+
+    @staticmethod
+    def _parse_with_language_fallback(pdf_bytes: bytes, output_dir: Path, image_dir: Path, pdf_name: str) -> str:
+        backend = get_vlm_engine(inference_engine="auto", is_async=False)
+        parse_method = "hybrid_auto"
+        candidates = ["auto"]
+        candidates.extend(["en", "ja", "ko", "ch"])
+
+        best_md = ""
+        best_score = float("-inf")
+        errors = []
+        for language in candidates:
+            try:
+                image_writer = FileBasedDataWriter(str(image_dir))
+                middle_json, _infer_result, _vlm_ocr_enable = hybrid_doc_analyze(
+                    pdf_bytes,
+                    image_writer=image_writer,
+                    backend=backend,
+                    parse_method=parse_method,
+                    language=language,
+                    inline_formula_enable=True,
+                    server_url=None,
+                )
+                pdf_info = middle_json["pdf_info"]
+                md_content = vlm_union_make(pdf_info, MakeMode.MM_MD, "images")
+                score = LocalPDFParser._estimate_markdown_quality(md_content)
+                if score > best_score:
+                    best_md = md_content
+                    best_score = score
+                if language == "auto" and score >= 0.45:
+                    return md_content
+            except Exception as ex:
+                errors.append(f"{language}: {ex}")
+                logger.warning(f"[本地解析器] 语言候选 {language} 解析失败: {ex}")
+
+        if best_md:
+            logger.info(f"[本地解析器] 采用最佳解析结果，质量分={best_score:.3f}")
+            return best_md
+        raise RuntimeError(f"本地 PDF 解析失败: {'; '.join(errors)}")
+
+    @staticmethod
+    def _estimate_markdown_quality(md_content: str) -> float:
+        text = str(md_content or "").strip()
+        if not text:
+            return 0.0
+        length_score = min(len(text) / 4000.0, 1.0)
+        alpha_ratio = len(re.findall(r"[A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text)) / max(1, len(text))
+        line_count = len([line for line in text.splitlines() if line.strip()])
+        structure_score = min(line_count / 80.0, 1.0)
+        noise_penalty = min(len(re.findall(r"[^\w\s\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af.,;:!?%()\[\]{}\-_/]", text)) / max(1, len(text)), 0.6)
+        return max(0.0, length_score * 0.4 + alpha_ratio * 0.4 + structure_score * 0.2 - noise_penalty)
 
 
 class OnlinePDFParser(BaseParser):

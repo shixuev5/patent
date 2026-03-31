@@ -1,9 +1,48 @@
 from pathlib import Path
 
 from agents.common.retrieval import LocalEvidenceRetriever
+from config import settings
 
 
-def test_search_prefers_embodiment_for_embodiment_intent(tmp_path: Path) -> None:
+class _FakeEmbeddingProvider:
+    embedding_dim = 8
+
+    def encode_queries(self, texts):
+        return [self._encode(text) for text in texts]
+
+    def encode_passages(self, texts):
+        return [self._encode(text) for text in texts]
+
+    def _encode(self, text):
+        value = str(text or "").lower()
+        vector = [0.0] * self.embedding_dim
+        groups = [
+            ["定位", "position", "alignment"],
+            ["导轨", "rail", "guide"],
+            ["移动", "slide", "move"],
+            ["锁定", "lock", "locking"],
+            ["结构", "structure"],
+        ]
+        for idx, group in enumerate(groups):
+            if any(token in value for token in group):
+                vector[idx] += 1.0
+        if not any(vector):
+            vector[0] = 1.0
+        norm = sum(item * item for item in vector) ** 0.5
+        return [item / norm for item in vector]
+
+
+def _patch_fake_embeddings(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
+    monkeypatch.setattr(
+        LocalEvidenceRetriever,
+        "_build_embedding_provider",
+        lambda self: _FakeEmbeddingProvider(),
+    )
+
+
+def test_search_prefers_embodiment_for_embodiment_intent(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
     retriever = LocalEvidenceRetriever(db_path=str(tmp_path / "local.db"), chunk_chars=80, chunk_overlap=20)
     retriever.build_index(
         [
@@ -23,9 +62,12 @@ def test_search_prefers_embodiment_for_embodiment_intent(tmp_path: Path) -> None
     hits = retriever.search("定位架 导轨 移动 锁定", intent="embodiment", top_k=3)
     assert hits
     assert hits[0]["section_type"] in {"embodiment", "claim"}
+    assert hits[0]["retrieval_channels"]
+    assert "fusion_score" in hits[0]
 
 
-def test_search_respects_doc_filters(tmp_path: Path) -> None:
+def test_search_respects_doc_filters(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
     retriever = LocalEvidenceRetriever(db_path=str(tmp_path / "local.db"), chunk_chars=100, chunk_overlap=20)
     retriever.build_index(
         [
@@ -39,7 +81,8 @@ def test_search_respects_doc_filters(tmp_path: Path) -> None:
     assert all(item["doc_id"] == "D2" for item in hits)
 
 
-def test_build_evidence_cards_respects_limits(tmp_path: Path) -> None:
+def test_build_evidence_cards_respects_limits(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
     retriever = LocalEvidenceRetriever(db_path=str(tmp_path / "local.db"), chunk_chars=120, chunk_overlap=40)
     retriever.build_index(
         [
@@ -65,3 +108,62 @@ def test_build_evidence_cards_respects_limits(tmp_path: Path) -> None:
     assert all(len(item["quote"]) <= 70 for item in cards)
     assert bundle["trace"]["context_chars"] <= 140
 
+
+def test_build_index_records_embedding_metadata_and_languages(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    retriever = LocalEvidenceRetriever(db_path=str(tmp_path / "local.db"), chunk_chars=100, chunk_overlap=20)
+    meta = retriever.build_index(
+        [
+            {
+                "doc_id": "D1",
+                "source_type": "comparison_document",
+                "title": "mixed",
+                "content": "中文定位结构 English rail locking mechanism.",
+            }
+        ]
+    )
+
+    assert meta["embedding_model"] == "fake/bge-m3"
+    assert meta["embedding_dim"] == 8
+    assert "mixed" in meta["indexed_languages"]
+
+
+def test_dense_search_can_bridge_cross_language_terms(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    retriever = LocalEvidenceRetriever(db_path=str(tmp_path / "local.db"), chunk_chars=100, chunk_overlap=20)
+    retriever.build_index(
+        [
+            {
+                "doc_id": "EN1",
+                "source_type": "comparison_document",
+                "title": "english",
+                "content": "The rail locking structure slides into position and keeps alignment stable.",
+            }
+        ]
+    )
+
+    hits = retriever.search("导轨 锁定 定位", intent="fact_verification", top_k=3)
+    assert hits
+    assert hits[0]["doc_id"] == "EN1"
+    assert "dense" in hits[0]["retrieval_channels"]
+
+
+def test_existing_index_is_not_cleared_on_reopen(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    db_path = tmp_path / "local.db"
+    retriever = LocalEvidenceRetriever(db_path=str(db_path), chunk_chars=100, chunk_overlap=20)
+    retriever.build_index(
+        [
+            {
+                "doc_id": "D1",
+                "source_type": "comparison_document",
+                "title": "Doc 1",
+                "content": "定位架沿导轨移动并锁定。",
+            }
+        ]
+    )
+
+    reopened = LocalEvidenceRetriever(db_path=str(db_path), chunk_chars=100, chunk_overlap=20)
+    hits = reopened.search("定位架 导轨 锁定", intent="fact_verification", top_k=3)
+    assert hits
+    assert hits[0]["doc_id"] == "D1"

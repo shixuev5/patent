@@ -373,8 +373,12 @@ class CommonKnowledgeVerificationNode:
                 "enabled": False,
                 "fallback": "no_local_retriever",
                 "queries": flat_queries,
+                "queries_by_language": {},
                 "doc_filters": local_doc_ids,
                 "hit_chunks": [],
+                "lexical_hits": [],
+                "dense_hits": [],
+                "fusion_hits": [],
             }
 
         candidates: List[Dict[str, Any]] = []
@@ -405,8 +409,18 @@ class CommonKnowledgeVerificationNode:
             "enabled": True,
             "fallback": "",
             "queries": flat_queries,
+            "queries_by_language": {},
             "doc_filters": local_doc_ids,
             "hit_chunks": [item.get("chunk_id") for item in sorted_items if item.get("chunk_id")],
+            "lexical_hits": [
+                item.get("chunk_id") for item in sorted_items
+                if item.get("chunk_id") and "lexical" in (item.get("retrieval_channels") or [])
+            ],
+            "dense_hits": [
+                item.get("chunk_id") for item in sorted_items
+                if item.get("chunk_id") and "dense" in (item.get("retrieval_channels") or [])
+            ],
+            "fusion_hits": [item.get("chunk_id") for item in sorted_items if item.get("chunk_id")],
         }
 
     def _to_external_candidates(self, external_evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -542,8 +556,12 @@ class CommonKnowledgeVerificationNode:
             "enabled": bool(local_trace.get("enabled", False)),
             "fallback": str(local_trace.get("fallback", "")).strip(),
             "queries": flat_queries,
+            "queries_by_language": local_trace.get("queries_by_language", {}),
             "doc_filters": local_doc_ids,
             "hit_chunks": local_trace.get("hit_chunks", []),
+            "lexical_hits": local_trace.get("lexical_hits", []),
+            "dense_hits": local_trace.get("dense_hits", []),
+            "fusion_hits": local_trace.get("fusion_hits", []),
             "selected_cards": card_trace.get("selected_candidates", []),
             "dropped_cards": card_trace.get("dropped_candidates", []),
             "context_chars": int(card_trace.get("context_chars", 0) or 0),

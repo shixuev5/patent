@@ -529,8 +529,12 @@ feature_text: {feature_text}
                 "enabled": False,
                 "fallback": "no_local_retriever",
                 "queries": queries,
+                "queries_by_language": {},
                 "doc_filters": doc_filters,
                 "hit_chunks": [],
+                "lexical_hits": [],
+                "dense_hits": [],
+                "fusion_hits": [],
                 "selected_cards": [],
             }
 
@@ -586,8 +590,18 @@ feature_text: {feature_text}
                 "enabled": True,
                 "fallback": "no_local_hits",
                 "queries": queries,
+                "queries_by_language": {},
                 "doc_filters": doc_filters,
                 "hit_chunks": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
+                "lexical_hits": [
+                    item.get("chunk_id") for item in reranked
+                    if item.get("chunk_id") and "lexical" in (item.get("retrieval_channels") or [])
+                ],
+                "dense_hits": [
+                    item.get("chunk_id") for item in reranked
+                    if item.get("chunk_id") and "dense" in (item.get("retrieval_channels") or [])
+                ],
+                "fusion_hits": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
                 "selected_cards": [],
             }
 
@@ -595,8 +609,18 @@ feature_text: {feature_text}
             "enabled": True,
             "fallback": "",
             "queries": queries,
+            "queries_by_language": {},
             "doc_filters": doc_filters,
             "hit_chunks": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
+            "lexical_hits": [
+                item.get("chunk_id") for item in reranked
+                if item.get("chunk_id") and "lexical" in (item.get("retrieval_channels") or [])
+            ],
+            "dense_hits": [
+                item.get("chunk_id") for item in reranked
+                if item.get("chunk_id") and "dense" in (item.get("retrieval_channels") or [])
+            ],
+            "fusion_hits": [item.get("chunk_id") for item in reranked if item.get("chunk_id")],
             "selected_cards": card_bundle.get("trace", {}).get("selected_candidates", []),
             "dropped_cards": card_bundle.get("trace", {}).get("dropped_candidates", []),
             "context_chars": card_bundle.get("trace", {}).get("context_chars", 0),

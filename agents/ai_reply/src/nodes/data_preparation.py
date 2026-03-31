@@ -132,12 +132,6 @@ class DataPreparationNode:
                 "reason": "LOCAL_RETRIEVAL_ENABLED=false",
             }
 
-        if settings.LOCAL_RETRIEVAL_BACKEND != "sqlite_fts5":
-            return {
-                "enabled": False,
-                "reason": f"unsupported backend: {settings.LOCAL_RETRIEVAL_BACKEND}",
-            }
-
         documents = self._build_local_retrieval_documents(prepared_materials)
         if not documents:
             return {
@@ -157,6 +151,7 @@ class DataPreparationNode:
             {
                 "doc_id": str(item.get("doc_id", "")).strip(),
                 "source_type": str(item.get("source_type", "")).strip(),
+                "doc_language": str(item.get("doc_language", "")).strip(),
             }
             for item in documents
         ]
