@@ -31,7 +31,7 @@ class OfficeActionExtractor:
         office_action = OfficeAction(
             application_number=self._extract_application_number(markdown_content),
             current_notice_round=current_notice_round,
-            comparison_documents=self._extract_comparison_documents(section_content),
+            comparison_documents=self._extract_comparison_documents(section_content, markdown_content),
             paragraphs=self._extract_paragraphs(section_content),
         )
         return office_action
@@ -72,16 +72,51 @@ class OfficeActionExtractor:
         logger.warning("未找到申请号")
         return ""
 
-    def _extract_comparison_documents(self, section_content: str) -> List[ComparisonDocument]:
+    def _extract_comparison_documents(self, section_content: str, markdown_content: str = "") -> List[ComparisonDocument]:
         """提取对比文件列表"""
         comparison_documents = self._extract_comparison_documents_from_body(section_content)
         if comparison_documents:
+            table_documents = self._extract_comparison_documents_from_table(markdown_content or section_content)
+            if table_documents:
+                comparison_documents = self._fill_publication_dates_from_table(
+                    comparison_documents,
+                    table_documents,
+                )
             logger.info(f"正文共提取到 {len(comparison_documents)} 个对比文件")
             return comparison_documents
 
-        comparison_documents = self._extract_comparison_documents_from_table(section_content)
+        comparison_documents = self._extract_comparison_documents_from_table(markdown_content or section_content)
         logger.info(f"表格兜底共提取到 {len(comparison_documents)} 个对比文件")
         return comparison_documents
+
+    def _fill_publication_dates_from_table(
+        self,
+        body_documents: List[ComparisonDocument],
+        table_documents: List[ComparisonDocument],
+    ) -> List[ComparisonDocument]:
+        """在保持正文编号与文献号口径不变的前提下，从表格补齐公开日期。"""
+        dates_by_number = {
+            self._clean_embedded_text(item.document_number): item.publication_date
+            for item in table_documents
+            if self._clean_embedded_text(item.document_number) and item.publication_date
+        }
+        dates_by_doc_id = {
+            str(item.document_id or "").strip(): item.publication_date
+            for item in table_documents
+            if str(item.document_id or "").strip() and item.publication_date
+        }
+
+        enriched_documents: List[ComparisonDocument] = []
+        for item in body_documents:
+            publication_date = item.publication_date
+            if not publication_date:
+                normalized_number = self._clean_embedded_text(item.document_number)
+                publication_date = dates_by_number.get(normalized_number) or dates_by_doc_id.get(item.document_id)
+
+            enriched_documents.append(
+                item.model_copy(update={"publication_date": publication_date})
+            )
+        return enriched_documents
 
     def _extract_comparison_documents_from_body(self, section_content: str) -> List[ComparisonDocument]:
         comparison_documents: List[ComparisonDocument] = []
@@ -117,19 +152,19 @@ class OfficeActionExtractor:
 
     def _extract_comparison_documents_from_table(self, section_content: str) -> List[ComparisonDocument]:
         comparison_documents: List[ComparisonDocument] = []
-        table_pattern = r"对比文件(?:\(其编号在今后的审查过程中继续沿用\)|（其编号在今后的审查过程中继续沿用）)：?\s*<table>(.*?)</table>"
+        table_pattern = r"对比文件(?:\(其编号在今后的审查过程中继续沿用\)|（其编号在今后的审查过程中继续沿用）)[:：]?\s*<table\b[^>]*>(.*?)</table>"
         table_match = re.search(table_pattern, section_content, re.DOTALL)
         if not table_match:
             return comparison_documents
 
         table_content = table_match.group(1)
-        row_pattern = r"<tr>(.*?)</tr>"
+        row_pattern = r"<tr\b[^>]*>(.*?)</tr>"
         rows = re.findall(row_pattern, table_content, re.DOTALL)
         if len(rows) <= 1:
             return comparison_documents
 
         for row in rows[1:]:
-            cell_pattern = r"<td>(.*?)</td>"
+            cell_pattern = r"<td\b[^>]*>(.*?)</td>"
             cells = re.findall(cell_pattern, row, re.DOTALL)
             if len(cells) < 3:
                 continue

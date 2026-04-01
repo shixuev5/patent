@@ -42,7 +42,7 @@ class ReportGenerationNode:
 
         try:
             cache = get_node_cache(self.config, "report_generation")
-            report = cache.run_step("generate_report_v8", self._generate_report, state)
+            report = cache.run_step("generate_report_v9", self._generate_report, state)
             output_path = self._save_report(report, state)
 
             updates["final_report"] = report
@@ -246,6 +246,9 @@ class ReportGenerationNode:
             feature_text = str(item_get(feature, "feature_text", "")).strip()
             feature_before_text = str(item_get(feature, "feature_before_text", "")).strip()
             feature_after_text = str(item_get(feature, "feature_after_text", "")).strip() or feature_text
+            source_type = str(item_get(feature, "source_type", "")).strip()
+            if source_type == "claim":
+                continue
             if not feature_text:
                 feature_text = feature_after_text
             dispute = dispute_map.get(feature_id, {})
@@ -259,7 +262,7 @@ class ReportGenerationNode:
                     "feature_after_text": feature_after_text,
                     "contains_added_text": self._change_contains_added_text(feature_before_text, feature_after_text),
                     "target_claim_ids": self._normalize_claim_ids(item_get(feature, "target_claim_ids", [])),
-                    "source_type": str(item_get(feature, "source_type", "")).strip(),
+                    "source_type": source_type,
                     "source_claim_ids": self._normalize_claim_ids(item_get(feature, "source_claim_ids", [])),
                     "support_finding": support_map.get(feature_id, {}),
                     "assessment": to_jsonable(assessment),

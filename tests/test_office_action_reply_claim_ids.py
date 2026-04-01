@@ -71,8 +71,8 @@ def test_report_generation_builds_change_items_by_feature_id() -> None:
                 "feature_before_text": "旧特征A",
                 "feature_after_text": "新增特征A",
                 "target_claim_ids": ["2"],
-                "source_type": "claim",
-                "source_claim_ids": ["5"],
+                "source_type": "spec",
+                "source_claim_ids": [],
             }
         ],
         support_findings=[
@@ -107,13 +107,13 @@ def test_report_generation_builds_change_items_by_feature_id() -> None:
     assert items[0]["feature_after_text"] == "新增特征A"
     assert items[0]["contains_added_text"] is True
     assert items[0]["target_claim_ids"] == ["2"]
-    assert items[0]["source_claim_ids"] == ["5"]
+    assert items[0]["source_claim_ids"] == []
     assert items[0]["support_finding"]["support_basis"] == "说明书第3页"
     assert items[0]["assessment"]["verdict"] == "APPLICANT_CORRECT"
     assert items[0]["final_review_reason"] == "结合D1仍可维持驳回。"
 
 
-def test_report_generation_builds_change_items_without_ai_requirement_for_non_added_change() -> None:
+def test_report_generation_excludes_claim_source_change_items_from_section3() -> None:
     node = ReportGenerationNode()
 
     items = node._build_change_items(
@@ -132,8 +132,4 @@ def test_report_generation_builds_change_items_without_ai_requirement_for_non_ad
         amendment_disputes=[],
     )
 
-    assert len(items) == 1
-    assert items[0]["feature_id"] == "F2"
-    assert items[0]["contains_added_text"] is False
-    assert items[0]["assessment"] == {}
-    assert items[0]["final_review_reason"] == ""
+    assert items == []

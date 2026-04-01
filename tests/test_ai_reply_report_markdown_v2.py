@@ -56,29 +56,6 @@ def _sample_report() -> dict:
                         }
                     ],
                     "final_review_reason": "经审查，修改后的权利要求1仍不具备创造性 CHANGE_FINAL_END",
-                },
-                {
-                    "feature_id": "F2",
-                    "feature_text": "保持不变的特征 CLAIM_FEATURE_END",
-                    "feature_before_text": "保持不变的特征 CLAIM_FEATURE_END",
-                    "feature_after_text": "保持不变的特征 CLAIM_FEATURE_END",
-                    "contains_added_text": False,
-                    "target_claim_ids": ["2"],
-                    "source_type": "claim",
-                    "source_claim_ids": ["5"],
-                    "assessment": {
-                        "verdict": "EXAMINER_CORRECT",
-                        "reasoning": "CLAIM_CHANGE_REASON_SHOULD_HIDE",
-                    },
-                    "evidence": [
-                        {
-                            "doc_id": "D2",
-                            "location": "第5页",
-                            "quote": "CLAIM_CHANGE_QUOTE_SHOULD_HIDE",
-                            "analysis": "CLAIM_CHANGE_ANALYSIS_SHOULD_HIDE",
-                        }
-                    ],
-                    "final_review_reason": "CLAIM_CHANGE_FINAL_SHOULD_HIDE",
                 }
             ],
         },
@@ -221,7 +198,7 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     assert "变更特征_ONLY_IN_SECTION3" in content
     assert "来源类型" not in content
     assert "1（来源权利要求 5）" not in content
-    assert "2（来源权利要求 5）" in content
+    assert "2（来源权利要求 5）" not in content
     assert "CHANGE_REASON_END" in content
     assert "CHANGE_QUOTE_END" in content
     assert "CHANGE_ANALYSIS_END" in content
@@ -230,7 +207,7 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     assert "CLAIM_CHANGE_QUOTE_SHOULD_HIDE" not in content
     assert "CLAIM_CHANGE_ANALYSIS_SHOULD_HIDE" not in content
     assert "CLAIM_CHANGE_FINAL_SHOULD_HIDE" not in content
-    assert "权项上提" in content
+    assert "权项上提" not in content
     assert "说明书补入" in content
     assert "未核查" not in content
 
