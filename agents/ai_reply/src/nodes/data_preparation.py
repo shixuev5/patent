@@ -146,16 +146,7 @@ class DataPreparationNode:
             chunk_chars=settings.LOCAL_RETRIEVAL_CHUNK_CHARS,
             chunk_overlap=settings.LOCAL_RETRIEVAL_CHUNK_OVERLAP,
         )
-        meta = retriever.build_index(documents)
-        meta["documents"] = [
-            {
-                "doc_id": str(item.get("doc_id", "")).strip(),
-                "source_type": str(item.get("source_type", "")).strip(),
-                "doc_language": str(item.get("doc_language", "")).strip(),
-            }
-            for item in documents
-        ]
-        return meta
+        return retriever.build_index(documents)
 
     def _build_local_retrieval_documents(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, str]]:
         documents: List[Dict[str, str]] = []

@@ -47,6 +47,8 @@ class AmendmentTrackingNode:
                 item if isinstance(item, StructuredClaim) else StructuredClaim(**item)
                 for item in result.get("claims_effective_structured", [])
             ]
+            updates["claims_old_source"] = str(result.get("claims_old_source", "")).strip()
+            updates["claims_old_source_reason"] = str(result.get("claims_old_source_reason", "")).strip()
             updates["has_claim_amendment"] = result["has_claim_amendment"]
             updates["added_features"] =[
                 item if isinstance(item, AddedFeature) else AddedFeature(**item)
@@ -71,13 +73,19 @@ class AmendmentTrackingNode:
         previous_claims_list = [self._to_dict(item) for item in (previous_claims or [])]
         current_claims_list = [self._to_dict(item) for item in (current_claims or [])]
         current_notice_round = self._extract_current_notice_round(prepared)
-        old_claims = self._resolve_old_claims(prepared, previous_claims_list, current_notice_round)
+        old_claims, claims_old_source, claims_old_source_reason = self._resolve_old_claims(
+            prepared,
+            previous_claims_list,
+            current_notice_round,
+        )
         effective_claims = current_claims_list or old_claims
 
         if not current_claims_list:
             return {
                 "claims_old_structured": old_claims,
                 "claims_effective_structured": effective_claims,
+                "claims_old_source": claims_old_source,
+                "claims_old_source_reason": claims_old_source_reason,
                 "has_claim_amendment": False,
                 "added_features":[],
             }
@@ -87,6 +95,8 @@ class AmendmentTrackingNode:
             return {
                 "claims_old_structured": old_claims,
                 "claims_effective_structured": effective_claims,
+                "claims_old_source": claims_old_source,
+                "claims_old_source_reason": claims_old_source_reason,
                 "has_claim_amendment": False,
                 "added_features":[],
             }
@@ -107,6 +117,8 @@ class AmendmentTrackingNode:
         return {
             "claims_old_structured": old_claims,
             "claims_effective_structured": effective_claims,
+            "claims_old_source": claims_old_source,
+            "claims_old_source_reason": claims_old_source_reason,
             "has_claim_amendment": normalized["has_claim_amendment"],
             "added_features": normalized["added_features"],
         }
@@ -333,10 +345,21 @@ class AmendmentTrackingNode:
         prepared_materials: Dict[str, Any],
         previous_claims: List[Dict[str, Any]],
         current_notice_round: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> tuple[List[Dict[str, Any]], str, str]:
         if current_notice_round >= 2 and previous_claims:
-            return previous_claims
-        return self._extract_original_patent_claims(prepared_materials)
+            return previous_claims, "claims_previous", "multi_notice_previous_claims"
+        if current_notice_round >= 2:
+            logger.warning("多轮审查场景缺少上一版权利要求，回退使用原始专利权利要求作为旧权利要求基线")
+            return (
+                self._extract_original_patent_claims(prepared_materials),
+                "original_patent",
+                "multi_notice_missing_previous_claims",
+            )
+        return (
+            self._extract_original_patent_claims(prepared_materials),
+            "original_patent",
+            "first_notice_or_missing_previous",
+        )
 
     def _extract_current_notice_round(self, prepared_materials: Dict[str, Any]) -> int:
         office_action = self._to_dict(prepared_materials.get("office_action", {}))

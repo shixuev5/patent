@@ -217,7 +217,7 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
 
     assert "CLAIM_REVIEW_1_END" in content
     assert "CLAIM_REVIEW_2_END" in content
-    assert "结合证据重组" in content
+    assert "独权重组评述" in content
     assert "来源OA段落：" not in content
     assert "当前权利要求文本：" in content
     assert "重组评述：" in content
@@ -254,7 +254,7 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert 'class="oar-change-add"' in html_doc
     assert 'class="oar-change-del"' in html_doc
     assert 'class="oar-change-source-tag oar-change-source-tag-spec"' in html_doc
-    assert "结合证据重组" in html_doc
+    assert "独权重组评述" in html_doc
     assert "CLAIM_BEFORE_ONLY" in html_doc
     assert "CLAIM_AFTER_ONLY" in html_doc
     assert "CLAIM_REVIEW_1_END" in html_doc
@@ -262,7 +262,7 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert "<blockquote>" not in html_doc
 
 
-def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_sequence() -> None:
+def test_build_final_report_markdown_preserves_upstream_unique_claim_cards() -> None:
     report = {
         "summary": {},
         "amendment_section": {},
@@ -272,7 +272,7 @@ def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_seque
             "items": [
                 {
                     "unit_id": "U1",
-                    "unit_type": "reused_oa",
+                    "unit_type": "evidence_restructured",
                     "display_claim_ids": ["1"],
                     "title": "权利要求1",
                     "claim_snapshots": [
@@ -283,23 +283,21 @@ def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_seque
                 },
                 {
                     "unit_id": "U2",
-                    "unit_type": "reused_oa",
-                    "display_claim_ids": ["8", "1"],
-                    "title": "权利要求8、权利要求1",
+                    "unit_type": "supplemented_new",
+                    "display_claim_ids": ["8"],
+                    "title": "权利要求8",
                     "claim_snapshots": [
                         {"claim_id": "8", "claim_before_text": "", "claim_text": "权8文本。"},
-                        {"claim_id": "1", "claim_before_text": "", "claim_text": "不应重复展示的权1文本。"},
                     ],
                     "review_before_text": "",
                     "review_text": "权8评述。",
                 },
                 {
                     "unit_id": "U3",
-                    "unit_type": "reused_oa",
-                    "display_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "9"],
-                    "title": "权利要求1、权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["2", "3", "4", "5", "6", "7", "9"],
+                    "title": "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9",
                     "claim_snapshots": [
-                        {"claim_id": "1", "claim_before_text": "", "claim_text": "不应展示的权1文本。"},
                         {"claim_id": "2", "claim_before_text": "", "claim_text": "权2文本。"},
                         {"claim_id": "3", "claim_before_text": "", "claim_text": "权3文本。"},
                         {"claim_id": "4", "claim_before_text": "", "claim_text": "权4文本。"},
@@ -317,12 +315,9 @@ def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_seque
 
     content = build_final_report_markdown(report)
 
-    assert "当前权利要求 8,1" not in content
-    assert "当前权利要求 1,2,3,4,5,6,7,9" not in content
-    assert "权利要求8｜当前权利要求 8｜复用原OA" in content
-    assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜当前权利要求 2,3,4,5,6,7,9｜复用原OA" in content
-    assert "不应重复展示的权1文本。" not in content
-    assert "不应展示的权1文本。" not in content
+    assert "权利要求1｜当前权利要求 1｜" in content
+    assert "权利要求8｜当前权利要求 8｜" in content
+    assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜当前权利要求 2,3,4,5,6,7,9｜" in content
     assert "权8文本。" in content
     assert "权9文本。" in content
 

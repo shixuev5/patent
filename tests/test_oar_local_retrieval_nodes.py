@@ -72,6 +72,14 @@ def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypat
     assert int(local_meta.get("chunk_count", 0)) > 0
     assert Path(str(local_meta.get("index_path", ""))).exists()
     assert local_meta.get("embedding_model") == "fake/bge-m3"
+    assert "embedding_provider" not in local_meta
+    assert local_meta.get("documents") == [
+        {
+            "doc_id": "D1",
+            "source_type": "comparison_document",
+            "doc_language": "mixed",
+        }
+    ]
 
 
 def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:

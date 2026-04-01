@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import sqlite3
+
 from agents.common.retrieval import LocalEvidenceRetriever
 from config import settings
 
@@ -126,6 +128,18 @@ def test_build_index_records_embedding_metadata_and_languages(tmp_path: Path, mo
     assert meta["embedding_model"] == "fake/bge-m3"
     assert meta["embedding_dim"] == 8
     assert "mixed" in meta["indexed_languages"]
+    assert meta["documents"] == [
+        {
+            "doc_id": "D1",
+            "source_type": "comparison_document",
+            "doc_language": "mixed",
+        }
+    ]
+    assert "embedding_provider" not in meta
+
+    with sqlite3.connect(str(tmp_path / "local.db")) as conn:
+        meta_rows = dict(conn.execute("SELECT key, value FROM retrieval_meta").fetchall())
+    assert "embedding_provider" not in meta_rows
 
 
 def test_dense_search_can_bridge_cross_language_terms(tmp_path: Path, monkeypatch) -> None:

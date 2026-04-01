@@ -496,11 +496,9 @@ def _tokenize_change_text(text: Any) -> List[str]:
 
 def _review_unit_type_label(unit_type: str) -> str:
     mapping = {
-        "reused_oa": "复用原OA",
-        "split_from_group": "拆分自原组合评述",
-        "merged_into_independent": "并入独权评述",
-        "supplemented_new": "新增补充评述",
-        "evidence_restructured": "结合证据重组",
+        "evidence_restructured": "独权重组评述",
+        "supplemented_new": "独权补充评述",
+        "dependent_group_restructured": "从权组重组评述",
     }
     return mapping.get(str(unit_type).strip(), "重组评述")
 
@@ -534,23 +532,6 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
     )
 
 
-def _review_unit_visible_claim_ids(unit: Any, seen_claim_ids: set[str]) -> List[str]:
-    claim_ids: List[str] = []
-    for claim_id in _normalize_claim_id_list(_item_get(unit, "display_claim_ids", [])):
-        if claim_id not in claim_ids:
-            claim_ids.append(claim_id)
-    for snapshot in _item_get(unit, "claim_snapshots", []) or []:
-        claim_id = str(_item_get(snapshot, "claim_id", "")).strip()
-        if claim_id.isdigit() and claim_id not in claim_ids:
-            claim_ids.append(claim_id)
-
-    visible_claim_ids = [claim_id for claim_id in claim_ids if claim_id not in seen_claim_ids]
-    if visible_claim_ids:
-        seen_claim_ids.update(visible_claim_ids)
-        return visible_claim_ids
-    return claim_ids
-
-
 def _normalize_claim_id_list(value: Any) -> List[str]:
     claim_ids: List[str] = []
     candidates = value if isinstance(value, list) else [value]
@@ -570,9 +551,8 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
         return '<div class="oar-opinion-empty">当前无可展示的重组评述。</div>'
 
     blocks: List[str] = []
-    seen_claim_ids: set[str] = set()
     for item in review_units:
-        visible_claim_ids = _review_unit_visible_claim_ids(item, seen_claim_ids)
+        visible_claim_ids = _normalize_claim_id_list(_item_get(item, "display_claim_ids", []))
         title = (
             "、".join(f"权利要求{claim_id}" for claim_id in visible_claim_ids)
             or _text_or_default(_item_get(item, "title", ""), default="重组评述")

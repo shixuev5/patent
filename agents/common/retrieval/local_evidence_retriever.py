@@ -285,7 +285,6 @@ class SQLiteHybridIndex:
             )
             meta_items = {
                 "schema_version": self.SCHEMA_VERSION,
-                "embedding_provider": "bge_m3",
                 "embedding_model": self.embedding_config.model_name,
                 "embedding_signature": current_signature,
                 "embedding_dim": str(embedding_provider.embedding_dim),
@@ -302,7 +301,6 @@ class SQLiteHybridIndex:
             "enabled": True,
             "index_path": str(self.db_path),
             "schema_version": self.SCHEMA_VERSION,
-            "embedding_provider": "bge_m3",
             "embedding_model": self.embedding_config.model_name,
             "embedding_dim": embedding_provider.embedding_dim,
             "chunk_chars": chunk_builder.chunk_chars,

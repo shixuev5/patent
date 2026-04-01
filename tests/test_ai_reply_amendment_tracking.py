@@ -106,6 +106,8 @@ def test_track_amendment_uses_original_claims_for_first_notice() -> None:
         }
     ]
     assert result["claims_effective_structured"] == result["claims_old_structured"]
+    assert result["claims_old_source"] == "original_patent"
+    assert result["claims_old_source_reason"] == "first_notice_or_missing_previous"
 
 
 def test_track_amendment_uses_previous_claims_for_multi_notice() -> None:
@@ -129,10 +131,32 @@ def test_track_amendment_uses_previous_claims_for_multi_notice() -> None:
     assert result["has_claim_amendment"] is False
     assert result["claims_old_structured"] == previous_claims
     assert result["claims_effective_structured"] == previous_claims
+    assert result["claims_old_source"] == "claims_previous"
+    assert result["claims_old_source_reason"] == "multi_notice_previous_claims"
 
 
 def test_track_amendment_falls_back_to_original_when_previous_missing_for_multi_notice() -> None:
     node = AmendmentTrackingNode()
+    node.llm_service = type(
+        "StubLLM",
+        (),
+        {
+            "invoke_text_json": staticmethod(
+                lambda messages, task_kind, temperature: {
+                    "has_claim_amendment": True,
+                    "added_features": [
+                        {
+                            "feature_id": "F1",
+                            "feature_text": "模块C",
+                            "target_claim_ids": ["1"],
+                            "source_type": "spec",
+                            "source_claim_ids": [],
+                        }
+                    ],
+                }
+            )
+        },
+    )()
     prepared_materials = {
         "original_patent": {
             "data": {
@@ -152,3 +176,5 @@ def test_track_amendment_falls_back_to_original_when_previous_missing_for_multi_
     assert result["claims_old_structured"][0]["claim_text"] == "一种装置，包括模块A。"
     assert result["claims_effective_structured"] == current_claims
     assert result["has_claim_amendment"] is True
+    assert result["claims_old_source"] == "original_patent"
+    assert result["claims_old_source_reason"] == "multi_notice_missing_previous_claims"

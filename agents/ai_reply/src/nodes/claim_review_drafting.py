@@ -87,21 +87,26 @@ class ClaimReviewDraftingNode:
             for key, value in self._to_dict(drafted_rejection_reasons).items()
             if str(key).strip()
         }
+        dispute_by_feature_id = {
+            str(item.get("source_feature_id", "")).strip(): item
+            for item in normalized_disputes
+            if str(item.get("source_feature_id", "")).strip()
+        }
         assessment_by_dispute_id = {
             str(item.get("dispute_id", "")).strip(): item
             for item in normalized_assessments
             if str(item.get("dispute_id", "")).strip()
         }
-        feature_map = {
-            str(item.get("feature_id", "")).strip(): item
-            for item in features
-            if str(item.get("feature_id", "")).strip()
-        }
+        assessment_by_feature_id = {}
+        for item in normalized_assessments:
+            feature_id = str(item.get("source_feature_id", "")).strip()
+            if feature_id:
+                assessment_by_feature_id[feature_id] = item
 
         merge_target_by_source = self._build_merge_target_map(features, effective_map)
-        covered_effective_claim_ids: Set[str] = set()
         unit_specs: List[Dict[str, Any]] = []
-        merged_unit_by_anchor: Dict[str, Dict[str, Any]] = {}
+        unit_by_id: Dict[str, Dict[str, Any]] = {}
+        independent_unit_by_anchor: Dict[str, Dict[str, Any]] = {}
         paragraph_order: Dict[str, int] = {}
 
         paragraph_candidates = []
@@ -111,64 +116,50 @@ class ClaimReviewDraftingNode:
             paragraph_order[paragraph_id] = index
             paragraph_candidates.append(paragraph)
 
+        for claim in effective_claims:
+            if claim["claim_type"] != "independent":
+                continue
+            paragraph = self._find_primary_independent_paragraph(claim["claim_id"], paragraph_candidates, old_map)
+            if not paragraph:
+                continue
+            paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
+            paragraph_claim_ids = self._paragraph_claim_ids(paragraph, old_map)
+            unit = self._build_unit_spec(
+                unit_id=paragraph_id,
+                unit_type="evidence_restructured",
+                source_paragraph_ids=[paragraph_id],
+                display_claim_ids=[claim["claim_id"]],
+                anchor_claim_id=claim["claim_id"],
+                oa_materials=[self._paragraph_material(paragraph, [claim["claim_id"]], paragraph_claim_ids)],
+                claim_snapshots=self._build_claim_snapshots([claim["claim_id"]], effective_map, old_map),
+                paragraph_order=paragraph_order.get(paragraph_id, 0),
+            )
+            independent_unit_by_anchor[claim["claim_id"]] = unit
+            unit_by_id[unit["unit_id"]] = unit
+            unit_specs.append(unit)
+
+        primary_paragraph_ids = {
+            unit["unit_id"] for unit in independent_unit_by_anchor.values() if unit["unit_id"] in paragraph_order
+        }
+
         for paragraph in paragraph_candidates:
             paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
-            paragraph_claim_ids = [
-                claim_id
-                for claim_id in self._normalize_claim_ids(paragraph.get("claim_ids", []))
-                if claim_id in old_map
-            ]
+            if paragraph_id in primary_paragraph_ids:
+                continue
+            paragraph_claim_ids = self._paragraph_claim_ids(paragraph, old_map)
             if not paragraph_claim_ids:
                 continue
 
             merged_source_ids = [claim_id for claim_id in paragraph_claim_ids if claim_id in merge_target_by_source]
-            plain_display_ids = [
-                claim_id
-                for claim_id in paragraph_claim_ids
-                if claim_id in effective_map and claim_id not in merge_target_by_source
-            ]
-
-            if merged_source_ids and len(paragraph_claim_ids) > 1:
-                for claim_id in plain_display_ids:
-                    unit_specs.append(
-                        self._build_unit_spec(
-                            unit_id=f"{paragraph_id}_{claim_id}",
-                            unit_type="split_from_group",
-                            source_paragraph_ids=[paragraph_id],
-                            display_claim_ids=[claim_id],
-                            anchor_claim_id=claim_id,
-                            oa_materials=[self._paragraph_material(paragraph, [claim_id], paragraph_claim_ids)],
-                            claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
-                            paragraph_order=paragraph_order.get(paragraph_id, 0),
-                        )
-                    )
-                    covered_effective_claim_ids.add(claim_id)
-            elif plain_display_ids:
-                anchor_claim_id = self._first_claim_id_by_effective_order(plain_display_ids, effective_claims)
-                unit_specs.append(
-                    self._build_unit_spec(
-                        unit_id=paragraph_id,
-                        unit_type="reused_oa",
-                        source_paragraph_ids=[paragraph_id],
-                        display_claim_ids=plain_display_ids,
-                        anchor_claim_id=anchor_claim_id,
-                        oa_materials=[self._paragraph_material(paragraph, plain_display_ids, paragraph_claim_ids)],
-                        claim_snapshots=self._build_claim_snapshots(plain_display_ids, effective_map, old_map),
-                        paragraph_order=paragraph_order.get(paragraph_id, 0),
-                    )
-                )
-                covered_effective_claim_ids.update(plain_display_ids)
-
             for source_claim_id in merged_source_ids:
                 target_claim_id = merge_target_by_source[source_claim_id]
                 if target_claim_id not in effective_map:
                     continue
-                covered_effective_claim_ids.add(target_claim_id)
-                merged_unit = merged_unit_by_anchor.get(target_claim_id)
-                if not merged_unit:
-                    merged_unit = self._build_unit_spec(
-                        unit_id=f"MERGED_{target_claim_id}",
-                        unit_type="merged_into_independent",
+                independent_unit = independent_unit_by_anchor.get(target_claim_id)
+                if not independent_unit:
+                    independent_unit = self._build_unit_spec(
+                        unit_id=f"IND_{target_claim_id}",
+                        unit_type="evidence_restructured",
                         source_paragraph_ids=[],
                         display_claim_ids=[target_claim_id],
                         anchor_claim_id=target_claim_id,
@@ -176,53 +167,69 @@ class ClaimReviewDraftingNode:
                         claim_snapshots=self._build_claim_snapshots([target_claim_id], effective_map, old_map),
                         paragraph_order=paragraph_order.get(paragraph_id, 0),
                     )
-                    merged_unit_by_anchor[target_claim_id] = merged_unit
-                    unit_specs.append(merged_unit)
-                merged_unit["source_paragraph_ids"].append(paragraph_id)
-                merged_unit["source_summary"]["merged_source_claim_ids"].append(source_claim_id)
-                merged_unit["oa_materials"].append(
-                    self._paragraph_material(paragraph, [source_claim_id], paragraph_claim_ids)
+                    independent_unit_by_anchor[target_claim_id] = independent_unit
+                    unit_by_id[independent_unit["unit_id"]] = independent_unit
+                    unit_specs.append(independent_unit)
+                self._append_paragraph_to_unit(
+                    independent_unit,
+                    paragraph,
+                    [source_claim_id],
+                    paragraph_claim_ids,
+                    paragraph_order.get(paragraph_id, 0),
+                )
+                self._append_unique(
+                    independent_unit["source_summary"]["merged_source_claim_ids"],
+                    source_claim_id,
                 )
 
-        for feature in features:
-            feature_id = str(feature.get("feature_id", "")).strip()
-            if not feature_id:
-                continue
-            source_type = str(feature.get("source_type", "")).strip()
-            target_claim_ids = [
-                claim_id for claim_id in self._normalize_claim_ids(feature.get("target_claim_ids", []))
-                if claim_id in effective_map
+            residual_claim_ids = [
+                claim_id
+                for claim_id in paragraph_claim_ids
+                if claim_id in effective_map and claim_id not in merge_target_by_source
             ]
-            if not target_claim_ids:
+            if not residual_claim_ids:
                 continue
+            anchor_claim_id = self._first_claim_id_by_effective_order(residual_claim_ids, effective_claims)
+            residual_unit = self._build_unit_spec(
+                unit_id=paragraph_id,
+                unit_type="dependent_group_restructured",
+                source_paragraph_ids=[paragraph_id],
+                display_claim_ids=residual_claim_ids,
+                anchor_claim_id=anchor_claim_id,
+                oa_materials=[self._paragraph_material(paragraph, residual_claim_ids, paragraph_claim_ids)],
+                claim_snapshots=self._build_claim_snapshots(residual_claim_ids, effective_map, old_map),
+                paragraph_order=paragraph_order.get(paragraph_id, 0),
+            )
+            unit_by_id[residual_unit["unit_id"]] = residual_unit
+            unit_specs.append(residual_unit)
 
-            if source_type == "claim":
-                merge_anchor_claim_id = self._resolve_anchor_claim_id(target_claim_ids[0], effective_map)
-                merged_unit = merged_unit_by_anchor.get(merge_anchor_claim_id, {})
-                if merged_unit:
-                    merged_unit["source_summary"]["added_feature_ids"].append(feature_id)
-                    continue
-
-            existing_unit = self._find_best_existing_unit(unit_specs, target_claim_ids)
-            if existing_unit:
-                self._upgrade_unit_type_for_added_feature(existing_unit)
-                existing_unit["source_summary"]["added_feature_ids"].append(feature_id)
+        covered_effective_claim_ids = {
+            claim_id
+            for unit in unit_specs
+            for claim_id in self._normalize_claim_ids(unit.get("display_claim_ids", []))
+        }
+        for claim in effective_claims:
+            claim_id = claim["claim_id"]
+            if claim["claim_type"] != "independent":
                 continue
-
-            anchor_claim_id = self._first_claim_id_by_effective_order(target_claim_ids, effective_claims)
+            if claim_id in covered_effective_claim_ids:
+                continue
+            if not self._claim_has_related_material(claim_id, normalized_disputes, features):
+                continue
             new_unit = self._build_unit_spec(
-                    unit_id=f"NEW_{feature_id}",
-                    unit_type="supplemented_new",
-                    source_paragraph_ids=[],
-                    display_claim_ids=target_claim_ids,
-                    anchor_claim_id=anchor_claim_id,
-                    oa_materials=[],
-                    claim_snapshots=self._build_claim_snapshots(target_claim_ids, effective_map, old_map),
-                    paragraph_order=self._insertion_order_for_claim(anchor_claim_id, effective_claims, paragraph_candidates),
-                )
-            new_unit["source_summary"]["added_feature_ids"].append(feature_id)
+                unit_id=f"IND_{claim_id}",
+                unit_type="supplemented_new",
+                source_paragraph_ids=[],
+                display_claim_ids=[claim_id],
+                anchor_claim_id=claim_id,
+                oa_materials=[],
+                claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
+                paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
+            )
+            independent_unit_by_anchor[claim_id] = new_unit
+            unit_by_id[new_unit["unit_id"]] = new_unit
             unit_specs.append(new_unit)
-            covered_effective_claim_ids.update(target_claim_ids)
+            covered_effective_claim_ids.add(claim_id)
 
         for claim in effective_claims:
             claim_id = claim["claim_id"]
@@ -230,18 +237,18 @@ class ClaimReviewDraftingNode:
                 continue
             if not self._claim_has_related_material(claim_id, normalized_disputes, features):
                 continue
-            unit_specs.append(
-                self._build_unit_spec(
-                    unit_id=f"SUPP_{claim_id}",
-                    unit_type="supplemented_new",
-                    source_paragraph_ids=[],
-                    display_claim_ids=[claim_id],
-                    anchor_claim_id=claim_id,
-                    oa_materials=[],
-                    claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
-                    paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
-                )
+            new_unit = self._build_unit_spec(
+                unit_id=f"CLM_{claim_id}",
+                unit_type="supplemented_new",
+                source_paragraph_ids=[],
+                display_claim_ids=[claim_id],
+                anchor_claim_id=claim_id,
+                oa_materials=[],
+                claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
+                paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
             )
+            unit_by_id[new_unit["unit_id"]] = new_unit
+            unit_specs.append(new_unit)
 
         drafting_inputs: List[Dict[str, Any]] = []
         finalized: Dict[str, Dict[str, Any]] = {}
@@ -255,15 +262,20 @@ class ClaimReviewDraftingNode:
             )
             amendment_materials = self._collect_amendment_materials(
                 display_claim_ids,
-                normalized_disputes,
-                assessment_by_dispute_id,
-                feature_map,
+                features,
+                dispute_by_feature_id,
+                assessment_by_feature_id,
             )
             source_summary = self._to_dict(unit.get("source_summary", {}))
             source_summary["response_dispute_ids"] = [
                 str(item.get("dispute_id", "")).strip()
                 for item in response_materials
                 if str(item.get("dispute_id", "")).strip()
+            ]
+            source_summary["added_feature_ids"] = [
+                str(item.get("feature_id", "")).strip()
+                for item in amendment_materials
+                if str(item.get("feature_id", "")).strip()
             ]
             source_summary["amendment_feature_ids"] = [
                 str(item.get("feature_id", "")).strip()
@@ -273,14 +285,7 @@ class ClaimReviewDraftingNode:
             unit["source_summary"] = source_summary
             unit["review_before_text"] = self._build_direct_review_text(unit.get("oa_materials", []))
 
-            if self._should_upgrade_to_evidence_restructured(unit, response_materials, amendment_materials):
-                unit["unit_type"] = "evidence_restructured"
-
             if not unit["oa_materials"] and not response_materials and not amendment_materials:
-                finalized[unit["unit_id"]] = self._finalize_unit(
-                    unit,
-                    "当前未提取到可复用的审查评述。",
-                )
                 continue
 
             if not self._should_use_llm(unit, response_materials, amendment_materials):
@@ -328,18 +333,18 @@ class ClaimReviewDraftingNode:
         amendment_materials: List[Dict[str, Any]],
     ) -> bool:
         unit_type = str(unit.get("unit_type", "")).strip()
-        if unit_type in {"split_from_group", "merged_into_independent", "supplemented_new", "evidence_restructured"}:
+        if unit_type == "supplemented_new":
             return True
+        if unit_type == "dependent_group_restructured":
+            return True
+        if unit_type == "evidence_restructured":
+            source_summary = self._to_dict(unit.get("source_summary", {}))
+            return bool(
+                response_materials
+                or amendment_materials
+                or source_summary.get("merged_source_claim_ids", [])
+            )
         return False
-
-    def _should_upgrade_to_evidence_restructured(
-        self,
-        unit: Dict[str, Any],
-        response_materials: List[Dict[str, Any]],
-        amendment_materials: List[Dict[str, Any]],
-    ) -> bool:
-        unit_type = str(unit.get("unit_type", "")).strip()
-        return unit_type == "reused_oa" and bool(response_materials or amendment_materials)
 
     def _build_direct_review_text(self, oa_materials: List[Dict[str, Any]]) -> str:
         contents: List[str] = []
@@ -348,10 +353,6 @@ class ClaimReviewDraftingNode:
             if content and content not in contents:
                 contents.append(content)
         return "\n".join(contents) if contents else "当前未提取到可复用的审查评述。"
-
-    def _upgrade_unit_type_for_added_feature(self, unit: Dict[str, Any]) -> None:
-        if str(unit.get("unit_type", "")).strip() == "reused_oa":
-            unit["unit_type"] = "supplemented_new"
 
     def _build_merge_target_map(
         self,
@@ -371,6 +372,48 @@ class ClaimReviewDraftingNode:
             for source_claim_id in self._normalize_claim_ids(feature.get("source_claim_ids", [])):
                 result[source_claim_id] = anchor_claim_id
         return result
+
+    def _find_primary_independent_paragraph(
+        self,
+        claim_id: str,
+        paragraphs: List[Dict[str, Any]],
+        old_map: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        for paragraph in paragraphs:
+            paragraph_claim_ids = self._paragraph_claim_ids(paragraph, old_map)
+            if paragraph_claim_ids == [claim_id]:
+                return paragraph
+        return {}
+
+    def _paragraph_claim_ids(
+        self,
+        paragraph: Dict[str, Any],
+        old_map: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        return [
+            claim_id
+            for claim_id in self._normalize_claim_ids(paragraph.get("claim_ids", []))
+            if claim_id in old_map
+        ]
+
+    def _append_paragraph_to_unit(
+        self,
+        unit: Dict[str, Any],
+        paragraph: Dict[str, Any],
+        focused_claim_ids: List[str],
+        original_claim_ids: List[str],
+        paragraph_order: float,
+    ) -> None:
+        paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
+        self._append_unique(unit["source_paragraph_ids"], paragraph_id)
+        self._append_unique(unit["source_summary"]["source_paragraph_ids"], paragraph_id)
+        unit["oa_materials"].append(self._paragraph_material(paragraph, focused_claim_ids, original_claim_ids))
+        unit["paragraph_order"] = min(float(unit.get("paragraph_order", paragraph_order)), float(paragraph_order))
+
+    def _append_unique(self, target: List[str], value: str) -> None:
+        text = str(value or "").strip()
+        if text and text not in target:
+            target.append(text)
 
     def _build_unit_spec(
         self,
@@ -472,49 +515,37 @@ class ClaimReviewDraftingNode:
     def _collect_amendment_materials(
         self,
         claim_ids: List[str],
-        disputes: List[Dict[str, Any]],
-        assessment_by_dispute_id: Dict[str, Dict[str, Any]],
-        feature_map: Dict[str, Dict[str, Any]],
+        features: List[Dict[str, Any]],
+        dispute_by_feature_id: Dict[str, Dict[str, Any]],
+        assessment_by_feature_id: Dict[str, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         materials: List[Dict[str, Any]] = []
         claim_id_set = set(claim_ids)
-        for dispute in disputes:
-            if str(dispute.get("origin", "")).strip() != "amendment_review":
+        for feature in features:
+            feature_id = str(feature.get("feature_id", "")).strip()
+            target_claim_ids = self._normalize_claim_ids(feature.get("target_claim_ids", []))
+            if not feature_id or not claim_id_set.intersection(target_claim_ids):
                 continue
-            dispute_claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", []))
-            if not claim_id_set.intersection(dispute_claim_ids):
-                continue
-
-            dispute_id = str(dispute.get("dispute_id", "")).strip()
-            feature_id = str(dispute.get("source_feature_id", "")).strip()
-            feature = feature_map.get(feature_id, {})
-            assessment_item = assessment_by_dispute_id.get(dispute_id, {})
+            dispute = dispute_by_feature_id.get(feature_id, {})
+            dispute_claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", [])) or target_claim_ids
+            assessment_item = assessment_by_feature_id.get(feature_id, {})
             assessment = self._to_dict(assessment_item.get("assessment", {}))
             materials.append(
                 {
                     "feature_id": feature_id,
                     "claim_ids": dispute_claim_ids,
-                    "feature_text": str(dispute.get("feature_text", "")).strip(),
+                    "feature_text": str(feature.get("feature_text", "")).strip(),
+                    "feature_before_text": str(feature.get("feature_before_text", "")).strip(),
+                    "feature_after_text": str(feature.get("feature_after_text", "")).strip(),
                     "source_type": str(feature.get("source_type", "")).strip(),
                     "source_claim_ids": self._normalize_claim_ids(feature.get("source_claim_ids", [])),
-                    "target_claim_ids": self._normalize_claim_ids(feature.get("target_claim_ids", [])),
+                    "target_claim_ids": target_claim_ids,
                     "assessment_reasoning": str(assessment.get("reasoning", "")).strip(),
                     "verdict": str(assessment.get("verdict", "")).strip(),
                     "examiner_rejection_rationale": str(assessment.get("examiner_rejection_rationale", "")).strip(),
                 }
             )
         return materials
-
-    def _find_best_existing_unit(
-        self,
-        unit_specs: List[Dict[str, Any]],
-        target_claim_ids: List[str],
-    ) -> Dict[str, Any]:
-        target_set = set(target_claim_ids)
-        for unit in unit_specs:
-            if target_set.intersection(unit.get("display_claim_ids", [])):
-                return unit
-        return {}
 
     def _claim_has_related_material(
         self,
@@ -586,16 +617,12 @@ class ClaimReviewDraftingNode:
 3. 纯净输出：只需输出每个评述单元的评述正文。不要输出单元标题，不要输出“审查员认为”之类的开场白，整合成一段连贯流畅的文本（避免生硬的要点罗列）。
 
 【针对不同单元类型的处理约束】
-- type = "split_from_group" (从权利要求组中拆分)：
-  原OA可能将多个权利要求放在一起评述。你必须从中精准剥离出仅与当前 `focused_claim_ids` 相关的评述逻辑，剔除其他不相关权利要求的信息，确保评述主语精准。
-- type = "merged_into_independent" (从权并入独权)：
-  申请人将原从权的特征并入了独权。你需要将原独权的评述逻辑与原从权（或新增特征）的评述逻辑自然融合。句式建议参考：“关于修改后的权利要求X，其包含了原权利要求Y的附加技术特征...基于对原权利要求X和Y的审查意见，该权利要求仍然不具备/具备...” 依据评估素材给出明确结论。
-- type = "supplemented_new" (新增或修改特征)：
+- type = "evidence_restructured" (独权主卡重组)：
+  该单元代表某个独权体系的唯一主卡。你必须以 oa_materials 为评述骨架，将原独权评述、并入从权评述以及 response/amendment 评估素材整合成一段新的正式评述。若 oa_materials 中同时包含独权与并入从权的内容，必须自然融合，不得拆开写。
+- type = "dependent_group_restructured" (残余从权组重组)：
+  原OA可能将多个从权放在一起评述，而其中部分从权已经并入独权主卡。你必须只保留当前 `display_claim_ids` 对应的剩余从权逻辑，剔除已被抽走的从权内容，生成一段只针对剩余从权组的正式评述。
+- type = "supplemented_new" (新增或修改特征补充)：
   原OA中没有该评述。你必须完全依赖 amendment_materials 或 response_materials 中的审查员评估结论（assessment_reasoning 和 verdict）来撰写。清晰指出新增特征是什么，以及它为何不能/能够克服先前的缺陷。
-- type = "evidence_restructured" (结合证据重组)：
-  该单元原本存在对应 OA 评述，但当前又关联了 response_materials 或 amendment_materials。你必须以 oa_materials 为评述骨架，结合 assessment_reasoning、verdict、final_examiner_rejection_reason、examiner_rejection_rationale 等素材重组出新的正式评述，确保结论与当前核查结果一致，不能只重复原 OA 原文。
-- type = "reused_oa" (复用原OA)：
-  在原意不变的基础上，结合当前最新的权利要求序号，对语言进行梳理和润色，确保在新语境下通顺。
 
 【输出格式约束】
 必须输出纯净、合法的 JSON 对象。严禁使用 Markdown 代码块包裹（不要输出 ```json），直接输出 JSON 文本。为保证推理质量，请先在内部字段给出简短分析，再输出最终文本。
@@ -656,7 +683,7 @@ JSON 格式规范如下：
     def _finalize_unit(self, unit: Dict[str, Any], review_text: str) -> Dict[str, Any]:
         return {
             "unit_id": str(unit.get("unit_id", "")).strip(),
-            "unit_type": str(unit.get("unit_type", "")).strip() or "reused_oa",
+            "unit_type": str(unit.get("unit_type", "")).strip() or "evidence_restructured",
             "source_paragraph_ids": self._normalize_claim_ids(unit.get("source_paragraph_ids", []), keep_non_digit=True),
             "display_claim_ids": self._normalize_claim_ids(unit.get("display_claim_ids", [])),
             "anchor_claim_id": str(unit.get("anchor_claim_id", "")).strip(),

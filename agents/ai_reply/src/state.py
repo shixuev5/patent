@@ -160,11 +160,11 @@ class SupportFinding(BaseModel):
 
 
 class ReviewUnit(BaseModel):
-    """基于上一轮OA重组后的评述单元"""
+    """第四部分最终展示卡片"""
     unit_id: str = Field(..., description="评述单元唯一标识")
     unit_type: str = Field(
-        "reused_oa",
-        description="单元类型: reused_oa/split_from_group/merged_into_independent/supplemented_new/evidence_restructured",
+        "evidence_restructured",
+        description="单元类型: evidence_restructured/supplemented_new/dependent_group_restructured",
     )
     source_paragraph_ids: List[str] = Field(default_factory=list, description="来源OA段落编号")
     display_claim_ids: List[str] = Field(default_factory=list, description="当前展示的权利要求编号列表")
@@ -253,6 +253,8 @@ class WorkflowState(BaseModel):
     claims_current_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前最新权利要求结构化列表")
     claims_old_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前OA审查所针对的权利要求结构化列表")
     claims_effective_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前生效权利要求结构化列表")
+    claims_old_source: str = Field("", description="旧权利要求来源：claims_previous/original_patent")
+    claims_old_source_reason: str = Field("", description="旧权利要求来源诊断原因")
     has_claim_amendment: bool = Field(False, description="是否存在权利要求修改")
     added_features: Annotated[List[AddedFeature], operator.add] = Field(default_factory=list, description="新增特征列表")
     support_findings: Annotated[List[SupportFinding], operator.add] = Field(default_factory=list, description="新增特征支持依据核查结果")
