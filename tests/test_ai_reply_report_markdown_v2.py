@@ -351,3 +351,91 @@ def test_build_final_report_markdown_shows_non_ai_change_items_as_not_applicable
 
     assert "无需AI判断" in content
     assert 'oar-verdict-badge oar-verdict-badge-unassessed' in content
+
+
+def test_build_final_report_markdown_renders_claim_source_change_items_in_section3() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "change_items": [
+                {
+                    "feature_id": "F9",
+                    "feature_text": "旧权9并入现权7",
+                    "feature_before_text": "",
+                    "feature_after_text": "旧权9并入现权7",
+                    "contains_added_text": True,
+                    "target_claim_ids": ["7"],
+                    "source_type": "claim",
+                    "source_claim_ids": ["9"],
+                    "assessment": {},
+                    "evidence": [],
+                    "final_review_reason": "",
+                }
+            ]
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "7（来源权利要求 9）" in content
+    assert "权项上提" in content
+
+
+def test_build_final_report_markdown_keeps_claim_cards_in_effective_claim_order() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "U1",
+                    "unit_type": "evidence_restructured",
+                    "display_claim_ids": ["1"],
+                    "title": "权利要求1",
+                    "claim_snapshots": [{"claim_id": "1", "claim_before_text": "", "claim_text": "权1文本。"}],
+                    "review_before_text": "",
+                    "review_text": "权1评述。",
+                },
+                {
+                    "unit_id": "U2",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["2"],
+                    "title": "权利要求2",
+                    "claim_snapshots": [{"claim_id": "2", "claim_before_text": "", "claim_text": "权2文本。"}],
+                    "review_before_text": "权2旧评述。",
+                    "review_text": "权2评述。",
+                },
+                {
+                    "unit_id": "U3",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["7"],
+                    "title": "权利要求7",
+                    "claim_snapshots": [{"claim_id": "7", "claim_before_text": "", "claim_text": "权7文本。"}],
+                    "review_before_text": "权7旧评述。",
+                    "review_text": "权7评述。",
+                },
+                {
+                    "unit_id": "U4",
+                    "unit_type": "evidence_restructured",
+                    "display_claim_ids": ["8"],
+                    "title": "权利要求8",
+                    "claim_snapshots": [{"claim_id": "8", "claim_before_text": "", "claim_text": "权8文本。"}],
+                    "review_before_text": "权8旧评述。",
+                    "review_text": "权8评述。",
+                },
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    pos1 = content.index("权利要求1｜当前权利要求 1｜")
+    pos2 = content.index("权利要求2｜当前权利要求 2｜")
+    pos7 = content.index("权利要求7｜当前权利要求 7｜")
+    pos8 = content.index("权利要求8｜当前权利要求 8｜")
+    assert pos1 < pos2 < pos7 < pos8

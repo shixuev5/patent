@@ -42,7 +42,7 @@ class ReportGenerationNode:
 
         try:
             cache = get_node_cache(self.config, "report_generation")
-            report = cache.run_step("generate_report_v9", self._generate_report, state)
+            report = cache.run_step("generate_report_v10", self._generate_report, state)
             output_path = self._save_report(report, state)
 
             updates["final_report"] = report
@@ -247,8 +247,6 @@ class ReportGenerationNode:
             feature_before_text = str(item_get(feature, "feature_before_text", "")).strip()
             feature_after_text = str(item_get(feature, "feature_after_text", "")).strip() or feature_text
             source_type = str(item_get(feature, "source_type", "")).strip()
-            if source_type == "claim":
-                continue
             if not feature_text:
                 feature_text = feature_after_text
             dispute = dispute_map.get(feature_id, {})

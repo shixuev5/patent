@@ -113,7 +113,7 @@ def test_report_generation_builds_change_items_by_feature_id() -> None:
     assert items[0]["final_review_reason"] == "结合D1仍可维持驳回。"
 
 
-def test_report_generation_excludes_claim_source_change_items_from_section3() -> None:
+def test_report_generation_includes_claim_source_change_items_in_section3() -> None:
     node = ReportGenerationNode()
 
     items = node._build_change_items(
@@ -132,4 +132,30 @@ def test_report_generation_excludes_claim_source_change_items_from_section3() ->
         amendment_disputes=[],
     )
 
-    assert items == []
+    assert len(items) == 1
+    assert items[0]["feature_id"] == "F2"
+    assert items[0]["source_type"] == "claim"
+    assert items[0]["target_claim_ids"] == ["3"]
+    assert items[0]["source_claim_ids"] == ["1"]
+
+
+def test_report_generation_claim_source_change_items_keep_amendment_flag_signal() -> None:
+    node = ReportGenerationNode()
+
+    items = node._build_change_items(
+        added_features=[
+            {
+                "feature_id": "F2",
+                "feature_text": "从旧权1上提的特征",
+                "feature_before_text": "旧权1中的特征",
+                "feature_after_text": "从旧权1上提的特征",
+                "target_claim_ids": ["3"],
+                "source_type": "claim",
+                "source_claim_ids": ["1"],
+            }
+        ],
+        support_findings=[],
+        amendment_disputes=[],
+    )
+
+    assert items

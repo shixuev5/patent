@@ -30,7 +30,7 @@ class ClaimReviewDraftingNode:
         try:
             cache = get_node_cache(self.config, "claim_review_drafting")
             review_units = cache.run_step(
-                "draft_review_units_v2",
+                "draft_review_units_v3",
                 self._draft_review_units,
                 self._state_get(state, "claims_old_structured", []),
                 self._state_get(state, "claims_effective_structured", []),
@@ -104,90 +104,108 @@ class ClaimReviewDraftingNode:
                 assessment_by_feature_id[feature_id] = item
 
         merge_target_by_source = self._build_merge_target_map(features, effective_map)
+        target_sources_map = self._build_target_sources_map(merge_target_by_source)
+        claim_before_source_map = self._build_claim_before_source_map(
+            effective_claims,
+            old_map,
+            merge_target_by_source,
+            target_sources_map,
+        )
         unit_specs: List[Dict[str, Any]] = []
         unit_by_id: Dict[str, Dict[str, Any]] = {}
-        independent_unit_by_anchor: Dict[str, Dict[str, Any]] = {}
-        paragraph_order: Dict[str, int] = {}
+        claim_unit_by_anchor: Dict[str, Dict[str, Any]] = {}
+        effective_order = {
+            claim["claim_id"]: index
+            for index, claim in enumerate(effective_claims)
+        }
 
         paragraph_candidates = []
         for index, paragraph in enumerate(paragraphs):
             paragraph_id = str(paragraph.get("paragraph_id", "")).strip() or f"P{index + 1}"
             paragraph["paragraph_id"] = paragraph_id
-            paragraph_order[paragraph_id] = index
             paragraph_candidates.append(paragraph)
-
-        for claim in effective_claims:
-            if claim["claim_type"] != "independent":
-                continue
-            paragraph = self._find_primary_independent_paragraph(claim["claim_id"], paragraph_candidates, old_map)
-            if not paragraph:
-                continue
-            paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
-            paragraph_claim_ids = self._paragraph_claim_ids(paragraph, old_map)
-            unit = self._build_unit_spec(
-                unit_id=paragraph_id,
-                unit_type="evidence_restructured",
-                source_paragraph_ids=[paragraph_id],
-                display_claim_ids=[claim["claim_id"]],
-                anchor_claim_id=claim["claim_id"],
-                oa_materials=[self._paragraph_material(paragraph, [claim["claim_id"]], paragraph_claim_ids)],
-                claim_snapshots=self._build_claim_snapshots([claim["claim_id"]], effective_map, old_map),
-                paragraph_order=paragraph_order.get(paragraph_id, 0),
-            )
-            independent_unit_by_anchor[claim["claim_id"]] = unit
-            unit_by_id[unit["unit_id"]] = unit
-            unit_specs.append(unit)
-
-        primary_paragraph_ids = {
-            unit["unit_id"] for unit in independent_unit_by_anchor.values() if unit["unit_id"] in paragraph_order
-        }
 
         for paragraph in paragraph_candidates:
             paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
-            if paragraph_id in primary_paragraph_ids:
-                continue
             paragraph_claim_ids = self._paragraph_claim_ids(paragraph, old_map)
             if not paragraph_claim_ids:
                 continue
 
-            merged_source_ids = [claim_id for claim_id in paragraph_claim_ids if claim_id in merge_target_by_source]
-            for source_claim_id in merged_source_ids:
-                target_claim_id = merge_target_by_source[source_claim_id]
-                if target_claim_id not in effective_map:
+            target_sources_in_paragraph: Dict[str, List[str]] = {}
+            residual_claim_ids: List[str] = []
+            for source_claim_id in paragraph_claim_ids:
+                target_claim_id = merge_target_by_source.get(source_claim_id, "")
+                if target_claim_id and target_claim_id in effective_map:
+                    target_sources_in_paragraph.setdefault(target_claim_id, []).append(source_claim_id)
                     continue
-                independent_unit = independent_unit_by_anchor.get(target_claim_id)
-                if not independent_unit:
-                    independent_unit = self._build_unit_spec(
-                        unit_id=f"IND_{target_claim_id}",
-                        unit_type="evidence_restructured",
+                if source_claim_id in effective_map:
+                    residual_claim_ids.append(source_claim_id)
+
+            for target_claim_id, source_claim_ids in target_sources_in_paragraph.items():
+                claim_unit = claim_unit_by_anchor.get(target_claim_id)
+                if not claim_unit:
+                    claim_unit = self._build_unit_spec(
+                        unit_id=str(paragraph.get("paragraph_id", "")).strip(),
+                        unit_type=self._single_claim_unit_type(target_claim_id, effective_map),
                         source_paragraph_ids=[],
                         display_claim_ids=[target_claim_id],
                         anchor_claim_id=target_claim_id,
                         oa_materials=[],
-                        claim_snapshots=self._build_claim_snapshots([target_claim_id], effective_map, old_map),
-                        paragraph_order=paragraph_order.get(paragraph_id, 0),
+                        claim_snapshots=self._build_claim_snapshots(
+                            [target_claim_id],
+                            effective_map,
+                            old_map,
+                            claim_before_source_map,
+                        ),
+                        paragraph_order=float(effective_order.get(target_claim_id, len(effective_claims))),
                     )
-                    independent_unit_by_anchor[target_claim_id] = independent_unit
-                    unit_by_id[independent_unit["unit_id"]] = independent_unit
-                    unit_specs.append(independent_unit)
+                    claim_unit_by_anchor[target_claim_id] = claim_unit
+                    unit_by_id[claim_unit["unit_id"]] = claim_unit
+                    unit_specs.append(claim_unit)
                 self._append_paragraph_to_unit(
-                    independent_unit,
+                    claim_unit,
                     paragraph,
-                    [source_claim_id],
+                    source_claim_ids,
                     paragraph_claim_ids,
-                    paragraph_order.get(paragraph_id, 0),
+                    float(effective_order.get(target_claim_id, len(effective_claims))),
                 )
-                self._append_unique(
-                    independent_unit["source_summary"]["merged_source_claim_ids"],
-                    source_claim_id,
-                )
+                for source_claim_id in source_claim_ids:
+                    self._append_unique(
+                        claim_unit["source_summary"]["merged_source_claim_ids"],
+                        source_claim_id,
+                    )
 
-            residual_claim_ids = [
-                claim_id
-                for claim_id in paragraph_claim_ids
-                if claim_id in effective_map and claim_id not in merge_target_by_source
-            ]
             if not residual_claim_ids:
+                continue
+            if len(residual_claim_ids) == 1:
+                target_claim_id = residual_claim_ids[0]
+                claim_unit = claim_unit_by_anchor.get(target_claim_id)
+                if not claim_unit:
+                    claim_unit = self._build_unit_spec(
+                        unit_id=str(paragraph.get("paragraph_id", "")).strip(),
+                        unit_type=self._single_claim_unit_type(target_claim_id, effective_map),
+                        source_paragraph_ids=[],
+                        display_claim_ids=[target_claim_id],
+                        anchor_claim_id=target_claim_id,
+                        oa_materials=[],
+                        claim_snapshots=self._build_claim_snapshots(
+                            [target_claim_id],
+                            effective_map,
+                            old_map,
+                            claim_before_source_map,
+                        ),
+                        paragraph_order=float(effective_order.get(target_claim_id, len(effective_claims))),
+                    )
+                    claim_unit_by_anchor[target_claim_id] = claim_unit
+                    unit_by_id[claim_unit["unit_id"]] = claim_unit
+                    unit_specs.append(claim_unit)
+                self._append_paragraph_to_unit(
+                    claim_unit,
+                    paragraph,
+                    residual_claim_ids,
+                    paragraph_claim_ids,
+                    float(effective_order.get(target_claim_id, len(effective_claims))),
+                )
                 continue
             anchor_claim_id = self._first_claim_id_by_effective_order(residual_claim_ids, effective_claims)
             residual_unit = self._build_unit_spec(
@@ -197,8 +215,13 @@ class ClaimReviewDraftingNode:
                 display_claim_ids=residual_claim_ids,
                 anchor_claim_id=anchor_claim_id,
                 oa_materials=[self._paragraph_material(paragraph, residual_claim_ids, paragraph_claim_ids)],
-                claim_snapshots=self._build_claim_snapshots(residual_claim_ids, effective_map, old_map),
-                paragraph_order=paragraph_order.get(paragraph_id, 0),
+                claim_snapshots=self._build_claim_snapshots(
+                    residual_claim_ids,
+                    effective_map,
+                    old_map,
+                    claim_before_source_map,
+                ),
+                paragraph_order=float(effective_order.get(anchor_claim_id, len(effective_claims))),
             )
             unit_by_id[residual_unit["unit_id"]] = residual_unit
             unit_specs.append(residual_unit)
@@ -223,10 +246,15 @@ class ClaimReviewDraftingNode:
                 display_claim_ids=[claim_id],
                 anchor_claim_id=claim_id,
                 oa_materials=[],
-                claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
-                paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
+                claim_snapshots=self._build_claim_snapshots(
+                    [claim_id],
+                    effective_map,
+                    old_map,
+                    claim_before_source_map,
+                ),
+                paragraph_order=float(effective_order.get(claim_id, len(effective_claims))),
             )
-            independent_unit_by_anchor[claim_id] = new_unit
+            claim_unit_by_anchor[claim_id] = new_unit
             unit_by_id[new_unit["unit_id"]] = new_unit
             unit_specs.append(new_unit)
             covered_effective_claim_ids.add(claim_id)
@@ -244,8 +272,13 @@ class ClaimReviewDraftingNode:
                 display_claim_ids=[claim_id],
                 anchor_claim_id=claim_id,
                 oa_materials=[],
-                claim_snapshots=self._build_claim_snapshots([claim_id], effective_map, old_map),
-                paragraph_order=self._insertion_order_for_claim(claim_id, effective_claims, paragraph_candidates),
+                claim_snapshots=self._build_claim_snapshots(
+                    [claim_id],
+                    effective_map,
+                    old_map,
+                    claim_before_source_map,
+                ),
+                paragraph_order=float(effective_order.get(claim_id, len(effective_claims))),
             )
             unit_by_id[new_unit["unit_id"]] = new_unit
             unit_specs.append(new_unit)
@@ -366,11 +399,40 @@ class ClaimReviewDraftingNode:
             target_claim_ids = self._normalize_claim_ids(feature.get("target_claim_ids", []))
             if not target_claim_ids:
                 continue
-            anchor_claim_id = self._resolve_anchor_claim_id(target_claim_ids[0], effective_map)
-            if not anchor_claim_id:
+            target_claim_id = target_claim_ids[0]
+            if target_claim_id not in effective_map:
+                target_claim_id = self._resolve_anchor_claim_id(target_claim_id, effective_map)
+            if not target_claim_id:
                 continue
             for source_claim_id in self._normalize_claim_ids(feature.get("source_claim_ids", [])):
-                result[source_claim_id] = anchor_claim_id
+                result[source_claim_id] = target_claim_id
+        return result
+
+    def _build_target_sources_map(self, merge_target_by_source: Dict[str, str]) -> Dict[str, List[str]]:
+        target_sources: Dict[str, List[str]] = {}
+        for source_claim_id, target_claim_id in merge_target_by_source.items():
+            target_sources.setdefault(target_claim_id, []).append(source_claim_id)
+        for claim_id, source_claim_ids in target_sources.items():
+            source_claim_ids.sort(key=self._claim_sort_key)
+        return target_sources
+
+    def _build_claim_before_source_map(
+        self,
+        effective_claims: List[Dict[str, Any]],
+        old_map: Dict[str, Dict[str, Any]],
+        merge_target_by_source: Dict[str, str],
+        target_sources_map: Dict[str, List[str]],
+    ) -> Dict[str, str]:
+        consumed_source_claim_ids = set(merge_target_by_source)
+        result: Dict[str, str] = {}
+        for claim in effective_claims:
+            claim_id = claim["claim_id"]
+            if claim_id in old_map and claim_id not in consumed_source_claim_ids:
+                result[claim_id] = claim_id
+                continue
+            source_claim_ids = target_sources_map.get(claim_id, [])
+            if source_claim_ids:
+                result[claim_id] = source_claim_ids[0]
         return result
 
     def _find_primary_independent_paragraph(
@@ -462,13 +524,17 @@ class ClaimReviewDraftingNode:
         claim_ids: List[str],
         effective_map: Dict[str, Dict[str, Any]],
         old_map: Dict[str, Dict[str, Any]],
+        claim_before_source_map: Dict[str, str] | None = None,
     ) -> List[Dict[str, Any]]:
         snapshots: List[Dict[str, Any]] = []
         for claim_id in claim_ids:
             claim = effective_map.get(claim_id, {})
             if not claim:
                 continue
-            old_claim = old_map.get(claim_id, {})
+            before_claim_id = claim_id
+            if claim_before_source_map:
+                before_claim_id = claim_before_source_map.get(claim_id, claim_id)
+            old_claim = old_map.get(before_claim_id, {})
             snapshots.append(
                 {
                     "claim_id": claim_id,
@@ -511,6 +577,16 @@ class ClaimReviewDraftingNode:
                 }
             )
         return materials
+
+    def _single_claim_unit_type(
+        self,
+        claim_id: str,
+        effective_map: Dict[str, Dict[str, Any]],
+    ) -> str:
+        claim = effective_map.get(claim_id, {})
+        if str(claim.get("claim_type", "")).strip() == "independent":
+            return "evidence_restructured"
+        return "dependent_group_restructured"
 
     def _collect_amendment_materials(
         self,

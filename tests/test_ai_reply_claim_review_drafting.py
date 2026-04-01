@@ -330,6 +330,117 @@ def test_claim_review_drafting_keeps_direct_primary_oa_out_of_llm(monkeypatch) -
     ]
 
 
+def test_claim_review_drafting_reorders_renumbered_claims_by_effective_claim_order(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    def _fake_invoke_text_json(messages, task_kind, temperature):
+        assert task_kind == "oar_claim_review_drafting"
+        user_prompt = messages[1]["content"]
+        assert '"unit_id": "P1"' in user_prompt
+        assert '"unit_id": "P4"' in user_prompt
+        assert '"unit_id": "P5"' in user_prompt
+        assert '"unit_id": "P6"' in user_prompt
+        assert '"unit_id": "P7"' in user_prompt
+        assert '"unit_id": "P8"' in user_prompt
+        assert '"unit_id": "P9"' in user_prompt
+        assert '"unit_id": "P10"' in user_prompt
+        assert '"review_before_text": "OA 对旧权1的原文评述\\nOA 对旧权2的原文评述\\nOA 对旧权3的原文评述"' in user_prompt
+        assert '"review_before_text": "OA 对旧权4的原文评述"' in user_prompt
+        assert '"review_before_text": "OA 对旧权9的原文评述"' in user_prompt
+        return {
+            "items": [
+                {"unit_id": "P1", "review_text": "现权1重组评述"},
+                {"unit_id": "P4", "review_text": "现权2重组评述"},
+                {"unit_id": "P5", "review_text": "现权3重组评述"},
+                {"unit_id": "P6", "review_text": "现权4重组评述"},
+                {"unit_id": "P7", "review_text": "现权5重组评述"},
+                {"unit_id": "P8", "review_text": "现权6重组评述"},
+                {"unit_id": "P9", "review_text": "现权7重组评述"},
+                {"unit_id": "P10", "review_text": "现权8重组评述"},
+            ]
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "1", "claim_text": "旧权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "2", "claim_text": "旧权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "3", "claim_text": "旧权3", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "4", "claim_text": "旧权4", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "5", "claim_text": "旧权5", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "6", "claim_text": "旧权6", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "7", "claim_text": "旧权7", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "8", "claim_text": "旧权8", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+            {"claim_id": "9", "claim_text": "旧权9", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "10", "claim_text": "旧权10", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "1", "claim_text": "现权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "2", "claim_text": "现权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "3", "claim_text": "现权3", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "4", "claim_text": "现权4", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "5", "claim_text": "现权5", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "6", "claim_text": "现权6", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+            {"claim_id": "7", "claim_text": "现权7", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "8", "claim_text": "现权8", "claim_type": "independent", "parent_claim_ids": []},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {"paragraph_id": "P1", "claim_ids": ["1"], "content": "OA 对旧权1的原文评述"},
+                    {"paragraph_id": "P2", "claim_ids": ["2"], "content": "OA 对旧权2的原文评述"},
+                    {"paragraph_id": "P3", "claim_ids": ["3"], "content": "OA 对旧权3的原文评述"},
+                    {"paragraph_id": "P4", "claim_ids": ["4"], "content": "OA 对旧权4的原文评述"},
+                    {"paragraph_id": "P5", "claim_ids": ["5"], "content": "OA 对旧权5的原文评述"},
+                    {"paragraph_id": "P6", "claim_ids": ["6"], "content": "OA 对旧权6的原文评述"},
+                    {"paragraph_id": "P7", "claim_ids": ["7"], "content": "OA 对旧权7的原文评述"},
+                    {"paragraph_id": "P8", "claim_ids": ["8"], "content": "OA 对旧权8的原文评述"},
+                    {"paragraph_id": "P9", "claim_ids": ["9"], "content": "OA 对旧权9的原文评述"},
+                    {"paragraph_id": "P10", "claim_ids": ["10"], "content": "OA 对旧权10的原文评述"},
+                ]
+            }
+        },
+        added_features=[
+            {"feature_id": "F1", "feature_text": "旧权2并入现权1", "feature_before_text": "", "feature_after_text": "旧权2并入现权1", "target_claim_ids": ["1"], "source_type": "claim", "source_claim_ids": ["2"]},
+            {"feature_id": "F2", "feature_text": "旧权3并入现权1", "feature_before_text": "", "feature_after_text": "旧权3并入现权1", "target_claim_ids": ["1"], "source_type": "claim", "source_claim_ids": ["3"]},
+            {"feature_id": "F3", "feature_text": "旧权4并入现权2", "feature_before_text": "", "feature_after_text": "旧权4并入现权2", "target_claim_ids": ["2"], "source_type": "claim", "source_claim_ids": ["4"]},
+            {"feature_id": "F4", "feature_text": "旧权5并入现权3", "feature_before_text": "", "feature_after_text": "旧权5并入现权3", "target_claim_ids": ["3"], "source_type": "claim", "source_claim_ids": ["5"]},
+            {"feature_id": "F5", "feature_text": "旧权6并入现权4", "feature_before_text": "", "feature_after_text": "旧权6并入现权4", "target_claim_ids": ["4"], "source_type": "claim", "source_claim_ids": ["6"]},
+            {"feature_id": "F6", "feature_text": "旧权7并入现权5", "feature_before_text": "", "feature_after_text": "旧权7并入现权5", "target_claim_ids": ["5"], "source_type": "claim", "source_claim_ids": ["7"]},
+            {"feature_id": "F7", "feature_text": "旧权8并入现权6", "feature_before_text": "", "feature_after_text": "旧权8并入现权6", "target_claim_ids": ["6"], "source_type": "claim", "source_claim_ids": ["8"]},
+            {"feature_id": "F8", "feature_text": "旧权9并入现权7", "feature_before_text": "", "feature_after_text": "旧权9并入现权7", "target_claim_ids": ["7"], "source_type": "claim", "source_claim_ids": ["9"]},
+            {"feature_id": "F9", "feature_text": "旧权10并入现权8", "feature_before_text": "", "feature_after_text": "旧权10并入现权8", "target_claim_ids": ["8"], "source_type": "claim", "source_claim_ids": ["10"]},
+        ],
+        disputes=[],
+        evidence_assessments=[],
+        drafted_rejection_reasons={},
+    )
+
+    assert [item["anchor_claim_id"] for item in result] == ["1", "2", "3", "4", "5", "6", "7", "8"]
+    assert [item["unit_id"] for item in result] == ["P1", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
+    assert result[0]["source_paragraph_ids"] == ["P1", "P2", "P3"]
+    assert result[0]["source_summary"]["merged_source_claim_ids"] == ["2", "3"]
+    assert result[0]["review_before_text"] == "OA 对旧权1的原文评述\nOA 对旧权2的原文评述\nOA 对旧权3的原文评述"
+    assert result[0]["claim_snapshots"] == [
+        {"claim_id": "1", "claim_before_text": "旧权1", "claim_text": "现权1", "claim_type": "independent"},
+    ]
+
+    for index, source_claim_id in enumerate(["4", "5", "6", "7", "8"], start=1):
+        unit = result[index]
+        paragraph_id = f"P{index + 3}"
+        assert unit["source_paragraph_ids"] == [paragraph_id]
+        assert unit["review_before_text"] == f"OA 对旧权{source_claim_id}的原文评述"
+        assert unit["claim_snapshots"][0]["claim_before_text"] == f"旧权{source_claim_id}"
+
+    assert result[6]["source_paragraph_ids"] == ["P9"]
+    assert result[6]["review_before_text"] == "OA 对旧权9的原文评述"
+    assert result[6]["claim_snapshots"][0]["claim_before_text"] == "旧权9"
+    assert result[7]["source_paragraph_ids"] == ["P10"]
+    assert result[7]["review_before_text"] == "OA 对旧权10的原文评述"
+    assert result[7]["claim_snapshots"][0]["claim_before_text"] == "旧权10"
+
+
 def test_topup_search_verification_sets_amendment_origin_fields(monkeypatch) -> None:
     node = TopupSearchVerificationNode()
 
