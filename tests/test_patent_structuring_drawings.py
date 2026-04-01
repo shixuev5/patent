@@ -128,6 +128,46 @@ def test_parse_drawings_excludes_abstract_figure() -> None:
     assert [d["file_path"] for d in drawings] == ["images/a.jpg"]
 
 
+def test_parse_drawings_prefers_global_sequence_when_image_and_label_counts_match() -> None:
+    md = """
+(57)摘要
+摘要内容
+![](images/abs.jpg)
+
+# 附图说明
+图1为第一图。
+图2为第二图。
+图3为第三图。
+图4为第四图。
+图5为第五图。
+图6为第六图。
+
+# 具体实施方式
+![](images/f1.jpg)
+![](images/f2.jpg)
+图1
+![](images/f3.jpg)
+图2
+图3
+![](images/f4.jpg)
+图4
+![](images/f5.jpg)
+![](images/f6.jpg)
+图5
+图6
+"""
+    drawings = RuleBasedExtractor._parse_drawings(md)
+    assert [item["file_path"] for item in drawings] == [
+        "images/f1.jpg",
+        "images/f2.jpg",
+        "images/f3.jpg",
+        "images/f4.jpg",
+        "images/f5.jpg",
+        "images/f6.jpg",
+    ]
+    assert [item["figure_label"] for item in drawings] == ["图1", "图2", "图3", "图4", "图5", "图6"]
+
+
 def test_extract_priority_date_from_30_block() -> None:
     md = """
 (22) 申请日 2022.03.22
@@ -273,6 +313,43 @@ def test_extract_applicants_without_address() -> None:
         "name": "上海某研究院",
         "address": "",
     }]
+
+
+def test_extract_applicants_joins_multiline_address_continuation() -> None:
+    md = """
+(71)申请人 武汉睿芯特种光纤有限责任公司
+
+地址 430078 湖北省武汉市东湖新技术开
+
+发区科技三路99号(自贸区武汉片区)
+
+(72)发明人 刘娜 吴杰 陶军
+"""
+    applicants = RuleBasedExtractor._extract_applicants(md)
+    assert applicants == [{
+        "name": "武汉睿芯特种光纤有限责任公司",
+        "address": "430078 湖北省武汉市东湖新技术开发区科技三路99号(自贸区武汉片区)",
+    }]
+
+
+def test_extract_applicants_does_not_merge_next_applicant_into_previous_address() -> None:
+    md = """
+(71)申请人 北京某科技有限公司
+地址 100000北京市海淀区某路1号
+上海某研究院
+地址 200000上海市浦东新区某街2号
+"""
+    applicants = RuleBasedExtractor._extract_applicants(md)
+    assert applicants == [
+        {
+            "name": "北京某科技有限公司",
+            "address": "100000北京市海淀区某路1号",
+        },
+        {
+            "name": "上海某研究院",
+            "address": "200000上海市浦东新区某街2号",
+        },
+    ]
 
 
 def test_hybrid_check_missing_fields_requires_parent_claim_ids_for_dependent_claim() -> None:
@@ -606,6 +683,30 @@ def test_hybrid_quality_issues_detects_numeric_and_address_like_bibliographic_no
     assert "bibliographic_data.applicants[0].name.invalid_chars" in issues
     assert "bibliographic_data.applicants[1].name.is_actually_address" in issues
     assert "bibliographic_data.agency.agents[0].invalid_chars" in issues
+
+
+def test_hybrid_quality_issues_detects_address_tail_fragment_in_applicant_name() -> None:
+    extractor = HybridExtractor.__new__(HybridExtractor)
+    issues = extractor._check_quality_issues(
+        "(57) ABSTRACT\ntext",
+        {
+            "bibliographic_data": {
+                "application_number": "x",
+                "application_date": "2020.01.01",
+                "invention_title": "Title",
+                "ipc_classifications": ["A01B 1/00"],
+                "applicants": [
+                    {"name": "发区科技三路99号(自贸区武汉片区)", "address": ""},
+                ],
+                "inventors": ["Name"],
+                "agency": {"agency_name": "", "agents": []},
+                "abstract": "ok",
+            },
+            "claims": [],
+            "description": {},
+        },
+    )
+    assert "bibliographic_data.applicants[0].name.is_actually_address" in issues
 
 
 def test_llm_prompt_mentions_multijurisdictional_formats() -> None:

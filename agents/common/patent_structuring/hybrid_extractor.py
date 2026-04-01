@@ -206,7 +206,11 @@ class HybridExtractor:
         if not value:
             return False
 
+        if re.match(r"^(?:发区|片区|园区|路|街|道|号|室|栋|楼)", value):
+            return True
         if re.search(r"(?:省|自治区|直辖市).*?(?:市|区|县).*?(?:路|街|道|镇|乡|村|号|室)", value):
+            return True
+        if re.search(r"\d+.*?(?:路|街|道|号|室|栋|楼|片区|园区|开发区|自贸区)", value):
             return True
         if re.search(r"(?:都|道|府|県).*?(?:市|区|郡).*?(?:町|村|丁目|番地?|号)", value) or re.search(r"^\d{3}-\d{4}", value):
             return True

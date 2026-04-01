@@ -254,8 +254,36 @@ class RuleBasedExtractor:
         if not drawings_zone:
             return drawings
 
-        # 使用逐行状态机，保证“一个图片只能绑定一个图号”。
         lines = drawings_zone.replace("\r\n", "\n").split("\n")
+        image_paths: List[str] = []
+        labels_in_order: List[str] = []
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            image_match = re.search(r"!\[.*?\]\((.*?)\)", line)
+            if image_match:
+                file_path = image_match.group(1).strip()
+                if abstract_figure and file_path == abstract_figure:
+                    continue
+                image_paths.append(file_path)
+                continue
+
+            fig_num = RuleBasedExtractor._match_standalone_figure_label(line)
+            if fig_num:
+                labels_in_order.append(fig_num)
+
+        # 当图片数与图号数相等时，优先采用全局顺序一对一绑定，避免局部分组噪声导致漏号。
+        if image_paths and len(image_paths) == len(labels_in_order):
+            for file_path, fig_num in zip(image_paths, labels_in_order):
+                drawings.append(
+                    RuleBasedExtractor._build_drawing_resource(file_path, fig_num, figure_captions)
+                )
+            return drawings
+
+        # 使用逐行状态机兜底，保证“一个图片只能绑定一个图号”。
         pending_images: List[str] = []
 
         def _flush(labels: List[str]) -> None:
@@ -266,13 +294,10 @@ class RuleBasedExtractor:
             # 单个图号：允许同图号对应多张图片
             if len(labels) == 1:
                 fig_num = labels[0]
-                caption = figure_captions.get(fig_num, "")
                 for file_path in pending_images:
-                    drawings.append({
-                        "file_path": file_path,
-                        "figure_label": f"图{fig_num}",
-                        "caption": caption,
-                    })
+                    drawings.append(
+                        RuleBasedExtractor._build_drawing_resource(file_path, fig_num, figure_captions)
+                    )
                 pending_images =[]
                 return
 
@@ -290,21 +315,15 @@ class RuleBasedExtractor:
 
                 # 多出来的前置图片归入第一个图号（表示同图号多图，不做图组合并）
                 first_fig_num = labels[0]
-                first_caption = figure_captions.get(first_fig_num, "")
                 for file_path in leading_images:
-                    drawings.append({
-                        "file_path": file_path,
-                        "figure_label": f"图{first_fig_num}",
-                        "caption": first_caption,
-                    })
+                    drawings.append(
+                        RuleBasedExtractor._build_drawing_resource(file_path, first_fig_num, figure_captions)
+                    )
 
             for file_path, fig_num in zip(selected_images, selected_labels):
-                caption = figure_captions.get(fig_num, "")
-                drawings.append({
-                    "file_path": file_path,
-                    "figure_label": f"图{fig_num}",
-                    "caption": caption,
-                })
+                drawings.append(
+                    RuleBasedExtractor._build_drawing_resource(file_path, fig_num, figure_captions)
+                )
 
             pending_images =[]
 
@@ -323,20 +342,15 @@ class RuleBasedExtractor:
                 continue
             
             # 支持字母和连接符图号（如图1A, 图2b）
-            normalized_line = re.sub(r"\[\d{4}\]\s*", "", line)
-            label_match = re.match(r"^(?:图|FIG\.?|Fig\.?)\s*([0-9a-zA-Z\-()]+)\s*$", normalized_line, re.IGNORECASE)
-            if not label_match:
-                label_match = re.match(r"^【図\s*([0-9a-zA-Z\-()]+)】\s*$", normalized_line)
-            if label_match:
+            fig_num = RuleBasedExtractor._match_standalone_figure_label(line)
+            if fig_num:
                 labels: List[str] =[]
                 while i < len(lines):
-                    current = re.sub(r"\[\d{4}\]\s*", "", lines[i]).strip()
-                    current_match = re.match(r"^(?:图|FIG\.?|Fig\.?)\s*([0-9a-zA-Z\-()]+)\s*$", current, re.IGNORECASE)
-                    if not current_match:
-                        current_match = re.match(r"^【図\s*([0-9a-zA-Z\-()]+)】\s*$", current)
-                    if not current_match:
+                    current = lines[i].strip()
+                    current_fig_num = RuleBasedExtractor._match_standalone_figure_label(current)
+                    if not current_fig_num:
                         break
-                    labels.append(current_match.group(1))
+                    labels.append(current_fig_num)
                     i += 1
 
                 _flush(labels)
@@ -346,6 +360,31 @@ class RuleBasedExtractor:
 
         # 末尾如果有悬空图片，无法可靠绑定图号，丢弃。
         return drawings
+
+    @staticmethod
+    def _match_standalone_figure_label(line: str) -> Optional[str]:
+        normalized_line = re.sub(r"\[\d{4}\]\s*", "", str(line or "")).strip()
+        if not normalized_line:
+            return None
+
+        label_match = re.match(
+            r"^(?:图|FIG\.?|Fig\.?)\s*([0-9a-zA-Z\-()]+)\s*$",
+            normalized_line,
+            re.IGNORECASE,
+        )
+        if not label_match:
+            label_match = re.match(r"^【図\s*([0-9a-zA-Z\-()]+)】\s*$", normalized_line)
+        if not label_match:
+            return None
+        return label_match.group(1)
+
+    @staticmethod
+    def _build_drawing_resource(file_path: str, fig_num: str, figure_captions: Dict[str, str]) -> dict:
+        return {
+            "file_path": file_path,
+            "figure_label": f"图{fig_num}",
+            "caption": figure_captions.get(fig_num, ""),
+        }
 
     @staticmethod
     def _extract_drawings_zone(md_content: str) -> str:
@@ -580,13 +619,15 @@ class RuleBasedExtractor:
 
         current_name = ""
         current_address = ""
+        collecting_address = False
 
         def _flush_current() -> None:
-            nonlocal current_name, current_address
+            nonlocal current_name, current_address, collecting_address
             name = str(current_name or "").strip()
             if not name:
                 current_name = ""
                 current_address = ""
+                collecting_address = False
                 return
             applicants.append({
                 "name": name,
@@ -594,6 +635,7 @@ class RuleBasedExtractor:
             })
             current_name = ""
             current_address = ""
+            collecting_address = False
 
         for raw_line in lines:
             line = re.sub(r"\[\d{4}\]\s*", "", raw_line).strip()
@@ -608,24 +650,28 @@ class RuleBasedExtractor:
             if has_address_marker:
                 if name_part:
                     _flush_current()
-                    applicants.append({
-                        "name": name_part,
-                        "address": address_part,
-                    })
+                    current_name = name_part
+                    current_address = address_part
+                    collecting_address = bool(address_part)
                     continue
 
                 # 地址独占一行时，优先绑定到当前申请人；若无当前项则补到上一项
                 if current_name:
-                    current_address = address_part
-                    _flush_current()
+                    current_address = RuleBasedExtractor._join_address_segments(current_address, address_part)
+                    collecting_address = True
                     continue
                 if applicants and not applicants[-1].get("address"):
                     applicants[-1]["address"] = address_part
                 continue
 
+            if current_name and collecting_address and RuleBasedExtractor._looks_like_address_continuation(line, current_address):
+                current_address = RuleBasedExtractor._join_address_segments(current_address, line)
+                continue
+
             if current_name:
                 _flush_current()
             current_name = name_part
+            collecting_address = False
 
         _flush_current()
         return applicants
@@ -654,8 +700,32 @@ class RuleBasedExtractor:
             if not RuleBasedExtractor._looks_like_address(address_part):
                 return text.strip("，,。 "), "", False
 
-        address_part = re.sub(r"\s*\(.*?\)\s*$", "", address_part).strip()
         return name_part, address_part, True
+
+    @staticmethod
+    def _join_address_segments(*parts: str) -> str:
+        segments = [str(part or "").strip() for part in parts if str(part or "").strip()]
+        if not segments:
+            return ""
+        return "".join(segments)
+
+    @staticmethod
+    def _looks_like_address_continuation(line: str, current_address: str = "") -> bool:
+        value = str(line or "").strip()
+        existing = str(current_address or "").strip()
+        if not value:
+            return False
+        if re.match(r"^(?:\(\d+\)|#\s*\(\d+\)|[（(]\d+[）)])", value):
+            return False
+        if RuleBasedExtractor._looks_like_address(value):
+            return True
+        if re.search(r"(?:区|县|路|街|道|号|室|栋|楼|园|片区|开发区|科技园|工业园|自贸区)", value):
+            return True
+        if re.match(r"^(?:发区|片区|园区|路|街|道|号|室|栋|楼)", value):
+            return True
+        if existing and existing[-1:] in {"开", "发", "路", "街", "道", "区", "园"}:
+            return True
+        return False
 
     @staticmethod
     def _looks_like_address(text: str) -> bool:
