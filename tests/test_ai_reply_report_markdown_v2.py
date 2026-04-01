@@ -325,3 +325,34 @@ def test_build_final_report_markdown_only_shows_current_claim_snapshots_in_seque
     assert "不应展示的权1文本。" not in content
     assert "权8文本。" in content
     assert "权9文本。" in content
+
+
+def test_build_final_report_markdown_shows_non_ai_change_items_as_not_applicable() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "change_items": [
+                {
+                    "feature_id": "F2",
+                    "feature_text": "保持不变的特征",
+                    "feature_before_text": "保持不变的特征",
+                    "feature_after_text": "保持不变的特征",
+                    "contains_added_text": False,
+                    "target_claim_ids": ["3"],
+                    "source_type": "spec",
+                    "source_claim_ids": [],
+                    "assessment": {},
+                    "evidence": [],
+                    "final_review_reason": "",
+                }
+            ]
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "无需AI判断" in content
+    assert 'oar-verdict-badge oar-verdict-badge-unassessed' in content

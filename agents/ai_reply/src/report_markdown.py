@@ -432,7 +432,9 @@ def _render_change_items_table(change_items: List[Any]) -> str:
                     [
                         claims_html,
                         feature_html,
-                        _verdict_badge_html(_verdict_label(verdict), verdict) if show_ai else "",
+                        _verdict_badge_html(_verdict_label(verdict), verdict)
+                        if show_ai
+                        else _verdict_badge_html("无需AI判断", "UNASSESSED"),
                     ],
                     detail_blocks,
                 ),
