@@ -21,7 +21,7 @@ from backend.time_utils import (
     utc_to_local_day,
 )
 from config import settings
-from .models import AccountMonthTarget, Task, TaskStatus, TaskType, User
+from .models import AccountMonthTarget, RefreshSession, Task, TaskStatus, TaskType, User
 
 
 class SQLiteTaskStorage:
@@ -111,6 +111,15 @@ class SQLiteTaskStorage:
             ("payload_bytes", "payload_bytes INTEGER NOT NULL DEFAULT 0"),
             ("payload_overflow", "payload_overflow INTEGER NOT NULL DEFAULT 0"),
             ("created_at", "created_at TEXT NOT NULL"),
+        ],
+        "refresh_sessions": [
+            ("token_hash", "token_hash TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("expires_at", "expires_at TEXT NOT NULL"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+            ("revoked_at", "revoked_at TEXT"),
+            ("replaced_by_token_hash", "replaced_by_token_hash TEXT"),
         ],
     }
 
@@ -210,6 +219,16 @@ class SQLiteTaskStorage:
         created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS refresh_sessions (
+        token_hash TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT,
+        replaced_by_token_hash TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -233,6 +252,9 @@ class SQLiteTaskStorage:
     CREATE INDEX IF NOT EXISTS idx_system_logs_request_id ON system_logs(request_id);
     CREATE INDEX IF NOT EXISTS idx_system_logs_provider ON system_logs(provider);
     CREATE INDEX IF NOT EXISTS idx_system_logs_success ON system_logs(success);
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_owner_id ON refresh_sessions(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires_at ON refresh_sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_revoked_at ON refresh_sessions(revoked_at);
     """
 
     def __init__(self, db_path: Union[str, Path, None] = None):
@@ -322,6 +344,17 @@ class SQLiteTaskStorage:
             created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
             last_login_at=parse_storage_ts(row["last_login_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_refresh_session(self, row: sqlite3.Row) -> RefreshSession:
+        return RefreshSession(
+            token_hash=str(row["token_hash"]),
+            owner_id=str(row["owner_id"]),
+            expires_at=parse_storage_ts(row["expires_at"], naive_strategy="utc"),
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+            revoked_at=parse_storage_ts(row["revoked_at"], naive_strategy="utc") if row["revoked_at"] else None,
+            replaced_by_token_hash=str(row["replaced_by_token_hash"] or "").strip() or None,
         )
 
     def _row_to_account_month_target(self, row: sqlite3.Row) -> AccountMonthTarget:
@@ -1856,6 +1889,84 @@ class SQLiteTaskStorage:
                 (normalized,),
             ).fetchone()
         return self._row_to_user(row) if row else None
+
+    def upsert_refresh_session(self, session: RefreshSession) -> RefreshSession:
+        created_at_iso = to_utc_z(session.created_at, naive_strategy="utc") if session.created_at else utc_now_z()
+        updated_at_iso = to_utc_z(session.updated_at, naive_strategy="utc") if session.updated_at else utc_now_z()
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO refresh_sessions (
+                    token_hash, owner_id, expires_at, created_at, updated_at, revoked_at, replaced_by_token_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(token_hash) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at,
+                    revoked_at = excluded.revoked_at,
+                    replaced_by_token_hash = excluded.replaced_by_token_hash
+                """,
+                (
+                    session.token_hash,
+                    session.owner_id,
+                    to_utc_z(session.expires_at, naive_strategy="utc"),
+                    created_at_iso,
+                    updated_at_iso,
+                    to_utc_z(session.revoked_at, naive_strategy="utc") if session.revoked_at else None,
+                    session.replaced_by_token_hash,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM refresh_sessions WHERE token_hash = ?",
+                (session.token_hash,),
+            ).fetchone()
+        return self._row_to_refresh_session(row) if row else session
+
+    def get_refresh_session(self, token_hash: str) -> Optional[RefreshSession]:
+        normalized = str(token_hash or "").strip()
+        if not normalized:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM refresh_sessions WHERE token_hash = ?",
+                (normalized,),
+            ).fetchone()
+        return self._row_to_refresh_session(row) if row else None
+
+    def revoke_refresh_session(self, token_hash: str, replaced_by_token_hash: Optional[str] = None) -> bool:
+        normalized = str(token_hash or "").strip()
+        if not normalized:
+            return False
+        now_iso = utc_now_z()
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE refresh_sessions
+                SET revoked_at = ?, replaced_by_token_hash = ?, updated_at = ?
+                WHERE token_hash = ? AND revoked_at IS NULL
+                """,
+                (now_iso, replaced_by_token_hash, now_iso, normalized),
+            )
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def revoke_refresh_sessions_by_owner(self, owner_id: str) -> int:
+        normalized = str(owner_id or "").strip()
+        if not normalized:
+            return 0
+        now_iso = utc_now_z()
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE refresh_sessions
+                SET revoked_at = ?, updated_at = ?
+                WHERE owner_id = ? AND revoked_at IS NULL
+                """,
+                (now_iso, now_iso, normalized),
+            )
+            conn.commit()
+        return int(cursor.rowcount or 0)
 
     def update_user_profile(
         self,

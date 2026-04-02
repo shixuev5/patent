@@ -58,6 +58,17 @@ class User:
 
 
 @dataclass
+class RefreshSession:
+    token_hash: str
+    owner_id: str
+    expires_at: datetime
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    revoked_at: Optional[datetime] = None
+    replaced_by_token_hash: Optional[str] = None
+
+
+@dataclass
 class AccountMonthTarget:
     owner_id: str
     year: int

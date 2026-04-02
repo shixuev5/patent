@@ -54,9 +54,17 @@ interface RequestRawOptions {
   path: string
   method?: string
   token?: string
+  retryOnUnauthorized?: boolean
   headers?: HeadersInit
   body?: BodyInit | null
   signal?: AbortSignal
+}
+
+type UnauthorizedTokenRefresher = () => Promise<string | null>
+let unauthorizedTokenRefresher: UnauthorizedTokenRefresher | null = null
+
+export const registerUnauthorizedTokenRefresher = (refresher: UnauthorizedTokenRefresher | null) => {
+  unauthorizedTokenRefresher = refresher
 }
 
 export const requestRaw = async ({
@@ -64,21 +72,42 @@ export const requestRaw = async ({
   path,
   method = 'GET',
   token,
+  retryOnUnauthorized = true,
   headers,
   body,
   signal,
 }: RequestRawOptions): Promise<Response> => {
-  const mergedHeaders = new Headers(headers || {})
-  if (token) {
-    mergedHeaders.set('Authorization', `Bearer ${token}`)
+  const buildHeaders = (nextToken?: string) => {
+    const mergedHeaders = new Headers(headers || {})
+    if (nextToken) {
+      mergedHeaders.set('Authorization', `Bearer ${nextToken}`)
+    }
+    return mergedHeaders
   }
 
-  return fetch(joinUrl(baseUrl, path), {
+  let response = await fetch(joinUrl(baseUrl, path), {
     method,
-    headers: mergedHeaders,
+    headers: buildHeaders(token),
     body: body ?? null,
     signal,
   })
+  if (
+    response.status === 401
+    && retryOnUnauthorized
+    && !!token
+    && typeof unauthorizedTokenRefresher === 'function'
+  ) {
+    const nextToken = await unauthorizedTokenRefresher()
+    if (nextToken) {
+      response = await fetch(joinUrl(baseUrl, path), {
+        method,
+        headers: buildHeaders(nextToken),
+        body: body ?? null,
+        signal,
+      })
+    }
+  }
+  return response
 }
 
 interface RequestJsonOptions extends RequestRawOptions {

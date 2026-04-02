@@ -14,11 +14,13 @@ class TaskResponse(BaseModel):
     message: str
 
 
-class GuestAuthResponse(BaseModel):
-    token: str
-    userId: str
-    expiresAt: str
-    authType: str = "guest"
+class SessionAuthResponse(BaseModel):
+    access_token: str
+    access_expires_at: str
+    refresh_token: str
+    refresh_expires_at: str
+    user_id: str
+    auth_type: Literal["guest", "authing"]
 
 
 class GuestAuthRequest(BaseModel):
@@ -39,11 +41,20 @@ class AuthingTokenExchangeRequest(BaseModel):
     idToken: str
 
 
-class AuthingAuthResponse(BaseModel):
-    token: str
-    userId: str
-    expiresAt: str
-    authType: str = "authing"
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+class GuestAuthResponse(SessionAuthResponse):
+    auth_type: Literal["guest"] = "guest"
+
+
+class AuthingAuthResponse(SessionAuthResponse):
+    auth_type: Literal["authing"] = "authing"
     user: UserProfileResponse
 
 

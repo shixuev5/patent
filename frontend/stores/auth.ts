@@ -3,6 +3,10 @@ import type { GuardClient, GuardConstructor } from '~/types/authing-guard-cdn'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
 const TASK_AUTH_TOKEN_KEY = 'patent_auth_token'
+const TASK_AUTH_ACCESS_TOKEN_KEY = 'patent_auth_access_token'
+const TASK_AUTH_REFRESH_TOKEN_KEY = 'patent_auth_refresh_token'
+const TASK_AUTH_ACCESS_EXPIRES_AT_KEY = 'patent_auth_access_expires_at'
+const TASK_AUTH_REFRESH_EXPIRES_AT_KEY = 'patent_auth_refresh_expires_at'
 const TASK_AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const TASK_AUTH_MODE_KEY = 'patent_auth_mode'
 
@@ -92,6 +96,10 @@ export const useAuthStore = defineStore('auth', {
     _clearBackendSessionCache() {
       if (!process.client) return
       localStorage.removeItem(TASK_AUTH_TOKEN_KEY)
+      localStorage.removeItem(TASK_AUTH_ACCESS_TOKEN_KEY)
+      localStorage.removeItem(TASK_AUTH_REFRESH_TOKEN_KEY)
+      localStorage.removeItem(TASK_AUTH_ACCESS_EXPIRES_AT_KEY)
+      localStorage.removeItem(TASK_AUTH_REFRESH_EXPIRES_AT_KEY)
       localStorage.removeItem(TASK_AUTH_USER_ID_KEY)
       localStorage.removeItem(TASK_AUTH_MODE_KEY)
     },

@@ -1,18 +1,23 @@
 import { defineStore } from 'pinia'
 import { useAuthStore } from '~/stores/auth'
-import { cachedGetJson, invalidateQueries, requestRaw } from '~/utils/apiClient'
+import { cachedGetJson, invalidateQueries, registerUnauthorizedTokenRefresher, requestRaw } from '~/utils/apiClient'
 import type { CreateTaskInput, Task, TaskType } from '~/types/task'
 import type { DailyPointsExceededDetail, UsageResponse } from '~/types/usage'
 
 const generateId = () => Math.random().toString(36).slice(2, 11)
 const STORAGE_KEY_PREFIX = 'patent_tasks::'
+const AUTH_ACCESS_TOKEN_KEY = 'patent_auth_access_token'
 const AUTH_TOKEN_KEY = 'patent_auth_token'
+const AUTH_REFRESH_TOKEN_KEY = 'patent_auth_refresh_token'
+const AUTH_ACCESS_EXPIRES_AT_KEY = 'patent_auth_access_expires_at'
+const AUTH_REFRESH_EXPIRES_AT_KEY = 'patent_auth_refresh_expires_at'
 const AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const AUTH_MODE_KEY = 'patent_auth_mode'
 const GUEST_DEVICE_ID_KEY = 'patent_guest_device_id'
 const TASK_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_COMPLETED_CACHE_COUNT = 20
 const PROGRESS_POLL_INTERVAL_MS = 5000
+const ACCESS_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000
 type AuthMode = 'guest' | 'authing'
 
 interface TaskCachePayload {
@@ -29,6 +34,15 @@ interface PointLimitNoticeState {
   show: boolean
   text: string
   shouldPromptLogin: boolean
+}
+
+interface SessionAuthPayload {
+  access_token: string
+  access_expires_at: string
+  refresh_token: string
+  refresh_expires_at: string
+  user_id: string
+  auth_type: 'guest' | 'authing'
 }
 
 export interface TaskSubmitResult {
@@ -98,13 +112,23 @@ const createGuestDeviceId = (): string => {
   return `guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+const toEpochMs = (value: string): number => {
+  const ts = Date.parse(String(value || ''))
+  return Number.isFinite(ts) ? ts : 0
+}
+
 export const useTaskStore = defineStore('tasks', {
   state: () => ({
     tasks: [] as Task[],
     loading: false,
     authToken: '' as string,
+    refreshToken: '' as string,
+    accessExpiresAt: '' as string,
+    refreshExpiresAt: '' as string,
     userId: '' as string,
     authMode: 'guest' as AuthMode,
+    refreshInFlight: null as Promise<boolean> | null,
+    unauthorizedRefresherRegistered: false,
     taskStorageKey: '' as string,
     progressPollers: {} as Record<string, ReturnType<typeof setInterval>>,
     downloadingTaskIds: new Set<string>(), // 跟踪正在下载的任务ID
@@ -219,14 +243,51 @@ export const useTaskStore = defineStore('tasks', {
       }
     },
 
-    applyAuthIdentity(token: string, userId: string, mode: AuthMode) {
+    registerUnauthorizedRefresher() {
+      if (this.unauthorizedRefresherRegistered) return
+      registerUnauthorizedTokenRefresher(async () => {
+        const refreshed = await this.refreshAuthSingleflight()
+        return refreshed ? this.authToken : null
+      })
+      this.unauthorizedRefresherRegistered = true
+    },
+
+    isAccessTokenUsable(): boolean {
+      if (!this.authToken || !this.accessExpiresAt) return false
+      const expMs = toEpochMs(this.accessExpiresAt)
+      if (!expMs) return false
+      return expMs - Date.now() > ACCESS_TOKEN_REFRESH_BUFFER_MS
+    },
+
+    isRefreshTokenUsable(): boolean {
+      if (!this.refreshToken || !this.refreshExpiresAt) return false
+      const expMs = toEpochMs(this.refreshExpiresAt)
+      if (!expMs) return false
+      return expMs > Date.now()
+    },
+
+    applyAuthIdentity(
+      accessToken: string,
+      refreshToken: string,
+      accessExpiresAt: string,
+      refreshExpiresAt: string,
+      userId: string,
+      mode: AuthMode,
+    ) {
       const changed = this.userId !== userId || this.authMode !== mode
-      this.authToken = token
+      this.authToken = accessToken
+      this.refreshToken = refreshToken
+      this.accessExpiresAt = accessExpiresAt
+      this.refreshExpiresAt = refreshExpiresAt
       this.userId = userId
       this.authMode = mode
 
       if (process.client) {
-        localStorage.setItem(AUTH_TOKEN_KEY, token)
+        localStorage.setItem(AUTH_TOKEN_KEY, accessToken)
+        localStorage.setItem(AUTH_ACCESS_TOKEN_KEY, accessToken)
+        localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken)
+        localStorage.setItem(AUTH_ACCESS_EXPIRES_AT_KEY, accessExpiresAt)
+        localStorage.setItem(AUTH_REFRESH_EXPIRES_AT_KEY, refreshExpiresAt)
         localStorage.setItem(AUTH_USER_ID_KEY, userId)
         localStorage.setItem(AUTH_MODE_KEY, mode)
       }
@@ -328,7 +389,10 @@ export const useTaskStore = defineStore('tasks', {
 
     loadAuthFromStorage() {
       if (!process.client) return
-      this.authToken = localStorage.getItem(AUTH_TOKEN_KEY) || ''
+      this.authToken = localStorage.getItem(AUTH_ACCESS_TOKEN_KEY) || localStorage.getItem(AUTH_TOKEN_KEY) || ''
+      this.refreshToken = localStorage.getItem(AUTH_REFRESH_TOKEN_KEY) || ''
+      this.accessExpiresAt = localStorage.getItem(AUTH_ACCESS_EXPIRES_AT_KEY) || ''
+      this.refreshExpiresAt = localStorage.getItem(AUTH_REFRESH_EXPIRES_AT_KEY) || ''
       this.userId = localStorage.getItem(AUTH_USER_ID_KEY) || ''
       const mode = localStorage.getItem(AUTH_MODE_KEY)
       this.authMode = mode === 'authing' ? 'authing' : 'guest'
@@ -338,17 +402,32 @@ export const useTaskStore = defineStore('tasks', {
     clearAuthFromStorage() {
       this.resetInMemoryTasks()
       this.authToken = ''
+      this.refreshToken = ''
+      this.accessExpiresAt = ''
+      this.refreshExpiresAt = ''
       this.userId = ''
       this.authMode = 'guest'
+      this.refreshInFlight = null
       this.taskStorageKey = ''
       if (!process.client) return
       localStorage.removeItem(AUTH_TOKEN_KEY)
+      localStorage.removeItem(AUTH_ACCESS_TOKEN_KEY)
+      localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY)
+      localStorage.removeItem(AUTH_ACCESS_EXPIRES_AT_KEY)
+      localStorage.removeItem(AUTH_REFRESH_EXPIRES_AT_KEY)
       localStorage.removeItem(AUTH_USER_ID_KEY)
       localStorage.removeItem(AUTH_MODE_KEY)
     },
 
-    saveAuthToStorage(token: string, userId: string, mode: AuthMode) {
-      this.applyAuthIdentity(token, userId, mode)
+    saveAuthToStorage(payload: SessionAuthPayload, mode: AuthMode) {
+      this.applyAuthIdentity(
+        payload.access_token,
+        payload.refresh_token,
+        payload.access_expires_at,
+        payload.refresh_expires_at,
+        payload.user_id,
+        mode,
+      )
     },
 
     ensureGuestDeviceId(): string {
@@ -374,9 +453,9 @@ export const useTaskStore = defineStore('tasks', {
           body: JSON.stringify({ deviceId }),
         })
         if (!response.ok) return false
-        const data = await response.json()
-        if (!data?.token || !data?.userId) return false
-        this.saveAuthToStorage(data.token, data.userId, 'guest')
+        const data = await response.json() as SessionAuthPayload
+        if (!data?.access_token || !data?.refresh_token || !data?.user_id) return false
+        this.saveAuthToStorage(data, 'guest')
         return true
       } catch (error) {
         console.error('创建匿名身份失败：', error)
@@ -395,15 +474,16 @@ export const useTaskStore = defineStore('tasks', {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ idToken }),
+          retryOnUnauthorized: false,
         })
         if (!response.ok) {
           const errorText = await this.parseApiError(response)
           console.error('Authing token 交换失败：', errorText)
           return false
         }
-        const data = await response.json()
-        if (!data?.token || !data?.userId) return false
-        this.saveAuthToStorage(data.token, data.userId, 'authing')
+        const data = await response.json() as SessionAuthPayload
+        if (!data?.access_token || !data?.refresh_token || !data?.user_id) return false
+        this.saveAuthToStorage(data, 'authing')
         return true
       } catch (error) {
         console.error('Authing token 交换异常：', error)
@@ -411,7 +491,49 @@ export const useTaskStore = defineStore('tasks', {
       }
     },
 
+    async refreshAuthToken(): Promise<boolean> {
+      const config = useRuntimeConfig()
+      if (!this.isRefreshTokenUsable()) return false
+      try {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/auth/refresh',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ refresh_token: this.refreshToken }),
+          retryOnUnauthorized: false,
+        })
+        if (!response.ok) return false
+        const data = await response.json() as SessionAuthPayload
+        if (!data?.access_token || !data?.refresh_token || !data?.user_id) return false
+        const mode: AuthMode = data.auth_type === 'authing' ? 'authing' : 'guest'
+        this.saveAuthToStorage(data, mode)
+        return true
+      } catch (error) {
+        console.error('刷新认证令牌失败：', error)
+        return false
+      }
+    },
+
+    async refreshAuthSingleflight(): Promise<boolean> {
+      if (this.refreshInFlight) return this.refreshInFlight
+      this.refreshInFlight = (async () => {
+        this.loadAuthFromStorage()
+        const ok = await this.refreshAuthToken()
+        if (!ok) this.clearAuthFromStorage()
+        return ok
+      })()
+      try {
+        return await this.refreshInFlight
+      } finally {
+        this.refreshInFlight = null
+      }
+    },
+
     async ensureAuth(): Promise<boolean> {
+      this.registerUnauthorizedRefresher()
       this.loadAuthFromStorage()
       const config = useRuntimeConfig()
       const hasAuthingEnabled = String(config.public.authingAppId || '').trim().length > 0
@@ -427,19 +549,34 @@ export const useTaskStore = defineStore('tasks', {
 
         if (isAuthingLoggedIn) {
           if (
-            this.authToken
+            this.isAccessTokenUsable()
             && this.authMode === 'authing'
             && this.userId
             && this.userId === expectedAuthingUserId
           ) {
             return true
           }
+          if (
+            this.authMode === 'authing'
+            && this.userId
+            && this.userId === expectedAuthingUserId
+            && this.isRefreshTokenUsable()
+          ) {
+            const refreshed = await this.refreshAuthSingleflight()
+            if (refreshed && this.isAccessTokenUsable()) return true
+          }
           this.clearAuthFromStorage()
           return await this.exchangeAuthingAuth(idToken)
         }
       }
 
-      if (this.authToken && this.authMode === 'guest' && this.userId) return true
+      if (this.authMode === 'guest' && this.userId) {
+        if (this.isAccessTokenUsable()) return true
+        if (this.isRefreshTokenUsable()) {
+          const refreshed = await this.refreshAuthSingleflight()
+          if (refreshed && this.isAccessTokenUsable()) return true
+        }
+      }
 
       this.clearAuthFromStorage()
       return await this.createGuestAuth()

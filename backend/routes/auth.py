@@ -7,17 +7,29 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Set
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 
-from backend.auth import _build_authing_owner_id, _issue_token, _verify_authing_id_token
+from backend.auth import (
+    _build_authing_owner_id,
+    _get_current_user,
+    _hash_refresh_token,
+    _issue_refresh_token,
+    _issue_token,
+    _verify_authing_id_token,
+)
 from backend.models import (
     AuthingAuthResponse,
     AuthingTokenExchangeRequest,
     GuestAuthRequest,
     GuestAuthResponse,
+    LogoutRequest,
+    RefreshTokenRequest,
+    SessionAuthResponse,
     UserProfileResponse,
 )
-from backend.storage import User, get_pipeline_manager
+from backend.models import CurrentUser
+from backend.storage import RefreshSession, User, get_pipeline_manager
+from backend.time_utils import to_utc_z, utc_now
 
 
 router = APIRouter()
@@ -113,18 +125,37 @@ def _extract_primary_role(claims: dict) -> str | None:
     return sorted(roles)[0]
 
 
+def _issue_auth_session(owner_id: str, auth_type: str) -> SessionAuthResponse:
+    access_token, access_exp = _issue_token(owner_id)
+    refresh_token, refresh_hash, refresh_exp = _issue_refresh_token()
+    now = utc_now()
+    task_manager.storage.upsert_refresh_session(
+        RefreshSession(
+            token_hash=refresh_hash,
+            owner_id=owner_id,
+            expires_at=datetime.fromtimestamp(refresh_exp, tz=timezone.utc),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return SessionAuthResponse(
+        access_token=access_token,
+        access_expires_at=datetime.fromtimestamp(access_exp, tz=timezone.utc).isoformat(),
+        refresh_token=refresh_token,
+        refresh_expires_at=datetime.fromtimestamp(refresh_exp, tz=timezone.utc).isoformat(),
+        user_id=owner_id,
+        auth_type="authing" if auth_type == "authing" else "guest",
+    )
+
+
 @router.post("/api/auth/guest", response_model=GuestAuthResponse)
 async def create_guest_auth(payload: GuestAuthRequest | None = None):
     """创建访客身份认证"""
     device_id = _normalize_guest_device_id(payload.deviceId if payload else None)
     device_hash = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:24]
     user_id = f"guest_{device_hash}"
-    token, exp = _issue_token(user_id)
-    return GuestAuthResponse(
-        token=token,
-        userId=user_id,
-        expiresAt=datetime.fromtimestamp(exp, tz=timezone.utc).isoformat(),
-    )
+    session = _issue_auth_session(user_id, auth_type="guest")
+    return GuestAuthResponse(**session.model_dump())
 
 
 @router.post("/api/auth/authing", response_model=AuthingAuthResponse)
@@ -153,11 +184,13 @@ async def exchange_authing_token(payload: AuthingTokenExchangeRequest):
     )
     saved_user = task_manager.storage.upsert_authing_user(user_record)
 
-    token, exp = _issue_token(owner_id)
+    session = _issue_auth_session(owner_id, auth_type="authing")
     return AuthingAuthResponse(
-        token=token,
-        userId=owner_id,
-        expiresAt=datetime.fromtimestamp(exp, tz=timezone.utc).isoformat(),
+        access_token=session.access_token,
+        access_expires_at=session.access_expires_at,
+        refresh_token=session.refresh_token,
+        refresh_expires_at=session.refresh_expires_at,
+        user_id=owner_id,
         user=UserProfileResponse(
             ownerId=saved_user.owner_id,
             authingSub=saved_user.authing_sub,
@@ -168,3 +201,43 @@ async def exchange_authing_token(payload: AuthingTokenExchangeRequest):
             picture=saved_user.picture,
         ),
     )
+
+
+@router.post("/api/auth/refresh", response_model=SessionAuthResponse)
+async def refresh_auth_session(payload: RefreshTokenRequest):
+    raw_refresh_token = str(payload.refresh_token or "").strip()
+    if not raw_refresh_token:
+        raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_INVALID", "message": "refresh token 不能为空。"})
+
+    token_hash = _hash_refresh_token(raw_refresh_token)
+    session = task_manager.storage.get_refresh_session(token_hash)
+    if not session:
+        raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_INVALID", "message": "refresh token 无效。"})
+
+    now = utc_now()
+    if session.revoked_at is not None or session.expires_at <= now:
+        raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_INVALID", "message": "refresh token 已失效。"})
+
+    next_session = _issue_auth_session(session.owner_id, auth_type="authing" if session.owner_id.startswith("authing:") else "guest")
+    next_hash = _hash_refresh_token(next_session.refresh_token)
+    task_manager.storage.revoke_refresh_session(token_hash, replaced_by_token_hash=next_hash)
+    return next_session
+
+
+@router.post("/api/auth/logout")
+async def logout_auth_session(
+    payload: LogoutRequest | None = None,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    revoked_count = 0
+    refresh_token = str(payload.refresh_token if payload else "").strip()
+    if refresh_token:
+        revoked = task_manager.storage.revoke_refresh_session(_hash_refresh_token(refresh_token))
+        revoked_count = 1 if revoked else 0
+    else:
+        revoked_count = task_manager.storage.revoke_refresh_sessions_by_owner(current_user.user_id)
+    return {
+        "success": True,
+        "revoked_count": int(revoked_count),
+        "revoked_at": to_utc_z(utc_now(), naive_strategy="utc"),
+    }

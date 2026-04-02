@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,8 @@ from backend.models import CurrentUser
 
 AUTH_SECRET = os.getenv("AUTH_SECRET", "change-this-secret-in-production")
 AUTH_TOKEN_TTL_DAYS = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
+ACCESS_TOKEN_TTL_MINUTES = int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", "30"))
+REFRESH_TOKEN_TTL_DAYS = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
 APP_TZ_OFFSET_HOURS = int(os.getenv("APP_TZ_OFFSET_HOURS", "8"))
 AUTHING_APP_ID = os.getenv("AUTHING_APP_ID", "").strip()
 AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
@@ -49,41 +52,70 @@ def _sign_payload(payload_b64: str) -> str:
     return hmac.new(AUTH_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _issue_token(user_id: str) -> tuple[str, int]:
+def _auth_detail(code: str, message: str) -> Dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def _issue_access_token(user_id: str) -> tuple[str, int]:
     now = int(time.time())
-    exp = now + AUTH_TOKEN_TTL_DAYS * 24 * 60 * 60
+    exp = now + ACCESS_TOKEN_TTL_MINUTES * 60
     payload = {
         "uid": user_id,
         "iat": now,
         "exp": exp,
+        "typ": "access",
     }
     payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
     signature = _sign_payload(payload_b64)
     return f"{payload_b64}.{signature}", exp
 
 
+def _issue_token(user_id: str) -> tuple[str, int]:
+    # Legacy compatibility wrapper used by old tests/mocks.
+    return _issue_access_token(user_id)
+
+
+def _issue_refresh_token() -> tuple[str, str, int]:
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    exp = int(time.time()) + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60
+    return raw_token, token_hash, exp
+
+
+def _hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
 def _verify_token(token: str) -> Optional[dict]:
+    payload, _reason = _verify_access_token_with_reason(token)
+    return payload
+
+
+def _verify_access_token_with_reason(token: str) -> Tuple[Optional[dict], Optional[str]]:
     try:
         payload_b64, signature = token.split(".", 1)
     except ValueError:
-        return None
+        return None, "INVALID"
 
     expected = _sign_payload(payload_b64)
     if not hmac.compare_digest(signature, expected):
-        return None
+        return None, "INVALID"
 
     try:
         payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
     except Exception:
-        return None
+        return None, "INVALID"
 
     exp = payload.get("exp")
     uid = payload.get("uid")
     if not uid or not isinstance(uid, str):
-        return None
+        return None, "INVALID"
+    token_type = str(payload.get("typ", "access")).strip().lower()
+    if token_type and token_type != "access":
+        return None, "INVALID"
     if not isinstance(exp, int) or exp <= int(time.time()):
-        return None
-    return payload
+        return None, "EXPIRED"
+    return payload, None
 
 
 def _parse_jwt(token: str) -> Tuple[Dict[str, Any], Dict[str, Any], bytes, str]:
@@ -270,11 +302,19 @@ def _get_current_user(
 ) -> CurrentUser:
     raw_token = _extract_token_from_request(authorization, token)
     if not raw_token:
-        raise HTTPException(status_code=401, detail="需要身份认证。")
+        raise HTTPException(status_code=401, detail=_auth_detail("UNAUTHORIZED", "需要身份认证。"))
 
-    payload = _verify_token(raw_token)
+    payload, reason = _verify_access_token_with_reason(raw_token)
     if not payload:
-        raise HTTPException(status_code=401, detail="令牌无效或已过期。")
+        if reason == "EXPIRED":
+            raise HTTPException(
+                status_code=401,
+                detail=_auth_detail("ACCESS_TOKEN_EXPIRED", "访问令牌已过期。"),
+            )
+        raise HTTPException(
+            status_code=401,
+            detail=_auth_detail("UNAUTHORIZED", "令牌无效。"),
+        )
 
     return CurrentUser(user_id=payload["uid"])
 
