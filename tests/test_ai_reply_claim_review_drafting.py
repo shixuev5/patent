@@ -571,9 +571,13 @@ def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> N
         ]
     )
 
-    assert "最小编辑原则" in system_prompt
-    assert "不得将原有详细评述缩写、概括、抽象化、改写成更短版本" in system_prompt
-    assert "旧评述中仍然成立的详细论证、对比文件公开内容、区别点分析、结论，应尽量完整保留" in user_prompt
+    assert "最小编辑与保真原则（反压缩机制）" in system_prompt
+    assert "自动摘要与压缩" in system_prompt
+    assert "原样保留" in system_prompt
+    assert "无实质变化时原文复用优先" in system_prompt
+    assert "不得为了措辞统一而整体改写" in system_prompt
+    assert "必须完整保留当前仍然成立的事实、对比文件公开内容、区别特征分析及结论" in system_prompt
+    assert "review_text 应尽量直接沿用 review_before_text" in user_prompt
 
 
 def test_topup_search_verification_sets_amendment_origin_fields(monkeypatch) -> None:
