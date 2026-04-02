@@ -255,6 +255,10 @@ class WorkflowState(BaseModel):
     claims_effective_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前生效权利要求结构化列表")
     claims_old_source: str = Field("", description="旧权利要求来源：claims_previous/original_patent")
     claims_old_source_reason: str = Field("", description="旧权利要求来源诊断原因")
+    claim_alignment_map: Dict[str, str] = Field(
+        default_factory=dict,
+        description="新旧权利要求语义对齐映射，key=当前权利要求编号，value=对应旧权利要求编号",
+    )
     has_claim_amendment: bool = Field(False, description="是否存在权利要求修改")
     added_features: Annotated[List[AddedFeature], operator.add] = Field(default_factory=list, description="新增特征列表")
     support_findings: Annotated[List[SupportFinding], operator.add] = Field(default_factory=list, description="新增特征支持依据核查结果")

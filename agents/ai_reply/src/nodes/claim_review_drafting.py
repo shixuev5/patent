@@ -39,6 +39,7 @@ class ClaimReviewDraftingNode:
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "evidence_assessments", []),
                 self._state_get(state, "drafted_rejection_reasons", {}),
+                self._state_get(state, "claim_alignment_map", {}),
             )
             updates["review_units"] = [
                 item if isinstance(item, ReviewUnit) else ReviewUnit(**item)
@@ -67,6 +68,7 @@ class ClaimReviewDraftingNode:
         disputes: List[Any],
         evidence_assessments: List[Any],
         drafted_rejection_reasons: Dict[str, str],
+        claim_alignment_map: Dict[str, str] | None = None,
     ) -> List[Dict[str, Any]]:
         old_claims = self._normalize_claims(claims_old_structured)
         effective_claims = self._normalize_claims(claims_effective_structured)
@@ -87,6 +89,11 @@ class ClaimReviewDraftingNode:
             for key, value in self._to_dict(drafted_rejection_reasons).items()
             if str(key).strip()
         }
+        normalized_claim_alignment_map = {
+            str(new_claim_id).strip(): str(old_claim_id).strip()
+            for new_claim_id, old_claim_id in self._to_dict(claim_alignment_map).items()
+            if str(new_claim_id).strip() and str(old_claim_id).strip()
+        }
         dispute_by_feature_id = {
             str(item.get("source_feature_id", "")).strip(): item
             for item in normalized_disputes
@@ -104,12 +111,18 @@ class ClaimReviewDraftingNode:
                 assessment_by_feature_id[feature_id] = item
 
         merge_target_by_source = self._build_merge_target_map(features, effective_map)
+        alignment_target_by_source = self._build_alignment_target_map(
+            normalized_claim_alignment_map,
+            effective_map,
+            merge_target_by_source,
+        )
         target_sources_map = self._build_target_sources_map(merge_target_by_source)
         claim_before_source_map = self._build_claim_before_source_map(
             effective_claims,
             old_map,
             merge_target_by_source,
             target_sources_map,
+            normalized_claim_alignment_map,
         )
         unit_specs: List[Dict[str, Any]] = []
         unit_by_id: Dict[str, Dict[str, Any]] = {}
@@ -131,17 +144,24 @@ class ClaimReviewDraftingNode:
             if not paragraph_claim_ids:
                 continue
 
-            target_sources_in_paragraph: Dict[str, List[str]] = {}
+            merged_sources_in_paragraph: Dict[str, List[str]] = {}
+            aligned_sources_in_paragraph: Dict[str, List[str]] = {}
             residual_claim_ids: List[str] = []
             for source_claim_id in paragraph_claim_ids:
-                target_claim_id = merge_target_by_source.get(source_claim_id, "")
-                if target_claim_id and target_claim_id in effective_map:
-                    target_sources_in_paragraph.setdefault(target_claim_id, []).append(source_claim_id)
+                merged_target_claim_id = merge_target_by_source.get(source_claim_id, "")
+                if merged_target_claim_id and merged_target_claim_id in effective_map:
+                    merged_sources_in_paragraph.setdefault(merged_target_claim_id, []).append(source_claim_id)
                     continue
+
+                aligned_target_claim_id = alignment_target_by_source.get(source_claim_id, "")
+                if aligned_target_claim_id and aligned_target_claim_id in effective_map:
+                    aligned_sources_in_paragraph.setdefault(aligned_target_claim_id, []).append(source_claim_id)
+                    continue
+
                 if source_claim_id in effective_map:
                     residual_claim_ids.append(source_claim_id)
 
-            for target_claim_id, source_claim_ids in target_sources_in_paragraph.items():
+            for target_claim_id, source_claim_ids in merged_sources_in_paragraph.items():
                 claim_unit = claim_unit_by_anchor.get(target_claim_id)
                 if not claim_unit:
                     claim_unit = self._build_unit_spec(
@@ -174,6 +194,35 @@ class ClaimReviewDraftingNode:
                         claim_unit["source_summary"]["merged_source_claim_ids"],
                         source_claim_id,
                     )
+
+            for target_claim_id, source_claim_ids in aligned_sources_in_paragraph.items():
+                claim_unit = claim_unit_by_anchor.get(target_claim_id)
+                if not claim_unit:
+                    claim_unit = self._build_unit_spec(
+                        unit_id=str(paragraph.get("paragraph_id", "")).strip(),
+                        unit_type=self._single_claim_unit_type(target_claim_id, effective_map),
+                        source_paragraph_ids=[],
+                        display_claim_ids=[target_claim_id],
+                        anchor_claim_id=target_claim_id,
+                        oa_materials=[],
+                        claim_snapshots=self._build_claim_snapshots(
+                            [target_claim_id],
+                            effective_map,
+                            old_map,
+                            claim_before_source_map,
+                        ),
+                        paragraph_order=float(effective_order.get(target_claim_id, len(effective_claims))),
+                    )
+                    claim_unit_by_anchor[target_claim_id] = claim_unit
+                    unit_by_id[claim_unit["unit_id"]] = claim_unit
+                    unit_specs.append(claim_unit)
+                self._append_paragraph_to_unit(
+                    claim_unit,
+                    paragraph,
+                    source_claim_ids,
+                    paragraph_claim_ids,
+                    float(effective_order.get(target_claim_id, len(effective_claims))),
+                )
 
             if not residual_claim_ids:
                 continue
@@ -310,11 +359,6 @@ class ClaimReviewDraftingNode:
                 for item in amendment_materials
                 if str(item.get("feature_id", "")).strip()
             ]
-            source_summary["amendment_feature_ids"] = [
-                str(item.get("feature_id", "")).strip()
-                for item in amendment_materials
-                if str(item.get("feature_id", "")).strip()
-            ]
             unit["source_summary"] = source_summary
             unit["review_before_text"] = self._build_direct_review_text(unit.get("oa_materials", []))
 
@@ -416,17 +460,38 @@ class ClaimReviewDraftingNode:
             source_claim_ids.sort(key=self._claim_sort_key)
         return target_sources
 
+    def _build_alignment_target_map(
+        self,
+        claim_alignment_map: Dict[str, str],
+        effective_map: Dict[str, Dict[str, Any]],
+        merge_target_by_source: Dict[str, str],
+    ) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        consumed_source_claim_ids = set(merge_target_by_source)
+        for target_claim_id, source_claim_id in claim_alignment_map.items():
+            if target_claim_id not in effective_map:
+                continue
+            if source_claim_id in consumed_source_claim_ids:
+                continue
+            result[source_claim_id] = target_claim_id
+        return result
+
     def _build_claim_before_source_map(
         self,
         effective_claims: List[Dict[str, Any]],
         old_map: Dict[str, Dict[str, Any]],
         merge_target_by_source: Dict[str, str],
         target_sources_map: Dict[str, List[str]],
+        claim_alignment_map: Dict[str, str],
     ) -> Dict[str, str]:
         consumed_source_claim_ids = set(merge_target_by_source)
         result: Dict[str, str] = {}
         for claim in effective_claims:
             claim_id = claim["claim_id"]
+            aligned_old_claim_id = str(claim_alignment_map.get(claim_id, "")).strip()
+            if aligned_old_claim_id and aligned_old_claim_id in old_map and aligned_old_claim_id not in consumed_source_claim_ids:
+                result[claim_id] = aligned_old_claim_id
+                continue
             if claim_id in old_map and claim_id not in consumed_source_claim_ids:
                 result[claim_id] = claim_id
                 continue
@@ -468,7 +533,6 @@ class ClaimReviewDraftingNode:
     ) -> None:
         paragraph_id = str(paragraph.get("paragraph_id", "")).strip()
         self._append_unique(unit["source_paragraph_ids"], paragraph_id)
-        self._append_unique(unit["source_summary"]["source_paragraph_ids"], paragraph_id)
         unit["oa_materials"].append(self._paragraph_material(paragraph, focused_claim_ids, original_claim_ids))
         unit["paragraph_order"] = min(float(unit.get("paragraph_order", paragraph_order)), float(paragraph_order))
 
@@ -499,7 +563,6 @@ class ClaimReviewDraftingNode:
             "oa_materials": oa_materials,
             "claim_snapshots": claim_snapshots,
             "source_summary": {
-                "source_paragraph_ids": list(source_paragraph_ids),
                 "merged_source_claim_ids": [],
                 "added_feature_ids": [],
             },
@@ -690,13 +753,15 @@ class ClaimReviewDraftingNode:
 【核心工作原则】
 1. 绝对忠实于素材：必须严格基于提供的 oa_materials、response_materials 和 amendment_materials 进行重写或扩写。严禁捏造任何未提及的技术特征、对比文件（如对比文件1、2等）、法律依据或审查结论。
 2. 逻辑严密连贯：输出的必须是最终可直接写入OA通知书的正文段落，语言必须客观、严谨、专业，符合中国专利审查规范。
-3. 纯净输出：只需输出每个评述单元的评述正文。不要输出单元标题，不要输出“审查员认为”之类的开场白，整合成一段连贯流畅的文本（避免生硬的要点罗列）。
+3. 最小编辑原则：若 `review_before_text` 已经包含可直接复用的上一轮OA评述，你必须以其为正文骨架，仅在确有必要时做最小范围补写、删除或重排。**不得将原有详细评述缩写、概括、抽象化、改写成更短版本，也不得省略原文中已经存在且当前仍然成立的事实、对比文件公开内容、区别特征分析或结论。**
+4. 保真优先于文采：如果旧评述中的句子、层次、细节当前仍然成立，应尽量原样保留；只有在新增并入从权、申请人答复或修改评估确实要求调整时，才允许在相关位置插入或替换。**禁止因为“行文更流畅”而删减技术细节。**
+5. 纯净输出：只需输出每个评述单元的评述正文。不要输出单元标题，不要输出“审查员认为”之类的开场白，整合成一段连贯流畅的文本；但“连贯”不等于“压缩”，不得牺牲已有细节。
 
 【针对不同单元类型的处理约束】
 - type = "evidence_restructured" (独权主卡重组)：
-  该单元代表某个独权体系的唯一主卡。你必须以 oa_materials 为评述骨架，将原独权评述、并入从权评述以及 response/amendment 评估素材整合成一段新的正式评述。若 oa_materials 中同时包含独权与并入从权的内容，必须自然融合，不得拆开写。
+  该单元代表某个独权体系的唯一主卡。你必须以 oa_materials 和 review_before_text 为评述骨架，将原独权评述、并入从权评述以及 response/amendment 评估素材整合成一段新的正式评述。若 oa_materials 中同时包含独权与并入从权的内容，必须自然融合，不得拆开写；**但原OA中已存在的详细论证必须尽量完整保留，不得只保留结论后省略论证过程。**
 - type = "dependent_group_restructured" (残余从权组重组)：
-  原OA可能将多个从权放在一起评述，而其中部分从权已经并入独权主卡。你必须只保留当前 `display_claim_ids` 对应的剩余从权逻辑，剔除已被抽走的从权内容，生成一段只针对剩余从权组的正式评述。
+  原OA可能将多个从权放在一起评述，而其中部分从权已经并入独权主卡。你必须只保留当前 `display_claim_ids` 对应的剩余从权逻辑，剔除已被抽走的从权内容，生成一段只针对剩余从权组的正式评述。**除去必须剔除的已抽走内容外，其余仍适用于剩余从权的详细说理应保留，不得顺手缩写。**
 - type = "supplemented_new" (新增或修改特征补充)：
   原OA中没有该评述。你必须完全依赖 amendment_materials 或 response_materials 中的审查员评估结论（assessment_reasoning 和 verdict）来撰写。清晰指出新增特征是什么，以及它为何不能/能够克服先前的缺陷。
 
@@ -718,6 +783,8 @@ JSON 格式规范如下：
         return (
             "请作为专利审查员，仔细阅读以下来自上一轮审查和本轮修改评估的素材。\n"
             "请严格按照 unit_id 逐条生成正式评述，并组装成要求的 JSON 格式。\n"
+            "【硬性要求】若 `review_before_text` 非空，默认必须在其基础上做最小改写：不得无故缩写、删减、概括、改写成更短版本；旧评述中仍然成立的详细论证、对比文件公开内容、区别点分析、结论，应尽量完整保留。\n"
+            "【硬性要求】只有当 oa_materials / response_materials / amendment_materials 明确要求增删时，才允许改动对应局部；不要为了追求简洁而压缩篇幅。\n"
             "【注意】：如果素材中提到“克服了缺陷”或“具备创造性”，你的评述结论必须与其一致；如果结论是“未克服”，请阐明驳回理由。\n\n"
             "=== 待处理的评述单元素材 ===\n"
             f"{json.dumps(drafting_inputs, ensure_ascii=False, indent=2)}"

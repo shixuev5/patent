@@ -49,6 +49,11 @@ class AmendmentTrackingNode:
             ]
             updates["claims_old_source"] = str(result.get("claims_old_source", "")).strip()
             updates["claims_old_source_reason"] = str(result.get("claims_old_source_reason", "")).strip()
+            updates["claim_alignment_map"] = {
+                str(new_claim_id).strip(): str(old_claim_id).strip()
+                for new_claim_id, old_claim_id in (result.get("claim_alignment_map", {}) or {}).items()
+                if str(new_claim_id).strip()
+            }
             updates["has_claim_amendment"] = result["has_claim_amendment"]
             updates["added_features"] =[
                 item if isinstance(item, AddedFeature) else AddedFeature(**item)
@@ -86,6 +91,7 @@ class AmendmentTrackingNode:
                 "claims_effective_structured": effective_claims,
                 "claims_old_source": claims_old_source,
                 "claims_old_source_reason": claims_old_source_reason,
+                "claim_alignment_map": {},
                 "has_claim_amendment": False,
                 "added_features":[],
             }
@@ -97,6 +103,7 @@ class AmendmentTrackingNode:
                 "claims_effective_structured": effective_claims,
                 "claims_old_source": claims_old_source,
                 "claims_old_source_reason": claims_old_source_reason,
+                "claim_alignment_map": structured_diff.get("claim_alignment_map", {}),
                 "has_claim_amendment": False,
                 "added_features":[],
             }
@@ -119,6 +126,7 @@ class AmendmentTrackingNode:
             "claims_effective_structured": effective_claims,
             "claims_old_source": claims_old_source,
             "claims_old_source_reason": claims_old_source_reason,
+            "claim_alignment_map": structured_diff.get("claim_alignment_map", {}),
             "has_claim_amendment": normalized["has_claim_amendment"],
             "added_features": normalized["added_features"],
         }
@@ -257,33 +265,57 @@ class AmendmentTrackingNode:
         old_map = {str(item.get("claim_id", "")).strip(): item for item in old_claims if str(item.get("claim_id", "")).strip()}
         new_map = {str(item.get("claim_id", "")).strip(): item for item in new_claims if str(item.get("claim_id", "")).strip()}
 
-        # 改为遍历所有的新权利要求ID，以涵盖纯新增的编号
+        # 遍历所有的新权利要求ID，以涵盖纯新增的编号
         new_ids_sorted = self._sort_claim_ids(list(new_map.keys()))
+        old_ids_sorted = self._sort_claim_ids(list(old_map.keys()))
         changed_claims_pairs: List[Dict[str, str]] =[]
-
-        # 构建旧权利要求的标准化文本池，用于处理权项“重编号/平移”的情况
-        old_texts_pool = {self._normalize_text(claim.get("claim_text", "")) for claim in old_claims}
+        claim_alignment_map: Dict[str, str] = {}
+        used_old_claim_ids = set()
 
         for claim_id in new_ids_sorted:
             new_claim = self._to_dict(new_map.get(claim_id, {}))
             new_text = str(new_claim.get("claim_text", "")).strip()
-            
+
             # 提取对应的旧权项（如果是全新增加的编号，old_text 为空）
             old_claim = self._to_dict(old_map.get(claim_id, {}))
             old_text = str(old_claim.get("claim_text", "")).strip()
-            
+
             old_text_norm = self._normalize_text(old_text)
             new_text_norm = self._normalize_text(new_text)
-            
+
             # 若文本完全一致，跳过（未修改）
             if old_text_norm == new_text_norm:
+                if claim_id in old_map:
+                    claim_alignment_map[claim_id] = claim_id
+                    used_old_claim_ids.add(claim_id)
                 continue
 
-            # 核心防御：如果新权利要求的文本在任意旧权利要求中原封不动出现过
-            # 说明只是申请人删除了某些权项导致编号前移（重编号），不应视为内容被修改
-            if new_text_norm in old_texts_pool:
+            new_text_canonical = self._canonicalize_claim_text_for_alignment(new_text)
+            old_text_canonical = self._canonicalize_claim_text_for_alignment(old_text)
+
+            # 即使引用权号变动，只要同号权项的技术内容一致，也视为纯重编号/格式变化。
+            if old_text and old_text_canonical == new_text_canonical:
+                claim_alignment_map[claim_id] = claim_id
+                used_old_claim_ids.add(claim_id)
                 continue
 
+            # 处理“删除某权项导致后续权项整体前移，同时引用权号联动变化”的场景。
+            # 对新权项在其余旧权项中做一次“忽略引用权号后的唯一匹配”。
+            canonical_candidates = [
+                old_id
+                for old_id in old_ids_sorted
+                if old_id not in used_old_claim_ids
+                and self._canonicalize_claim_text_for_alignment(
+                    str(self._to_dict(old_map.get(old_id, {})).get("claim_text", "")).strip()
+                ) == new_text_canonical
+            ]
+            if len(canonical_candidates) == 1:
+                matched_old_id = canonical_candidates[0]
+                claim_alignment_map[claim_id] = matched_old_id
+                used_old_claim_ids.add(matched_old_id)
+                continue
+
+            claim_alignment_map[claim_id] = claim_id if claim_id in old_map else ""
             changed_claims_pairs.append({
                 "claim_id": claim_id,
                 "old_text": old_text,  # 可能是空字符串
@@ -307,13 +339,29 @@ class AmendmentTrackingNode:
             "has_changes": bool(changed_claims_pairs),
             "changed_claim_ids": changed_claim_ids,
             "changed_claims_pairs": changed_claims_pairs,
+            "claim_alignment_map": claim_alignment_map,
             "full_old_claims_context": full_old_claims_context,
         }
 
     def _normalize_text(self, text: Any) -> str:
         value = str(text or "")
         value = re.sub(r"\s+", "", value)
-        return re.sub(r"[，,；;。:\-—_（）()\[\]{}]", "", value).strip()
+        return re.sub(r"[，,；;。:：\-—_（）()\[\]{}]", "", value).strip()
+
+    def _canonicalize_claim_text_for_alignment(self, text: Any) -> str:
+        value = str(text or "")
+        value = value.split("#", 1)[0]
+        value = re.sub(
+            r"权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*中任一项所述",
+            "权利要求#中任一项所述",
+            value,
+        )
+        value = re.sub(
+            r"权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*所述",
+            "权利要求#所述",
+            value,
+        )
+        return self._normalize_text(value)
 
     def _sort_claim_ids(self, claim_ids: List[str]) -> List[str]:
         def _key(value: str):
