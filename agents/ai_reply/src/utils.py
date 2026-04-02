@@ -11,19 +11,54 @@ from agents.common.utils.cache import StepCache
 from agents.ai_reply.src.state import WorkflowConfig
 
 
-def is_patent_document(document_number: str) -> bool:
-    """判断是否为专利文献"""
-    patent_patterns = [
-        r"^CN\d+[A-Z]?\d*$",  # 中国专利 (如 CN110000000A, CN202210000001.1)
-        r"^US\d+[A-Z]?\d*$",  # 美国专利 (如 US1234567B1, US20200000001A1)
-        r"^WO\d+[A-Z]?\d*$",  # 国际专利 (如 WO2020000001A1, WO2020000001)
-        r"^EP\d+[A-Z]?\d*$",  # 欧洲专利 (如 EP1234567B1, EP1234567)
-        r"^JP\d+[A-Z]?\d*$",  # 日本专利 (如 JP2020000001A, JP2020000001)
-        r"^KR\d+[A-Z]?\d*$",  # 韩国专利 (如 KR2020000001A, KR2020000001)
-    ]
+_PATENT_PUBLICATION_PATTERNS = [
+    r"^CN\d{6,}[A-Z]\d*$",  # 中国公开号/公告号
+    r"^US\d{6,}[A-Z]\d*$",  # 美国公开/授权号
+    r"^WO\d{6,}[A-Z]?\d*$",  # PCT/WO 公开号
+    r"^EP\d{6,}[A-Z]\d*$",  # 欧洲公开/授权号
+    r"^JP\d{6,}[A-Z]?\d*$",  # 日本现代格式
+    r"^JP[HS]\d{4,}[A-Z]?\d*$",  # 日本旧纪年格式，如 JPH115534A / JPS62123456A
+    r"^KR\d{6,}[A-Z]?\d*$",  # 韩国公开/授权号
+    r"^TW\d{6,}[A-Z]?\d*$",  # 台湾公开/授权号
+    r"^DE\d{6,}[A-Z]\d*$",  # 德国公开/授权号
+    r"^FR\d{6,}[A-Z]\d*$",  # 法国公开/授权号
+    r"^GB\d{6,}[A-Z]\d*$",  # 英国公开/授权号
+    r"^AU\d{6,}[A-Z]\d*$",  # 澳大利亚公开/授权号
+    r"^CA\d{6,}[A-Z]\d*$",  # 加拿大公开/授权号
+]
 
-    for pattern in patent_patterns:
-        if re.match(pattern, document_number.strip(), re.IGNORECASE):
+_PATENT_APPLICATION_PATTERNS = [
+    r"^\d{4}\d{7,8}\.\d$",  # 中国申请号，如 202211411308.6 / 202310001234.5
+    r"^PCT[A-Z]{2}\d{4}\d{5,}$",  # PCT 申请号简化归一化格式，如 PCTCN2024123456
+]
+
+
+def normalize_patent_identifier(value: str) -> str:
+    """统一专利标识符的常见分隔符与大小写。"""
+    return re.sub(r"[\s\-/]+", "", str(value or "").strip()).upper()
+
+
+def is_patent_document(document_number: str) -> bool:
+    """判断是否为专利公开号/公告号等文献号。"""
+    normalized = normalize_patent_identifier(document_number)
+    if not normalized:
+        return False
+
+    for pattern in _PATENT_PUBLICATION_PATTERNS:
+        if re.match(pattern, normalized, re.IGNORECASE):
+            return True
+
+    return False
+
+
+def is_patent_application_number(value: str) -> bool:
+    """判断是否为常见专利申请号。"""
+    normalized = normalize_patent_identifier(value)
+    if not normalized:
+        return False
+
+    for pattern in _PATENT_APPLICATION_PATTERNS:
+        if re.match(pattern, normalized, re.IGNORECASE):
             return True
 
     return False

@@ -7,6 +7,7 @@ import json
 from typing import List, Dict, Optional, Any
 from loguru import logger
 from config import settings
+from agents.ai_reply.src.utils import is_patent_application_number
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 
@@ -722,8 +723,7 @@ class ZhihuiyaClient(BaseSearchClient):
         :return: PATENT_ID 或 None
         """
         # 判断输入是专利公开号还是申请号
-        # 专利申请号格式通常为：YYYYXXXXXXXXX.X (如 202211411308.6)
-        if re.match(r'\d{4}\d{7,8}\.\d', pn):
+        if is_patent_application_number(pn):
             # 申请号格式，使用 APNO 字段查询
             logger.info(f"[智慧芽] 识别为申请号：{pn}")
             query = f"APNO:({pn})"

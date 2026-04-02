@@ -65,3 +65,19 @@ def test_get_publication_number_by_application_number_returns_none_when_missing(
         ),
     )
     assert client.get_publication_number_by_application_number("202310001234.5") is None
+
+
+def test_get_patent_id_by_pn_uses_application_query_for_application_number(monkeypatch):
+    client = ZhihuiyaClient()
+    captured = {}
+
+    def _fake_query(query):
+        captured["query"] = query
+        return {"PATENT_ID": "pid-1"}
+
+    monkeypatch.setattr(client, "_query_patent_info_by_count", _fake_query)
+
+    patent_id = client._get_patent_id_by_pn("PCT/CN2024/123456")
+
+    assert patent_id == "pid-1"
+    assert captured["query"] == "APNO:(PCT/CN2024/123456)"

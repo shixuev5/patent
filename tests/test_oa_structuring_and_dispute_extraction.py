@@ -4,6 +4,23 @@ from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 
 
+def test_office_action_extractor_treats_jph_publication_as_patent() -> None:
+    markdown_content = """申请号：202610088597.2
+
+# 第一次审查意见通知书
+
+1、权利要求1相对于对比文件1(JPH115534A)和对比文件2(CN108010365A)不具备创造性。
+"""
+
+    office_action = OfficeActionExtractor().extract(markdown_content)
+
+    assert [doc.document_number for doc in office_action.comparison_documents] == [
+        "JPH115534A",
+        "CN108010365A",
+    ]
+    assert [doc.is_patent for doc in office_action.comparison_documents] == [True, True]
+
+
 def test_office_action_extractor_extracts_reliable_paragraph_fields() -> None:
     markdown_content = """申请号：202211411308.6
 
