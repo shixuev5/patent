@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 
 
@@ -18,6 +20,9 @@ class _FakeResponse:
 
 
 def _clear_external_env(monkeypatch):
+    for env_name in list(os.environ):
+        if env_name.startswith("ZHIHUIYA_ACCOUNTS__"):
+            monkeypatch.delenv(env_name, raising=False)
     for env_name in [
         "OPENALEX_API_KEYS",
         "OPENALEX_API_KEY",
@@ -45,6 +50,26 @@ def test_openalex_legacy_single_key_env_is_ignored(monkeypatch):
     aggregator = ExternalEvidenceAggregator()
 
     assert aggregator.openalex_api_keys == []
+
+
+def test_zhihuiya_multi_account_env_enables_client(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("ZHIHUIYA_ACCOUNTS__0__USERNAME", "user-a@example.com")
+    monkeypatch.setenv("ZHIHUIYA_ACCOUNTS__0__PASSWORD", "secret-a")
+
+    aggregator = ExternalEvidenceAggregator()
+
+    assert aggregator.zhihuiya_enabled is True
+
+
+def test_zhihuiya_legacy_single_account_env_is_ignored(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("ZHIHUIYA_USERNAME", "legacy@example.com")
+    monkeypatch.setenv("ZHIHUIYA_PASSWORD", "legacy-password")
+
+    aggregator = ExternalEvidenceAggregator()
+
+    assert aggregator.zhihuiya_enabled is False
 
 
 def test_openalex_search_keeps_anonymous_mode_when_key_missing(monkeypatch):

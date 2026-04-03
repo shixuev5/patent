@@ -30,9 +30,7 @@ class ExternalEvidenceAggregator:
         self._tavily_key_cursor = 0
         self.tavily_base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com/search").strip()
 
-        self.zhihuiya_enabled = bool(
-            os.getenv("ZHIHUIYA_USERNAME", "").strip() and os.getenv("ZHIHUIYA_PASSWORD", "").strip()
-        )
+        self.zhihuiya_enabled = bool(settings.ZHIHUIYA_ACCOUNTS)
         self.zhihuiya_min_similarity_score = self._safe_float(
             os.getenv("ZHIHUIYA_MIN_SIMILARITY_SCORE", "0"),
             default=0.0,

@@ -11,14 +11,13 @@ class SearchClientFactory:
     def get_client(provider: str = "zhihuiya") -> BaseSearchClient:
         provider = provider.lower().strip()
 
+        if provider == "zhihuiya" or provider == "patsnap":
+            return ZhihuiyaClient()
+
         # 双重检查锁定 (Double-Checked Locking) 确保线程安全且高效
         if provider not in SearchClientFactory._instances:
             with SearchClientFactory._lock:
                 if provider not in SearchClientFactory._instances:
-                    if provider == "zhihuiya" or provider == "patsnap":
-                        # 这里创建实例
-                        SearchClientFactory._instances[provider] = ZhihuiyaClient()
-                    else:
-                        raise ValueError(f"Unknown search provider: {provider}")
+                    raise ValueError(f"Unknown search provider: {provider}")
 
         return SearchClientFactory._instances[provider]

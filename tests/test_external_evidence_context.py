@@ -1,8 +1,13 @@
+import os
+
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from backend import task_usage_tracking
 
 
 def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
+    for env_name in list(os.environ):
+        if env_name.startswith("ZHIHUIYA_ACCOUNTS__"):
+            monkeypatch.delenv(env_name, raising=False)
     monkeypatch.delenv("ZHIHUIYA_USERNAME", raising=False)
     monkeypatch.delenv("ZHIHUIYA_PASSWORD", raising=False)
 

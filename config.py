@@ -1,5 +1,7 @@
 import os
+import re
 from pathlib import Path
+from typing import Dict, List, Mapping
 from dotenv import load_dotenv
 
 # 项目版本号
@@ -7,6 +9,29 @@ VERSION = "1.1.0"
 
 # 加载 .env 环境变量
 load_dotenv()
+
+
+def load_zhihuiya_accounts(environ: Mapping[str, str] | None = None) -> List[Dict[str, str]]:
+    """从编号环境变量中加载智慧芽多账号配置。"""
+    env = environ or os.environ
+    pattern = re.compile(r"^ZHIHUIYA_ACCOUNTS__(\d+)__(USERNAME|PASSWORD)$")
+    grouped: Dict[int, Dict[str, str]] = {}
+
+    for key, raw_value in env.items():
+        match = pattern.match(str(key))
+        if not match:
+            continue
+        index = int(match.group(1))
+        field = match.group(2).lower()
+        grouped.setdefault(index, {})[field] = str(raw_value or "").strip()
+
+    accounts: List[Dict[str, str]] = []
+    for index in sorted(grouped):
+        username = grouped[index].get("username", "").strip()
+        password = grouped[index].get("password", "").strip()
+        if username and password:
+            accounts.append({"username": username, "password": password})
+    return accounts
 
 # 检测是否在 Hugging Face Spaces 上运行
 def is_huggingface_spaces():
@@ -54,8 +79,6 @@ class Settings:
     VLM_MAX_WORKERS = max(1, int(os.getenv("VLM_MAX_WORKERS", "4")))
 
     # --- 智慧芽 ---
-    ZHIHUIYA_USERNAME = os.getenv("ZHIHUIYA_USERNAME", "")
-    ZHIHUIYA_PASSWORD = os.getenv("ZHIHUIYA_PASSWORD", "")
     ZHIHUIYA_CLIENT_ID = os.getenv(
         "ZHIHUIYA_CLIENT_ID", "f58bbdfdd63549dbb64fed4b816c8bfc"
     )
@@ -100,6 +123,10 @@ class Settings:
     AUTHING_APP_ID = os.getenv("AUTHING_APP_ID", "").strip()
     AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
     AUTHING_DOMAIN = os.getenv("AUTHING_DOMAIN", "").strip()
+
+    @property
+    def ZHIHUIYA_ACCOUNTS(self) -> List[Dict[str, str]]:
+        return load_zhihuiya_accounts()
 
 
 settings = Settings()

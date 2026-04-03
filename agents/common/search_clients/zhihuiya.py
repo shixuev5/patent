@@ -4,6 +4,8 @@ import os
 import threading
 import base64
 import json
+import random
+import time
 from typing import List, Dict, Optional, Any
 from loguru import logger
 from config import settings
@@ -74,9 +76,15 @@ from agents.common.search_clients.base import BaseSearchClient
 
 
 class ZhihuiyaClient(BaseSearchClient):
+    _account_cooldown_seconds = 30 * 60
+    _account_cooldowns: Dict[str, float] = {}
+    _account_cooldown_lock = threading.Lock()
+
     def __init__(self):
         self.session = requests.Session()
+        self.accounts = [dict(item) for item in settings.ZHIHUIYA_ACCOUNTS]
         self.token = None
+        self.current_account: Optional[Dict[str, str]] = None
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-api-version": "2.0",
@@ -84,7 +92,166 @@ class ZhihuiyaClient(BaseSearchClient):
         self.request_timeout = settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS
         self.download_timeout = settings.DOWNLOAD_REQUEST_TIMEOUT_SECONDS
         # 依然建议保留登录锁，防止 Token 过期时多个线程同时触发重新登录
-        self._login_lock = threading.Lock()
+        self._login_lock = threading.RLock()
+
+    @classmethod
+    def _cleanup_expired_cooldowns(cls, now: Optional[float] = None):
+        now_ts = now if now is not None else time.monotonic()
+        expired_usernames = [
+            username
+            for username, cooldown_until in cls._account_cooldowns.items()
+            if cooldown_until <= now_ts
+        ]
+        for username in expired_usernames:
+            cls._account_cooldowns.pop(username, None)
+
+    @classmethod
+    def _mark_account_cooldown(cls, username: str, reason: str):
+        if not username:
+            return
+        cooldown_until = time.monotonic() + cls._account_cooldown_seconds
+        with cls._account_cooldown_lock:
+            cls._cleanup_expired_cooldowns()
+            cls._account_cooldowns[username] = cooldown_until
+        logger.warning(f"[智慧芽] 账号进入冷却：{username}，原因：{reason}")
+
+    def _clear_auth_state(self):
+        self.token = None
+        self.current_account = None
+        self.headers.pop("Authorization", None)
+
+    def _pick_login_candidates(self) -> List[Dict[str, str]]:
+        if not self.accounts:
+            return []
+
+        now_ts = time.monotonic()
+        with self._account_cooldown_lock:
+            self._cleanup_expired_cooldowns(now_ts)
+            available_accounts = [
+                account
+                for account in self.accounts
+                if self._account_cooldowns.get(account["username"], 0.0) <= now_ts
+            ]
+
+        candidates = available_accounts or [dict(account) for account in self.accounts]
+        random.shuffle(candidates)
+        if not available_accounts:
+            logger.warning("[智慧芽] 所有账号都在冷却中，本次将忽略冷却状态重试全部账号。")
+        return candidates
+
+    def _fetch_login_public_key(self) -> str:
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                pk_resp = self.session.get(
+                    "https://passport.zhihuiya.com/public/request_public_key",
+                    timeout=self.request_timeout,
+                )
+                pk_resp.raise_for_status()
+                return pk_resp.text
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"[智慧芽] 公钥获取失败（第 {attempt + 1} 次）：{e}"
+                )
+        raise RuntimeError(f"获取公钥失败（已重试）：{last_error}")
+
+    def _login_with_account(self, account: Dict[str, str], public_key_text: str):
+        encrypted_password = rsa_encrypt(account["password"], public_key_text)
+        payload = {
+            "username": account["username"],
+            "password": encrypted_password,
+            "remember_me": "on",
+            "client_id": settings.ZHIHUIYA_CLIENT_ID,
+            "from": "account",
+            "response_type": "TOKEN",
+        }
+        login_resp = self.session.post(
+            "https://passport.zhihuiya.com/doLogin",
+            json=payload,
+            timeout=self.request_timeout,
+        )
+        try:
+            data = login_resp.json()
+        except Exception:
+            data = {}
+
+        if login_resp.status_code >= 400:
+            error_message = (
+                data.get("error_message")
+                or data.get("message")
+                or data.get("msg")
+                or login_resp.text
+                or f"http {login_resp.status_code}"
+            )
+            raise RuntimeError(str(error_message).strip())
+
+        token = str(data.get("token") or "").strip()
+        if not token:
+            raise RuntimeError("登录成功响应缺少 token")
+
+        self.current_account = dict(account)
+        self.token = token
+        self.headers["Authorization"] = f"Bearer {token}"
+        logger.success(f"[智慧芽] 登录成功，账号：{account['username']}")
+
+        # 登录成功后初始化查询字段配置，失败只记录日志，不阻断主流程
+        self._configure_search_settings()
+
+    def _handle_auth_failure(self, reason: str):
+        username = ""
+        if self.current_account:
+            username = str(self.current_account.get("username") or "").strip()
+        if username:
+            self._mark_account_cooldown(username, reason)
+        self._clear_auth_state()
+
+    def _is_auth_failure_response(self, resp: requests.Response) -> bool:
+        if resp.status_code in {401, 403}:
+            return True
+
+        body_text = str(getattr(resp, "text", "") or "").lower()
+        if "token expired" in body_text or "invalid token" in body_text:
+            return True
+
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            payload_text = json.dumps(payload, ensure_ascii=False).lower()
+            if "token expired" in payload_text or "invalid token" in payload_text:
+                return True
+        return False
+
+    def _request_with_auth(self, method: str, url: str, **kwargs) -> requests.Response:
+        base_headers = dict(kwargs.pop("headers", {}) or {})
+        request_timeout = kwargs.pop("timeout", self.request_timeout)
+
+        last_response: Optional[requests.Response] = None
+        for _ in range(2):
+            if not self.token:
+                self._login()
+
+            request_headers = dict(self.headers)
+            request_headers.update(base_headers)
+            request_fn = getattr(self.session, method.lower())
+            response = request_fn(
+                url,
+                headers=request_headers,
+                timeout=request_timeout,
+                **kwargs,
+            )
+            last_response = response
+            if self._is_auth_failure_response(response):
+                logger.warning("[智慧芽] 检测到鉴权失败，正在切换账号重试。")
+                self._handle_auth_failure("鉴权失败")
+                continue
+            return response
+
+        if last_response is not None and self._is_auth_failure_response(last_response):
+            raise RuntimeError("智慧芽鉴权失败，所有账号重试后仍不可用")
+        raise RuntimeError("智慧芽请求失败，未获得有效响应")
 
     def _login(self):
         """执行登录流程获取 Token"""
@@ -94,58 +261,29 @@ class ZhihuiyaClient(BaseSearchClient):
             return
 
         with self._login_lock:
-            if self.token: return
+            if self.token:
+                return
+            if not self.accounts:
+                raise RuntimeError("未配置可用的智慧芽账号")
 
-            # 1. 获取公钥 + 格式校验 + 加密（失败重试一次）
-            encrypted_password = ""
-            last_error: Optional[Exception] = None
-            for attempt in range(2):
+            public_key_text = self._fetch_login_public_key()
+            candidate_accounts = self._pick_login_candidates()
+            login_errors: List[str] = []
+
+            for account in candidate_accounts:
+                username = account["username"]
                 try:
-                    pk_resp = self.session.get(
-                        "https://passport.zhihuiya.com/public/request_public_key",
-                        timeout=self.request_timeout,
-                    )
-                    pk_resp.raise_for_status()
-                    encrypted_password = rsa_encrypt(
-                        settings.ZHIHUIYA_PASSWORD, pk_resp.text
-                    )
-                    break
+                    self._login_with_account(account, public_key_text)
+                    return
                 except Exception as e:
-                    last_error = e
-                    logger.warning(
-                        f"[智慧芽] 公钥获取/加密失败（第 {attempt + 1} 次）：{e}"
-                    )
-            if not encrypted_password:
-                logger.error(f"[智慧芽] 获取公钥失败：{last_error}")
-                raise RuntimeError(
-                    f"获取公钥并加密密码失败（已重试）：{last_error}"
-                )
+                    self._clear_auth_state()
+                    self._mark_account_cooldown(username, f"登录失败: {e}")
+                    login_errors.append(f"{username}: {e}")
+                    logger.warning(f"[智慧芽] 账号登录失败，尝试切换下一个账号：{username}")
 
-            # 2. 登录获取 Token
-            payload = {
-                "username": settings.ZHIHUIYA_USERNAME,
-                "password": encrypted_password,
-                "remember_me": "on",
-                "client_id": settings.ZHIHUIYA_CLIENT_ID,
-                "from": "account",
-                "response_type": "TOKEN",
-            }
-
-            try:
-                login_resp = self.session.post(
-                    "https://passport.zhihuiya.com/doLogin", json=payload, timeout=self.request_timeout
-                )
-                login_resp.raise_for_status()
-                data = login_resp.json()
-                self.token = data.get("token")
-                self.headers["Authorization"] = f"Bearer {self.token}"
-                logger.success("[智慧芽] 登录成功。")
-
-                # 3. 登录成功后，初始化查询字段配置
-                self._configure_search_settings()
-            except Exception as e:
-                logger.error(f"[智慧芽] 登录失败：{e}")
-                raise
+            raise RuntimeError(
+                "智慧芽全部账号登录失败: " + " | ".join(login_errors)
+            )
 
     def _fetch_basic_info(self, patent_id: str) -> Dict[str, Any]:
         """
@@ -163,7 +301,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
+            resp = self._request_with_auth("post", url, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
@@ -218,7 +356,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
+            resp = self._request_with_auth("post", url, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
@@ -242,7 +380,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
+            resp = self._request_with_auth("post", url, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
@@ -261,7 +399,7 @@ class ZhihuiyaClient(BaseSearchClient):
         url = f"https://search-service.zhihuiya.com/core-search-api/search/patent/id/{patent_id}/official-image"
 
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.request_timeout)
+            resp = self._request_with_auth("get", url)
             resp.raise_for_status()
             data = resp.json()
 
@@ -345,7 +483,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         try:
             logger.info("[智慧芽] 正在配置检索结果字段...")
-            resp = self.session.put(url, headers=self.headers, json=payload)
+            resp = self._request_with_auth("put", url, json=payload)
             resp.raise_for_status()
             logger.success("[智慧芽] 检索结果字段配置成功。")
         except Exception as e:
@@ -440,9 +578,6 @@ class ZhihuiyaClient(BaseSearchClient):
         :param to_date: 截止日期 (YYYYMMDD)，用于查新逻辑
         :param limit: 返回数量
         """
-        if not self.token:
-            self._login()
-
         logger.info(f"[智慧芽] 开始语义检索（截止日期：{to_date}）...")
 
         # --- Step 1: 获取 Semantic ID ---
@@ -455,9 +590,7 @@ class ZhihuiyaClient(BaseSearchClient):
         }
 
         try:
-            resp1 = self.session.post(
-                step1_url, headers=self.headers, json=step1_payload, timeout=self.request_timeout
-            )
+            resp1 = self._request_with_auth("post", step1_url, json=step1_payload)
             resp1.raise_for_status()
             data1 = resp1.json()
 
@@ -511,9 +644,6 @@ class ZhihuiyaClient(BaseSearchClient):
         :param pn: 目标专利号 (e.g., CN116745575A)
         :param limit: 返回数量
         """
-        if not self.token:
-            self._login()
-
         # --- Step 1: 通过 PN 获取 Semantic ID ---
         jump_url = "https://search-service.zhihuiya.com/core-search-api/search/input/search/semantic/jump"
         jump_payload = {
@@ -526,14 +656,7 @@ class ZhihuiyaClient(BaseSearchClient):
 
         try:
             logger.info(f"[智慧芽] 正在为 {pn} 生成相似专利语义 ID...")
-            resp = self.session.post(jump_url, headers=self.headers, json=jump_payload, timeout=self.request_timeout)
-
-            # Token 过期重试逻辑
-            if resp.status_code == 401:
-                self.token = None
-                self._login()
-                resp = self.session.post(jump_url, headers=self.headers, json=jump_payload, timeout=self.request_timeout)
-
+            resp = self._request_with_auth("post", jump_url, json=jump_payload)
             resp.raise_for_status()
             data = resp.json()
 
@@ -638,41 +761,27 @@ class ZhihuiyaClient(BaseSearchClient):
 
     def _do_post_request(self, url: str, payload: Dict) -> List[Dict]:
         """统一的 POST 请求处理与重试逻辑"""
-        for attempt in range(2):
-            try:
-                resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
+        try:
+            resp = self._request_with_auth("post", url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
-                # Token 过期重试
-                if resp.status_code == 401 or (
-                    resp.headers.get("content-type") == "application/json"
-                    and "token expired" in resp.text
-                ):
-                    logger.warning("[智慧芽] Token 已过期，正在刷新...")
-                    self.token = None
-                    self._login()
-                    continue
-
-                resp.raise_for_status()
-                data = resp.json()
-
-                if data.get("status") is False:
-                    logger.error(f"[智慧芽] API 错误：{data}")
-                    return []
-
-                count_info = data.get("data", {}).get("patent_count", {})
-                total_hits = count_info.get("total_count", 0)
-                if total_hits == 0:
-                    total_hits = count_info.get("group_count", 0)
-
-                raw_list = data.get("data", {}).get("patent_data", [])
-                normalized_results = [self._normalize_result(item) for item in raw_list]
-
-                return {"total": total_hits, "results": normalized_results}
-
-            except Exception as e:
-                logger.error(f"[智慧芽] 请求失败：{e}")
+            if data.get("status") is False:
+                logger.error(f"[智慧芽] API 错误：{data}")
                 return {"total": 0, "results": []}
-        return {"total": 0, "results": []}
+
+            count_info = data.get("data", {}).get("patent_count", {})
+            total_hits = count_info.get("total_count", 0)
+            if total_hits == 0:
+                total_hits = count_info.get("group_count", 0)
+
+            raw_list = data.get("data", {}).get("patent_data", [])
+            normalized_results = [self._normalize_result(item) for item in raw_list]
+
+            return {"total": total_hits, "results": normalized_results}
+        except Exception as e:
+            logger.error(f"[智慧芽] 请求失败：{e}")
+            return {"total": 0, "results": []}
 
     # =========================================================================
     # PDF 下载相关功能
@@ -690,31 +799,22 @@ class ZhihuiyaClient(BaseSearchClient):
         if not payload["q"]:
             return None
 
-        for attempt in range(2):
-            try:
-                resp = self.session.post(url, headers=self.headers, json=payload, timeout=self.request_timeout)
+        try:
+            resp = self._request_with_auth("post", url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
-                if resp.status_code == 401:
-                    logger.warning("[智慧芽] 查询 count 时 Token 过期，正在刷新...")
-                    self.token = None
-                    self._login()
-                    continue
-
-                resp.raise_for_status()
-                data = resp.json()
-
-                if not data.get("status"):
-                    logger.error(f"[智慧芽] count 查询失败：{data.get('message')}")
-                    return None
-
-                patent_info = data.get("data", {}).get("patent_info", {})
-                if isinstance(patent_info, dict):
-                    return patent_info
+            if not data.get("status"):
+                logger.error(f"[智慧芽] count 查询失败：{data.get('message')}")
                 return None
-            except Exception as e:
-                logger.error(f"[智慧芽] count 查询失败：{e}")
-                return None
-        return None
+
+            patent_info = data.get("data", {}).get("patent_info", {})
+            if isinstance(patent_info, dict):
+                return patent_info
+            return None
+        except Exception as e:
+            logger.error(f"[智慧芽] count 查询失败：{e}")
+            return None
 
     def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
         """
@@ -750,9 +850,6 @@ class ZhihuiyaClient(BaseSearchClient):
         if not apno:
             return None
 
-        if not self.token:
-            self._login()
-
         patent_info = self._query_patent_info_by_count(f"APNO:({apno})")
         if not patent_info:
             logger.warning(f"[智慧芽] 未查询到申请号 {apno} 对应的 patent_info")
@@ -776,30 +873,20 @@ class ZhihuiyaClient(BaseSearchClient):
             "ttlLang": "CN" # 默认使用CN，如果需要可扩展为参数
         }
 
-        for attempt in range(2):
-            try:
-                resp = self.session.get(url, headers=self.headers, params=params, timeout=self.request_timeout)
+        try:
+            resp = self._request_with_auth("get", url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
 
-                if resp.status_code == 401:
-                    logger.warning("[智慧芽] 查询 PDF 链接时 Token 过期，正在刷新...")
-                    self.token = None
-                    self._login()
-                    continue
-
-                resp.raise_for_status()
-                data = resp.json()
-
-                if not data.get("status"):
-                    logger.error(f"[智慧芽] 获取 PDF 链接失败：{data.get('message')}")
-                    return None
-
-                pdf_url = data.get("data", {}).get("PDF_D")
-                return pdf_url
-
-            except Exception as e:
-                logger.error(f"[智慧芽] 获取 PDF 链接异常：{e}")
+            if not data.get("status"):
+                logger.error(f"[智慧芽] 获取 PDF 链接失败：{data.get('message')}")
                 return None
-        return None
+
+            pdf_url = data.get("data", {}).get("PDF_D")
+            return pdf_url
+        except Exception as e:
+            logger.error(f"[智慧芽] 获取 PDF 链接异常：{e}")
+            return None
 
     def download_patent_document(self, pn: str, save_path: str) -> bool:
         """
