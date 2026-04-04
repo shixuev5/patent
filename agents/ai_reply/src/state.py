@@ -54,7 +54,7 @@ class Dispute(BaseModel):
     dispute_id: str = Field(..., description="争议项唯一标识")
     origin: str = Field("response_dispute", description="争议来源: response_dispute/amendment_review")
     source_argument_id: str = Field("", description="来源申请人论点编号")
-    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 feature_id")
+    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 amendment_id")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     feature_text: str = Field(..., description="特征描述文本")
     examiner_opinion: ExaminerOpinion = Field(..., description="审查员观点")
@@ -119,7 +119,7 @@ class EvidenceAssessment(BaseModel):
     dispute_id: str = Field(..., description="争议项唯一标识")
     origin: str = Field("response_dispute", description="核查结果来源: response_dispute/amendment_review")
     source_argument_id: str = Field("", description="来源申请人论点编号")
-    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 feature_id")
+    source_feature_id: str = Field("", description="若来自权利要求修改评判，则记录对应 amendment_id")
     claim_ids: List[str] = Field(default_factory=list, description="关联权利要求序号列表")
     claim_text: str = Field(default="", description="原权利要求文本")
     feature_text: str = Field(default="", description="争议技术特征")
@@ -138,20 +138,59 @@ class StructuredClaim(BaseModel):
     parent_claim_ids: List[str] = Field(default_factory=list, description="直接父权利要求编号列表")
 
 
-class AddedFeature(BaseModel):
-    """新增特征"""
-    feature_id: str = Field(..., description="新增特征编号，如 New_F1")
-    feature_text: str = Field(..., description="新增特征文本")
+class ClaimAlignment(BaseModel):
+    """新旧权利要求对齐结果"""
+    claim_id: str = Field(..., description="当前权利要求编号")
+    old_claim_id: str = Field("", description="对应的旧权利要求编号；若为全新权项则为空")
+    alignment_kind: str = Field(
+        "same_number_match",
+        description="对齐类型：same_number_match/renumbered_successor/new_claim",
+    )
+    reason: str = Field(
+        "unchanged",
+        description="对齐原因：unchanged/upstream_deleted/upstream_merged/newly_added",
+    )
+
+
+class SubstantiveAmendment(BaseModel):
+    """实质性修改项"""
+    amendment_id: str = Field(..., description="修改项编号，如 A1")
+    target_claim_ids: List[str] = Field(default_factory=list, description="目标权利要求编号列表")
+    amendment_kind: str = Field(
+        ...,
+        description="修改类型：claim_feature_merge/spec_feature_addition",
+    )
+    content_origin: str = Field(
+        ...,
+        description="内容来源：old_claim/specification",
+    )
+    source_claim_ids: List[str] = Field(default_factory=list, description="若来自旧权利要求，则记录来源权项编号")
+    feature_text: str = Field(..., description="新增或修改后的技术特征文本")
     feature_before_text: str = Field("", description="该变更项对应的旧版本特征片段")
     feature_after_text: str = Field("", description="该变更项对应的新版本特征片段")
-    target_claim_ids: List[str] = Field(default_factory=list, description="目标权利要求编号列表")
-    source_type: str = Field("spec", description="来源类型：claim/spec")
-    source_claim_ids: List[str] = Field(default_factory=list, description="若来自原权利要求，则记录来源权利要求编号")
+
+
+class StructuralAdjustment(BaseModel):
+    """结构性调整项"""
+    adjustment_id: str = Field(..., description="结构调整编号，如 S1")
+    claim_id: str = Field(..., description="当前权利要求编号")
+    claim_type: str = Field("unknown", description="当前权利要求类型：independent/dependent/unknown")
+    old_claim_id: str = Field("", description="对应的旧权利要求编号")
+    adjustment_kind: str = Field(
+        ...,
+        description="结构调整类型：renumbering/reference_adjustment",
+    )
+    reason: str = Field(
+        ...,
+        description="触发原因：upstream_deleted/upstream_merged",
+    )
+    before_text: str = Field("", description="调整前文本")
+    after_text: str = Field("", description="调整后文本")
 
 
 class SupportFinding(BaseModel):
     """修改支持依据核查结果"""
-    feature_id: str = Field(..., description="新增特征编号")
+    amendment_id: str = Field(..., description="实质性修改编号")
     feature_text: str = Field(..., description="新增特征文本")
     reasoning: Optional[str] = Field(default="", description="大模型的判断推理过程")
     support_found: bool = Field(False, description="是否找到原始支持依据")
@@ -255,12 +294,19 @@ class WorkflowState(BaseModel):
     claims_effective_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前生效权利要求结构化列表")
     claims_old_source: str = Field("", description="旧权利要求来源：claims_previous/original_patent")
     claims_old_source_reason: str = Field("", description="旧权利要求来源诊断原因")
-    claim_alignment_map: Dict[str, str] = Field(
-        default_factory=dict,
-        description="新旧权利要求语义对齐映射，key=当前权利要求编号，value=对应旧权利要求编号",
+    claim_alignments: Annotated[List[ClaimAlignment], operator.add] = Field(
+        default_factory=list,
+        description="新旧权利要求对齐结果列表",
     )
     has_claim_amendment: bool = Field(False, description="是否存在权利要求修改")
-    added_features: Annotated[List[AddedFeature], operator.add] = Field(default_factory=list, description="新增特征列表")
+    substantive_amendments: Annotated[List[SubstantiveAmendment], operator.add] = Field(
+        default_factory=list,
+        description="实质性修改列表",
+    )
+    structural_adjustments: Annotated[List[StructuralAdjustment], operator.add] = Field(
+        default_factory=list,
+        description="结构性调整列表",
+    )
     support_findings: Annotated[List[SupportFinding], operator.add] = Field(default_factory=list, description="新增特征支持依据核查结果")
     added_matter_risk: bool = Field(False, description="是否存在修改超范围风险")
     reuse_oa_tasks: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list, description="可复用历史审查意见的任务列表")

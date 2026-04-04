@@ -33,29 +33,48 @@ def _sample_report() -> dict:
             "has_claim_amendment": True,
             "added_matter_risk": False,
             "early_rejection_reason": "",
-            "change_items": [
+            "substantive_change_groups": [
                 {
-                    "feature_id": "F1",
-                    "feature_text": "变更特征_ONLY_IN_SECTION3",
-                    "feature_before_text": "旧版本片段",
-                    "feature_after_text": "变更特征_ONLY_IN_SECTION3",
-                    "contains_added_text": True,
-                    "target_claim_ids": ["1"],
-                    "source_type": "spec",
-                    "source_claim_ids": [],
-                    "assessment": {
-                        "verdict": "EXAMINER_CORRECT",
-                        "reasoning": "修改后的特征属于本领域常规设置 CHANGE_REASON_END",
-                    },
-                    "evidence": [
+                    "claim_id": "1",
+                    "claim_type": "independent",
+                    "items": [
                         {
-                            "doc_id": "D1",
-                            "location": "第2页",
-                            "quote": "修改证据引文 CHANGE_QUOTE_END",
-                            "analysis": "修改证据分析 CHANGE_ANALYSIS_END",
+                            "amendment_id": "A1",
+                            "feature_text": "变更特征_ONLY_IN_SECTION3",
+                            "feature_before_text": "旧版本片段",
+                            "feature_after_text": "变更特征_ONLY_IN_SECTION3",
+                            "contains_added_text": True,
+                            "amendment_kind": "spec_feature_addition",
+                            "content_origin": "specification",
+                            "source_claim_ids": [],
+                            "has_ai_assessment": True,
+                            "assessment": {
+                                "verdict": "EXAMINER_CORRECT",
+                                "reasoning": "修改后的特征属于本领域常规设置 CHANGE_REASON_END",
+                            },
+                            "evidence": [
+                                {
+                                    "doc_id": "D1",
+                                    "location": "第2页",
+                                    "quote": "修改证据引文 CHANGE_QUOTE_END",
+                                    "analysis": "修改证据分析 CHANGE_ANALYSIS_END",
+                                }
+                            ],
+                            "final_review_reason": "经审查，修改后的权利要求1仍不具备创造性 CHANGE_FINAL_END",
                         }
                     ],
-                    "final_review_reason": "经审查，修改后的权利要求1仍不具备创造性 CHANGE_FINAL_END",
+                }
+            ],
+            "structural_adjustments": [
+                {
+                    "adjustment_id": "S1",
+                    "claim_id": "5",
+                    "claim_type": "dependent",
+                    "old_claim_id": "6",
+                    "adjustment_kind": "renumbering",
+                    "reason": "upstream_deleted",
+                    "before_text": "权利要求6",
+                    "after_text": "权利要求5",
                 }
             ],
         },
@@ -192,10 +211,14 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     content = build_final_report_markdown(_sample_report())
 
     assert "## 3. 权利要求变更表" in content
+    assert "### 3.1 实质修改" not in content
+    assert "### 3.2 结构调整" not in content
     assert "## 4. 基于上一轮审查意见的重组评述" in content
     assert "## 5. 争论点总表与AI判断" in content
     assert "## 6. 针对申请人意见陈述的答复" in content
+    assert '<th class="oar-col-claims">权利要求</th>' in content
     assert "变更特征_ONLY_IN_SECTION3" in content
+    assert "权利要求5" in content
     assert "来源类型" not in content
     assert "1（来源权利要求 5）" not in content
     assert "2（来源权利要求 5）" not in content
@@ -208,8 +231,27 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     assert "CLAIM_CHANGE_ANALYSIS_SHOULD_HIDE" not in content
     assert "CLAIM_CHANGE_FINAL_SHOULD_HIDE" not in content
     assert "权项上提" not in content
-    assert "说明书补入" in content
+    assert "说明书记载补入" in content
+    assert "编号顺延" in content
     assert "未核查" not in content
+    assert 'class="oar-layered-table oar-layered-table-overview oar-claim-change-table"' in content
+    assert 'rowspan="2"' in content
+    assert 'class="oar-layered-cell oar-claim-change-cell-detail">' in content
+    assert 'class="oar-change-item-card"' in content
+    assert 'class="oar-change-item-title">来源说明书</div>' in content
+    assert 'class="oar-change-item-label">变更内容</div>' in content
+    assert 'class="oar-change-ai-detail-stack"' in content
+    assert ">1（独权）<" in content
+    assert "旧权利要求6因上游权项删除，顺延为现权利要求5。" in content
+    section3 = content.split("## 4. 基于上一轮审查意见的重组评述", 1)[0]
+    assert '<th class="oar-col-verdict">AI判断</th>' not in section3
+    assert '<th class="oar-col-index">序号</th>' not in section3
+    assert 'colspan="2"' not in section3
+    assert 'colspan="3"' not in section3
+    assert "oar-change-ai-summary-item" not in section3
+    assert "调整说明：" not in section3
+    assert "当前权项：" not in section3
+    assert "调整内容" not in section3
 
 
 def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_blocks() -> None:
@@ -217,9 +259,10 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
 
     assert "CLAIM_REVIEW_1_END" in content
     assert "CLAIM_REVIEW_2_END" in content
-    assert "独权重组评述" in content
+    assert "独权重组" in content
+    assert "补充评述" in content
     assert "来源OA段落：" not in content
-    assert "当前权利要求文本：" in content
+    assert "权利要求文本：" in content
     assert "重组评述：" in content
     assert 'oar-change-del">CLAIM_BEFORE_ONLY' in content
     assert 'oar-change-add">CLAIM_AFTER_ONLY' in content
@@ -227,15 +270,24 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
     assert 'oar-change-add">CLAIM_REVIEW_1_END' in content
     assert 'oar-change-add">根据权利要求1所述的一种装置' in content
     assert "权利要求4" in content
-    assert "权利要求5" in content
+    assert "5（从权）" in content
     assert 'class="oar-opinion-block"' in content
     assert 'class="oar-claim-snapshot-list"' in content
     assert 'class="oar-claim-snapshot-item"' in content
+    assert 'class="oar-claim-snapshot-head">权利要求1</div>' not in content
+    assert 'class="oar-claim-snapshot-head">权利要求4</div>' in content
+    assert 'class="oar-claim-snapshot-head">权利要求5</div>' in content
     assert "申请人指出：" in content
     assert "审查员答复：" in content
     assert "未提取到申请人详细意见陈述。" in content
     assert "旧整段文本不应作为第 5 部分主展示内容。" not in content
     assert "\n> " not in content
+    assert "支持申请人" in content
+    assert "支持审查员" in content
+    assert "暂不确定" in content
+    assert "AI更支持申请人" not in content
+    assert "AI更支持审查员" not in content
+    assert "AI暂不确定" not in content
 
 
 def test_build_final_report_markdown_html_conversion_preserves_layered_layout() -> None:
@@ -247,14 +299,14 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
         enable_echarts=False,
     )
 
-    assert '<table class="oar-layered-table oar-layered-table-overview">' in html_doc
+    assert '<table class="oar-layered-table oar-layered-table-overview oar-claim-change-table">' in html_doc
     assert 'class="oar-opinion-block"' in html_doc
     assert 'class="oar-claim-snapshot-list"' in html_doc
     assert 'class="oar-verdict-badge oar-verdict-badge-applicant"' in html_doc
     assert 'class="oar-change-add"' in html_doc
     assert 'class="oar-change-del"' in html_doc
     assert 'class="oar-change-source-tag oar-change-source-tag-spec"' in html_doc
-    assert "独权重组评述" in html_doc
+    assert "独权重组" in html_doc
     assert "CLAIM_BEFORE_ONLY" in html_doc
     assert "CLAIM_AFTER_ONLY" in html_doc
     assert "CLAIM_REVIEW_1_END" in html_doc
@@ -315,9 +367,9 @@ def test_build_final_report_markdown_preserves_upstream_unique_claim_cards() -> 
 
     content = build_final_report_markdown(report)
 
-    assert "权利要求1｜当前权利要求 1｜" in content
-    assert "权利要求8｜当前权利要求 8｜" in content
-    assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜当前权利要求 2,3,4,5,6,7,9｜" in content
+    assert "权利要求1｜独权重组" in content
+    assert "权利要求8｜补充评述" in content
+    assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜从权组重组" in content
     assert "权8文本。" in content
     assert "权9文本。" in content
 
@@ -325,51 +377,48 @@ def test_build_final_report_markdown_preserves_upstream_unique_claim_cards() -> 
 def test_build_final_report_markdown_shows_non_ai_change_items_as_not_applicable() -> None:
     report = {
         "summary": {},
-        "amendment_section": {
-            "change_items": [
-                {
-                    "feature_id": "F2",
-                    "feature_text": "保持不变的特征",
-                    "feature_before_text": "保持不变的特征",
-                    "feature_after_text": "保持不变的特征",
-                    "contains_added_text": False,
-                    "target_claim_ids": ["3"],
-                    "source_type": "spec",
-                    "source_claim_ids": [],
-                    "assessment": {},
-                    "evidence": [],
-                    "final_review_reason": "",
-                }
-            ]
-        },
+        "amendment_section": {"substantive_change_groups": [{"claim_id": "3", "claim_type": "dependent", "items": [{"amendment_id": "A2", "feature_text": "保持不变的特征", "feature_before_text": "保持不变的特征", "feature_after_text": "保持不变的特征", "contains_added_text": False, "amendment_kind": "spec_feature_addition", "content_origin": "specification", "source_claim_ids": [], "has_ai_assessment": False, "assessment": {}, "evidence": [], "final_review_reason": ""}]}], "structural_adjustments": []},
         "response_dispute_section": {"items": []},
         "response_reply_section": {"items": []},
         "claim_review_section": {"items": []},
     }
 
     content = build_final_report_markdown(report)
+    section3 = content.split("## 4. 基于上一轮审查意见的重组评述", 1)[0]
 
-    assert "无需AI判断" in content
-    assert 'oar-verdict-badge oar-verdict-badge-unassessed' in content
+    assert "保持不变的特征" in content
+    assert 'rowspan="1"' in content
+    assert 'oar-claim-change-cell-detail">' not in section3
+    assert 'oar-verdict-badge oar-verdict-badge-unassessed' not in section3
+    assert 'class="oar-change-unassessed"' not in section3
+    assert "当前变更项无需展开 AI 理由与依据。" not in section3
+    assert ">3（从权）<" in content
 
 
 def test_build_final_report_markdown_renders_claim_source_change_items_in_section3() -> None:
     report = {
         "summary": {},
         "amendment_section": {
-            "change_items": [
+            "substantive_change_groups": [
                 {
-                    "feature_id": "F9",
-                    "feature_text": "旧权9并入现权7",
-                    "feature_before_text": "",
-                    "feature_after_text": "旧权9并入现权7",
-                    "contains_added_text": True,
-                    "target_claim_ids": ["7"],
-                    "source_type": "claim",
-                    "source_claim_ids": ["9"],
-                    "assessment": {},
-                    "evidence": [],
-                    "final_review_reason": "",
+                    "claim_id": "7",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A9",
+                            "feature_text": "旧权9并入现权7",
+                            "feature_before_text": "",
+                            "feature_after_text": "旧权9并入现权7",
+                            "contains_added_text": True,
+                            "amendment_kind": "claim_feature_merge",
+                            "content_origin": "old_claim",
+                            "source_claim_ids": ["9"],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
                 }
             ]
         },
@@ -380,8 +429,72 @@ def test_build_final_report_markdown_renders_claim_source_change_items_in_sectio
 
     content = build_final_report_markdown(report)
 
-    assert "7（来源权利要求 9）" in content
-    assert "权项上提" in content
+    assert "来源权利要求 9" in content
+    assert "从权特征并入" in content
+    assert 'class="oar-change-item-title">来源权利要求 9</div>' in content
+    assert 'class="oar-change-claims-main">来源权利要求 9</div>' not in content
+    assert ">7（从权）<" in content
+
+
+def test_build_final_report_markdown_group_with_mixed_ai_items_only_renders_ai_conclusions() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "3",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A2",
+                            "feature_text": "需要AI判断的项",
+                            "feature_before_text": "旧特征",
+                            "feature_after_text": "需要AI判断的项",
+                            "contains_added_text": True,
+                            "amendment_kind": "claim_feature_merge",
+                            "content_origin": "old_claim",
+                            "source_claim_ids": ["1"],
+                            "has_ai_assessment": True,
+                            "assessment": {
+                                "verdict": "EXAMINER_CORRECT",
+                                "reasoning": "MIXED_AI_REASON",
+                            },
+                            "evidence": [{"doc_id": "D1", "analysis": "MIXED_AI_EVIDENCE"}],
+                            "final_review_reason": "MIXED_AI_FINAL",
+                        },
+                        {
+                            "amendment_id": "A3",
+                            "feature_text": "无需AI判断的项",
+                            "feature_before_text": "无需AI判断的项",
+                            "feature_after_text": "无需AI判断的项",
+                            "contains_added_text": False,
+                            "amendment_kind": "spec_feature_addition",
+                            "content_origin": "specification",
+                            "source_claim_ids": [],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        },
+                    ],
+                }
+            ]
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "MIXED_AI_REASON" in content
+    assert "MIXED_AI_EVIDENCE" in content
+    assert "MIXED_AI_FINAL" in content
+    assert "无需AI判断的项" in content
+    assert '<span class="oar-verdict-badge oar-verdict-badge-unassessed">无需AI判断</span>' not in content
+    assert 'class="oar-change-ai-verdict"' in content
+    assert 'class="oar-change-ai-detail-stack"' in content
+    assert 'oar-change-ai-summary-item' not in content
 
 
 def test_build_final_report_markdown_keeps_claim_cards_in_effective_claim_order() -> None:
@@ -434,8 +547,8 @@ def test_build_final_report_markdown_keeps_claim_cards_in_effective_claim_order(
 
     content = build_final_report_markdown(report)
 
-    pos1 = content.index("权利要求1｜当前权利要求 1｜")
-    pos2 = content.index("权利要求2｜当前权利要求 2｜")
-    pos7 = content.index("权利要求7｜当前权利要求 7｜")
-    pos8 = content.index("权利要求8｜当前权利要求 8｜")
+    pos1 = content.index("权利要求1｜独权重组")
+    pos2 = content.index("权利要求2｜从权组重组")
+    pos7 = content.index("权利要求7｜从权组重组")
+    pos8 = content.index("权利要求8｜独权重组")
     assert pos1 < pos2 < pos7 < pos8

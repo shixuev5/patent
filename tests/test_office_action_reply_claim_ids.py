@@ -60,24 +60,25 @@ def test_report_generation_summary_excludes_amendment_reviews() -> None:
     assert summary["verdict_distribution"]["examiner_correct"] == 1
 
 
-def test_report_generation_builds_change_items_by_feature_id() -> None:
+def test_report_generation_builds_claim_change_groups_by_claim_id() -> None:
     node = ReportGenerationNode()
 
-    items = node._build_change_items(
-        added_features=[
+    groups = node._build_claim_change_groups(
+        substantive_amendments=[
             {
-                "feature_id": "F1",
+                "amendment_id": "F1",
                 "feature_text": "新增特征A",
                 "feature_before_text": "旧特征A",
                 "feature_after_text": "新增特征A",
                 "target_claim_ids": ["2"],
-                "source_type": "spec",
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
                 "source_claim_ids": [],
             }
         ],
         support_findings=[
             {
-                "feature_id": "F1",
+                "amendment_id": "F1",
                 "support_found": True,
                 "support_basis": "说明书第3页",
             }
@@ -99,63 +100,176 @@ def test_report_generation_builds_change_items_by_feature_id() -> None:
                 },
             }
         ],
+        effective_claims=[{"claim_id": "2", "claim_type": "dependent"}],
     )
 
-    assert len(items) == 1
-    assert items[0]["feature_id"] == "F1"
-    assert items[0]["feature_before_text"] == "旧特征A"
-    assert items[0]["feature_after_text"] == "新增特征A"
-    assert items[0]["contains_added_text"] is True
-    assert items[0]["target_claim_ids"] == ["2"]
-    assert items[0]["source_claim_ids"] == []
-    assert items[0]["support_finding"]["support_basis"] == "说明书第3页"
-    assert items[0]["assessment"]["verdict"] == "APPLICANT_CORRECT"
-    assert items[0]["final_review_reason"] == "结合D1仍可维持驳回。"
+    assert len(groups) == 1
+    assert groups[0]["claim_id"] == "2"
+    assert groups[0]["claim_type"] == "dependent"
+    assert len(groups[0]["items"]) == 1
+    item = groups[0]["items"][0]
+    assert item["amendment_id"] == "F1"
+    assert item["feature_before_text"] == "旧特征A"
+    assert item["feature_after_text"] == "新增特征A"
+    assert item["contains_added_text"] is True
+    assert item["source_claim_ids"] == []
+    assert item["support_finding"]["support_basis"] == "说明书第3页"
+    assert item["assessment"]["verdict"] == "APPLICANT_CORRECT"
+    assert item["has_ai_assessment"] is True
+    assert item["final_review_reason"] == "结合D1仍可维持驳回。"
 
 
-def test_report_generation_includes_claim_source_change_items_in_section3() -> None:
+def test_report_generation_splits_same_feature_into_multiple_claim_groups() -> None:
     node = ReportGenerationNode()
 
-    items = node._build_change_items(
-        added_features=[
+    groups = node._build_claim_change_groups(
+        substantive_amendments=[
             {
-                "feature_id": "F2",
-                "feature_text": "保持不变的特征",
-                "feature_before_text": "保持不变的特征",
-                "feature_after_text": "保持不变的特征",
-                "target_claim_ids": ["3"],
-                "source_type": "claim",
-                "source_claim_ids": ["1"],
+                "amendment_id": "F2",
+                "feature_text": "多个权利要求共享的新特征",
+                "feature_before_text": "旧片段",
+                "feature_after_text": "多个权利要求共享的新特征",
+                "target_claim_ids": ["1", "3"],
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
+                "source_claim_ids": ["9"],
             }
         ],
         support_findings=[],
         amendment_disputes=[],
+        effective_claims=[
+            {"claim_id": "1", "claim_type": "independent"},
+            {"claim_id": "3", "claim_type": "dependent"},
+        ],
     )
 
-    assert len(items) == 1
-    assert items[0]["feature_id"] == "F2"
-    assert items[0]["source_type"] == "claim"
-    assert items[0]["target_claim_ids"] == ["3"]
-    assert items[0]["source_claim_ids"] == ["1"]
+    assert [group["claim_id"] for group in groups] == ["1", "3"]
+    assert [group["claim_type"] for group in groups] == ["independent", "dependent"]
+    assert groups[0]["items"][0]["amendment_id"] == "F2"
+    assert groups[1]["items"][0]["amendment_id"] == "F2"
+    assert groups[0]["items"][0]["amendment_kind"] == "claim_feature_merge"
+    assert groups[1]["items"][0]["source_claim_ids"] == ["9"]
 
 
-def test_report_generation_claim_source_change_items_keep_amendment_flag_signal() -> None:
+def test_report_generation_keeps_all_change_items_under_same_claim_group() -> None:
     node = ReportGenerationNode()
 
-    items = node._build_change_items(
-        added_features=[
+    groups = node._build_claim_change_groups(
+        substantive_amendments=[
             {
-                "feature_id": "F2",
+                "amendment_id": "F2",
                 "feature_text": "从旧权1上提的特征",
                 "feature_before_text": "旧权1中的特征",
                 "feature_after_text": "从旧权1上提的特征",
                 "target_claim_ids": ["3"],
-                "source_type": "claim",
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
                 "source_claim_ids": ["1"],
-            }
+            },
+            {
+                "amendment_id": "F3",
+                "feature_text": "从说明书补入的特征",
+                "feature_before_text": "",
+                "feature_after_text": "从说明书补入的特征",
+                "target_claim_ids": ["3"],
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
+                "source_claim_ids": [],
+            },
         ],
         support_findings=[],
         amendment_disputes=[],
+        effective_claims=[{"claim_id": "3", "claim_type": "dependent"}],
     )
 
-    assert items
+    assert len(groups) == 1
+    assert groups[0]["claim_id"] == "3"
+    assert [item["amendment_id"] for item in groups[0]["items"]] == ["F2", "F3"]
+    assert [item["amendment_kind"] for item in groups[0]["items"]] == ["claim_feature_merge", "spec_feature_addition"]
+
+
+def test_report_generation_places_spec_items_last_within_claim_group() -> None:
+    node = ReportGenerationNode()
+
+    groups = node._build_claim_change_groups(
+        substantive_amendments=[
+            {
+                "amendment_id": "F3",
+                "feature_text": "说明书补入特征",
+                "feature_before_text": "",
+                "feature_after_text": "说明书补入特征",
+                "target_claim_ids": ["4"],
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
+                "source_claim_ids": [],
+            },
+            {
+                "amendment_id": "F1",
+                "feature_text": "从权并入特征A",
+                "feature_before_text": "旧特征A",
+                "feature_after_text": "从权并入特征A",
+                "target_claim_ids": ["4"],
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
+                "source_claim_ids": ["3"],
+            },
+            {
+                "amendment_id": "F2",
+                "feature_text": "从权并入特征B",
+                "feature_before_text": "旧特征B",
+                "feature_after_text": "从权并入特征B",
+                "target_claim_ids": ["4"],
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
+                "source_claim_ids": ["2"],
+            },
+        ],
+        support_findings=[],
+        amendment_disputes=[],
+        effective_claims=[{"claim_id": "4", "claim_type": "dependent"}],
+    )
+
+    assert [item["amendment_id"] for item in groups[0]["items"]] == ["F1", "F2", "F3"]
+
+
+def test_report_generation_marks_ai_assessment_presence_per_change_item() -> None:
+    node = ReportGenerationNode()
+
+    groups = node._build_claim_change_groups(
+        substantive_amendments=[
+            {
+                "amendment_id": "F2",
+                "feature_text": "需AI判断的特征",
+                "feature_before_text": "旧特征",
+                "feature_after_text": "需AI判断的特征",
+                "target_claim_ids": ["3"],
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
+                "source_claim_ids": ["1"],
+            },
+            {
+                "amendment_id": "F3",
+                "feature_text": "无需AI判断的特征",
+                "feature_before_text": "无需AI判断的特征",
+                "feature_after_text": "无需AI判断的特征",
+                "target_claim_ids": ["3"],
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
+                "source_claim_ids": [],
+            },
+        ],
+        support_findings=[],
+        amendment_disputes=[
+            {
+                "source_feature_id": "F2",
+                "evidence_assessment": {
+                    "assessment": {"verdict": "EXAMINER_CORRECT", "reasoning": "已有公开。"},
+                    "evidence": [],
+                },
+            }
+        ],
+        effective_claims=[{"claim_id": "3", "claim_type": "dependent"}],
+    )
+
+    assert len(groups) == 1
+    assert [item["has_ai_assessment"] for item in groups[0]["items"]] == [True, False]

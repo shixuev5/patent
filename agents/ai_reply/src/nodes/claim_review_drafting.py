@@ -30,16 +30,16 @@ class ClaimReviewDraftingNode:
         try:
             cache = get_node_cache(self.config, "claim_review_drafting")
             review_units = cache.run_step(
-                "draft_review_units_v3",
+                "draft_review_units_v5",
                 self._draft_review_units,
                 self._state_get(state, "claims_old_structured", []),
                 self._state_get(state, "claims_effective_structured", []),
                 self._state_get(state, "prepared_materials", {}),
-                self._state_get(state, "added_features", []),
+                self._state_get(state, "substantive_amendments", []),
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "evidence_assessments", []),
                 self._state_get(state, "drafted_rejection_reasons", {}),
-                self._state_get(state, "claim_alignment_map", {}),
+                self._state_get(state, "claim_alignments", []),
             )
             updates["review_units"] = [
                 item if isinstance(item, ReviewUnit) else ReviewUnit(**item)
@@ -64,11 +64,11 @@ class ClaimReviewDraftingNode:
         claims_old_structured: List[Any],
         claims_effective_structured: List[Any],
         prepared_materials: Dict[str, Any],
-        added_features: List[Any],
+        substantive_amendments: List[Any],
         disputes: List[Any],
         evidence_assessments: List[Any],
         drafted_rejection_reasons: Dict[str, str],
-        claim_alignment_map: Dict[str, str] | None = None,
+        claim_alignments: List[Any] | None = None,
     ) -> List[Dict[str, Any]]:
         old_claims = self._normalize_claims(claims_old_structured)
         effective_claims = self._normalize_claims(claims_effective_structured)
@@ -81,7 +81,7 @@ class ClaimReviewDraftingNode:
         prepared = self._to_dict(prepared_materials)
         office_action = self._to_dict(prepared.get("office_action", {}))
         paragraphs = [self._to_dict(item) for item in (office_action.get("paragraphs", []) or [])]
-        features = [self._to_dict(item) for item in (added_features or [])]
+        amendments = [self._to_dict(item) for item in (substantive_amendments or [])]
         normalized_disputes = [self._to_dict(item) for item in (disputes or [])]
         normalized_assessments = [self._to_dict(item) for item in (evidence_assessments or [])]
         drafted_map = {
@@ -89,12 +89,12 @@ class ClaimReviewDraftingNode:
             for key, value in self._to_dict(drafted_rejection_reasons).items()
             if str(key).strip()
         }
-        normalized_claim_alignment_map = {
-            str(new_claim_id).strip(): str(old_claim_id).strip()
-            for new_claim_id, old_claim_id in self._to_dict(claim_alignment_map).items()
-            if str(new_claim_id).strip() and str(old_claim_id).strip()
-        }
-        dispute_by_feature_id = {
+        normalized_claim_alignments = [
+            self._to_dict(item)
+            for item in (claim_alignments or [])
+            if str(self._to_dict(item).get("claim_id", "")).strip()
+        ]
+        dispute_by_amendment_id = {
             str(item.get("source_feature_id", "")).strip(): item
             for item in normalized_disputes
             if str(item.get("source_feature_id", "")).strip()
@@ -104,15 +104,15 @@ class ClaimReviewDraftingNode:
             for item in normalized_assessments
             if str(item.get("dispute_id", "")).strip()
         }
-        assessment_by_feature_id = {}
+        assessment_by_amendment_id = {}
         for item in normalized_assessments:
-            feature_id = str(item.get("source_feature_id", "")).strip()
-            if feature_id:
-                assessment_by_feature_id[feature_id] = item
+            amendment_id = str(item.get("source_feature_id", "")).strip()
+            if amendment_id:
+                assessment_by_amendment_id[amendment_id] = item
 
-        merge_target_by_source = self._build_merge_target_map(features, effective_map)
+        merge_target_by_source = self._build_merge_target_map(amendments, effective_map)
         alignment_target_by_source = self._build_alignment_target_map(
-            normalized_claim_alignment_map,
+            normalized_claim_alignments,
             effective_map,
             merge_target_by_source,
         )
@@ -122,7 +122,7 @@ class ClaimReviewDraftingNode:
             old_map,
             merge_target_by_source,
             target_sources_map,
-            normalized_claim_alignment_map,
+            normalized_claim_alignments,
         )
         unit_specs: List[Dict[str, Any]] = []
         unit_by_id: Dict[str, Dict[str, Any]] = {}
@@ -286,7 +286,7 @@ class ClaimReviewDraftingNode:
                 continue
             if claim_id in covered_effective_claim_ids:
                 continue
-            if not self._claim_has_related_material(claim_id, normalized_disputes, features):
+            if not self._claim_has_related_material(claim_id, normalized_disputes, amendments):
                 continue
             new_unit = self._build_unit_spec(
                 unit_id=f"IND_{claim_id}",
@@ -312,7 +312,7 @@ class ClaimReviewDraftingNode:
             claim_id = claim["claim_id"]
             if claim_id in covered_effective_claim_ids:
                 continue
-            if not self._claim_has_related_material(claim_id, normalized_disputes, features):
+            if not self._claim_has_related_material(claim_id, normalized_disputes, amendments):
                 continue
             new_unit = self._build_unit_spec(
                 unit_id=f"CLM_{claim_id}",
@@ -344,9 +344,9 @@ class ClaimReviewDraftingNode:
             )
             amendment_materials = self._collect_amendment_materials(
                 display_claim_ids,
-                features,
-                dispute_by_feature_id,
-                assessment_by_feature_id,
+                amendments,
+                dispute_by_amendment_id,
+                assessment_by_amendment_id,
             )
             source_summary = self._to_dict(unit.get("source_summary", {}))
             source_summary["response_dispute_ids"] = [
@@ -354,10 +354,10 @@ class ClaimReviewDraftingNode:
                 for item in response_materials
                 if str(item.get("dispute_id", "")).strip()
             ]
-            source_summary["added_feature_ids"] = [
-                str(item.get("feature_id", "")).strip()
+            source_summary["amendment_ids"] = [
+                str(item.get("amendment_id", "")).strip()
                 for item in amendment_materials
-                if str(item.get("feature_id", "")).strip()
+                if str(item.get("amendment_id", "")).strip()
             ]
             unit["source_summary"] = source_summary
             unit["review_before_text"] = self._build_direct_review_text(unit.get("oa_materials", []))
@@ -433,14 +433,14 @@ class ClaimReviewDraftingNode:
 
     def _build_merge_target_map(
         self,
-        features: List[Dict[str, Any]],
+        amendments: List[Dict[str, Any]],
         effective_map: Dict[str, Dict[str, Any]],
     ) -> Dict[str, str]:
         result: Dict[str, str] = {}
-        for feature in features:
-            if str(feature.get("source_type", "")).strip() != "claim":
+        for amendment in amendments:
+            if str(amendment.get("amendment_kind", "")).strip() != "claim_feature_merge":
                 continue
-            target_claim_ids = self._normalize_claim_ids(feature.get("target_claim_ids", []))
+            target_claim_ids = self._normalize_claim_ids(amendment.get("target_claim_ids", []))
             if not target_claim_ids:
                 continue
             target_claim_id = target_claim_ids[0]
@@ -448,7 +448,7 @@ class ClaimReviewDraftingNode:
                 target_claim_id = self._resolve_anchor_claim_id(target_claim_id, effective_map)
             if not target_claim_id:
                 continue
-            for source_claim_id in self._normalize_claim_ids(feature.get("source_claim_ids", [])):
+            for source_claim_id in self._normalize_claim_ids(amendment.get("source_claim_ids", [])):
                 result[source_claim_id] = target_claim_id
         return result
 
@@ -462,16 +462,20 @@ class ClaimReviewDraftingNode:
 
     def _build_alignment_target_map(
         self,
-        claim_alignment_map: Dict[str, str],
+        claim_alignments: List[Dict[str, Any]],
         effective_map: Dict[str, Dict[str, Any]],
         merge_target_by_source: Dict[str, str],
     ) -> Dict[str, str]:
         result: Dict[str, str] = {}
         consumed_source_claim_ids = set(merge_target_by_source)
-        for target_claim_id, source_claim_id in claim_alignment_map.items():
+        for alignment in claim_alignments:
+            target_claim_id = str(alignment.get("claim_id", "")).strip()
+            source_claim_id = str(alignment.get("old_claim_id", "")).strip()
             if target_claim_id not in effective_map:
                 continue
             if source_claim_id in consumed_source_claim_ids:
+                continue
+            if not source_claim_id:
                 continue
             result[source_claim_id] = target_claim_id
         return result
@@ -482,13 +486,18 @@ class ClaimReviewDraftingNode:
         old_map: Dict[str, Dict[str, Any]],
         merge_target_by_source: Dict[str, str],
         target_sources_map: Dict[str, List[str]],
-        claim_alignment_map: Dict[str, str],
+        claim_alignments: List[Dict[str, Any]],
     ) -> Dict[str, str]:
         consumed_source_claim_ids = set(merge_target_by_source)
+        aligned_old_claim_by_new = {
+            str(item.get("claim_id", "")).strip(): str(item.get("old_claim_id", "")).strip()
+            for item in claim_alignments
+            if str(item.get("claim_id", "")).strip()
+        }
         result: Dict[str, str] = {}
         for claim in effective_claims:
             claim_id = claim["claim_id"]
-            aligned_old_claim_id = str(claim_alignment_map.get(claim_id, "")).strip()
+            aligned_old_claim_id = str(aligned_old_claim_by_new.get(claim_id, "")).strip()
             if aligned_old_claim_id and aligned_old_claim_id in old_map and aligned_old_claim_id not in consumed_source_claim_ids:
                 result[claim_id] = aligned_old_claim_id
                 continue
@@ -564,7 +573,7 @@ class ClaimReviewDraftingNode:
             "claim_snapshots": claim_snapshots,
             "source_summary": {
                 "merged_source_claim_ids": [],
-                "added_feature_ids": [],
+                "amendment_ids": [],
             },
             "paragraph_order": paragraph_order,
         }
@@ -654,30 +663,31 @@ class ClaimReviewDraftingNode:
     def _collect_amendment_materials(
         self,
         claim_ids: List[str],
-        features: List[Dict[str, Any]],
-        dispute_by_feature_id: Dict[str, Dict[str, Any]],
-        assessment_by_feature_id: Dict[str, Dict[str, Any]],
+        amendments: List[Dict[str, Any]],
+        dispute_by_amendment_id: Dict[str, Dict[str, Any]],
+        assessment_by_amendment_id: Dict[str, Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         materials: List[Dict[str, Any]] = []
         claim_id_set = set(claim_ids)
-        for feature in features:
-            feature_id = str(feature.get("feature_id", "")).strip()
-            target_claim_ids = self._normalize_claim_ids(feature.get("target_claim_ids", []))
-            if not feature_id or not claim_id_set.intersection(target_claim_ids):
+        for amendment in amendments:
+            amendment_id = str(amendment.get("amendment_id", "")).strip()
+            target_claim_ids = self._normalize_claim_ids(amendment.get("target_claim_ids", []))
+            if not amendment_id or not claim_id_set.intersection(target_claim_ids):
                 continue
-            dispute = dispute_by_feature_id.get(feature_id, {})
+            dispute = dispute_by_amendment_id.get(amendment_id, {})
             dispute_claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", [])) or target_claim_ids
-            assessment_item = assessment_by_feature_id.get(feature_id, {})
+            assessment_item = assessment_by_amendment_id.get(amendment_id, {})
             assessment = self._to_dict(assessment_item.get("assessment", {}))
             materials.append(
                 {
-                    "feature_id": feature_id,
+                    "amendment_id": amendment_id,
                     "claim_ids": dispute_claim_ids,
-                    "feature_text": str(feature.get("feature_text", "")).strip(),
-                    "feature_before_text": str(feature.get("feature_before_text", "")).strip(),
-                    "feature_after_text": str(feature.get("feature_after_text", "")).strip(),
-                    "source_type": str(feature.get("source_type", "")).strip(),
-                    "source_claim_ids": self._normalize_claim_ids(feature.get("source_claim_ids", [])),
+                    "feature_text": str(amendment.get("feature_text", "")).strip(),
+                    "feature_before_text": str(amendment.get("feature_before_text", "")).strip(),
+                    "feature_after_text": str(amendment.get("feature_after_text", "")).strip(),
+                    "amendment_kind": str(amendment.get("amendment_kind", "")).strip(),
+                    "content_origin": str(amendment.get("content_origin", "")).strip(),
+                    "source_claim_ids": self._normalize_claim_ids(amendment.get("source_claim_ids", [])),
                     "target_claim_ids": target_claim_ids,
                     "assessment_reasoning": str(assessment.get("reasoning", "")).strip(),
                     "verdict": str(assessment.get("verdict", "")).strip(),
@@ -690,13 +700,13 @@ class ClaimReviewDraftingNode:
         self,
         claim_id: str,
         disputes: List[Dict[str, Any]],
-        features: List[Dict[str, Any]],
+        amendments: List[Dict[str, Any]],
     ) -> bool:
         for dispute in disputes:
             if claim_id in self._normalize_claim_ids(dispute.get("claim_ids", [])):
                 return True
-        for feature in features:
-            if claim_id in self._normalize_claim_ids(feature.get("target_claim_ids", [])):
+        for amendment in amendments:
+            if claim_id in self._normalize_claim_ids(amendment.get("target_claim_ids", [])):
                 return True
         return False
 

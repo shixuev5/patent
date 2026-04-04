@@ -1,6 +1,6 @@
 """
 修改差异分析节点
-使用大模型识别新增/变化特征，并判定来源（原权利要求上提 or 说明书特征）
+拆分输出新旧权项对齐、实质性修改和结构性调整。
 """
 
 import json
@@ -10,12 +10,17 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
-from agents.ai_reply.src.state import AddedFeature, StructuredClaim
+from agents.ai_reply.src.state import (
+    ClaimAlignment,
+    StructuralAdjustment,
+    StructuredClaim,
+    SubstantiveAmendment,
+)
 from agents.ai_reply.src.utils import get_node_cache
 
 
 class AmendmentTrackingNode:
-    """修改差异分析节点（LLM主判）"""
+    """修改差异分析节点（LLM主判实质修改，规则识别结构调整）"""
 
     def __init__(self, config=None):
         self.config = config
@@ -32,7 +37,7 @@ class AmendmentTrackingNode:
         try:
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v7",
+                "track_amendment_v9",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
                 self._state_get(state, "claims_previous_structured", []),
@@ -49,22 +54,30 @@ class AmendmentTrackingNode:
             ]
             updates["claims_old_source"] = str(result.get("claims_old_source", "")).strip()
             updates["claims_old_source_reason"] = str(result.get("claims_old_source_reason", "")).strip()
-            updates["claim_alignment_map"] = {
-                str(new_claim_id).strip(): str(old_claim_id).strip()
-                for new_claim_id, old_claim_id in (result.get("claim_alignment_map", {}) or {}).items()
-                if str(new_claim_id).strip()
-            }
-            updates["has_claim_amendment"] = result["has_claim_amendment"]
-            updates["added_features"] =[
-                item if isinstance(item, AddedFeature) else AddedFeature(**item)
-                for item in result.get("added_features", [])
+            updates["claim_alignments"] = [
+                item if isinstance(item, ClaimAlignment) else ClaimAlignment(**item)
+                for item in result.get("claim_alignments", [])
+            ]
+            updates["has_claim_amendment"] = bool(result.get("has_claim_amendment", False))
+            updates["substantive_amendments"] = [
+                item if isinstance(item, SubstantiveAmendment) else SubstantiveAmendment(**item)
+                for item in result.get("substantive_amendments", [])
+            ]
+            updates["structural_adjustments"] = [
+                item if isinstance(item, StructuralAdjustment) else StructuralAdjustment(**item)
+                for item in result.get("structural_adjustments", [])
             ]
             updates["status"] = "completed"
             updates["progress"] = 60.0
-            logger.info(f"修改差异分析完成，新增特征数: {len(updates['added_features'])}")
+            logger.info(
+                "修改差异分析完成，实质修改数: {}，结构调整数: {}".format(
+                    len(updates["substantive_amendments"]),
+                    len(updates["structural_adjustments"]),
+                )
+            )
         except Exception as e:
             logger.error(f"修改差异分析失败: {e}")
-            updates["errors"] =[{
+            updates["errors"] = [{
                 "node_name": "amendment_tracking",
                 "error_message": str(e),
                 "error_type": "amendment_tracking_error",
@@ -91,216 +104,242 @@ class AmendmentTrackingNode:
                 "claims_effective_structured": effective_claims,
                 "claims_old_source": claims_old_source,
                 "claims_old_source_reason": claims_old_source_reason,
-                "claim_alignment_map": {},
+                "claim_alignments": [],
                 "has_claim_amendment": False,
-                "added_features":[],
+                "substantive_amendments": [],
+                "structural_adjustments": [],
             }
 
-        structured_diff = self._build_structured_diff(old_claims, effective_claims)
-        if not structured_diff.get("has_changes", False):
-            return {
-                "claims_old_structured": old_claims,
-                "claims_effective_structured": effective_claims,
-                "claims_old_source": claims_old_source,
-                "claims_old_source_reason": claims_old_source_reason,
-                "claim_alignment_map": structured_diff.get("claim_alignment_map", {}),
-                "has_claim_amendment": False,
-                "added_features":[],
-            }
+        claim_alignments = self._build_claim_alignments(old_claims, effective_claims)
+        changed_claims_pairs = self._build_changed_claim_pairs(old_claims, effective_claims, claim_alignments)
+        full_old_claims_context = {
+            str(claim.get("claim_id", "")): str(claim.get("claim_text", "")).strip()
+            for claim in old_claims
+            if str(claim.get("claim_id", "")).strip()
+        }
 
-        messages =[
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": self._build_user_prompt(structured_diff)},
-        ]
-        
-        # 依赖外部 LangGraph 节点的自动重试机制
-        response = self.llm_service.invoke_text_json(
-            messages=messages,
-            task_kind="oar_amendment_tracking",
-            temperature=0.05,
+        substantive_amendments: List[Dict[str, Any]] = []
+        if changed_claims_pairs:
+            payload = {
+                "summary": {
+                    "old_claim_count": len(old_claims),
+                    "new_claim_count": len(effective_claims),
+                    "changed_claim_count": len(changed_claims_pairs),
+                },
+                "changed_claim_ids": [item["claim_id"] for item in changed_claims_pairs],
+                "changed_claims_pairs": changed_claims_pairs,
+                "full_old_claims_context": full_old_claims_context,
+            }
+            response = self.llm_service.invoke_text_json(
+                messages=[
+                    {"role": "system", "content": self._build_system_prompt()},
+                    {"role": "user", "content": self._build_user_prompt(payload)},
+                ],
+                task_kind="oar_amendment_tracking",
+                temperature=0.05,
+            )
+            normalized = self._normalize_tracking_result(response)
+            substantive_amendments = normalized["substantive_amendments"]
+
+        claim_alignments = self._refresh_alignment_reasons(claim_alignments, old_claims, substantive_amendments)
+        structural_adjustments = self._extract_structural_adjustments(
+            old_claims,
+            effective_claims,
+            claim_alignments,
         )
-        normalized = self._normalize_tracking_result(response)
-        
+        has_claim_amendment = bool(substantive_amendments or structural_adjustments)
+
         return {
             "claims_old_structured": old_claims,
             "claims_effective_structured": effective_claims,
             "claims_old_source": claims_old_source,
             "claims_old_source_reason": claims_old_source_reason,
-            "claim_alignment_map": structured_diff.get("claim_alignment_map", {}),
-            "has_claim_amendment": normalized["has_claim_amendment"],
-            "added_features": normalized["added_features"],
+            "claim_alignments": claim_alignments,
+            "has_claim_amendment": has_claim_amendment,
+            "substantive_amendments": substantive_amendments,
+            "structural_adjustments": structural_adjustments,
         }
 
     def _build_system_prompt(self) -> str:
-        return """你是资深的中国专利代理师和专利局审查员。你的任务是对比【修改前和修改后的权利要求对】，精准提取引入的【新增/修改的实质性技术特征】，并判定这些特征的来源。
+        return """你是资深的中国专利代理师和专利局审查员，精通《专利审查指南》。
+你的唯一任务是：精准比对【修改前和修改后的权利要求】，提取其中的“实质性技术修改”。
 
-### 分析步骤与核心原则：
+### 核心定义
+你需要从修改后的权利要求中，提取出新增的或发生实质性改变的技术特征。必须完全忽略：
+1. 纯粹的结构性调整（如：删除某权项导致的编号顺延、引用关系联动变化）。
+2. 纯粹的文字润色（如：错别字修改、标点符号修改、语序调整）。
+3. 不改变技术实质的同义词替换（例如：“支撑件”修改为“支撑结构”，实质未变，应当忽略）。
+4. 单纯的特征删除：如果修改仅仅是删除了原有的某个技术特征（扩大了保护范围），请直接忽略，不要输出。
 
-1. **对比权项对（changed_claims_pairs）**
-   - 阅读每一对修改前后的权利要求，找出申请人实际增加或实质性修改的“完整技术特征”。
-   - **特殊情况处理**：如果 `old_text` 为空字符串，说明该权利要求是**全新增加**的，请直接提取 `new_text` 中的实质性技术特征（请忽略“如权利要求X所述的”等前序引用套话）。
-   - 过滤掉非实质性修改：如果仅包含标点符号更改、错别字修正、从属编号调整、语序调整或纯语言文字润色（不改变技术方案实质），请忽略。
-   - 只有当引入了新的技术限制条件、新的结构、步骤、参数或关系时，才将 `has_claim_amendment` 判定为 `true`。
+### 严格的修改类型（仅限2种）
+1. 从权特征并入
+   - 触发条件：新权利要求中新增的特征，其实质内容在【任一旧权利要求】中已经明确记载。
+   - amendment_kind 必须为: "claim_feature_merge"
+   - content_origin 必须为: "old_claim"
+   - source_claim_ids: 必须准确填写来源的旧权利要求编号（例如 ["5"]，绝对不能为空）。
 
-2. **提炼新增技术特征（added_features）**
-   - `feature_text` 必须是技术上语义完整的句子或短句，不能是零碎词语。
-   - 如果同一权项中的多个零碎修改共同组成了一个完整的技术动作或结构关系，必须将它们合并成一个完整通顺的 `feature_text`。
-   - 同时必须输出该条变更对应的旧片段 `feature_before_text` 与新片段 `feature_after_text`，用于报告中的单条特征 diff 展示。
-   - 若属于纯新增，`feature_before_text` 置空字符串，`feature_after_text` 必须等于或覆盖 `feature_text`。
-   - 若属于替换/改写，`feature_before_text` 与 `feature_after_text` 都必须填写，且二者只覆盖这条特征自身，不要输出整条权利要求全文。
+2. 说明书记载补入
+   - 触发条件：新权利要求中新增的特征，在【所有旧权利要求】中均未记载，属于从说明书中新引入的实质性特征。
+   - amendment_kind 必须为: "spec_feature_addition"
+   - content_origin 必须为: "specification"
+   - source_claim_ids: 必须为严格的空数组 []。
 
-3. **判定特征来源（source_type）**
-   - 必须全局检索提供的 `full_old_claims_context`（旧权利要求全文本）。
-   - **`claim`（权项上提）**：如果该新特征的实质技术内容，在**任意一条**旧权利要求中已经记载过（即使本次措辞有微调），则判定为 `claim`，并在 `source_claim_ids` 填写该特征原本所在的旧权项编号。
-   - **`spec`（说明书提取）**：当且仅当该特征的内容在**所有旧权利要求**中均未曾记载过（属于申请人从说明书中找出的新特征），才判定为 `spec`。
+### 字段提取粒度要求（极其重要）
+- 必须按【单条技术特征】粒度拆分。如果并入了两个不同来源的特征，必须拆分为两个独立的 JSON 对象。
+- amendment_id: 按顺序生成，如 "A1", "A2"。
+- feature_text: 简明扼要地概括该技术特征（陈述句）。
+- feature_before_text: 旧特征原文片段。如果是说明书补入则严格填 ""；如果是从权并入，摘录来源旧权项的原文。
+- feature_after_text: 新特征原文片段。必须是精简的词组或分句，严禁返回整条权利要求的全文！
 
-### 严格的输出格式与约束：
-
-- **只输出合法的 JSON 对象**，绝对不要输出任何 Markdown 标记（如 ```json）、分析过程或其他解释性文本。
-- JSON 结构必须严格符合以下要求：
+### 期望输出格式
+必须直接输出合法的 JSON 对象。你的输出必须以 `{` 开头，以 `}` 结尾，绝对不要包含 ```json 等任何 Markdown 标记。
+示例：
 {
-  "has_claim_amendment": true,
-  "added_features":[
+  "substantive_amendments": [
     {
-      "feature_id": "F1", // 从 F1, F2 开始依次编号
-      "feature_text": "完整的技术特征描述（如：第二弹性件的一端与滑块连接，另一端与壳体内壁连接）",
-      "feature_before_text": "该变更项在旧权利要求中的对应旧片段；若为纯新增则为空字符串",
-      "feature_after_text": "该变更项在新权利要求中的对应新片段；应等于或覆盖 feature_text",
-      "target_claim_ids":["1", "3"], // 该特征被添加到了哪些新权利要求中（字符串数组）
-      "source_type": "claim", // 必须且只能是 "claim" 或 "spec"
-      "source_claim_ids": ["4", "5"] // 如果是 claim，填写原权项编号；如果是 spec，必须为空数组[]
+      "amendment_id": "A1",
+      "target_claim_ids": ["1"],
+      "amendment_kind": "claim_feature_merge",
+      "content_origin": "old_claim",
+      "source_claim_ids": ["3"],
+      "feature_text": "显示器材质为柔性OLED",
+      "feature_before_text": "所述显示器为柔性OLED屏",
+      "feature_after_text": "且所述显示器采用柔性OLED材质"
+    },
+    {
+      "amendment_id": "A2",
+      "target_claim_ids": ["1"],
+      "amendment_kind": "spec_feature_addition",
+      "content_origin": "specification",
+      "source_claim_ids": [],
+      "feature_text": "增加防水涂层",
+      "feature_before_text": "",
+      "feature_after_text": "外壳表面设有厚度为0.1mm的防水涂层"
     }
   ]
 }
 
-### 边界条件处理：
-- 当且仅当 `has_claim_amendment` 为 `false` 时，`added_features` 必须为 `[]`。
-- `source_claim_ids` 中的编号必须仅包含数字（作为字符串），不要包含“权利要求”等字眼。
-- 当 `source_type` 为 `spec` 时，`source_claim_ids` **必须**为空数组 `[]`。"""
+若未发现任何实质性新增特征，请严格输出：{"substantive_amendments": []}"""
 
-    def _build_user_prompt(self, structured_diff: Dict[str, Any]) -> str:
-        return f"""请分析以下新旧权利要求差异数据。
+    def _build_user_prompt(self, payload: Dict[str, Any]) -> str:
+        return f"""请作为资深专利代理师，分析以下权利要求修改数据。
 
-【分析提示】
-1. `changed_claims_pairs` 是代码层面已粗筛出的“确有文本差异，且不是纯重编号/平移”的权项对。
-2. 请直接对比每组 `old_text` 与 `new_text`，提炼真正新增或实质修改的完整技术特征。
-3. 每条 `added_features` 都要按“单条特征粒度”补充 `feature_before_text` 与 `feature_after_text`，不要返回整条权利要求全文。
-4. 请务必核对 `full_old_claims_context`。如果某个新特征的实质内容在任一旧权利要求中已经出现过，即使表达有微调，也应判定为 `claim`；只有在旧权利要求中完全找不到时，才判定为 `spec`。
+【分析指引与特殊处理】
+1. 关注 `changed_claims_pairs`：`target_claim_ids` 应填写发生变动的新权项的 `claim_id`。
+2. 全局检索溯源：当你发现新增特征时，务必在 `full_old_claims_context` (旧权全文) 中全局搜寻。找得到就是 `claim_feature_merge`，找不到就是 `spec_feature_addition`。
+3. 全新增加的权利要求：如果某 pair 的 `old_text` 为空，说明这是一个全新添加的权利要求。请提炼该新权项中的核心技术特征，并去旧权文中找源头，判断是合并而来还是说明书引入。
 
 【差异数据】
-{json.dumps(structured_diff, ensure_ascii=False, indent=2)}"""
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+
+请严格遵循 JSON 格式直接输出结果："""
 
     def _normalize_tracking_result(self, response: Dict[str, Any]) -> Dict[str, Any]:
         result = self._to_dict(response)
-        if "has_claim_amendment" not in result:
-            raise ValueError("amendment_tracking 输出缺少 has_claim_amendment")
-        has_claim_amendment_raw = result.get("has_claim_amendment")
-        if not isinstance(has_claim_amendment_raw, bool):
-            raise ValueError("amendment_tracking 输出非法 has_claim_amendment，必须为布尔值")
-        has_claim_amendment = has_claim_amendment_raw
+        amendments_raw = result.get("substantive_amendments", [])
+        if not isinstance(amendments_raw, list):
+            raise ValueError("amendment_tracking 输出格式错误：substantive_amendments 不是列表")
 
-        if "added_features" not in result:
-            raise ValueError("amendment_tracking 输出缺少 added_features")
-        features_raw = result.get("added_features",[])
-        if not isinstance(features_raw, list):
-            raise ValueError("amendment_tracking 输出格式错误：added_features 不是列表")
+        amendments: List[Dict[str, Any]] = []
+        for item in amendments_raw:
+            amendment = self._to_dict(item)
+            amendment_id = str(amendment.get("amendment_id", "")).strip()
+            feature_text = str(amendment.get("feature_text", "")).strip()
+            feature_before_text = str(amendment.get("feature_before_text", "")).strip()
+            feature_after_text = str(amendment.get("feature_after_text", "")).strip() or feature_text
+            amendment_kind = str(amendment.get("amendment_kind", "")).strip()
+            content_origin = str(amendment.get("content_origin", "")).strip()
+            if not amendment_id or not feature_text:
+                raise ValueError("amendment_tracking 输出非法 substantive_amendments 项，缺少 amendment_id 或 feature_text")
+            if amendment_kind not in {"claim_feature_merge", "spec_feature_addition"}:
+                raise ValueError(f"amendment_tracking 输出非法 amendment_kind: {amendment_kind}")
+            if content_origin not in {"old_claim", "specification"}:
+                raise ValueError(f"amendment_tracking 输出非法 content_origin: {content_origin}")
 
-        features: List[Dict[str, Any]] =[]
-        for item in features_raw:
-            feature = self._to_dict(item)
-            feature_id = str(feature.get("feature_id", "")).strip()
-            feature_text = str(feature.get("feature_text", "")).strip()
-            feature_before_text = str(feature.get("feature_before_text", "")).strip()
-            feature_after_text = str(feature.get("feature_after_text", "")).strip()
-            if not feature_after_text:
-                feature_after_text = feature_text
-            if not feature_text:
-                feature_text = feature_after_text
-            if not feature_id or not feature_text:
-                raise ValueError("amendment_tracking 输出非法 added_features 项，缺少 feature_id 或 feature_text")
-
-            source_type = str(feature.get("source_type", "")).strip()
-            if source_type not in {"claim", "spec"}:
-                raise ValueError(f"amendment_tracking 输出非法 source_type: {source_type}")
-
-            target_claim_ids =[
+            target_claim_ids = [
                 str(claim_id).strip()
-                for claim_id in (feature.get("target_claim_ids", []) or[])
+                for claim_id in (amendment.get("target_claim_ids", []) or [])
                 if str(claim_id).strip()
             ]
-            source_claim_ids =[
+            if not target_claim_ids:
+                raise ValueError("amendment_tracking 输出非法 substantive_amendments 项，缺少 target_claim_ids")
+            source_claim_ids = [
                 str(claim_id).strip()
-                for claim_id in (feature.get("source_claim_ids", []) or[])
+                for claim_id in (amendment.get("source_claim_ids", []) or [])
                 if str(claim_id).strip()
             ]
+            if amendment_kind == "claim_feature_merge":
+                if content_origin != "old_claim":
+                    raise ValueError("claim_feature_merge 必须对应 content_origin=old_claim")
+                if not source_claim_ids:
+                    raise ValueError("claim_feature_merge 必须提供 source_claim_ids")
+            else:
+                if content_origin != "specification":
+                    raise ValueError("spec_feature_addition 必须对应 content_origin=specification")
+                source_claim_ids = []
 
-            # 自动容错修正：如果 LLM 判定为说明书增加，但错误地带上了来源权项编号，强制清空
-            if source_type == "spec" and source_claim_ids:
-                logger.warning(f"特征 {feature_id} 被标记为 'spec' 但 source_claim_ids 非空，已自动修正清除。")
-                source_claim_ids =[]
-
-            features.append({
-                "feature_id": feature_id,
-                "feature_text": feature_text,
-                "feature_before_text": feature_before_text,
-                "feature_after_text": feature_after_text,
-                "target_claim_ids": target_claim_ids,
-                "source_type": source_type,
-                "source_claim_ids": source_claim_ids,
-            })
-
-        if not has_claim_amendment and features:
-            raise ValueError("amendment_tracking 输出冲突：has_claim_amendment=false 但 added_features 非空")
+            amendments.append(
+                {
+                    "amendment_id": amendment_id,
+                    "target_claim_ids": target_claim_ids,
+                    "amendment_kind": amendment_kind,
+                    "content_origin": content_origin,
+                    "source_claim_ids": source_claim_ids,
+                    "feature_text": feature_text,
+                    "feature_before_text": feature_before_text,
+                    "feature_after_text": feature_after_text,
+                }
+            )
 
         return {
-            "has_claim_amendment": has_claim_amendment,
-            "added_features": features,
+            "substantive_amendments": amendments,
         }
 
-    def _build_structured_diff(
+    def _build_claim_alignments(
         self,
         old_claims: List[Dict[str, Any]],
         new_claims: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         old_map = {str(item.get("claim_id", "")).strip(): item for item in old_claims if str(item.get("claim_id", "")).strip()}
         new_map = {str(item.get("claim_id", "")).strip(): item for item in new_claims if str(item.get("claim_id", "")).strip()}
-
-        # 遍历所有的新权利要求ID，以涵盖纯新增的编号
-        new_ids_sorted = self._sort_claim_ids(list(new_map.keys()))
         old_ids_sorted = self._sort_claim_ids(list(old_map.keys()))
-        changed_claims_pairs: List[Dict[str, str]] =[]
-        claim_alignment_map: Dict[str, str] = {}
+        new_ids_sorted = self._sort_claim_ids(list(new_map.keys()))
+
+        alignments: List[Dict[str, Any]] = []
         used_old_claim_ids = set()
 
         for claim_id in new_ids_sorted:
             new_claim = self._to_dict(new_map.get(claim_id, {}))
             new_text = str(new_claim.get("claim_text", "")).strip()
-
-            # 提取对应的旧权项（如果是全新增加的编号，old_text 为空）
             old_claim = self._to_dict(old_map.get(claim_id, {}))
             old_text = str(old_claim.get("claim_text", "")).strip()
 
-            old_text_norm = self._normalize_text(old_text)
-            new_text_norm = self._normalize_text(new_text)
-
-            # 若文本完全一致，跳过（未修改）
-            if old_text_norm == new_text_norm:
-                if claim_id in old_map:
-                    claim_alignment_map[claim_id] = claim_id
+            if old_text:
+                if self._normalize_text(old_text) == self._normalize_text(new_text):
                     used_old_claim_ids.add(claim_id)
-                continue
+                    alignments.append(
+                        {
+                            "claim_id": claim_id,
+                            "old_claim_id": claim_id,
+                            "alignment_kind": "same_number_match",
+                            "reason": "unchanged",
+                        }
+                    )
+                    continue
+                if self._canonicalize_claim_text_for_alignment(old_text) == self._canonicalize_claim_text_for_alignment(new_text):
+                    used_old_claim_ids.add(claim_id)
+                    alignments.append(
+                        {
+                            "claim_id": claim_id,
+                            "old_claim_id": claim_id,
+                            "alignment_kind": "same_number_match",
+                            "reason": "unchanged",
+                        }
+                    )
+                    continue
 
             new_text_canonical = self._canonicalize_claim_text_for_alignment(new_text)
-            old_text_canonical = self._canonicalize_claim_text_for_alignment(old_text)
-
-            # 即使引用权号变动，只要同号权项的技术内容一致，也视为纯重编号/格式变化。
-            if old_text and old_text_canonical == new_text_canonical:
-                claim_alignment_map[claim_id] = claim_id
-                used_old_claim_ids.add(claim_id)
-                continue
-
-            # 处理“删除某权项导致后续权项整体前移，同时引用权号联动变化”的场景。
-            # 对新权项在其余旧权项中做一次“忽略引用权号后的唯一匹配”。
+            new_claim_type = str(new_claim.get("claim_type", "")).strip()
             canonical_candidates = [
                 old_id
                 for old_id in old_ids_sorted
@@ -308,40 +347,284 @@ class AmendmentTrackingNode:
                 and self._canonicalize_claim_text_for_alignment(
                     str(self._to_dict(old_map.get(old_id, {})).get("claim_text", "")).strip()
                 ) == new_text_canonical
+                and self._claim_alignment_candidate_is_compatible(
+                    new_claim_id=claim_id,
+                    new_claim=new_claim,
+                    old_claim_id=old_id,
+                    old_claim=self._to_dict(old_map.get(old_id, {})),
+                    require_parent_compatibility=(new_claim_type == "dependent"),
+                )
             ]
             if len(canonical_candidates) == 1:
                 matched_old_id = canonical_candidates[0]
-                claim_alignment_map[claim_id] = matched_old_id
                 used_old_claim_ids.add(matched_old_id)
+                alignments.append(
+                    {
+                        "claim_id": claim_id,
+                        "old_claim_id": matched_old_id,
+                        "alignment_kind": "renumbered_successor",
+                        "reason": "upstream_deleted",
+                    }
+                )
                 continue
 
-            claim_alignment_map[claim_id] = claim_id if claim_id in old_map else ""
-            changed_claims_pairs.append({
-                "claim_id": claim_id,
-                "old_text": old_text,  # 可能是空字符串
-                "new_text": new_text,
-            })
+            body_canonical_candidates = self._find_body_canonical_candidates(
+                claim_id=claim_id,
+                new_claim=new_claim,
+                old_map=old_map,
+                old_ids_sorted=old_ids_sorted,
+                used_old_claim_ids=used_old_claim_ids,
+            )
+            if len(body_canonical_candidates) == 1:
+                matched_old_id = body_canonical_candidates[0]
+                used_old_claim_ids.add(matched_old_id)
+                alignments.append(
+                    {
+                        "claim_id": claim_id,
+                        "old_claim_id": matched_old_id,
+                        "alignment_kind": "renumbered_successor",
+                        "reason": "upstream_deleted",
+                    }
+                )
+                continue
 
-        full_old_claims_context = {
-            str(claim.get("claim_id", "")): str(claim.get("claim_text", ""))
-            for claim in old_claims
-            if str(claim.get("claim_id", "")).strip()
-        }
-        
-        changed_claim_ids = [item["claim_id"] for item in changed_claims_pairs]
+            if old_text:
+                used_old_claim_ids.add(claim_id)
+                alignments.append(
+                    {
+                        "claim_id": claim_id,
+                        "old_claim_id": claim_id,
+                        "alignment_kind": "same_number_match",
+                        "reason": "unchanged",
+                    }
+                )
+                continue
 
-        return {
-            "summary": {
-                "old_claim_count": len(old_claims),
-                "new_claim_count": len(new_claims),
-                "changed_claim_count": len(changed_claims_pairs),
-            },
-            "has_changes": bool(changed_claims_pairs),
-            "changed_claim_ids": changed_claim_ids,
-            "changed_claims_pairs": changed_claims_pairs,
-            "claim_alignment_map": claim_alignment_map,
-            "full_old_claims_context": full_old_claims_context,
+            alignments.append(
+                {
+                    "claim_id": claim_id,
+                    "old_claim_id": "",
+                    "alignment_kind": "new_claim",
+                    "reason": "newly_added",
+                }
+            )
+
+        return alignments
+
+    def _find_body_canonical_candidates(
+        self,
+        claim_id: str,
+        new_claim: Dict[str, Any],
+        old_map: Dict[str, Dict[str, Any]],
+        old_ids_sorted: List[str],
+        used_old_claim_ids: set[str],
+    ) -> List[str]:
+        new_text_body = self._canonicalize_claim_body_for_alignment(new_claim.get("claim_text", ""))
+        if not new_text_body:
+            return []
+
+        candidates: List[str] = []
+        current_claim_key = self._claim_sort_key(claim_id)
+        for old_id in old_ids_sorted:
+            if old_id in used_old_claim_ids:
+                continue
+            if self._claim_sort_key(old_id) < current_claim_key:
+                continue
+            old_claim = self._to_dict(old_map.get(old_id, {}))
+            if not self._claim_alignment_candidate_is_compatible(
+                new_claim_id=claim_id,
+                new_claim=new_claim,
+                old_claim_id=old_id,
+                old_claim=old_claim,
+                require_parent_compatibility=True,
+            ):
+                continue
+            old_text_body = self._canonicalize_claim_body_for_alignment(old_claim.get("claim_text", ""))
+            if old_text_body and old_text_body == new_text_body:
+                candidates.append(old_id)
+        return candidates
+
+    def _claim_alignment_candidate_is_compatible(
+        self,
+        new_claim_id: str,
+        new_claim: Dict[str, Any],
+        old_claim_id: str,
+        old_claim: Dict[str, Any],
+        require_parent_compatibility: bool,
+    ) -> bool:
+        new_claim_type = str(new_claim.get("claim_type", "")).strip()
+        old_claim_type = str(old_claim.get("claim_type", "")).strip()
+        if new_claim_type and old_claim_type and new_claim_type != old_claim_type:
+            return False
+        if require_parent_compatibility and new_claim_type == "dependent" and old_claim_type == "dependent":
+            return self._dependent_parent_shift_compatible(
+                new_claim_id=new_claim_id,
+                new_parent_ids=self._normalize_claim_ids(new_claim.get("parent_claim_ids", [])),
+                old_claim_id=old_claim_id,
+                old_parent_ids=self._normalize_claim_ids(old_claim.get("parent_claim_ids", [])),
+            )
+        return True
+
+    def _build_changed_claim_pairs(
+        self,
+        old_claims: List[Dict[str, Any]],
+        new_claims: List[Dict[str, Any]],
+        claim_alignments: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        old_map = {str(item.get("claim_id", "")).strip(): item for item in old_claims if str(item.get("claim_id", "")).strip()}
+        new_map = {str(item.get("claim_id", "")).strip(): item for item in new_claims if str(item.get("claim_id", "")).strip()}
+        changed_claims_pairs: List[Dict[str, str]] = []
+
+        for alignment in claim_alignments:
+            claim_id = str(alignment.get("claim_id", "")).strip()
+            old_claim_id = str(alignment.get("old_claim_id", "")).strip()
+            new_text = str(self._to_dict(new_map.get(claim_id, {})).get("claim_text", "")).strip()
+            old_text = str(self._to_dict(old_map.get(old_claim_id, {})).get("claim_text", "")).strip()
+
+            if str(alignment.get("alignment_kind", "")).strip() == "new_claim":
+                changed_claims_pairs.append(
+                    {
+                        "claim_id": claim_id,
+                        "old_text": "",
+                        "new_text": new_text,
+                    }
+                )
+                continue
+
+            if self._normalize_text(old_text) == self._normalize_text(new_text):
+                continue
+            if self._canonicalize_claim_text_for_alignment(old_text) == self._canonicalize_claim_text_for_alignment(new_text):
+                continue
+            if self._canonicalize_claim_body_for_alignment(old_text) == self._canonicalize_claim_body_for_alignment(new_text):
+                continue
+
+            changed_claims_pairs.append(
+                {
+                    "claim_id": claim_id,
+                    "old_text": old_text,
+                    "new_text": new_text,
+                }
+            )
+
+        return changed_claims_pairs
+
+    def _refresh_alignment_reasons(
+        self,
+        claim_alignments: List[Dict[str, Any]],
+        old_claims: List[Dict[str, Any]],
+        substantive_amendments: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        old_ids_sorted = self._sort_claim_ids(
+            [str(item.get("claim_id", "")).strip() for item in old_claims if str(item.get("claim_id", "")).strip()]
+        )
+        matched_old_ids = {
+            str(item.get("old_claim_id", "")).strip()
+            for item in claim_alignments
+            if str(item.get("old_claim_id", "")).strip()
         }
+        merged_source_ids = {
+            claim_id
+            for amendment in substantive_amendments
+            if str(amendment.get("amendment_kind", "")).strip() == "claim_feature_merge"
+            for claim_id in self._normalize_claim_ids(amendment.get("source_claim_ids", []))
+        }
+
+        refreshed: List[Dict[str, Any]] = []
+        for alignment in claim_alignments:
+            item = dict(alignment)
+            old_claim_id = str(item.get("old_claim_id", "")).strip()
+            if not old_claim_id or str(item.get("reason", "")).strip() == "newly_added":
+                refreshed.append(item)
+                continue
+            inferred = self._infer_alignment_reason(old_claim_id, old_ids_sorted, matched_old_ids, merged_source_ids)
+            item["reason"] = inferred
+            if (
+                str(item.get("alignment_kind", "")).strip() == "same_number_match"
+                and old_claim_id == str(item.get("claim_id", "")).strip()
+                and inferred == "unchanged"
+            ):
+                item["reason"] = "unchanged"
+            refreshed.append(item)
+        return refreshed
+
+    def _infer_alignment_reason(
+        self,
+        old_claim_id: str,
+        old_ids_sorted: List[str],
+        matched_old_ids: set[str],
+        merged_source_ids: set[str],
+    ) -> str:
+        shifted_out_old_ids: List[str] = []
+        for candidate in old_ids_sorted:
+            if self._claim_sort_key(candidate) >= self._claim_sort_key(old_claim_id):
+                break
+            if candidate not in matched_old_ids:
+                shifted_out_old_ids.append(candidate)
+        if any(candidate in merged_source_ids for candidate in shifted_out_old_ids):
+            return "upstream_merged"
+        if shifted_out_old_ids:
+            return "upstream_deleted"
+        return "unchanged"
+
+    def _extract_structural_adjustments(
+        self,
+        old_claims: List[Dict[str, Any]],
+        new_claims: List[Dict[str, Any]],
+        claim_alignments: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        old_map = {str(item.get("claim_id", "")).strip(): item for item in old_claims if str(item.get("claim_id", "")).strip()}
+        new_map = {str(item.get("claim_id", "")).strip(): item for item in new_claims if str(item.get("claim_id", "")).strip()}
+        adjustments: List[Dict[str, Any]] = []
+        next_index = 1
+
+        for alignment in claim_alignments:
+            claim_id = str(alignment.get("claim_id", "")).strip()
+            old_claim_id = str(alignment.get("old_claim_id", "")).strip()
+            alignment_kind = str(alignment.get("alignment_kind", "")).strip()
+            reason = str(alignment.get("reason", "")).strip()
+            if not old_claim_id or reason not in {"upstream_deleted", "upstream_merged"}:
+                continue
+
+            new_claim = self._to_dict(new_map.get(claim_id, {}))
+            claim_type = str(new_claim.get("claim_type", "")).strip() or "unknown"
+            old_text = str(self._to_dict(old_map.get(old_claim_id, {})).get("claim_text", "")).strip()
+            new_text = str(new_claim.get("claim_text", "")).strip()
+            old_canonical = self._canonicalize_claim_text_for_alignment(old_text)
+            new_canonical = self._canonicalize_claim_text_for_alignment(new_text)
+            old_normalized = self._normalize_text(old_text)
+            new_normalized = self._normalize_text(new_text)
+
+            if alignment_kind == "renumbered_successor" and claim_id != old_claim_id:
+                adjustments.append(
+                    {
+                        "adjustment_id": f"S{next_index}",
+                        "claim_id": claim_id,
+                        "claim_type": claim_type,
+                        "old_claim_id": old_claim_id,
+                        "adjustment_kind": "renumbering",
+                        "reason": reason,
+                        "before_text": f"权利要求{old_claim_id}",
+                        "after_text": f"权利要求{claim_id}",
+                    }
+                )
+                next_index += 1
+
+            if old_text and old_canonical == new_canonical and old_normalized != new_normalized:
+                adjustments.append(
+                    {
+                        "adjustment_id": f"S{next_index}",
+                        "claim_id": claim_id,
+                        "claim_type": claim_type,
+                        "old_claim_id": old_claim_id,
+                        "adjustment_kind": "reference_adjustment",
+                        "reason": reason,
+                        "before_text": old_text,
+                        "after_text": new_text,
+                    }
+                )
+                next_index += 1
+
+        return adjustments
 
     def _normalize_text(self, text: Any) -> str:
         value = str(text or "")
@@ -363,29 +646,85 @@ class AmendmentTrackingNode:
         )
         return self._normalize_text(value)
 
-    def _sort_claim_ids(self, claim_ids: List[str]) -> List[str]:
-        def _key(value: str):
-            return (0, int(value)) if value.isdigit() else (1, value)
+    def _canonicalize_claim_body_for_alignment(self, text: Any) -> str:
+        value = str(text or "")
+        value = value.split("#", 1)[0].strip()
+        value = re.sub(
+            r"^\s*根据权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*(?:中任一项)?所述的?",
+            "",
+            value,
+        )
+        value = re.sub(r"^\s*[^，,。；;：:]*?(其中|其特征在于)[，,:：]?\s*", "", value)
+        return self._normalize_text(value)
 
-        return sorted([str(item).strip() for item in claim_ids if str(item).strip()], key=_key)
+    def _sort_claim_ids(self, claim_ids: List[str]) -> List[str]:
+        return sorted([str(item).strip() for item in claim_ids if str(item).strip()], key=self._claim_sort_key)
+
+    def _claim_sort_key(self, value: str):
+        return (0, int(value)) if str(value).isdigit() else (1, str(value))
+
+    def _normalize_claim_ids(self, value: Any) -> List[str]:
+        claim_ids: List[str] = []
+        candidates = value if isinstance(value, list) else [value]
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in re.split(r"[，,\s]+", text):
+                part = piece.strip()
+                if part and part.isdigit() and part not in claim_ids:
+                    claim_ids.append(part)
+        return claim_ids
+
+    def _dependent_parent_shift_compatible(
+        self,
+        new_claim_id: str,
+        new_parent_ids: List[str],
+        old_claim_id: str,
+        old_parent_ids: List[str],
+    ) -> bool:
+        if not new_parent_ids or not old_parent_ids:
+            return True
+        if not (str(new_claim_id).isdigit() and str(old_claim_id).isdigit()):
+            return set(new_parent_ids).issubset(set(old_parent_ids))
+
+        shift = int(old_claim_id) - int(new_claim_id)
+        if shift <= 0:
+            return False
+
+        old_parent_set = set(old_parent_ids)
+        for parent_id in new_parent_ids:
+            if not str(parent_id).isdigit():
+                if parent_id not in old_parent_set:
+                    return False
+                continue
+            parent_num = int(parent_id)
+            if str(parent_num) in old_parent_set:
+                continue
+            shifted_parent_id = str(parent_num + shift)
+            if shifted_parent_id not in old_parent_set:
+                return False
+        return True
 
     def _extract_original_patent_claims(self, prepared_materials: Dict[str, Any]) -> List[Dict[str, Any]]:
         original_patent = self._to_dict(prepared_materials.get("original_patent", {}))
         patent_data = self._to_dict(original_patent.get("data", {}))
-        claims_raw = patent_data.get("claims",[])
+        claims_raw = patent_data.get("claims", [])
         if not isinstance(claims_raw, list):
             return []
 
-        claims =[]
+        claims = []
         for idx, item in enumerate(claims_raw, start=1):
             claim = self._to_dict(item)
             claim_id = str(claim.get("claim_id", "")).strip() or str(idx)
-            claims.append({
-                "claim_id": claim_id,
-                "claim_text": str(claim.get("claim_text", "")).strip(),
-                "claim_type": str(claim.get("claim_type", "unknown")).strip() or "unknown",
-                "parent_claim_ids": self._sort_claim_ids(claim.get("parent_claim_ids", []) or []),
-            })
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "claim_text": str(claim.get("claim_text", "")).strip(),
+                    "claim_type": str(claim.get("claim_type", "unknown")).strip() or "unknown",
+                    "parent_claim_ids": self._sort_claim_ids(claim.get("parent_claim_ids", []) or []),
+                }
+            )
         return claims
 
     def _resolve_old_claims(

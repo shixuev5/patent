@@ -27,10 +27,10 @@ class AmendmentStrategyNode:
         try:
             cache = get_node_cache(self.config, "amendment_strategy")
             result = cache.run_step(
-                "build_amendment_strategy_v2",
+                "build_amendment_strategy_v3",
                 self._build_strategy,
                 self._state_get(state, "has_claim_amendment", False),
-                self._state_get(state, "added_features", []),
+                self._state_get(state, "substantive_amendments", []),
                 self._state_get(state, "prepared_materials", {}),
             )
 
@@ -52,11 +52,11 @@ class AmendmentStrategyNode:
 
         return updates
 
-    def _build_strategy(self, has_claim_amendment: bool, added_features, prepared_materials):
+    def _build_strategy(self, has_claim_amendment: bool, substantive_amendments, prepared_materials):
         if not has_claim_amendment:
             return {"reuse_oa_tasks": [], "topup_tasks": []}
 
-        features = [self._to_dict(item) for item in (added_features or [])]
+        amendments = [self._to_dict(item) for item in (substantive_amendments or [])]
         prepared = self._to_dict(prepared_materials)
         office_action = self._to_dict(prepared.get("office_action", {}))
         paragraphs = office_action.get("paragraphs", []) or []
@@ -72,12 +72,12 @@ class AmendmentStrategyNode:
         reuse_oa_tasks: List[Dict[str, Any]] = []
         topup_tasks: List[Dict[str, Any]] = []
 
-        for feature in features:
-            feature_id = str(feature.get("feature_id", "")).strip()
-            feature_text = str(feature.get("feature_text", "")).strip()
-            source_type = str(feature.get("source_type", "spec")).strip()
-            target_claim_ids = [str(item).strip() for item in feature.get("target_claim_ids", []) if str(item).strip()]
-            source_claim_ids = [str(item).strip() for item in feature.get("source_claim_ids", []) if str(item).strip()]
+        for amendment in amendments:
+            amendment_id = str(amendment.get("amendment_id", "")).strip()
+            feature_text = str(amendment.get("feature_text", "")).strip()
+            amendment_kind = str(amendment.get("amendment_kind", "")).strip()
+            target_claim_ids = [str(item).strip() for item in amendment.get("target_claim_ids", []) if str(item).strip()]
+            source_claim_ids = [str(item).strip() for item in amendment.get("source_claim_ids", []) if str(item).strip()]
 
             claim_candidates = []
             for item in (target_claim_ids or source_claim_ids or ["1"]):
@@ -85,15 +85,17 @@ class AmendmentStrategyNode:
                     claim_candidates.append(item)
 
             task = {
-                "task_id": feature_id,
+                "task_id": amendment_id,
                 "claim_ids": claim_candidates,
                 "feature_text": feature_text,
-                "source_type": source_type,
+                "amendment_kind": amendment_kind,
                 "source_claim_ids": source_claim_ids,
                 "target_claim_ids": target_claim_ids,
             }
 
-            if source_type == "claim" and any(claim in oa_claim_ids_covered for claim in (source_claim_ids or claim_candidates)):
+            if amendment_kind == "claim_feature_merge" and any(
+                claim in oa_claim_ids_covered for claim in (source_claim_ids or claim_candidates)
+            ):
                 reuse_oa_tasks.append(task)
             else:
                 topup_tasks.append(task)

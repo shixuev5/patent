@@ -18,7 +18,12 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     disputes = _item_get(response_dispute_section, "items", []) or []
     reply_items = _item_get(response_reply_section, "items", []) or []
     review_units = _item_get(claim_review_section, "items", []) or []
-    change_items = _item_get(amendment_section, "change_items", []) or []
+    substantive_change_groups = _item_get(amendment_section, "substantive_change_groups", []) or []
+    structural_adjustments = _item_get(amendment_section, "structural_adjustments", []) or []
+    claim_change_groups = _build_claim_change_groups(
+        substantive_change_groups=substantive_change_groups,
+        structural_adjustments=structural_adjustments,
+    )
 
     total_disputes = _as_int(_item_get(summary, "total_disputes", 0))
     assessed_disputes = _as_int(_item_get(summary, "assessed_disputes", 0))
@@ -149,7 +154,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## 3. 权利要求变更表")
     lines.append("")
-    lines.append(_render_change_items_table(change_items))
+    lines.append(_render_claim_change_groups_table(claim_change_groups))
     lines.append("")
 
     lines.append("## 4. 基于上一轮审查意见的重组评述")
@@ -265,44 +270,49 @@ def _cell(value: Any) -> str:
     return _html_text(value, default="-")
 
 
-def _change_source_tag_label(source_type: str) -> str:
-    source_type = str(source_type).strip()
-    if source_type == "claim":
-        return "权项上提"
-    if source_type == "spec":
-        return "说明书补入"
-    return "未知来源"
+def _change_source_tag_label(amendment_kind: str) -> str:
+    amendment_kind = str(amendment_kind).strip()
+    if amendment_kind == "claim_feature_merge":
+        return "从权特征并入"
+    if amendment_kind == "spec_feature_addition":
+        return "说明书记载补入"
+    return "未知修改"
 
 
-def _change_claims_html(target_claim_ids: Any, source_type: str, source_claim_ids: List[str]) -> str:
-    claim_label = _format_claim_ids(target_claim_ids) or "-"
-    source_type = str(source_type).strip()
-    if source_type == "claim":
-        source_label = _format_claim_ids(source_claim_ids) or "-"
-        main_text = f"{claim_label}（来源权利要求 {source_label}）"
-    else:
-        main_text = claim_label
-    tag_label = _change_source_tag_label(source_type)
+def _change_source_html(amendment_kind: str, source_claim_ids: List[str]) -> str:
+    amendment_kind = str(amendment_kind).strip()
+    tag_label = _change_source_tag_label(amendment_kind)
     tag_class = "oar-change-source-tag"
-    if source_type == "claim":
+    if amendment_kind == "claim_feature_merge":
         tag_class += " oar-change-source-tag-claim"
-    elif source_type == "spec":
+    elif amendment_kind == "spec_feature_addition":
         tag_class += " oar-change-source-tag-spec"
     else:
         tag_class += " oar-change-source-tag-unknown"
     return (
-        '<div class="oar-change-claims">'
-        f'<div class="oar-change-claims-main">{_html_text(main_text)}</div>'
+        '<div class="oar-change-claims oar-change-claims-compact">'
         f'<div><span class="{tag_class}">{_html_text(tag_label, default="未知来源")}</span></div>'
         "</div>"
     )
 
 
+def _change_item_title_html(amendment_kind: str, source_claim_ids: List[str]) -> str:
+    amendment_kind = str(amendment_kind).strip()
+    if amendment_kind == "claim_feature_merge":
+        source_label = _format_claim_ids(source_claim_ids) or "-"
+        title = f"来源权利要求 {source_label}"
+    elif amendment_kind == "spec_feature_addition":
+        title = "来源说明书"
+    else:
+        title = "来源待确认"
+    return f'<div class="oar-change-item-title">{_html_text(title)}</div>'
+
+
 def _verdict_label(verdict: str) -> str:
     mapping = {
-        "APPLICANT_CORRECT": "申请人正确",
-        "EXAMINER_CORRECT": "审查员正确",
-        "INCONCLUSIVE": "结论不确定",
+        "APPLICANT_CORRECT": "支持申请人",
+        "EXAMINER_CORRECT": "支持审查员",
+        "INCONCLUSIVE": "暂不确定",
     }
     return mapping.get(str(verdict).strip(), "未核查")
 
@@ -351,36 +361,161 @@ def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_bloc
     return "".join(parts)
 
 
-def _render_change_items_table(change_items: List[Any]) -> str:
+def _claim_group_label_html(claim_id: Any, claim_type: Any) -> str:
+    claim_label = _format_claim_ids(claim_id) or "-"
+    claim_type_text = str(claim_type or "").strip()
+    if claim_type_text == "independent":
+        label = f"{claim_label}（独权）"
+    elif claim_type_text == "dependent":
+        label = f"{claim_label}（从权）"
+    else:
+        label = str(claim_label)
+    return f'<div class="oar-change-claims-main">{_html_text(label)}</div>'
+
+
+def _change_item_html(item: Any) -> str:
+    item_type = str(_item_get(item, "item_type", "substantive_amendment")).strip()
+    if item_type == "structural_adjustment":
+        return _structural_adjustment_item_html(item)
+
+    feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
+    feature_before_text = str(_item_get(item, "feature_before_text", "")).strip()
+    feature_after_text = str(_item_get(item, "feature_after_text", "")).strip() or feature_text
+    source_claim_ids = _item_get(item, "source_claim_ids", []) or []
+    amendment_kind = str(_item_get(item, "amendment_kind", "")).strip()
+    source_title = _change_item_title_html(amendment_kind, source_claim_ids)
+    source_tag = _change_source_html(amendment_kind, source_claim_ids)
+    feature_html, _ = _change_feature_diff_html(feature_before_text, feature_after_text, feature_text)
+    return (
+        '<div class="oar-change-item-card">'
+        f'<div class="oar-change-item-head">{source_title}{source_tag}</div>'
+        '<div class="oar-change-item-body">'
+        '<div class="oar-change-item-label">变更内容</div>'
+        f'{feature_html}'
+        "</div>"
+        "</div>"
+    )
+
+
+def _change_ai_badge_html(item: Any) -> str:
+    assessment = _item_get(item, "assessment", {}) or {}
+    verdict = str(_item_get(assessment, "verdict", "")).strip()
+    return _verdict_badge_html(_verdict_label(verdict), verdict)
+
+
+def _change_ai_detail_html(item: Any) -> str:
+    assessment = _item_get(item, "assessment", {}) or {}
+    verdict = str(_item_get(assessment, "verdict", "")).strip()
+    ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="-")
+    final_review_reason = _text_or_default(_item_get(item, "final_review_reason", ""), default="-")
+    evidence_html = _render_ai_basis_html({"evidence": _item_get(item, "evidence", []) or []})
+    return (
+        '<div class="oar-change-ai-panel">'
+        f'<div class="oar-change-ai-verdict">{_change_ai_badge_html(item) if verdict else ""}</div>'
+        '<div class="oar-change-ai-detail-stack">'
+        f'{_detail_block_html("AI理由：", _html_text(ai_reason), extra_class="oar-change-ai-card")}'
+        f'{_detail_block_html("AI依据：", evidence_html, extra_class="oar-detail-block-evidence oar-change-ai-card")}'
+        f'{_detail_block_html("最终审查结论：", _html_text(final_review_reason), extra_class="oar-change-ai-card")}'
+        "</div>"
+        "</div>"
+    )
+
+
+def _change_unassessed_html() -> str:
+    return ""
+
+
+def _build_claim_change_groups(
+    substantive_change_groups: List[Any],
+    structural_adjustments: List[Any],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for group in substantive_change_groups or []:
+        claim_id = str(_item_get(group, "claim_id", "")).strip()
+        if not claim_id:
+            continue
+        bucket = grouped.setdefault(
+            claim_id,
+            {
+                "claim_id": claim_id,
+                "claim_type": str(_item_get(group, "claim_type", "")).strip() or "unknown",
+                "items": [],
+            },
+        )
+        if str(bucket.get("claim_type", "")).strip() == "unknown":
+            bucket["claim_type"] = str(_item_get(group, "claim_type", "")).strip() or "unknown"
+        for item in _item_get(group, "items", []) or []:
+            item_dict = dict(_item_get({"item": item}, "item", {}) if isinstance(item, dict) else item)
+            if not item_dict:
+                item_dict = _to_dict(item)
+            item_dict["item_type"] = "substantive_amendment"
+            bucket["items"].append(item_dict)
+
+    for item in structural_adjustments or []:
+        claim_id = str(_item_get(item, "claim_id", "")).strip()
+        if not claim_id:
+            continue
+        bucket = grouped.setdefault(
+            claim_id,
+            {
+                "claim_id": claim_id,
+                "claim_type": "unknown",
+                "items": [],
+            },
+        )
+        item_dict = dict(item) if isinstance(item, dict) else _to_dict(item)
+        item_dict["item_type"] = "structural_adjustment"
+        item_dict["has_ai_assessment"] = False
+        item_claim_type = str(item_dict.get("claim_type", "")).strip() or "unknown"
+        if str(bucket.get("claim_type", "")).strip() == "unknown" and item_claim_type != "unknown":
+            bucket["claim_type"] = item_claim_type
+        bucket["items"].append(item_dict)
+
+    result: List[Dict[str, Any]] = []
+    for claim_id in sorted(grouped.keys(), key=_claim_sort_key):
+        bucket = grouped[claim_id]
+        bucket["items"] = sorted(bucket["items"], key=_claim_change_item_sort_key)
+        result.append(bucket)
+    return result
+
+
+def _claim_change_item_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
+    item_type = str(item.get("item_type", "substantive_amendment")).strip()
+    if item_type == "structural_adjustment":
+        adjustment_kind = str(item.get("adjustment_kind", "")).strip()
+        rank = 2 if adjustment_kind == "reference_adjustment" else 1
+        return (rank, str(item.get("adjustment_id", "")).strip())
+
+    amendment_kind = str(item.get("amendment_kind", "")).strip()
+    source_rank = 1 if amendment_kind == "claim_feature_merge" else 2
+    return (source_rank, str(item.get("amendment_id", "")).strip())
+
+
+def _render_claim_change_groups_table(claim_change_groups: List[Any]) -> str:
     lines = [
-        '<table class="oar-layered-table oar-layered-table-overview">',
+        '<table class="oar-layered-table oar-layered-table-overview oar-claim-change-table">',
         "<colgroup>",
-        '<col style="width: 40px;">',
-        '<col style="width: 176px;">',
+        '<col style="width: 80px;">',
         "<col>",
-        '<col style="width: 132px;">',
         "</colgroup>",
         "<thead>",
         "<tr>",
-        '<th class="oar-col-index">序号</th>',
-        '<th class="oar-col-claims">目标权利要求</th>',
-        '<th class="oar-col-feature">变更特征</th>',
-        '<th class="oar-col-verdict">AI判断</th>',
+        '<th class="oar-col-claims">权利要求</th>',
+        '<th class="oar-col-feature">变更项</th>',
         "</tr>",
         "</thead>",
     ]
-    if not change_items:
+    if not claim_change_groups:
         lines.extend(
             [
                 "<tbody>",
                 "<tr>",
-                '<td class="oar-index-cell">1</td>',
-                '<td class="oar-layered-cell" colspan="3">',
-                _layered_summary_html(
-                    "oar-layered-grid-change",
-                    [_html_text("-"), _html_text("无权利要求变更"), ""],
-                    [],
-                ),
+                '<td class="oar-layered-cell">',
+                _html_text("-"),
+                "</td>",
+                '<td class="oar-layered-cell">',
+                _html_text("无权利要求变更"),
                 "</td>",
                 "</tr>",
                 "</tbody>",
@@ -389,62 +524,105 @@ def _render_change_items_table(change_items: List[Any]) -> str:
         )
         return "\n".join(lines)
 
-    for index, item in enumerate(change_items, start=1):
-        feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
-        feature_before_text = str(_item_get(item, "feature_before_text", "")).strip()
-        feature_after_text = str(_item_get(item, "feature_after_text", "")).strip() or feature_text
-        source_claim_ids = _item_get(item, "source_claim_ids", []) or []
-        source_type = str(_item_get(item, "source_type", "")).strip()
-        claims_html = _change_claims_html(_item_get(item, "target_claim_ids", []), source_type, source_claim_ids)
-        feature_html, inferred_contains_added_text = _change_feature_diff_html(
-            feature_before_text,
-            feature_after_text,
-            feature_text,
-        )
-        contains_added_text_raw = _item_get(item, "contains_added_text", None)
-        contains_added_text = (
-            inferred_contains_added_text
-            if contains_added_text_raw is None
-            else bool(contains_added_text_raw)
-        )
-        assessment = _item_get(item, "assessment", {}) or {}
-        verdict = str(_item_get(assessment, "verdict", "")).strip()
-        show_ai = contains_added_text and verdict in {"APPLICANT_CORRECT", "EXAMINER_CORRECT", "INCONCLUSIVE"}
-        detail_blocks: List[str] = []
-        if show_ai:
-            ai_reason = _text_or_default(_item_get(assessment, "reasoning", ""), default="-")
-            final_review_reason = _text_or_default(_item_get(item, "final_review_reason", ""), default="-")
-            evidence_html = _render_ai_basis_html({"evidence": _item_get(item, "evidence", []) or []})
-            detail_blocks = [
-                _detail_text_html("AI理由：", ai_reason),
-                _detail_block_html("AI依据：", evidence_html, extra_class="oar-detail-block-evidence"),
-                _detail_text_html("最终审查结论：", final_review_reason),
-            ]
-
+    for group in claim_change_groups:
+        claim_id = _item_get(group, "claim_id", "")
+        claim_type = _item_get(group, "claim_type", "unknown")
+        items = _item_get(group, "items", []) or []
+        feature_blocks = [_change_item_html(item) for item in items]
+        ai_items = [item for item in items if bool(_item_get(item, "has_ai_assessment", False))]
+        ai_detail_blocks = [_change_ai_detail_html(item) for item in ai_items]
         lines.extend(
             [
                 '<tbody class="oar-layered-group">',
                 "<tr>",
-                f'<td class="oar-index-cell">{index}</td>',
-                '<td class="oar-layered-cell" colspan="3">',
-                _layered_summary_html(
-                    "oar-layered-grid-change",
-                    [
-                        claims_html,
-                        feature_html,
-                        _verdict_badge_html(_verdict_label(verdict), verdict)
-                        if show_ai
-                        else _verdict_badge_html("无需AI判断", "UNASSESSED"),
-                    ],
-                    detail_blocks,
-                ),
+                f'<td class="oar-layered-cell oar-claim-change-cell-claim" rowspan="{2 if ai_items else 1}">',
+                _claim_group_label_html(claim_id, claim_type),
+                "</td>",
+                '<td class="oar-layered-cell oar-claim-change-cell-feature">',
+                "".join(feature_blocks),
+                _change_unassessed_html() if not ai_items else "",
                 "</td>",
                 "</tr>",
+            ]
+        )
+        if ai_items:
+            lines.extend(
+                [
+                    "<tr>",
+                    '<td class="oar-layered-cell oar-claim-change-cell-detail">',
+                    '<div class="oar-grid-detail">',
+                    "".join(ai_detail_blocks),
+                    "</div>",
+                    "</td>",
+                    "</tr>",
+                ]
+            )
+        lines.extend(
+            [
                 "</tbody>",
             ]
         )
     lines.append("</table>")
     return "\n".join(lines)
+
+
+def _structural_adjustment_label(adjustment_kind: str) -> str:
+    adjustment_kind = str(adjustment_kind).strip()
+    if adjustment_kind == "renumbering":
+        return "编号顺延"
+    if adjustment_kind == "reference_adjustment":
+        return "引用关系调整"
+    return "结构调整"
+
+
+def _structural_adjustment_reason(reason: str) -> str:
+    reason = str(reason).strip()
+    if reason == "upstream_merged":
+        return "因上游权项并入触发"
+    if reason == "upstream_deleted":
+        return "因上游权项删除触发"
+    return "触发原因待确认"
+
+
+def _structural_adjustment_sentence(item: Any) -> str:
+    claim_id = str(_item_get(item, "claim_id", "")).strip() or "-"
+    old_claim_id = str(_item_get(item, "old_claim_id", "")).strip() or "-"
+    adjustment_kind = str(_item_get(item, "adjustment_kind", "")).strip()
+    reason = str(_item_get(item, "reason", "")).strip()
+
+    if adjustment_kind == "renumbering":
+        if reason == "upstream_merged":
+            return f"旧权利要求{old_claim_id}因上游权项并入，顺延为现权利要求{claim_id}。"
+        if reason == "upstream_deleted":
+            return f"旧权利要求{old_claim_id}因上游权项删除，顺延为现权利要求{claim_id}。"
+        return f"旧权利要求{old_claim_id}顺延为现权利要求{claim_id}。"
+
+    if adjustment_kind == "reference_adjustment":
+        if reason == "upstream_merged":
+            return f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，其引用关系已随上游权项并入同步调整。"
+        if reason == "upstream_deleted":
+            return f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，其引用关系已随上游权项删除同步调整。"
+        return f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，其引用关系已同步调整。"
+
+    return f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，结构关系已调整。"
+
+
+def _structural_adjustment_item_html(item: Any) -> str:
+    old_claim_id = str(_item_get(item, "old_claim_id", "")).strip() or "-"
+    adjustment_kind = _structural_adjustment_label(_item_get(item, "adjustment_kind", ""))
+    summary = f"对应旧权利要求 {old_claim_id}"
+    sentence = _structural_adjustment_sentence(item)
+    return (
+        '<div class="oar-change-item-card oar-structural-adjustment-item">'
+        '<div class="oar-change-item-head">'
+        f'<div class="oar-change-item-title">{_html_text(summary)}</div>'
+        f'<div class="oar-change-claims oar-change-claims-compact"><div><span class="oar-change-source-tag oar-change-source-tag-unknown">{_html_text(adjustment_kind)}</span></div></div>'
+        "</div>"
+        '<div class="oar-change-item-body">'
+        f'<div class="oar-change-item-label">{_html_text(sentence)}</div>'
+        "</div>"
+        "</div>"
+    )
 
 
 def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: str) -> Tuple[str, bool]:
@@ -494,17 +672,34 @@ def _tokenize_change_text(text: Any) -> List[str]:
     return re.findall(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value)
 
 
+def _to_dict(item: Any) -> Dict[str, Any]:
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    if hasattr(item, "dict"):
+        return item.dict()
+    return {}
+
+
+def _claim_sort_key(value: Any) -> Tuple[int, str]:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return (0, f"{int(text):09d}")
+    return (1, text)
+
+
 def _review_unit_type_label(unit_type: str) -> str:
     mapping = {
-        "evidence_restructured": "独权重组评述",
-        "supplemented_new": "独权补充评述",
-        "dependent_group_restructured": "从权组重组评述",
+        "evidence_restructured": "独权重组",
+        "supplemented_new": "补充评述",
+        "dependent_group_restructured": "从权组重组",
     }
     return mapping.get(str(unit_type).strip(), "重组评述")
 
 
 def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
-    items: List[str] = []
+    snapshots: List[tuple[str, str]] = []
     for item in claim_snapshots or []:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
         claim_before_text = str(_item_get(item, "claim_before_text", "")).strip()
@@ -512,21 +707,24 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
         if not claim_id:
             continue
         claim_diff_html, _ = _change_feature_diff_html(claim_before_text, claim_text, claim_text)
-        items.extend(
-            [
-                '<div class="oar-claim-snapshot-item">',
-                f'<div class="oar-claim-snapshot-head">{_escape_text(f"权利要求{claim_id}")}</div>',
-                f'<div class="oar-claim-snapshot-body">{claim_diff_html}</div>',
-                "</div>",
-            ]
-        )
+        snapshots.append((claim_id, claim_diff_html))
+
+    items: List[str] = []
+    show_snapshot_head = len(snapshots) > 1
+    for claim_id, claim_diff_html in snapshots:
+        parts = ['<div class="oar-claim-snapshot-item">']
+        if show_snapshot_head:
+            parts.append(f'<div class="oar-claim-snapshot-head">{_escape_text(f"权利要求{claim_id}")}</div>')
+        parts.append(f'<div class="oar-claim-snapshot-body">{claim_diff_html}</div>')
+        parts.append("</div>")
+        items.extend(parts)
 
     if not items:
         items.append('<div class="oar-claim-snapshot-empty">未提取到权利要求文本。</div>')
 
     return (
         '<div class="oar-opinion-paragraph oar-opinion-paragraph-claims">'
-        f'<div class="oar-opinion-label">{_escape_text("当前权利要求文本：")}</div>'
+        f'<div class="oar-opinion-label">{_escape_text("权利要求文本：")}</div>'
         f'<div class="oar-claim-snapshot-list">{"".join(items)}</div>'
         "</div>"
     )
@@ -557,7 +755,6 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
             "、".join(f"权利要求{claim_id}" for claim_id in visible_claim_ids)
             or _text_or_default(_item_get(item, "title", ""), default="重组评述")
         )
-        claim_label = ",".join(visible_claim_ids) or "-"
         unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
         claim_snapshots = [
             snapshot
@@ -575,7 +772,7 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
         blocks.extend(
             [
                 '<div class="oar-opinion-block">',
-                f'<div class="oar-opinion-title">{_html_text(f"{title}｜当前权利要求 {claim_label}｜{unit_type}", default="")}</div>',
+                f'<div class="oar-opinion-title">{_html_text(f"{title}｜{unit_type}", default="")}</div>',
                 claim_text_html,
                 _argument_paragraph_html_with_body("重组评述：", review_diff_html),
                 "</div>",

@@ -19,7 +19,9 @@ def test_analysis_parallel_runs_amendment_and_dispute_branches_in_parallel(monke
             "claims_old_structured": [],
             "claims_effective_structured": [],
             "has_claim_amendment": False,
-            "added_features": [],
+            "claim_alignments": [],
+            "substantive_amendments": [],
+            "structural_adjustments": [],
         }
 
     def _fake_dispute_extraction(self, state):

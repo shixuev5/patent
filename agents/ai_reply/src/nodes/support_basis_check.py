@@ -31,9 +31,9 @@ class SupportBasisCheckNode:
         try:
             cache = get_node_cache(self.config, "support_basis_check")
             result = cache.run_step(
-                "check_support_basis_v4",
+                "check_support_basis_v5",
                 self._check_support_basis,
-                self._state_get(state, "added_features", []),
+                self._state_get(state, "substantive_amendments", []),
                 self._state_get(state, "prepared_materials", {}),
             )
 
@@ -57,12 +57,12 @@ class SupportBasisCheckNode:
 
         return updates
 
-    def _check_support_basis(self, added_features, prepared_materials):
-        features = [self._to_dict(item) for item in (added_features or [])]
+    def _check_support_basis(self, substantive_amendments, prepared_materials):
+        features = [self._to_dict(item) for item in (substantive_amendments or [])]
         spec_features = [
             feature
             for feature in features
-            if str(feature.get("source_type", "")).strip().lower() == "spec"
+            if str(feature.get("amendment_kind", "")).strip() == "spec_feature_addition"
         ]
         if not spec_features:
             return {
@@ -80,7 +80,7 @@ class SupportBasisCheckNode:
         if not specification_context:
             findings = [
                 {
-                    "feature_id": str(feature.get("feature_id", "")).strip(),
+                    "amendment_id": str(feature.get("amendment_id", "")).strip(),
                     "feature_text": str(feature.get("feature_text", "")).strip(),
                     "support_found": False,
                     "support_basis": "",
@@ -105,18 +105,18 @@ class SupportBasisCheckNode:
         )
         normalized = self._normalize_result(response)
         expected_ids = {
-            str(feature.get("feature_id", "")).strip()
+            str(feature.get("amendment_id", "")).strip()
             for feature in spec_features
-            if str(feature.get("feature_id", "")).strip()
+            if str(feature.get("amendment_id", "")).strip()
         }
         actual_ids = {
-            str(item.get("feature_id", "")).strip()
+            str(item.get("amendment_id", "")).strip()
             for item in normalized.get("support_findings", [])
-            if str(item.get("feature_id", "")).strip()
+            if str(item.get("amendment_id", "")).strip()
         }
         if actual_ids != expected_ids:
             raise ValueError(
-                "support_basis_check 输出 feature_id 集合不匹配，"
+                "support_basis_check 输出 amendment_id 集合不匹配，"
                 f"expected={sorted(expected_ids)}, actual={sorted(actual_ids)}"
             )
         return normalized
@@ -145,7 +145,7 @@ class SupportBasisCheckNode:
 {
   "support_findings":[
     {
-      "feature_id": "New_F1",
+      "amendment_id": "A1",
       "feature_text": "新增特征原文",
       "reasoning": "简要分析过程：说明书对应段落是怎么描述的？是否属于同义替换或直接推导？是否存在特征剥离或上位概括等超范围情形？",
       "support_found": true或false,
@@ -167,9 +167,9 @@ class SupportBasisCheckNode:
     ) -> str:
         simplified_features =[
             {
-                "feature_id": str(item.get("feature_id", "")).strip(),
+                "amendment_id": str(item.get("amendment_id", "")).strip(),
                 "feature_text": str(item.get("feature_text", "")).strip(),
-                "source_type": str(item.get("source_type", "")).strip(),
+                "amendment_kind": str(item.get("amendment_kind", "")).strip(),
             }
             for item in features
         ]
@@ -207,7 +207,7 @@ class SupportBasisCheckNode:
         findings: List[Dict[str, Any]] = []
         for item in findings_raw:
             finding = self._to_dict(item)
-            feature_id = str(finding.get("feature_id", "")).strip()
+            amendment_id = str(finding.get("amendment_id", "")).strip()
             feature_text = str(finding.get("feature_text", "")).strip()
             support_found_raw = finding.get("support_found")
             if not isinstance(support_found_raw, bool):
@@ -217,11 +217,11 @@ class SupportBasisCheckNode:
             risk = str(finding.get("risk", "")).strip()
             reasoning = str(finding.get("reasoning", "")).strip()
 
-            if not feature_id or not feature_text:
-                raise ValueError("support_basis_check 输出非法 support_findings 项，缺少 feature_id 或 feature_text")
+            if not amendment_id or not feature_text:
+                raise ValueError("support_basis_check 输出非法 support_findings 项，缺少 amendment_id 或 feature_text")
 
             findings.append({
-                "feature_id": feature_id,
+                "amendment_id": amendment_id,
                 "feature_text": feature_text,
                 "reasoning": reasoning,
                 "support_found": support_found,

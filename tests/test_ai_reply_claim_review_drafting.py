@@ -60,23 +60,25 @@ def test_claim_review_drafting_aggregates_independent_card_and_residual_group(mo
                 ]
             }
         },
-        added_features=[
+        substantive_amendments=[
             {
-                "feature_id": "F2",
+                "amendment_id": "F2",
                 "feature_text": "将旧权2并入权1的新增特征",
                 "feature_before_text": "",
                 "feature_after_text": "将旧权2并入权1的新增特征",
                 "target_claim_ids": ["1"],
-                "source_type": "claim",
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
                 "source_claim_ids": ["2"],
             },
             {
-                "feature_id": "F1",
+                "amendment_id": "F1",
                 "feature_text": "权利要求1说明书新增特征",
                 "feature_before_text": "",
                 "feature_after_text": "权利要求1说明书新增特征",
                 "target_claim_ids": ["1"],
-                "source_type": "spec",
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
                 "source_claim_ids": [],
             },
         ],
@@ -138,7 +140,7 @@ def test_claim_review_drafting_aggregates_independent_card_and_residual_group(mo
     ]
     assert independent_unit["source_summary"] == {
         "merged_source_claim_ids": ["2"],
-        "added_feature_ids": ["F2", "F1"],
+        "amendment_ids": ["F2", "F1"],
         "response_dispute_ids": ["DSP_1"],
     }
 
@@ -153,7 +155,7 @@ def test_claim_review_drafting_aggregates_independent_card_and_residual_group(mo
     ]
     assert residual_unit["source_summary"] == {
         "merged_source_claim_ids": [],
-        "added_feature_ids": [],
+        "amendment_ids": [],
         "response_dispute_ids": [],
     }
 
@@ -184,7 +186,7 @@ def test_claim_review_drafting_drops_deleted_oa_units_without_replacement(monkey
                 ]
             }
         },
-        added_features=[],
+        substantive_amendments=[],
         disputes=[],
         evidence_assessments=[],
         drafted_rejection_reasons={},
@@ -217,14 +219,15 @@ def test_claim_review_drafting_builds_supplemented_independent_card_without_prim
             {"claim_id": "1", "claim_text": "新权1", "claim_type": "independent", "parent_claim_ids": []},
         ],
         prepared_materials={"office_action": {"paragraphs": []}},
-        added_features=[
+        substantive_amendments=[
             {
-                "feature_id": "F1",
+                "amendment_id": "F1",
                 "feature_text": "权利要求1新增特征",
                 "feature_before_text": "",
                 "feature_after_text": "权利要求1新增特征",
                 "target_claim_ids": ["1"],
-                "source_type": "spec",
+                "amendment_kind": "spec_feature_addition",
+                "content_origin": "specification",
                 "source_claim_ids": [],
             },
         ],
@@ -263,7 +266,7 @@ def test_claim_review_drafting_builds_supplemented_independent_card_without_prim
             ],
             "source_summary": {
                 "merged_source_claim_ids": [],
-                "added_feature_ids": ["F1"],
+                "amendment_ids": ["F1"],
                 "response_dispute_ids": [],
             },
         }
@@ -296,7 +299,7 @@ def test_claim_review_drafting_keeps_direct_primary_oa_out_of_llm(monkeypatch) -
                 ]
             }
         },
-        added_features=[],
+        substantive_amendments=[],
         disputes=[],
         evidence_assessments=[],
         drafted_rejection_reasons={},
@@ -317,7 +320,7 @@ def test_claim_review_drafting_keeps_direct_primary_oa_out_of_llm(monkeypatch) -
             ],
             "source_summary": {
                 "merged_source_claim_ids": [],
-                "added_feature_ids": [],
+                "amendment_ids": [],
                 "response_dispute_ids": [],
             },
         }
@@ -395,16 +398,16 @@ def test_claim_review_drafting_reorders_renumbered_claims_by_effective_claim_ord
                 ]
             }
         },
-        added_features=[
-            {"feature_id": "F1", "feature_text": "旧权2并入现权1", "feature_before_text": "", "feature_after_text": "旧权2并入现权1", "target_claim_ids": ["1"], "source_type": "claim", "source_claim_ids": ["2"]},
-            {"feature_id": "F2", "feature_text": "旧权3并入现权1", "feature_before_text": "", "feature_after_text": "旧权3并入现权1", "target_claim_ids": ["1"], "source_type": "claim", "source_claim_ids": ["3"]},
-            {"feature_id": "F3", "feature_text": "旧权4并入现权2", "feature_before_text": "", "feature_after_text": "旧权4并入现权2", "target_claim_ids": ["2"], "source_type": "claim", "source_claim_ids": ["4"]},
-            {"feature_id": "F4", "feature_text": "旧权5并入现权3", "feature_before_text": "", "feature_after_text": "旧权5并入现权3", "target_claim_ids": ["3"], "source_type": "claim", "source_claim_ids": ["5"]},
-            {"feature_id": "F5", "feature_text": "旧权6并入现权4", "feature_before_text": "", "feature_after_text": "旧权6并入现权4", "target_claim_ids": ["4"], "source_type": "claim", "source_claim_ids": ["6"]},
-            {"feature_id": "F6", "feature_text": "旧权7并入现权5", "feature_before_text": "", "feature_after_text": "旧权7并入现权5", "target_claim_ids": ["5"], "source_type": "claim", "source_claim_ids": ["7"]},
-            {"feature_id": "F7", "feature_text": "旧权8并入现权6", "feature_before_text": "", "feature_after_text": "旧权8并入现权6", "target_claim_ids": ["6"], "source_type": "claim", "source_claim_ids": ["8"]},
-            {"feature_id": "F8", "feature_text": "旧权9并入现权7", "feature_before_text": "", "feature_after_text": "旧权9并入现权7", "target_claim_ids": ["7"], "source_type": "claim", "source_claim_ids": ["9"]},
-            {"feature_id": "F9", "feature_text": "旧权10并入现权8", "feature_before_text": "", "feature_after_text": "旧权10并入现权8", "target_claim_ids": ["8"], "source_type": "claim", "source_claim_ids": ["10"]},
+        substantive_amendments=[
+            {"amendment_id": "F1", "feature_text": "旧权2并入现权1", "feature_before_text": "", "feature_after_text": "旧权2并入现权1", "target_claim_ids": ["1"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["2"]},
+            {"amendment_id": "F2", "feature_text": "旧权3并入现权1", "feature_before_text": "", "feature_after_text": "旧权3并入现权1", "target_claim_ids": ["1"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["3"]},
+            {"amendment_id": "F3", "feature_text": "旧权4并入现权2", "feature_before_text": "", "feature_after_text": "旧权4并入现权2", "target_claim_ids": ["2"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["4"]},
+            {"amendment_id": "F4", "feature_text": "旧权5并入现权3", "feature_before_text": "", "feature_after_text": "旧权5并入现权3", "target_claim_ids": ["3"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["5"]},
+            {"amendment_id": "F5", "feature_text": "旧权6并入现权4", "feature_before_text": "", "feature_after_text": "旧权6并入现权4", "target_claim_ids": ["4"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["6"]},
+            {"amendment_id": "F6", "feature_text": "旧权7并入现权5", "feature_before_text": "", "feature_after_text": "旧权7并入现权5", "target_claim_ids": ["5"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["7"]},
+            {"amendment_id": "F7", "feature_text": "旧权8并入现权6", "feature_before_text": "", "feature_after_text": "旧权8并入现权6", "target_claim_ids": ["6"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["8"]},
+            {"amendment_id": "F8", "feature_text": "旧权9并入现权7", "feature_before_text": "", "feature_after_text": "旧权9并入现权7", "target_claim_ids": ["7"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["9"]},
+            {"amendment_id": "F9", "feature_text": "旧权10并入现权8", "feature_before_text": "", "feature_after_text": "旧权10并入现权8", "target_claim_ids": ["8"], "amendment_kind": "claim_feature_merge", "content_origin": "old_claim", "source_claim_ids": ["10"]},
         ],
         disputes=[],
         evidence_assessments=[],
@@ -494,31 +497,32 @@ def test_claim_review_drafting_uses_alignment_map_for_pure_renumbered_residual_u
                 ]
             }
         },
-        added_features=[
+        substantive_amendments=[
             {
-                "feature_id": "F1",
+                "amendment_id": "F1",
                 "feature_text": "旧权5并入现权1",
                 "feature_before_text": "",
                 "feature_after_text": "旧权5并入现权1",
                 "target_claim_ids": ["1"],
-                "source_type": "claim",
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
                 "source_claim_ids": ["5"],
             },
         ],
         disputes=[],
         evidence_assessments=[],
         drafted_rejection_reasons={},
-        claim_alignment_map={
-            "1": "1",
-            "2": "2",
-            "3": "3",
-            "4": "4",
-            "5": "6",
-            "6": "7",
-            "7": "8",
-            "8": "9",
-            "9": "10",
-        },
+        claim_alignments=[
+            {"claim_id": "1", "old_claim_id": "1", "alignment_kind": "same_number_match", "reason": "unchanged"},
+            {"claim_id": "2", "old_claim_id": "2", "alignment_kind": "same_number_match", "reason": "unchanged"},
+            {"claim_id": "3", "old_claim_id": "3", "alignment_kind": "same_number_match", "reason": "unchanged"},
+            {"claim_id": "4", "old_claim_id": "4", "alignment_kind": "same_number_match", "reason": "unchanged"},
+            {"claim_id": "5", "old_claim_id": "6", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "6", "old_claim_id": "7", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "7", "old_claim_id": "8", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "8", "old_claim_id": "9", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "9", "old_claim_id": "10", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+        ],
     )
 
     assert [item["anchor_claim_id"] for item in result] == ["1", "2", "3", "4", "5", "6", "7", "8", "9"]

@@ -34,7 +34,7 @@ class FinalReportRenderNode:
 
         try:
             cache = get_node_cache(self.config, "final_report_render")
-            artifacts = cache.run_step("render_final_report_v3", self._render_report, state)
+            artifacts = cache.run_step("render_final_report_v9", self._render_report, state)
 
             updates["final_report_artifacts"] = artifacts
             updates["status"] = "completed"

@@ -95,11 +95,11 @@ flowchart TD
    - 将专利对比文件数据与非专文件全文映射到统一数据结构。
 
 4. `amendment_tracking`
-   - 对比新旧权利要求，抽取新增特征（`added_features`）。
-   - 标记来源：`claim`（上提）或 `spec`（说明书特征）。
+   - 对比新旧权利要求，拆分输出 `claim_alignments`、`substantive_amendments`、`structural_adjustments`。
+   - 其中实质修改区分为 `claim_feature_merge`（从权特征并入）和 `spec_feature_addition`（说明书记载补入）。
 
 5. `support_basis_check`
-   - 仅针对 `source_type=spec` 的新增特征核查是否有原说明书记载。
+   - 仅针对 `amendment_kind=spec_feature_addition` 的实质修改核查是否有原说明书记载。
    - 输出 `support_findings`、`added_matter_risk`、`early_rejection_reason`。
 
 6. `amendment_strategy`
@@ -281,7 +281,8 @@ flowchart TD
    - 输出争议总数、已核查数、裁决分布、反驳类型分布、申请人答复要点数
 2. 生成 `amendment_section`
    - 包含修改风险概览
-   - 包含 `change_items`，逐项展示新增/修改特征的 AI 评判、理由、证据与最终审查结论
+   - 包含 `substantive_change_groups` 与 `structural_adjustments`
+   - 第 3 部分拆分展示“实质修改”和“结构调整”
 3. 生成 `claim_review_section`
    - 基于 `claim_review_drafting` 的结果，按当前生效权利要求逐条输出正式评述
 4. 生成 `response_dispute_section`

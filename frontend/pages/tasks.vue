@@ -51,7 +51,6 @@
           @click="mode = 'ai_reply'"
         >
           AI 答复
-          <span class="ml-1.5 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium leading-none text-slate-500">Beta</span>
         </button>
       </div>
 
@@ -315,7 +314,7 @@ const modeDescription = computed(() => {
 const modeTitle = computed(() => {
   if (mode.value === 'patent_analysis') return 'AI 分析'
   if (mode.value === 'ai_review') return 'AI 审查'
-  return 'AI 答复（Beta）'
+  return 'AI 答复'
 })
 
 const isSupportedDoc = (file: File): boolean => {
