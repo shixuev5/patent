@@ -422,9 +422,11 @@ async def get_account_dashboard(
     work_week_analysis = _count_created(current_user.user_id, week_start, week_end, TaskType.PATENT_ANALYSIS.value)
     work_week_review = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REVIEW.value)
     work_week_reply = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REPLY.value)
+    work_week_search = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_SEARCH.value)
     work_month_analysis = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.PATENT_ANALYSIS.value)
     work_month_review = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REVIEW.value)
     work_month_reply = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REPLY.value)
+    work_month_search = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_SEARCH.value)
 
     created_rows = task_manager.storage.aggregate_user_created_tasks_daily(
         current_user.user_id,
@@ -434,34 +436,38 @@ async def get_account_dashboard(
     daily_map: Dict[str, Dict[str, int]] = {}
     for row in created_rows:
         key = row["day"]
-        item = daily_map.setdefault(key, {"analysis": 0, "review": 0, "reply": 0})
+        item = daily_map.setdefault(key, {"analysis": 0, "review": 0, "reply": 0, "search": 0})
         if row["task_type"] == TaskType.PATENT_ANALYSIS.value:
             item["analysis"] += int(row["count"])
         elif row["task_type"] == TaskType.AI_REVIEW.value:
             item["review"] += int(row["count"])
         elif row["task_type"] == TaskType.AI_REPLY.value:
             item["reply"] += int(row["count"])
+        elif row["task_type"] == TaskType.AI_SEARCH.value:
+            item["search"] += int(row["count"])
 
     weekly_bucket = [
-        {"analysis": 0, "review": 0, "reply": 0},
-        {"analysis": 0, "review": 0, "reply": 0},
-        {"analysis": 0, "review": 0, "reply": 0},
-        {"analysis": 0, "review": 0, "reply": 0},
+        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
+        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
+        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
+        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
     ]
     daily_series: List[DailyActivityPoint] = []
     for day_item in _iter_dates(month_start_day, month_end_day):
         key = day_item.isoformat()
-        row = daily_map.get(key, {"analysis": 0, "review": 0, "reply": 0})
+        row = daily_map.get(key, {"analysis": 0, "review": 0, "reply": 0, "search": 0})
         analysis = int(row["analysis"])
         review = int(row["review"])
         reply = int(row["reply"])
-        total = analysis + review + reply
+        search = int(row["search"])
+        total = analysis + review + reply + search
         daily_series.append(
             DailyActivityPoint(
                 date=key,
                 analysisCreated=analysis,
                 reviewCreated=review,
                 replyCreated=reply,
+                searchCreated=search,
                 totalCreated=total,
             )
         )
@@ -470,19 +476,22 @@ async def get_account_dashboard(
         weekly_bucket[week_index]["analysis"] += analysis
         weekly_bucket[week_index]["review"] += review
         weekly_bucket[week_index]["reply"] += reply
+        weekly_bucket[week_index]["search"] += search
 
     weekly_series: List[WeeklyActivityPoint] = []
     for idx in range(4):
         analysis = weekly_bucket[idx]["analysis"]
         review = weekly_bucket[idx]["review"]
         reply = weekly_bucket[idx]["reply"]
+        search = weekly_bucket[idx]["search"]
         weekly_series.append(
             WeeklyActivityPoint(
                 week=f"第{idx + 1}周",
                 analysisCreated=analysis,
                 reviewCreated=review,
                 replyCreated=reply,
-                totalCreated=analysis + review + reply,
+                searchCreated=search,
+                totalCreated=analysis + review + reply + search,
             )
         )
 
@@ -490,13 +499,15 @@ async def get_account_dashboard(
         analysisCount=work_week_analysis,
         reviewCount=work_week_review,
         replyCount=work_week_reply,
-        totalCount=work_week_analysis + work_week_review + work_week_reply,
+        searchCount=work_week_search,
+        totalCount=work_week_analysis + work_week_review + work_week_reply + work_week_search,
     )
     work_month = TaskWindowCounts(
         analysisCount=work_month_analysis,
         reviewCount=work_month_review,
         replyCount=work_month_reply,
-        totalCount=work_month_analysis + work_month_review + work_month_reply,
+        searchCount=work_month_search,
+        totalCount=work_month_analysis + work_month_review + work_month_reply + work_month_search,
     )
     month_target, month_target_source = _resolve_effective_month_target(
         current_user.user_id,

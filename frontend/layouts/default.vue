@@ -13,6 +13,7 @@
         <nav class="hidden items-center justify-center gap-1 md:flex">
           <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">首页</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">AI 任务</NuxtLink>
+          <NuxtLink to="/search" :class="navClass(route.path.startsWith('/search'))">AI 检索</NuxtLink>
           <NuxtLink to="/account" :class="navClass(route.path.startsWith('/account'))">个人空间</NuxtLink>
           <NuxtLink v-if="showAdminEntry" to="/admin/usage" :class="navClass(route.path.startsWith('/admin/usage'))">管理统计</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
@@ -53,9 +54,16 @@
                 欢迎，{{ displayUserName }}
               </p>
               <NuxtLink
+                to="/search"
+                class="mt-1 block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                @click="closeMobileMenu"
+              >
+                AI 检索
+              </NuxtLink>
+              <NuxtLink
                 to="/account"
                 class="block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-                :class="hasAuthingEnabled && authStore.isLoggedIn ? 'mt-1 border-t border-slate-100 pt-2.5' : ''"
+                :class="hasAuthingEnabled && authStore.isLoggedIn ? 'mt-1 border-t border-slate-100 pt-2.5' : 'mt-1'"
                 @click="closeMobileMenu"
               >
                 个人空间

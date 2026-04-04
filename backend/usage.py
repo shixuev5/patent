@@ -21,13 +21,15 @@ TASK_POINT_COST_UNITS = {
     TaskType.PATENT_ANALYSIS.value: 2,  # 1.0
     TaskType.AI_REVIEW.value: 2,  # 1.0
     TaskType.AI_REPLY.value: 4,  # 2.0
+    TaskType.AI_SEARCH.value: 3,  # 1.5
 }
 ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.AI_REVIEW.value,
     TaskType.AI_REPLY.value,
+    TaskType.AI_SEARCH.value,
 }
-POINT_OCCUPIED_STATUSES = ("pending", "processing", "completed")
+POINT_OCCUPIED_STATUSES = ("pending", "processing", "paused", "completed")
 
 
 def _parse_point_limit_units(value: Optional[str], fallback_points: float) -> int:
@@ -113,13 +115,16 @@ def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResp
     analysis_count = _today_created_count(owner_id, TaskType.PATENT_ANALYSIS.value)
     review_count = _today_created_count(owner_id, TaskType.AI_REVIEW.value)
     reply_count = _today_created_count(owner_id, TaskType.AI_REPLY.value)
+    search_count = _today_created_count(owner_id, TaskType.AI_SEARCH.value)
     analysis_occupied_count = _today_point_occupied_count(owner_id, TaskType.PATENT_ANALYSIS.value)
     review_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REVIEW.value)
     reply_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REPLY.value)
+    search_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_SEARCH.value)
     used_units = (
         analysis_occupied_count * TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]
         + review_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]
         + reply_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_REPLY.value]
+        + search_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_SEARCH.value]
     )
     remaining_units = max(0, daily_limit_units - used_units)
 
@@ -138,12 +143,14 @@ def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResp
             "patentAnalysis": _units_to_points(TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]),
             "aiReview": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]),
             "officeActionReply": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REPLY.value]),
+            "aiSearch": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_SEARCH.value]),
         },
         createdToday={
             "analysisCount": analysis_count,
             "reviewCount": review_count,
             "replyCount": reply_count,
-            "totalCount": analysis_count + review_count + reply_count,
+            "searchCount": search_count,
+            "totalCount": analysis_count + review_count + reply_count + search_count,
         },
         requestedTaskType=requested_task_type,
         requestedTaskPoints=_units_to_points(requested_task_units) if requested_task_units is not None else None,

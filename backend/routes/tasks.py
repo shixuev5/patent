@@ -51,6 +51,11 @@ ALLOWED_TASK_TYPES = {
     TaskType.AI_REVIEW.value,
     TaskType.AI_REPLY.value,
 }
+VISIBLE_TASK_TYPES = {
+    TaskType.PATENT_ANALYSIS.value,
+    TaskType.AI_REVIEW.value,
+    TaskType.AI_REPLY.value,
+}
 
 NODE_LABELS = {
     "document_processing": "正在解析文档",
@@ -1529,7 +1534,11 @@ async def run_ai_reply_task(
 @router.get("/api/tasks")
 async def list_tasks(current_user: CurrentUser = Depends(_get_current_user)):
     """获取用户的任务列表"""
-    tasks = task_manager.list_tasks(owner_id=current_user.user_id)
+    tasks = [
+        task
+        for task in task_manager.list_tasks(owner_id=current_user.user_id)
+        if _task_type(task) in VISIBLE_TASK_TYPES
+    ]
     return {
         "tasks": [_task_to_response(task) for task in tasks],
         "total": len(tasks),

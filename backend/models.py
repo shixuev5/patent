@@ -82,6 +82,7 @@ class WeeklyActivityPoint(BaseModel):
     analysisCreated: int
     reviewCreated: int
     replyCreated: int
+    searchCreated: int
     totalCreated: int
 
 
@@ -89,6 +90,7 @@ class TaskWindowCounts(BaseModel):
     analysisCount: int
     reviewCount: int
     replyCount: int
+    searchCount: int
     totalCount: int
 
 
@@ -97,6 +99,7 @@ class DailyActivityPoint(BaseModel):
     analysisCreated: int
     reviewCreated: int
     replyCreated: int
+    searchCreated: int
     totalCreated: int
 
 
@@ -129,12 +132,14 @@ class TaskPointCost(BaseModel):
     patentAnalysis: float
     aiReview: float
     officeActionReply: float
+    aiSearch: float
 
 
 class UsageCreatedToday(BaseModel):
     analysisCount: int
     reviewCount: int
     replyCount: int
+    searchCount: int
     totalCount: int
 
 

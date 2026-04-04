@@ -21,6 +21,7 @@ from backend.time_utils import (
     utc_to_local_day,
 )
 from config import settings
+from .ai_search_support import AI_SEARCH_STORAGE_SQL
 from .models import AccountMonthTarget, RefreshSession, Task, TaskStatus, TaskType, User
 
 
@@ -255,7 +256,7 @@ class SQLiteTaskStorage:
     CREATE INDEX IF NOT EXISTS idx_refresh_sessions_owner_id ON refresh_sessions(owner_id);
     CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires_at ON refresh_sessions(expires_at);
     CREATE INDEX IF NOT EXISTS idx_refresh_sessions_revoked_at ON refresh_sessions(revoked_at);
-    """
+    """ + AI_SEARCH_STORAGE_SQL
 
     def __init__(self, db_path: Union[str, Path, None] = None):
         if db_path is None:
@@ -383,6 +384,14 @@ class SQLiteTaskStorage:
     @staticmethod
     def _encode_metadata(value: Any) -> Any:
         if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    @staticmethod
+    def _encode_json_value(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list, tuple)):
             return json.dumps(value, ensure_ascii=False)
         return value
 
@@ -2194,3 +2203,655 @@ class SQLiteTaskStorage:
                 key=lambda item: (item[0][0], item[0][1], item[0][2]),
             )
         ]
+
+    def _row_to_ai_search_message(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "message_id": row["message_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]) if row["plan_version"] is not None else None,
+            "role": row["role"],
+            "kind": row["kind"],
+            "content": row["content"],
+            "stream_status": row["stream_status"],
+            "question_id": row["question_id"],
+            "metadata": self._parse_metadata(row["metadata"]),
+            "created_at": row["created_at"],
+        }
+
+    def create_ai_search_message(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "message_id": str(record.get("message_id", "")).strip(),
+            "task_id": str(record.get("task_id", "")).strip(),
+            "plan_version": int(record["plan_version"]) if record.get("plan_version") is not None else None,
+            "role": str(record.get("role", "")).strip(),
+            "kind": str(record.get("kind", "")).strip(),
+            "content": record.get("content"),
+            "stream_status": str(record.get("stream_status", "")).strip() or None,
+            "question_id": str(record.get("question_id", "")).strip() or None,
+            "metadata": self._encode_json_value(record.get("metadata") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["message_id"] or not payload["task_id"] or not payload["role"] or not payload["kind"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_messages (
+                    message_id, task_id, plan_version, role, kind, content,
+                    stream_status, question_id, metadata, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["message_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["role"],
+                    payload["kind"],
+                    payload["content"],
+                    payload["stream_status"],
+                    payload["question_id"],
+                    payload["metadata"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_ai_search_messages(self, task_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_messages
+                WHERE task_id = ?
+                ORDER BY created_at ASC, message_id ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_ai_search_message(row) for row in rows]
+
+    def _row_to_ai_search_plan(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "status": row["status"],
+            "objective": row["objective"],
+            "search_elements_json": self._parse_metadata(row["search_elements_json"]),
+            "plan_json": self._parse_metadata(row["plan_json"]),
+            "created_at": row["created_at"],
+            "confirmed_at": row["confirmed_at"],
+            "superseded_at": row["superseded_at"],
+        }
+
+    def get_next_ai_search_plan_version(self, task_id: str) -> int:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(plan_version), 0) + 1 AS next_version FROM ai_search_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return int(row["next_version"] or 1) if row else 1
+
+    def create_ai_search_plan(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "task_id": str(record.get("task_id", "")).strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "status": str(record.get("status", "")).strip(),
+            "objective": record.get("objective"),
+            "search_elements_json": self._encode_json_value(record.get("search_elements_json") or {}),
+            "plan_json": self._encode_json_value(record.get("plan_json") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+            "confirmed_at": str(record.get("confirmed_at") or "").strip() or None,
+            "superseded_at": str(record.get("superseded_at") or "").strip() or None,
+        }
+        if not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_plans (
+                    task_id, plan_version, status, objective, search_elements_json,
+                    plan_json, created_at, confirmed_at, superseded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["status"],
+                    payload["objective"],
+                    payload["search_elements_json"],
+                    payload["plan_json"],
+                    payload["created_at"],
+                    payload["confirmed_at"],
+                    payload["superseded_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_ai_search_plan(self, task_id: str, plan_version: int, **kwargs) -> bool:
+        allowed_fields = {
+            "status",
+            "objective",
+            "search_elements_json",
+            "plan_json",
+            "confirmed_at",
+            "superseded_at",
+        }
+        updates = {key: kwargs[key] for key in kwargs if key in allowed_fields}
+        if not updates:
+            return False
+        for key in list(updates.keys()):
+            if key.endswith("_json"):
+                updates[key] = self._encode_json_value(updates[key])
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [task_id, int(plan_version)]
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE ai_search_plans SET {set_clause} WHERE task_id = ? AND plan_version = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_ai_search_plan(self, task_id: str, plan_version: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        if plan_version is None:
+            sql = """
+                SELECT *
+                FROM ai_search_plans
+                WHERE task_id = ?
+                ORDER BY plan_version DESC
+                LIMIT 1
+            """
+            params = (task_id,)
+        else:
+            sql = "SELECT * FROM ai_search_plans WHERE task_id = ? AND plan_version = ?"
+            params = (task_id, int(plan_version))
+        with self._get_connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._row_to_ai_search_plan(row) if row else None
+
+    def list_ai_search_plans(self, task_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_plans
+                WHERE task_id = ?
+                ORDER BY plan_version DESC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_ai_search_plan(row) for row in rows]
+
+    def _row_to_ai_search_document(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "document_id": row["document_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "pn": row["pn"],
+            "title": row["title"],
+            "abstract": row["abstract"],
+            "ipc_cpc_json": self._parse_metadata(row["ipc_cpc_json"]),
+            "source_batches_json": self._parse_metadata(row["source_batches_json"]),
+            "stage": row["stage"],
+            "score": float(row["score"]) if row["score"] is not None else None,
+            "agent_reason": row["agent_reason"],
+            "key_passages_json": self._parse_metadata(row["key_passages_json"]),
+            "user_pinned": bool(int(row["user_pinned"] or 0)),
+            "user_removed": bool(int(row["user_removed"] or 0)),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def upsert_ai_search_documents(self, records: List[Dict[str, Any]]) -> int:
+        if not records:
+            return 0
+        now = utc_now_z()
+        values = []
+        for record in records:
+            document_id = str(record.get("document_id", "")).strip()
+            task_id = str(record.get("task_id", "")).strip()
+            plan_version = int(record.get("plan_version") or 0)
+            stage = str(record.get("stage", "")).strip()
+            if not document_id or not task_id or plan_version <= 0 or not stage:
+                continue
+            values.append(
+                (
+                    document_id,
+                    task_id,
+                    plan_version,
+                    record.get("pn"),
+                    record.get("title"),
+                    record.get("abstract"),
+                    self._encode_json_value(record.get("ipc_cpc_json") or []),
+                    self._encode_json_value(record.get("source_batches_json") or []),
+                    stage,
+                    record.get("score"),
+                    record.get("agent_reason"),
+                    self._encode_json_value(record.get("key_passages_json") or []),
+                    1 if record.get("user_pinned") else 0,
+                    1 if record.get("user_removed") else 0,
+                    str(record.get("created_at") or now),
+                    str(record.get("updated_at") or now),
+                )
+            )
+        if not values:
+            return 0
+        with self._get_connection() as conn:
+            cursor = conn.executemany(
+                """
+                INSERT INTO ai_search_documents (
+                    document_id, task_id, plan_version, pn, title, abstract,
+                    ipc_cpc_json, source_batches_json, stage, score, agent_reason,
+                    key_passages_json, user_pinned, user_removed, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    pn = excluded.pn,
+                    title = excluded.title,
+                    abstract = excluded.abstract,
+                    ipc_cpc_json = excluded.ipc_cpc_json,
+                    source_batches_json = excluded.source_batches_json,
+                    stage = excluded.stage,
+                    score = excluded.score,
+                    agent_reason = excluded.agent_reason,
+                    key_passages_json = excluded.key_passages_json,
+                    user_pinned = excluded.user_pinned,
+                    user_removed = excluded.user_removed,
+                    created_at = COALESCE(ai_search_documents.created_at, excluded.created_at),
+                    updated_at = excluded.updated_at
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_ai_search_documents(
+        self,
+        task_id: str,
+        plan_version: int,
+        stages: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        where = ["task_id = ?", "plan_version = ?"]
+        params: List[Any] = [task_id, int(plan_version)]
+        if stages:
+            placeholders = ", ".join("?" for _ in stages)
+            where.append(f"stage IN ({placeholders})")
+            params.extend(stages)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM ai_search_documents
+                WHERE {' AND '.join(where)}
+                ORDER BY
+                    CASE stage
+                        WHEN 'selected' THEN 0
+                        WHEN 'shortlisted' THEN 1
+                        WHEN 'candidate' THEN 2
+                        WHEN 'rejected' THEN 3
+                        ELSE 9
+                    END,
+                    COALESCE(score, 0) DESC,
+                    updated_at DESC
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_ai_search_document(row) for row in rows]
+
+    def update_ai_search_document(self, task_id: str, plan_version: int, document_id: str, **kwargs) -> bool:
+        allowed_fields = {
+            "stage",
+            "score",
+            "agent_reason",
+            "key_passages_json",
+            "user_pinned",
+            "user_removed",
+            "title",
+            "abstract",
+            "source_batches_json",
+            "ipc_cpc_json",
+            "updated_at",
+        }
+        updates = {key: kwargs[key] for key in kwargs if key in allowed_fields}
+        if not updates:
+            return False
+        updates.setdefault("updated_at", utc_now_z())
+        for key in list(updates.keys()):
+            if key.endswith("_json"):
+                updates[key] = self._encode_json_value(updates[key])
+            elif key in {"user_pinned", "user_removed"}:
+                updates[key] = 1 if updates[key] else 0
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [task_id, int(plan_version), document_id]
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE ai_search_documents
+                SET {set_clause}
+                WHERE task_id = ? AND plan_version = ? AND document_id = ?
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def _row_to_ai_search_feature_table(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "feature_table_id": row["feature_table_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "status": row["status"],
+            "table_json": self._parse_metadata(row["table_json"]),
+            "summary_markdown": row["summary_markdown"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_ai_search_feature_table(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "feature_table_id": str(record.get("feature_table_id", "")).strip(),
+            "task_id": str(record.get("task_id", "")).strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "status": str(record.get("status", "")).strip(),
+            "table_json": self._encode_json_value(record.get("table_json") or []),
+            "summary_markdown": record.get("summary_markdown"),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+            "updated_at": str(record.get("updated_at") or utc_now_z()),
+        }
+        if not payload["feature_table_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_feature_tables (
+                    feature_table_id, task_id, plan_version, status, table_json,
+                    summary_markdown, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["feature_table_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["status"],
+                    payload["table_json"],
+                    payload["summary_markdown"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_ai_search_feature_tables(self, task_id: str, plan_version: int) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_feature_tables
+                WHERE task_id = ? AND plan_version = ?
+                ORDER BY updated_at DESC, feature_table_id DESC
+                """,
+                (task_id, int(plan_version)),
+            ).fetchall()
+        return [self._row_to_ai_search_feature_table(row) for row in rows]
+
+    def get_ai_search_feature_table(
+        self,
+        task_id: str,
+        plan_version: int,
+        feature_table_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if feature_table_id:
+            sql = """
+                SELECT *
+                FROM ai_search_feature_tables
+                WHERE task_id = ? AND plan_version = ? AND feature_table_id = ?
+                LIMIT 1
+            """
+            params = (task_id, int(plan_version), feature_table_id)
+        else:
+            sql = """
+                SELECT *
+                FROM ai_search_feature_tables
+                WHERE task_id = ? AND plan_version = ?
+                ORDER BY updated_at DESC, feature_table_id DESC
+                LIMIT 1
+            """
+            params = (task_id, int(plan_version))
+        with self._get_connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._row_to_ai_search_feature_table(row) if row else None
+
+    def _row_to_ai_search_checkpoint(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "thread_id": row["thread_id"],
+            "checkpoint_ns": row["checkpoint_ns"],
+            "checkpoint_id": row["checkpoint_id"],
+            "checkpoint_json": row["checkpoint_json"],
+            "metadata_json": row["metadata_json"],
+            "parent_checkpoint_id": row["parent_checkpoint_id"],
+            "created_at": row["created_at"],
+        }
+
+    def put_ai_search_checkpoint(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "thread_id": str(record.get("thread_id", "")).strip(),
+            "checkpoint_ns": str(record.get("checkpoint_ns", "")).strip(),
+            "checkpoint_id": str(record.get("checkpoint_id", "")).strip(),
+            "checkpoint_json": str(record.get("checkpoint_json", "")).strip(),
+            "metadata_json": str(record.get("metadata_json", "")).strip(),
+            "parent_checkpoint_id": str(record.get("parent_checkpoint_id", "")).strip() or None,
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["thread_id"] or not payload["checkpoint_id"] or not payload["checkpoint_json"] or not payload["metadata_json"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_checkpoints (
+                    thread_id, checkpoint_ns, checkpoint_id, checkpoint_json,
+                    metadata_json, parent_checkpoint_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(thread_id, checkpoint_ns, checkpoint_id) DO UPDATE SET
+                    checkpoint_json = excluded.checkpoint_json,
+                    metadata_json = excluded.metadata_json,
+                    parent_checkpoint_id = excluded.parent_checkpoint_id,
+                    created_at = COALESCE(ai_search_checkpoints.created_at, excluded.created_at)
+                """,
+                (
+                    payload["thread_id"],
+                    payload["checkpoint_ns"],
+                    payload["checkpoint_id"],
+                    payload["checkpoint_json"],
+                    payload["metadata_json"],
+                    payload["parent_checkpoint_id"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_ai_search_checkpoint(
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if checkpoint_id:
+            sql = """
+                SELECT *
+                FROM ai_search_checkpoints
+                WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
+                LIMIT 1
+            """
+            params = (thread_id, checkpoint_ns, checkpoint_id)
+        else:
+            sql = """
+                SELECT *
+                FROM ai_search_checkpoints
+                WHERE thread_id = ? AND checkpoint_ns = ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params = (thread_id, checkpoint_ns)
+        with self._get_connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._row_to_ai_search_checkpoint(row) if row else None
+
+    def list_ai_search_checkpoints(
+        self,
+        thread_id: str,
+        checkpoint_ns: Optional[str] = None,
+        checkpoint_id: Optional[str] = None,
+        before_checkpoint_id: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        where = ["thread_id = ?"]
+        params: List[Any] = [thread_id]
+        if checkpoint_ns is not None:
+            where.append("checkpoint_ns = ?")
+            params.append(checkpoint_ns)
+        if checkpoint_id is not None:
+            where.append("checkpoint_id = ?")
+            params.append(checkpoint_id)
+        if before_checkpoint_id:
+            where.append("checkpoint_id < ?")
+            params.append(before_checkpoint_id)
+        sql = f"""
+            SELECT *
+            FROM ai_search_checkpoints
+            WHERE {' AND '.join(where)}
+            ORDER BY checkpoint_id DESC
+        """
+        if limit is not None:
+            sql += f" LIMIT {max(1, int(limit))}"
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_ai_search_checkpoint(row) for row in rows]
+
+    def put_ai_search_checkpoint_blobs(self, records: List[Dict[str, Any]]) -> int:
+        if not records:
+            return 0
+        values = []
+        for record in records:
+            thread_id = str(record.get("thread_id", "")).strip()
+            checkpoint_ns = str(record.get("checkpoint_ns", "")).strip()
+            channel = str(record.get("channel", "")).strip()
+            version = str(record.get("version", "")).strip()
+            typed_value_json = str(record.get("typed_value_json", "")).strip()
+            if not thread_id or not channel or not version or not typed_value_json:
+                continue
+            values.append((thread_id, checkpoint_ns, channel, version, typed_value_json))
+        if not values:
+            return 0
+        with self._get_connection() as conn:
+            cursor = conn.executemany(
+                """
+                INSERT INTO ai_search_checkpoint_blobs (
+                    thread_id, checkpoint_ns, channel, version, typed_value_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(thread_id, checkpoint_ns, channel, version) DO UPDATE SET
+                    typed_value_json = excluded.typed_value_json
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def get_ai_search_checkpoint_blobs(
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        versions: Dict[str, Any],
+    ) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        if not versions:
+            return result
+        with self._get_connection() as conn:
+            for channel, version in versions.items():
+                row = conn.execute(
+                    """
+                    SELECT typed_value_json
+                    FROM ai_search_checkpoint_blobs
+                    WHERE thread_id = ? AND checkpoint_ns = ? AND channel = ? AND version = ?
+                    LIMIT 1
+                    """,
+                    (thread_id, checkpoint_ns, channel, str(version)),
+                ).fetchone()
+                if row:
+                    result[str(channel)] = row["typed_value_json"]
+        return result
+
+    def put_ai_search_checkpoint_writes(self, records: List[Dict[str, Any]]) -> int:
+        if not records:
+            return 0
+        values = []
+        for record in records:
+            thread_id = str(record.get("thread_id", "")).strip()
+            checkpoint_ns = str(record.get("checkpoint_ns", "")).strip()
+            checkpoint_id = str(record.get("checkpoint_id", "")).strip()
+            task_id = str(record.get("task_id", "")).strip()
+            channel = str(record.get("channel", "")).strip()
+            typed_value_json = str(record.get("typed_value_json", "")).strip()
+            write_idx = int(record.get("write_idx") or 0)
+            task_path = str(record.get("task_path", "")).strip()
+            if not thread_id or not checkpoint_id or not task_id or not channel or not typed_value_json:
+                continue
+            values.append((thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx, channel, typed_value_json, task_path))
+        if not values:
+            return 0
+        with self._get_connection() as conn:
+            cursor = conn.executemany(
+                """
+                INSERT OR IGNORE INTO ai_search_checkpoint_writes (
+                    thread_id, checkpoint_ns, checkpoint_id, task_id, write_idx,
+                    channel, typed_value_json, task_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_ai_search_checkpoint_writes(
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+    ) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_checkpoint_writes
+                WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
+                ORDER BY task_id ASC, write_idx ASC
+                """,
+                (thread_id, checkpoint_ns, checkpoint_id),
+            ).fetchall()
+        return [
+            {
+                "thread_id": row["thread_id"],
+                "checkpoint_ns": row["checkpoint_ns"],
+                "checkpoint_id": row["checkpoint_id"],
+                "task_id": row["task_id"],
+                "write_idx": int(row["write_idx"]),
+                "channel": row["channel"],
+                "typed_value_json": row["typed_value_json"],
+                "task_path": row["task_path"],
+            }
+            for row in rows
+        ]
+
+    def delete_ai_search_thread_checkpoints(self, thread_id: str) -> bool:
+        with self._get_connection() as conn:
+            changed = 0
+            for table_name in (
+                "ai_search_checkpoints",
+                "ai_search_checkpoint_writes",
+                "ai_search_checkpoint_blobs",
+            ):
+                cursor = conn.execute(f"DELETE FROM {table_name} WHERE thread_id = ?", (thread_id,))
+                changed += cursor.rowcount
+            conn.commit()
+            return changed > 0

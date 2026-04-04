@@ -44,6 +44,7 @@ async def health_check():
             "cost_patent_analysis_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]),
             "cost_ai_review_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]),
             "cost_ai_reply_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_REPLY.value]),
+            "cost_ai_search_points": _units_to_points(TASK_POINT_COST_UNITS[TaskType.AI_SEARCH.value]),
             "token_ttl_days": AUTH_TOKEN_TTL_DAYS,
         },
     }

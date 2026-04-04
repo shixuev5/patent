@@ -4,12 +4,14 @@ export interface TaskPointCost {
   patentAnalysis: number
   aiReview: number
   officeActionReply: number
+  aiSearch: number
 }
 
 export interface UsageCreatedToday {
   analysisCount: number
   reviewCount: number
   replyCount: number
+  searchCount: number
   totalCount: number
 }
 

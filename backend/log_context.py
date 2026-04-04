@@ -12,6 +12,7 @@ TASK_TYPE_LABELS = {
     "patent_analysis": "AI 分析",
     "ai_reply": "AI 答复",
     "ai_review": "AI 审查",
+    "ai_search": "AI 检索",
 }
 
 

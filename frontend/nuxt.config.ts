@@ -22,7 +22,7 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'static',
     prerender: {
-      routes: ['/', '/tasks', '/account', '/changelog', '/auth/callback'],
+      routes: ['/', '/tasks', '/search', '/account', '/changelog', '/auth/callback'],
     },
   },
   

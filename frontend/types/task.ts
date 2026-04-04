@@ -1,4 +1,4 @@
-export type TaskType = 'patent_analysis' | 'ai_review' | 'ai_reply';
+export type TaskType = 'patent_analysis' | 'ai_review' | 'ai_reply' | 'ai_search';
 
 export interface Task {
   id: string;

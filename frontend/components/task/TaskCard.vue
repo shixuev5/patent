@@ -98,6 +98,7 @@ const showPatentNumber = computed(() => {
 })
 
 const taskTypeLabel = computed(() => {
+  if (props.task.taskType === 'ai_search') return 'AI 检索'
   if (props.task.taskType === 'ai_reply') return 'AI 答复'
   if (props.task.taskType === 'ai_review') return 'AI 审查'
   return 'AI 分析'

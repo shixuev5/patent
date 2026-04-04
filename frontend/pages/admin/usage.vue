@@ -154,6 +154,7 @@
                 <option value="patent_analysis">AI 分析</option>
                 <option value="ai_review">AI 审查</option>
                 <option value="ai_reply">AI 答复</option>
+                <option value="ai_search">AI 检索</option>
               </select>
             </label>
             <label class="field">
@@ -700,6 +701,7 @@
                 <option value="patent_analysis">AI 分析</option>
                 <option value="ai_review">AI 审查</option>
                 <option value="ai_reply">AI 答复</option>
+                <option value="ai_search">AI 检索</option>
               </select>
             </label>
             <label class="field">
@@ -971,6 +973,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   patent_analysis: 'AI 分析',
   ai_review: 'AI 审查',
   ai_reply: 'AI 答复',
+  ai_search: 'AI 检索',
 }
 
 const TASK_STATUS_LABELS: Record<string, string> = {
@@ -1144,13 +1147,15 @@ const buildUrlWithToken = (url: string, token: string): string => {
 const canDownloadEntityTask = (row: AdminEntityTaskItem): boolean => {
   const taskId = String(row.taskId || '').trim()
   const status = String(row.status || '').trim().toLowerCase()
-  return !!taskId && status === 'completed'
+  const taskType = String(row.taskType || '').trim().toLowerCase()
+  return !!taskId && status === 'completed' && taskType !== 'ai_search'
 }
 const buildEntityTaskDownloadFilename = (row: AdminEntityTaskItem): string => {
   const taskType = String(row.taskType || '').trim().toLowerCase()
   const artifactName = String(row.title || row.taskId || '').trim() || String(row.taskId || 'task')
   if (taskType === 'ai_reply') return `AI 答复报告_${artifactName}.pdf`
   if (taskType === 'ai_review') return `AI 审查报告_${artifactName}.pdf`
+  if (taskType === 'ai_search') return `AI 检索结果_${artifactName}.json`
   return `AI 分析报告_${artifactName}.pdf`
 }
 const downloadEntityTask = async (row: AdminEntityTaskItem) => {

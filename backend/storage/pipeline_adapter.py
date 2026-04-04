@@ -45,7 +45,14 @@ class PipelineTaskManager:
         if not title and pn:
             title = f"AI 分析任务 - {pn}"
         elif not title:
-            title = f"AI 分析任务 - {task_id}"
+            if task_type == TaskType.AI_REPLY.value:
+                title = f"AI 答复任务 - {task_id}"
+            elif task_type == TaskType.AI_REVIEW.value:
+                title = f"AI 审查任务 - {task_id}"
+            elif task_type == TaskType.AI_SEARCH.value:
+                title = f"AI 检索会话 - {task_id}"
+            else:
+                title = f"AI 分析任务 - {task_id}"
 
         output_dir = str(settings.OUTPUT_DIR / task_id)
 

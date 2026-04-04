@@ -54,6 +54,7 @@ export interface TaskSubmitResult {
 }
 
 const normalizeTaskType = (taskType?: string): TaskType => {
+  if (taskType === 'ai_search') return 'ai_search'
   if (taskType === 'ai_reply') return 'ai_reply'
   if (taskType === 'ai_review') return 'ai_review'
   return 'patent_analysis'
@@ -595,6 +596,8 @@ export const useTaskStore = defineStore('tasks', {
     getTaskPointCost(usage: UsageResponse, taskType: TaskType): number {
       const raw = taskType === 'ai_reply'
         ? usage.costPerTask.officeActionReply
+        : taskType === 'ai_search'
+          ? usage.costPerTask.aiSearch
         : taskType === 'ai_review'
           ? usage.costPerTask.aiReview
           : usage.costPerTask.patentAnalysis
@@ -622,6 +625,7 @@ export const useTaskStore = defineStore('tasks', {
         analysisCount: (currentUsage.createdToday.analysisCount || 0) + (taskType === 'patent_analysis' ? 1 : 0),
         reviewCount: (currentUsage.createdToday.reviewCount || 0) + (taskType === 'ai_review' ? 1 : 0),
         replyCount: (currentUsage.createdToday.replyCount || 0) + (taskType === 'ai_reply' ? 1 : 0),
+        searchCount: (currentUsage.createdToday.searchCount || 0) + (taskType === 'ai_search' ? 1 : 0),
         totalCount: (currentUsage.createdToday.totalCount || 0) + 1,
       }
 

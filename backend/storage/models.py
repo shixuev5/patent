@@ -23,6 +23,7 @@ class TaskType(str, Enum):
     PATENT_ANALYSIS = "patent_analysis"
     AI_REPLY = "ai_reply"
     AI_REVIEW = "ai_review"
+    AI_SEARCH = "ai_search"
 
 
 @dataclass

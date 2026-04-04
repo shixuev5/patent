@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from backend import usage
+from backend.time_utils import utc_now
 from backend.storage import Task, TaskStatus, TaskType
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 
@@ -26,7 +26,7 @@ def _create_task(
     task_id: str,
     status: TaskStatus = TaskStatus.PENDING,
 ):
-    now = datetime.now()
+    now = utc_now()
     storage.create_task(
         Task(
             id=task_id,
@@ -113,4 +113,17 @@ def test_failed_or_cancelled_tasks_refund_points(monkeypatch, tmp_path):
     result = usage._get_user_usage(owner_id, task_type=TaskType.AI_REPLY.value)
     assert result.usedPoints == 1.0
     assert result.remainingPoints == 2.0
+    assert result.canCreateRequestedTask is True
+
+
+def test_ai_search_paused_task_still_occupies_points(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    owner_id = "guest_ai_search"
+    _create_task(storage, owner_id, TaskType.AI_SEARCH.value, "t-s-1", status=TaskStatus.PAUSED)
+
+    result = usage._get_user_usage(owner_id, task_type=TaskType.AI_SEARCH.value)
+
+    assert result.usedPoints == 1.5
+    assert result.remainingPoints == 1.5
+    assert result.createdToday.searchCount == 1
     assert result.canCreateRequestedTask is True

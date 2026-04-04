@@ -51,6 +51,7 @@ ALLOWED_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.AI_REVIEW.value,
     TaskType.AI_REPLY.value,
+    TaskType.AI_SEARCH.value,
 }
 
 
@@ -152,6 +153,8 @@ def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -
     resolved_pn = _normalize_pn(pn)
     if not resolved_pn:
         return None
+    if task_type == TaskType.AI_SEARCH.value:
+        return None
     if task_type == TaskType.AI_REPLY.value:
         return r2_storage.build_ai_reply_pdf_key(resolved_pn)
     if task_type == TaskType.AI_REVIEW.value:
@@ -161,6 +164,8 @@ def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -
 
 def _build_task_download_filename(task_type: str, pn: Optional[str], title: Optional[str], task_id: str) -> str:
     artifact_name = str(pn or title or task_id or "").strip() or task_id
+    if task_type == TaskType.AI_SEARCH.value:
+        return f"AI 检索结果_{artifact_name}.json"
     if task_type == TaskType.AI_REPLY.value:
         return f"AI 答复报告_{artifact_name}.pdf"
     if task_type == TaskType.AI_REVIEW.value:

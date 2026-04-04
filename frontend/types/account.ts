@@ -22,6 +22,7 @@ export interface WeeklyActivityPoint {
   analysisCreated: number
   reviewCreated: number
   replyCreated: number
+  searchCreated: number
   totalCreated: number
 }
 
@@ -29,6 +30,7 @@ export interface TaskWindowCounts {
   analysisCount: number
   reviewCount: number
   replyCount: number
+  searchCount: number
   totalCount: number
 }
 
@@ -37,6 +39,7 @@ export interface DailyActivityPoint {
   analysisCreated: number
   reviewCreated: number
   replyCreated: number
+  searchCreated: number
   totalCreated: number
 }
 
