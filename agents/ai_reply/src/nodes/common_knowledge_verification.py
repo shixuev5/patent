@@ -325,8 +325,8 @@ class CommonKnowledgeVerificationNode:
         extra_fallback_queries = {
                 "openalex": normalize_query_specs(
                     [
-                        make_query_spec(f"\"{feature_text}\" AND textbook AND handbook", "boolean", "anchor"),
-                        make_query_spec(f"\"{feature_text}\" AND standard practice review", "boolean", "expansion"),
+                        make_query_spec(f"{feature_text} textbook manual fundamentals", "boolean", "anchor"),
+                        make_query_spec(f"{feature_text} conventional standard practice", "boolean", "expansion"),
                     ],
                     engine="openalex",
                     limit=2,
@@ -461,8 +461,8 @@ class CommonKnowledgeVerificationNode:
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
         fallback_queries = {
             "openalex": normalize_query_specs([
-                make_query_spec(f"\"{feature_text}\" AND review AND tutorial", "boolean", "anchor"),
-                make_query_spec(f"\"{feature_text}\" AND standard practice", "boolean", "expansion"),
+                make_query_spec(f"{feature_text} review tutorial survey", "boolean", "anchor"),
+                make_query_spec(f"{feature_text} standard textbook background", "boolean", "expansion"),
             ], engine="openalex", limit=2),
             "zhihuiya": normalize_query_specs([
                 make_query_spec(f"\"{feature_text}\" AND 本领域公知常识", "lexical", "core_patent"),
@@ -665,8 +665,8 @@ class CommonKnowledgeVerificationNode:
         return """你是资深的专利审查与复审专家AI，当前任务是基于外部证据或模型知识，核查“审查员将某技术特征认定为公知常识/常规技术手段”的逻辑争议，并判断申请人的反驳是否成立。
 
 【公知常识判定标准】
-- 只有记载在教科书、技术词典、技术手册中的知识，或本领域中广泛使用的常规技术手段，才能被轻易认定为公知常识。
-- 仅仅在一两篇普通专利文献中公开的技术，通常不足以直接证明其为“公知常识”（除非文献明确记载该技术为本领域公知）。
+- 只有记载在教科书、技术词典、技术手册、国家标准中的知识，或本领域中广泛使用的常规技术手段，才能被轻易认定为公知常识。
+- 【极其重要】：仅仅在一两篇普通专利文献，或【普通学术论文 (Research Paper)】中公开的技术，通常【不足以】直接证明其为“公知常识”（除非该文献是【综述类 (Review/Survey)】或明确记载该技术为本领域公知常识）。请警惕将前沿研究成果误判为公知常识。
 
 【判定优先级】
 1. 外部证据优先：若检索到的外部证据（EXT*）明确支持或否定该特征为公知常识，必须以此为主要依据。
@@ -680,7 +680,7 @@ class CommonKnowledgeVerificationNode:
 
 【字段输出与审查员说理约束 (极其重要)】
 由于系统管线要求，你需要遵守以下严格的条件约束：
-- reasoning：在此字段中进行详尽的逻辑推演（分析特征 -> 评估证据 -> 得出结论）。
+- reasoning：在此字段中进行详尽的逻辑推演（分析特征 -> 评估证据 -> 区分它是普通现有技术还是公知常识 -> 得出结论）。
 - confidence：0.0 到 1.0 之间的浮点数。外部证据确凿时 >0.8；仅靠模型知识时 0.5~0.7；存疑时 <0.5。
 - examiner_rejection_rationale：
   *[强制规则 1] 仅当 verdict 为 "APPLICANT_CORRECT" 时，本字段【必须】填写内容。其业务逻辑是：虽然申请人成功反驳了该特征是“公知常识”，但系统仍需要一段与当前证据一致的“替代性驳回逻辑要点”（例如：指出该特征虽非公知常识，但结合具体应用场景仍属于容易想到的常规变形）。

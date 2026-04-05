@@ -1,34 +1,39 @@
 import json
 
+import pytest
+
 from agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingNode
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 
 
 def test_claim_review_drafting_aggregates_independent_card_and_residual_group(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
+    seen_unit_ids = []
 
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
         user_prompt = messages[1]["content"]
-        assert '"unit_id": "P1"' in user_prompt
-        assert '"unit_type": "evidence_restructured"' in user_prompt
-        assert '"unit_id": "P2"' in user_prompt
-        assert '"unit_type": "dependent_group_restructured"' in user_prompt
+        payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
+        item = json.loads(payload)
+        unit_id = item["unit_id"]
+        seen_unit_ids.append(unit_id)
+        assert '"unit_id": "P1"' not in user_prompt or unit_id == "P1"
+        assert '"unit_id": "P2"' not in user_prompt or unit_id == "P2"
         assert '"unit_id": "MERGED_1"' not in user_prompt
         assert '"unit_id": "NEW_F1"' not in user_prompt
-        assert '"display_claim_ids": [' in user_prompt
-        assert '"1"' in user_prompt
-        assert '"3"' in user_prompt
-        assert '"4"' in user_prompt
-        assert '"review_before_text": "OA 对权利要求1的原文评述\\nOA 对权利要求2-4的组合评述"' in user_prompt
-        assert '"feature_text": "将旧权2并入权1的新增特征"' in user_prompt
-        assert '"feature_text": "权利要求1说明书新增特征"' in user_prompt
-        return {
-            "items": [
-                {"unit_id": "P1", "review_text": "权利要求1聚合后的重组评述"},
-                {"unit_id": "P2", "review_text": "权利要求3-4残余组合评述"},
-            ]
-        }
+        assert isinstance(item["display_claim_ids"], list)
+        if unit_id == "P1":
+            assert item["unit_type"] == "evidence_restructured"
+            assert item["display_claim_ids"] == ["1"]
+            assert item["review_before_text"] == "OA 对权利要求1的原文评述\nOA 对权利要求2-4的组合评述"
+            assert any(material["feature_text"] == "将旧权2并入权1的新增特征" for material in item["amendment_materials"])
+            assert any(material["feature_text"] == "权利要求1说明书新增特征" for material in item["amendment_materials"])
+            return {"unit_id": "P1", "review_text": "权利要求1聚合后的重组评述"}
+
+        assert unit_id == "P2"
+        assert item["unit_type"] == "dependent_group_restructured"
+        assert item["display_claim_ids"] == ["3", "4"]
+        return {"unit_id": "P2", "review_text": "权利要求3-4残余组合评述"}
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
 
@@ -128,6 +133,7 @@ def test_claim_review_drafting_aggregates_independent_card_and_residual_group(mo
     )
 
     assert [item["unit_id"] for item in result] == ["P1", "P2"]
+    assert seen_unit_ids == ["P1", "P2"]
     assert [item["unit_type"] for item in result] == ["evidence_restructured", "dependent_group_restructured"]
 
     independent_unit = result[0]
@@ -201,15 +207,13 @@ def test_claim_review_drafting_builds_supplemented_independent_card_without_prim
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
         user_prompt = messages[1]["content"]
+        payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
+        item = json.loads(payload)
         assert '"unit_id": "IND_1"' in user_prompt
-        assert '"unit_type": "supplemented_new"' in user_prompt
-        assert '"source_paragraph_ids": []' in user_prompt
-        assert '"feature_text": "权利要求1新增特征"' in user_prompt
-        return {
-            "items": [
-                {"unit_id": "IND_1", "review_text": "权利要求1无主段落时的补充评述"},
-            ]
-        }
+        assert item["unit_type"] == "supplemented_new"
+        assert item["source_paragraph_ids"] == []
+        assert item["amendment_materials"][0]["feature_text"] == "权利要求1新增特征"
+        return {"unit_id": "IND_1", "review_text": "权利要求1无主段落时的补充评述"}
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
 
@@ -329,33 +333,14 @@ def test_claim_review_drafting_keeps_direct_primary_oa_out_of_llm(monkeypatch) -
 
 def test_claim_review_drafting_reorders_renumbered_claims_by_effective_claim_order(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
+    seen_unit_ids = []
 
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
-        user_prompt = messages[1]["content"]
-        assert '"unit_id": "P1"' in user_prompt
-        assert '"unit_id": "P4"' in user_prompt
-        assert '"unit_id": "P5"' in user_prompt
-        assert '"unit_id": "P6"' in user_prompt
-        assert '"unit_id": "P7"' in user_prompt
-        assert '"unit_id": "P8"' in user_prompt
-        assert '"unit_id": "P9"' in user_prompt
-        assert '"unit_id": "P10"' in user_prompt
-        assert '"review_before_text": "OA 对旧权1的原文评述\\nOA 对旧权2的原文评述\\nOA 对旧权3的原文评述"' in user_prompt
-        assert '"review_before_text": "OA 对旧权4的原文评述"' in user_prompt
-        assert '"review_before_text": "OA 对旧权9的原文评述"' in user_prompt
-        return {
-            "items": [
-                {"unit_id": "P1", "review_text": "现权1重组评述"},
-                {"unit_id": "P4", "review_text": "现权2重组评述"},
-                {"unit_id": "P5", "review_text": "现权3重组评述"},
-                {"unit_id": "P6", "review_text": "现权4重组评述"},
-                {"unit_id": "P7", "review_text": "现权5重组评述"},
-                {"unit_id": "P8", "review_text": "现权6重组评述"},
-                {"unit_id": "P9", "review_text": "现权7重组评述"},
-                {"unit_id": "P10", "review_text": "现权8重组评述"},
-            ]
-        }
+        payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
+        item = json.loads(payload)
+        seen_unit_ids.append(item["unit_id"])
+        return {"unit_id": item["unit_id"], "review_text": f"现权{item['anchor_claim_id']}重组评述"}
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
 
@@ -416,6 +401,7 @@ def test_claim_review_drafting_reorders_renumbered_claims_by_effective_claim_ord
 
     assert [item["anchor_claim_id"] for item in result] == ["1", "2", "3", "4", "5", "6", "7", "8"]
     assert [item["unit_id"] for item in result] == ["P1", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
+    assert seen_unit_ids == ["P1", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
     assert result[0]["source_paragraph_ids"] == ["P1", "P2", "P3"]
     assert result[0]["source_summary"]["merged_source_claim_ids"] == ["2", "3"]
     assert result[0]["review_before_text"] == "OA 对旧权1的原文评述\nOA 对旧权2的原文评述\nOA 对旧权3的原文评述"
@@ -444,15 +430,10 @@ def test_claim_review_drafting_uses_alignment_map_for_pure_renumbered_residual_u
     def _fake_invoke_text_json(messages, task_kind, temperature):
         assert task_kind == "oar_claim_review_drafting"
         payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
-        items = json.loads(payload)
+        item = json.loads(payload)
         return {
-            "items": [
-                {
-                    "unit_id": item["unit_id"],
-                    "review_text": f"重组评述::{item['unit_id']}::{','.join(item.get('display_claim_ids', []))}",
-                }
-                for item in items
-            ]
+            "unit_id": item["unit_id"],
+            "review_text": f"重组评述::{item['unit_id']}::{','.join(item.get('display_claim_ids', []))}",
         }
 
     monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
@@ -555,9 +536,46 @@ def test_claim_review_drafting_uses_alignment_map_for_pure_renumbered_residual_u
 def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> None:
     node = ClaimReviewDraftingNode()
 
-    system_prompt = node._build_system_prompt()
-    user_prompt = node._build_user_prompt(
-        [
+    system_prompt = node._build_single_system_prompt()
+    user_prompt = node._build_single_user_prompt(
+        {
+            "unit_id": "P1",
+            "unit_type": "evidence_restructured",
+            "title": "权利要求1",
+            "source_paragraph_ids": ["P1"],
+            "display_claim_ids": ["1"],
+            "anchor_claim_id": "1",
+            "source_summary": {"merged_source_claim_ids": []},
+            "review_before_text": "旧评述全文",
+            "claim_snapshots": [],
+            "oa_materials": [{"paragraph_id": "P1", "content": "旧评述全文"}],
+            "response_materials": [],
+            "amendment_materials": [],
+        }
+    )
+
+    assert "最小编辑与保真原则（反压缩机制）" in system_prompt
+    assert "自动摘要与压缩" in system_prompt
+    assert "原样保留" in system_prompt
+    assert "无实质变化时原文复用优先" in system_prompt
+    assert "不得为了措辞统一而整体改写" in system_prompt
+    assert "必须完整保留当前仍然成立的事实、对比文件公开内容、区别特征分析及结论" in system_prompt
+    assert "必须返回输入中的同一个 unit_id" in system_prompt
+    assert "review_text 应尽量直接沿用 review_before_text" in user_prompt
+    assert "只能返回该 unit_id 对应的单个 JSON 对象" in user_prompt
+
+
+def test_claim_review_drafting_raises_on_mismatched_unit_id(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    monkeypatch.setattr(
+        node.llm_service,
+        "invoke_text_json",
+        lambda *args, **kwargs: {"unit_id": "WRONG", "review_text": "错误结果"},
+    )
+
+    with pytest.raises(ValueError, match="unit_id=WRONG"):
+        node._draft_single_review_unit(
             {
                 "unit_id": "P1",
                 "unit_type": "evidence_restructured",
@@ -572,16 +590,63 @@ def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> N
                 "response_materials": [],
                 "amendment_materials": [],
             }
-        ]
+        )
+
+
+def test_claim_review_drafting_raises_on_missing_review_text(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    monkeypatch.setattr(
+        node.llm_service,
+        "invoke_text_json",
+        lambda *args, **kwargs: {"unit_id": "P1"},
     )
 
-    assert "最小编辑与保真原则（反压缩机制）" in system_prompt
-    assert "自动摘要与压缩" in system_prompt
-    assert "原样保留" in system_prompt
-    assert "无实质变化时原文复用优先" in system_prompt
-    assert "不得为了措辞统一而整体改写" in system_prompt
-    assert "必须完整保留当前仍然成立的事实、对比文件公开内容、区别特征分析及结论" in system_prompt
-    assert "review_text 应尽量直接沿用 review_before_text" in user_prompt
+    with pytest.raises(ValueError, match="缺少 review_text"):
+        node._draft_single_review_unit(
+            {
+                "unit_id": "P1",
+                "unit_type": "evidence_restructured",
+                "title": "权利要求1",
+                "source_paragraph_ids": ["P1"],
+                "display_claim_ids": ["1"],
+                "anchor_claim_id": "1",
+                "source_summary": {"merged_source_claim_ids": []},
+                "review_before_text": "旧评述全文",
+                "claim_snapshots": [],
+                "oa_materials": [{"paragraph_id": "P1", "content": "旧评述全文"}],
+                "response_materials": [],
+                "amendment_materials": [],
+            }
+        )
+
+
+def test_claim_review_drafting_raises_on_legacy_items_array(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    monkeypatch.setattr(
+        node.llm_service,
+        "invoke_text_json",
+        lambda *args, **kwargs: {"items": [{"unit_id": "P1", "review_text": "旧协议"}]},
+    )
+
+    with pytest.raises(ValueError, match="items 数组"):
+        node._draft_single_review_unit(
+            {
+                "unit_id": "P1",
+                "unit_type": "evidence_restructured",
+                "title": "权利要求1",
+                "source_paragraph_ids": ["P1"],
+                "display_claim_ids": ["1"],
+                "anchor_claim_id": "1",
+                "source_summary": {"merged_source_claim_ids": []},
+                "review_before_text": "旧评述全文",
+                "claim_snapshots": [],
+                "oa_materials": [{"paragraph_id": "P1", "content": "旧评述全文"}],
+                "response_materials": [],
+                "amendment_materials": [],
+            }
+        )
 
 
 def test_topup_search_verification_sets_amendment_origin_fields(monkeypatch) -> None:

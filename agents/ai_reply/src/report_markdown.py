@@ -377,6 +377,8 @@ def _change_item_html(item: Any) -> str:
     item_type = str(_item_get(item, "item_type", "substantive_amendment")).strip()
     if item_type == "structural_adjustment":
         return _structural_adjustment_item_html(item)
+    if item_type == "merged_structural_adjustment":
+        return _merged_structural_adjustment_item_html(item)
 
     feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
     feature_before_text = str(_item_get(item, "feature_before_text", "")).strip()
@@ -452,10 +454,14 @@ def _build_claim_change_groups(
             item_dict["item_type"] = "substantive_amendment"
             bucket["items"].append(item_dict)
 
+    struct_grouped: Dict[str, List[Any]] = {}
     for item in structural_adjustments or []:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
         if not claim_id:
             continue
+        struct_grouped.setdefault(claim_id, []).append(item)
+
+    for claim_id, adjustments in struct_grouped.items():
         bucket = grouped.setdefault(
             claim_id,
             {
@@ -464,13 +470,25 @@ def _build_claim_change_groups(
                 "items": [],
             },
         )
-        item_dict = dict(item) if isinstance(item, dict) else _to_dict(item)
-        item_dict["item_type"] = "structural_adjustment"
-        item_dict["has_ai_assessment"] = False
-        item_claim_type = str(item_dict.get("claim_type", "")).strip() or "unknown"
-        if str(bucket.get("claim_type", "")).strip() == "unknown" and item_claim_type != "unknown":
-            bucket["claim_type"] = item_claim_type
-        bucket["items"].append(item_dict)
+        claim_type = "unknown"
+        normalized_adjustments: List[Dict[str, Any]] = []
+        for adjustment in adjustments:
+            item_dict = dict(adjustment) if isinstance(adjustment, dict) else _to_dict(adjustment)
+            normalized_adjustments.append(item_dict)
+            item_claim_type = str(item_dict.get("claim_type", "")).strip()
+            if item_claim_type and item_claim_type != "unknown" and claim_type == "unknown":
+                claim_type = item_claim_type
+        if str(bucket.get("claim_type", "")).strip() == "unknown" and claim_type != "unknown":
+            bucket["claim_type"] = claim_type
+
+        merged_item = {
+            "item_type": "merged_structural_adjustment",
+            "claim_id": claim_id,
+            "old_claim_id": str(_item_get(normalized_adjustments[0], "old_claim_id", "")).strip(),
+            "adjustments": normalized_adjustments,
+            "has_ai_assessment": False,
+        }
+        bucket["items"].append(merged_item)
 
     result: List[Dict[str, Any]] = []
     for claim_id in sorted(grouped.keys(), key=_claim_sort_key):
@@ -482,10 +500,8 @@ def _build_claim_change_groups(
 
 def _claim_change_item_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
     item_type = str(item.get("item_type", "substantive_amendment")).strip()
-    if item_type == "structural_adjustment":
-        adjustment_kind = str(item.get("adjustment_kind", "")).strip()
-        rank = 2 if adjustment_kind == "reference_adjustment" else 1
-        return (rank, str(item.get("adjustment_id", "")).strip())
+    if item_type in ("structural_adjustment", "merged_structural_adjustment"):
+        return (3, "")
 
     amendment_kind = str(item.get("amendment_kind", "")).strip()
     source_rank = 1 if amendment_kind == "claim_feature_merge" else 2
@@ -617,6 +633,90 @@ def _structural_adjustment_item_html(item: Any) -> str:
         '<div class="oar-change-item-head">'
         f'<div class="oar-change-item-title">{_html_text(summary)}</div>'
         f'<div class="oar-change-claims oar-change-claims-compact"><div><span class="oar-change-source-tag oar-change-source-tag-unknown">{_html_text(adjustment_kind)}</span></div></div>'
+        "</div>"
+        '<div class="oar-change-item-body">'
+        f'<div class="oar-change-item-label">{_html_text(sentence)}</div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def _merged_structural_adjustment_item_html(merged_item: Dict[str, Any]) -> str:
+    claim_id = str(_item_get(merged_item, "claim_id", "")).strip() or "-"
+    old_claim_id = str(_item_get(merged_item, "old_claim_id", "")).strip() or "-"
+    adjustments = _item_get(merged_item, "adjustments", []) or []
+
+    has_renumbering = False
+    has_ref_adj = False
+    reason = "upstream_merged"
+    old_ref = ""
+    new_ref = ""
+
+    for adjustment in adjustments:
+        kind = str(_item_get(adjustment, "adjustment_kind", "")).strip()
+        item_reason = str(_item_get(adjustment, "reason", "")).strip()
+        if item_reason:
+            reason = item_reason
+
+        if kind == "renumbering":
+            has_renumbering = True
+            continue
+        if kind == "reference_adjustment":
+            has_ref_adj = True
+            before_text = str(_item_get(adjustment, "before_text", "")).strip()
+            after_text = str(_item_get(adjustment, "after_text", "")).strip()
+            match_before = re.search(r"^\s*(?:根据|如)权利要求(.*?)所述", before_text)
+            match_after = re.search(r"^\s*(?:根据|如)权利要求(.*?)所述", after_text)
+            if match_before and match_after:
+                old_ref = match_before.group(1).strip()
+                new_ref = match_after.group(1).strip()
+
+    tags: List[str] = []
+    if has_renumbering:
+        tags.append("编号顺延")
+    if has_ref_adj:
+        tags.append("引用关系调整")
+    if not tags:
+        tags.append("结构调整")
+    tags_html = "".join(
+        f'<div><span class="oar-change-source-tag oar-change-source-tag-unknown">{_html_text(tag)}</span></div>'
+        for tag in tags
+    )
+
+    if reason == "upstream_merged":
+        reason_prefix = "因上游权项并入"
+    elif reason == "upstream_deleted":
+        reason_prefix = "因上游权项删除"
+    else:
+        reason_prefix = "因结构调整"
+
+    if has_renumbering and has_ref_adj:
+        if old_ref and new_ref and old_ref != new_ref:
+            sentence = (
+                f"旧权利要求{old_claim_id}{reason_prefix}，顺延为现权利要求{claim_id}，"
+                f"且其引用基础由“权利要求{old_ref}”变更为“权利要求{new_ref}”。"
+            )
+        else:
+            sentence = f"旧权利要求{old_claim_id}{reason_prefix}，顺延为现权利要求{claim_id}，其引用关系已同步调整。"
+    elif has_renumbering:
+        sentence = f"旧权利要求{old_claim_id}{reason_prefix}，顺延为现权利要求{claim_id}。"
+    elif has_ref_adj:
+        if old_ref and new_ref and old_ref != new_ref:
+            sentence = (
+                f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，{reason_prefix}，"
+                f"其引用基础由“权利要求{old_ref}”变更为“权利要求{new_ref}”。"
+            )
+        else:
+            sentence = f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，{reason_prefix}，其引用关系已同步调整。"
+    else:
+        sentence = f"现权利要求{claim_id}对应旧权利要求{old_claim_id}，结构关系已调整。"
+
+    summary = f"对应旧权利要求 {old_claim_id}"
+    return (
+        '<div class="oar-change-item-card oar-structural-adjustment-item">'
+        '<div class="oar-change-item-head">'
+        f'<div class="oar-change-item-title">{_html_text(summary)}</div>'
+        f'<div class="oar-change-claims oar-change-claims-compact">{tags_html}</div>'
         "</div>"
         '<div class="oar-change-item-body">'
         f'<div class="oar-change-item-label">{_html_text(sentence)}</div>'

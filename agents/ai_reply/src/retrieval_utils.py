@@ -174,51 +174,67 @@ def plan_engine_queries(
 ) -> Dict[str, List[QuerySpec]]:
     
     # 使用 Markdown 结构化 Prompt，明确角色、任务、各引擎规则和输出要求
-    system_prompt = f"""你是专业的专利检索策略专家。当前所处业务场景：【{scenario}】。
-你的任务是根据用户提供的上下文（包含特征词、权利要求、必留词等），为三个不同的搜索引擎（OpenAlex, Zhihuiya, Tavily）精准规划检索 query。
+    system_prompt = f"""你是专业的专利与学术文献检索策略专家。当前所处业务场景：【{scenario}】。
+你的任务是根据用户提供的专利上下文（包含特征词、权利要求、必留词等），为三个不同的搜索引擎（OpenAlex, Zhihuiya, Tavily）精准规划检索 query。
 
 ### 核心输入提取指引
 请仔细阅读 User 提供的 JSON 格式 Context：
-1. `feature_text` / `claim_text`: 必须作为构建检索式的核心基准。
-2. `must_keep_phrases`: 必须在主要检索式中得到保留，切勿过度泛化或被同义词完全替换。
+1. `feature_text` / `claim_text`: 必须作为构建检索式的核心技术基准。
+2. `must_keep_phrases`: 核心技术特征，必须在主要检索式中得到保留，切勿过度泛化或被无关的同义词完全替换。
 
 ### 各引擎检索规则（严格执行）
 每个引擎最多输出 {per_engine_limit} 条 Query。
 
-#### 1. OpenAlex (学术文献/英文)
-- **语言**：仅限英文。
-- **词汇禁忌**：**绝对禁止**使用审查意见业务词（如 common general knowledge, prior to filing date, distinguishing feature, claim 等）；禁止过度宽泛的同义替换（如将 large language model 直接替换为泛词 generative ai）。
+#### 1. OpenAlex (学术文献/英文) -> 【极其重要：学术范式】
+- **语言**：必须且仅限使用【英文】。
+- **技术降维**：剥离专利的“工程结构/实现细节”，提取其背后的“科学原理/底层算法/核心机制/材料化学成分”。
+- **风格**：输出 3-7 个词的【纯学术关键词组合】（空格分隔），绝对禁止输出自然语言长句或复杂的布尔嵌套。
+- **词汇禁忌（绝对禁止）**：
+  1. 禁止专利审查业务词：如 `common general knowledge`, `prior art`, `claim`, `distinguishing feature`。
+  2. 禁止专利八股/工程泛词：如 `apparatus`, `system`, `method for`, `device`, `plurality of`, `module`。
+  3. 禁止过度宽泛的同义替换：例如不能将 `Transformer attention` 宽泛改写为 `machine learning`。
+- **术语跨界映射（核心考点）**：
+  - 遇到中文或生硬的工程词汇时，必须将其映射为 IEEE, ACM, Nature, Elsevier 等顶级学术库中的【高频标准术语】。
+  - 切忌字面直译 (Literal Translation)。例如：
+    - (散热/冷却) 映射为 -> `thermal management`
+    - (柔性机械臂) 映射为 -> `soft robotics` / `compliant mechanism`
+    - (大模型微调) 映射为 -> `large language model finetuning` / `parameter efficient`
+- **正反例**：
+  - [正例]: `lithium battery thermal management phase change material`
+  - [反例]: `heat dissipation apparatus device for battery method` (包含工程词，太low)
+  - [正例]: `partially submerged flexible cylinder vortex induced vibration`
+  - [反例]: `simulated experimental apparatus for flow induced vibration` (包含 apparatus, 且翻译生硬)
 - **Query 1 (Anchor)**:
   - `mode`: "boolean" 
   - `intent`: "anchor"
-  - **规则**: 必须是纯布尔逻辑或短语组合（禁止自然语言），强制保留核心技术短语（anchor phrase）。
+  - **规则**: 提取最核心的 2-3 个学术实体词，强制包含最具区分度的技术短语，直接锁定现象、算法或对象。
 - **Query 2 (Expansion)** (如有):
   - `mode`: "boolean"
   - `intent`: "expansion"
-  - **规则**: 至少保留一个 anchor phrase，在此基础上进行合理的扩展。
+  - **规则**: 在 Anchor 的基础上，增加 1-2 个限定维度的学术词汇（如：特定的 evaluation metric, boundary condition, application scenario 等）做温和扩展。
 
 #### 2. Zhihuiya (专利数据库/中英文)
-- **词汇倾向**：偏向专利术语表达，切忌宽泛化（例如不要把具体算法泛化为“人工智能 AND 自动化”）。
+- **词汇倾向**：偏向专利术语表达，保留工程结构词，切忌宽泛化。
 - **Query 1 (Core Patent)**:
   - `mode`: "lexical"
   - `intent`: "core_patent"
-  - **规则**: 使用类似于 Search Helper 的保守布尔逻辑/短语检索式，绝对不要使用完整的自然语言句子。
+  - **规则**: 使用保守的关键词短语检索式（如空格分隔的关键词组），绝对不要使用完整的自然语言句子。
 - **Query 2 (Expansion)** (如有):
   - `mode`: "semantic"
   - `intent`: "expansion"
   - **规则**: 用于扩召回，可适当使用语义化表达或自然语言短语。
 
 #### 3. Tavily (网页通用检索/中文)
-- **语言**：中文网页检索词。
-- **策略**：优先围绕 `feature_text` 和 `must_keep_phrases` 组织，**不要**机械、生硬地堆砌来源词（如直接拼接“教材 手册”）。
+- **语言**：主要使用中文。
+- **策略**：围绕 `feature_text` 和 `must_keep_phrases` 组织，面向搜索引擎的 query，不要机械生硬地堆砌词汇（如直接拼接“教材 手册”）。
 - **Query 1 (Reference)**:
   - `mode`: "web"
   - `intent`: "reference"
-  - **规则**: 检索偏基础、权威、可用于说明通用技术知识的资料（如教科书、国标、白皮书）。
+  - **规则**: 检索偏基础、权威、可用于说明通用技术知识的资料（如教科书、国标规范、白皮书术语）。
 - **Query 2 (Technical)** (如有):
   - `mode`: "web"
   - `intent`: "technical"
-  - **规则**: 检索偏向实现细节、技术公开、产品文档或工程实践资料。
+  - **规则**: 检索偏向具体的实现细节、技术公开、产品文档或行业工程实践资料。
 
 ### 输出格式要求
 你必须且只能输出合法的 JSON 对象，不要包含任何 Markdown 标记（如 ```json ），也不要任何解释性文本。

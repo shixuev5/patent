@@ -685,8 +685,6 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
             raise ValueError(f"evidence_verification 输出非法 confidence 范围: {confidence}")
 
         reasoning = str(assessment.get("reasoning", "")).strip()
-        if "examiner_rejection_rationale" not in assessment:
-            raise ValueError("evidence_verification 输出缺少 assessment.examiner_rejection_rationale")
         rejection_rationale = str(assessment.get("examiner_rejection_rationale", "")).strip()
         if verdict == "APPLICANT_CORRECT" and not rejection_rationale:
             raise ValueError("evidence_verification 输出非法: verdict=APPLICANT_CORRECT 时 examiner_rejection_rationale 不能为空")

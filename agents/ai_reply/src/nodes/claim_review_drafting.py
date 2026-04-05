@@ -2,6 +2,7 @@
 基于上一轮OA的重组评述生成节点。
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from typing import Any, Dict, List, Set
 
@@ -9,7 +10,9 @@ from loguru import logger
 
 from agents.ai_reply.src.state import ReviewUnit
 from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
+from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
+from config import settings
 
 
 class ClaimReviewDraftingNode:
@@ -31,7 +34,7 @@ class ClaimReviewDraftingNode:
             ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "claim_review_drafting")
             review_units = cache.run_step(
-                "draft_review_units_v5",
+                "draft_review_units_v6",
                 self._draft_review_units,
                 self._state_get(state, "claims_old_structured", []),
                 self._state_get(state, "claims_effective_structured", []),
@@ -399,18 +402,67 @@ class ClaimReviewDraftingNode:
             )
 
         if drafting_inputs:
+            max_workers = max(1, min(settings.OAR_MAX_CONCURRENCY, len(drafting_inputs)))
+            logger.info(
+                f"claim_review_drafting 开始单元级生成: units={len(drafting_inputs)} workers={max_workers}"
+            )
+            ordered_results: List[Dict[str, Any] | None] = [None] * len(drafting_inputs)
+            pending_indices = list(range(len(drafting_inputs)))
+            if len(drafting_inputs) > 2 and max_workers > 1:
+                logger.info(
+                    f"claim_review_drafting 预热首个单元: unit_id={drafting_inputs[0]['unit_id']}"
+                )
+                ordered_results[0] = self._draft_single_review_unit(drafting_inputs[0])
+                pending_indices.remove(0)
+
+            if pending_indices:
+                if max_workers == 1:
+                    for index in pending_indices:
+                        ordered_results[index] = self._draft_single_review_unit(drafting_inputs[index])
+                else:
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {
+                            submit_with_current_context(
+                                executor,
+                                self._draft_single_review_unit,
+                                drafting_inputs[index],
+                            ): index
+                            for index in pending_indices
+                        }
+                        for future in as_completed(futures):
+                            index = futures[future]
+                            ordered_results[index] = future.result()
+
+            for item in ordered_results:
+                if not item:
+                    continue
+                finalized[item["unit_id"]] = item
+
+        unit_specs.sort(key=lambda item: (float(item.get("paragraph_order", 0)), self._claim_sort_key(item.get("anchor_claim_id", ""))))
+        return [finalized[unit["unit_id"]] for unit in unit_specs if unit["unit_id"] in finalized]
+
+    def _draft_single_review_unit(self, unit_input: Dict[str, Any]) -> Dict[str, Any]:
+        unit_id = str(unit_input.get("unit_id", "")).strip() or "UNKNOWN"
+        logger.info(f"claim_review_drafting 生成单元开始: unit_id={unit_id}")
+        try:
             response = self.llm_service.invoke_text_json(
                 messages=[
-                    {"role": "system", "content": self._build_system_prompt()},
-                    {"role": "user", "content": self._build_user_prompt(drafting_inputs)},
+                    {"role": "system", "content": self._build_single_system_prompt()},
+                    {"role": "user", "content": self._build_single_user_prompt(unit_input)},
                 ],
                 task_kind="oar_claim_review_drafting",
                 temperature=0.1,
             )
-            finalized.update(self._normalize_llm_output(response, drafting_inputs))
-
-        unit_specs.sort(key=lambda item: (float(item.get("paragraph_order", 0)), self._claim_sort_key(item.get("anchor_claim_id", ""))))
-        return [finalized[unit["unit_id"]] for unit in unit_specs if unit["unit_id"] in finalized]
+            result = self._normalize_single_llm_output(response, unit_input)
+            logger.info(f"claim_review_drafting 生成单元完成: unit_id={unit_id}")
+            return result
+        except Exception as exc:
+            logger.error(
+                f"claim_review_drafting 生成单元失败: unit_id={unit_id}, error={exc}"
+            )
+            raise ValueError(
+                f"claim_review_drafting 单元生成失败: unit_id={unit_id}, error={exc}"
+            ) from exc
 
     def _should_use_llm(
         self,
@@ -766,11 +818,11 @@ class ClaimReviewDraftingNode:
         label = "、".join(f"权利要求{claim_id}" for claim_id in claim_ids if claim_id)
         return label or "补充评述"
 
-    def _build_system_prompt(self) -> str:
+    def _build_single_system_prompt(self) -> str:
         return """你是一名资深的中国专利实质审查员。你的任务是基于“上一轮审查意见（OA）”、“申请人的答复/修改”以及“审查员评估结论”，为下一轮OA撰写正式的、符合《专利审查指南》规范的正文评述。
 
 【输入数据结构说明】
-你在每次任务中将接收到一个待处理对象的 JSON 数组。每个单元包含以下核心字段：
+你在每次任务中只会接收到 1 个待处理单元的 JSON 对象。该单元包含以下核心字段：
 - review_before_text: 上一轮OA的原始评述文本。这是你必须保留的“基础骨架”。
 - oa_materials: 上一轮OA中提取的相关段落，重点留意原有的详细说理过程。
 - response_materials: 申请人的意见陈述及审查员对该意见的评估结论（重点关注 assessment_reasoning 和 verdict）。
@@ -792,58 +844,47 @@ class ClaimReviewDraftingNode:
   原OA中无该部分评述。你必须完全依赖 amendment_materials 或 response_materials 中的审查员评估结论撰写。清晰指出新增/修改特征是什么，并阐明其为何能够/不能够克服原缺陷。
 
 【输出格式约束】
-必须输出纯净的、可被代码直接解析的 JSON 对象。严禁使用 Markdown 代码块包裹（不要输出 ```json ），不要包含任何额外的解释性文本。JSON 格式严格规范如下：
+1. 本次只处理 1 个单元，必须输出纯净的、可被代码直接解析的 JSON 对象。
+2. 严禁使用 Markdown 代码块包裹（不要输出 ```json ），不要包含任何额外的解释性文本。
+3. 必须返回输入中的同一个 unit_id，不得省略，不得改写，不得返回数组。
+4. 即使你判断该单元无需修改，也必须返回该 unit_id，并在 review_text 中输出最终正文；若没有新的实质性改动依据，应尽量沿用 review_before_text。
+5. JSON 格式严格规范如下：
 {
-  "items": [
-    {
-      "unit_id": "必须与输入的 unit_id 完全一致",
-      "rationale": "简要陈述你的处理思路（限50字内，说明增删改了哪些核心逻辑）",
-      "review_text": "最终的评述正文。直接是一段完整的话，不加任何标题。请确保文本内的双引号和换行符已正确转义。"
-    }
-  ]
+  "unit_id": "必须与输入的 unit_id 完全一致",
+  "rationale": "简要陈述你的处理思路（限50字内，说明增删改了哪些核心逻辑）",
+  "review_text": "最终的评述正文。直接是一段完整的话，不加任何标题。请确保文本内的双引号和换行符已正确转义。"
 }"""
 
-    def _build_user_prompt(self, drafting_inputs: List[Dict[str, Any]]) -> str:
-        # 用户提示词被极度精简，仅包含动态数据，最大化利用系统提示词缓存
+    def _build_single_user_prompt(self, unit_input: Dict[str, Any]) -> str:
         return (
-            "请严格遵循系统指令中的处理约束与保真原则，处理以下待评述单元素材，并返回要求格式的纯JSON结果。\n"
+            "请严格遵循系统指令中的处理约束与保真原则，只处理下面这 1 个待评述单元，并返回要求格式的纯JSON结果。\n"
+            "【强制要求】你必须返回且只能返回该 unit_id 对应的单个 JSON 对象，不得输出数组，不得遗漏。\n"
             "【再次强调】若 review_before_text 非空且没有新的实质性增删依据，review_text 应尽量直接沿用 review_before_text，不要为了统一文风而整体重写。\n"
             "=== 待处理的评述单元素材 ===\n"
-            f"{json.dumps(drafting_inputs, ensure_ascii=False, indent=2)}"
+            f"{json.dumps(unit_input, ensure_ascii=False, indent=2)}"
         )
 
-    def _normalize_llm_output(
+    def _normalize_single_llm_output(
         self,
         response: Dict[str, Any],
-        drafting_inputs: List[Dict[str, Any]],
-    ) -> Dict[str, Dict[str, Any]]:
+        unit_input: Dict[str, Any],
+    ) -> Dict[str, Any]:
         output = self._to_dict(response)
-        raw_items = output.get("items", [])
-        if not isinstance(raw_items, list):
-            raise ValueError("claim_review_drafting 输出非法: items 必须为数组")
+        if isinstance(output.get("items"), list):
+            raise ValueError("claim_review_drafting 输出非法: 单条任务不接受 items 数组")
 
-        input_map = {
-            str(item.get("unit_id", "")).strip(): item
-            for item in drafting_inputs
-            if str(item.get("unit_id", "")).strip()
-        }
-        result: Dict[str, Dict[str, Any]] = {}
-        for item in raw_items:
-            item_dict = self._to_dict(item)
-            unit_id = str(item_dict.get("unit_id", "")).strip()
-            if not unit_id or unit_id not in input_map:
-                continue
-            if unit_id in result:
-                raise ValueError(f"claim_review_drafting 输出非法: unit_id={unit_id} 重复")
-            review_text = str(item_dict.get("review_text", "")).strip()
-            if not review_text:
-                raise ValueError(f"claim_review_drafting 输出非法: unit_id={unit_id} 缺少 review_text")
-            result[unit_id] = self._finalize_unit(input_map[unit_id], review_text)
-
-        missing = [unit_id for unit_id in input_map if unit_id not in result]
-        if missing:
-            raise ValueError(f"claim_review_drafting 输出缺少 unit_id: {missing}")
-        return result
+        expected_unit_id = str(unit_input.get("unit_id", "")).strip()
+        unit_id = str(output.get("unit_id", "")).strip()
+        if not unit_id:
+            raise ValueError("claim_review_drafting 输出非法: 缺少 unit_id")
+        if unit_id != expected_unit_id:
+            raise ValueError(
+                f"claim_review_drafting 输出非法: unit_id={unit_id} 与输入 {expected_unit_id} 不一致"
+            )
+        review_text = str(output.get("review_text", "")).strip()
+        if not review_text:
+            raise ValueError(f"claim_review_drafting 输出非法: unit_id={unit_id} 缺少 review_text")
+        return self._finalize_unit(unit_input, review_text)
 
     def _finalize_unit(self, unit: Dict[str, Any], review_text: str) -> Dict[str, Any]:
         return {

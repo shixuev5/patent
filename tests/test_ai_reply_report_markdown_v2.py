@@ -278,6 +278,39 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
     assert 'class="oar-claim-snapshot-head">权利要求4</div>' in content
     assert 'class="oar-claim-snapshot-head">权利要求5</div>' in content
     assert "申请人指出：" in content
+
+
+def test_build_final_report_markdown_merges_structural_adjustments_per_claim() -> None:
+    report = _sample_report()
+    report["amendment_section"]["structural_adjustments"] = [
+        {
+            "adjustment_id": "S1",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_merged",
+            "before_text": "权利要求6",
+            "after_text": "权利要求4",
+        },
+        {
+            "adjustment_id": "S2",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_merged",
+            "before_text": "根据权利要求3所述的一种装置",
+            "after_text": "根据权利要求1所述的一种装置",
+        },
+    ]
+
+    content = build_final_report_markdown(report)
+
+    assert content.count("对应旧权利要求 6") == 1
+    assert "旧权利要求6因上游权项并入，顺延为现权利要求4，且其引用基础由“权利要求3”变更为“权利要求1”。" in content
+    assert content.count("编号顺延") == 1
+    assert content.count("引用关系调整") == 1
     assert "审查员答复：" in content
     assert "未提取到申请人详细意见陈述。" in content
     assert "旧整段文本不应作为第 5 部分主展示内容。" not in content
