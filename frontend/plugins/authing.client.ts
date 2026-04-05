@@ -1,4 +1,4 @@
-import type { GuardClient, GuardConstructor } from '~/types/authing-guard-cdn'
+import type { GuardClient, GuardWindow } from '~/types/authing-guard-cdn'
 
 export default defineNuxtPlugin((nuxtApp) => {
   const config = useRuntimeConfig()
@@ -10,14 +10,14 @@ export default defineNuxtPlugin((nuxtApp) => {
 
   const redirectUri = String(config.public.authingRedirectUri || '').trim()
   const host = String(config.public.authingDomain || '').trim()
-  const guardFactory = (window as Window & { GuardFactory?: { Guard?: GuardConstructor } }).GuardFactory
+  const win = window as GuardWindow
+  const Guard = win.Guard || win.GuardFactory?.Guard
 
-  if (!guardFactory || typeof guardFactory.Guard !== 'function') {
-    console.error('Authing Guard CDN 未加载，请检查 guard.min.js 是否已注入。')
+  if (typeof Guard !== 'function') {
     return
   }
 
-  const guard = new guardFactory.Guard({
+  const guard = new Guard({
     appId,
     ...(redirectUri ? { redirectUri } : {}),
     ...(host ? { host } : {}),

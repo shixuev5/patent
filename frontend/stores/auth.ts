@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { GuardClient, GuardConstructor } from '~/types/authing-guard-cdn'
+import type { GuardClient, GuardConstructor, GuardWindow } from '~/types/authing-guard-cdn'
 import type { AuthState, AuthingUser } from '~/types/auth'
 
 const TASK_AUTH_TOKEN_KEY = 'patent_auth_token'
@@ -9,10 +9,17 @@ const TASK_AUTH_ACCESS_EXPIRES_AT_KEY = 'patent_auth_access_expires_at'
 const TASK_AUTH_REFRESH_EXPIRES_AT_KEY = 'patent_auth_refresh_expires_at'
 const TASK_AUTH_USER_ID_KEY = 'patent_auth_user_id'
 const TASK_AUTH_MODE_KEY = 'patent_auth_mode'
+const AUTHING_ID_TOKEN_KEY = 'idToken'
+const AUTHING_ACCESS_TOKEN_KEY = 'accessToken'
+const AUTHING_CODE_CHALLENGE_KEY = 'codeChallenge'
 
 interface StandaloneGuardOptions {
   mode?: string
   defaultScene?: string
+}
+
+interface GuardResolution {
+  guard: GuardClient | null
 }
 
 const toAuthingUser = (userInfo: unknown): AuthingUser => {
@@ -32,52 +39,94 @@ const toAuthingUser = (userInfo: unknown): AuthingUser => {
   } as unknown as AuthingUser
 }
 
-const getGuardConstructor = (): GuardConstructor | null => {
-  if (!process.client) return null
-  const guardFactory = (window as Window & { GuardFactory?: { Guard?: GuardConstructor } }).GuardFactory
-  return guardFactory && typeof guardFactory.Guard === 'function' ? guardFactory.Guard : null
-}
-
-const createStandaloneGuard = (options: StandaloneGuardOptions = {}): GuardClient | null => {
-  if (!process.client) return null
-
+const parseJwtPayload = (token: string): Record<string, unknown> | null => {
   try {
-    const config = useRuntimeConfig()
-    const appId = String(config.public.authingAppId || '').trim()
-    if (!appId) return null
-
-    const host = String(config.public.authingDomain || '').trim()
-    const redirectUri = String(config.public.authingRedirectUri || '').trim()
-    const Guard = getGuardConstructor()
-    if (!Guard) return null
-
-    return new Guard({
-      appId,
-      ...(host ? { host } : {}),
-      ...(redirectUri ? { redirectUri } : {}),
-      ...(options.mode ? { mode: options.mode } : {}),
-      ...(options.defaultScene ? { defaultScene: options.defaultScene } : {}),
-    })
+    const parts = String(token || '').split('.')
+    if (parts.length < 2) return null
+    const payload = parts[1]
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const decoded = atob(padded)
+    return JSON.parse(decoded) as Record<string, unknown>
   } catch (_error) {
     return null
   }
 }
 
-const getGuardClient = (): GuardClient | null => {
+const getStoredIdToken = (): string => {
+  if (!process.client) return ''
+  return String(localStorage.getItem(AUTHING_ID_TOKEN_KEY) || '').trim()
+}
+
+const getFallbackUserFromStoredIdToken = (): AuthingUser | null => {
   if (!process.client) return null
+  const token = getStoredIdToken()
+  if (!token) return null
+  const payload = parseJwtPayload(token)
+  const sub = String(payload?.sub || '').trim()
+  if (!sub) return null
+  return {
+    sub,
+    name: typeof payload?.name === 'string' ? payload.name : undefined,
+    nickname: typeof payload?.nickname === 'string' ? payload.nickname : undefined,
+    email: typeof payload?.email === 'string' ? payload.email : undefined,
+    phone: typeof payload?.phone_number === 'string' ? payload.phone_number : undefined,
+    picture: typeof payload?.picture === 'string' ? payload.picture : undefined,
+    email_verified: typeof payload?.email_verified === 'boolean' ? payload.email_verified : undefined,
+    updated_at: typeof payload?.updated_at === 'string' ? payload.updated_at : undefined,
+    token,
+  }
+}
+
+const getGuardConstructor = (): GuardConstructor | null => {
+  if (!process.client) return null
+  const win = window as GuardWindow
+  if (typeof win.Guard === 'function') return win.Guard
+  const factoryGuard = win.GuardFactory?.Guard
+  return typeof factoryGuard === 'function' ? factoryGuard : null
+}
+
+const createStandaloneGuard = (options: StandaloneGuardOptions = {}): GuardClient | null => {
+  if (!process.client) return null
+
+  const config = useRuntimeConfig()
+  const appId = String(config.public.authingAppId || '').trim()
+  if (!appId) return null
+
+  const host = String(config.public.authingDomain || '').trim()
+  const redirectUri = String(config.public.authingRedirectUri || '').trim()
+  const Guard = getGuardConstructor()
+  if (!Guard) return null
+
+  return new Guard({
+    appId,
+    ...(host ? { host } : {}),
+    ...(redirectUri ? { redirectUri } : {}),
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.defaultScene ? { defaultScene: options.defaultScene } : {}),
+  })
+}
+
+const resolveGuardClient = async (options: StandaloneGuardOptions = {}): Promise<GuardResolution> => {
+  if (!process.client) return { guard: null }
 
   try {
     const nuxtApp = useNuxtApp()
     const guardFromApp = nuxtApp.$guard
-    if (guardFromApp) return guardFromApp
+    if (guardFromApp) return { guard: guardFromApp }
 
     const legacyGuardFromApp = (nuxtApp.vueApp.config.globalProperties as any)?.$guard as GuardClient | undefined
-    if (legacyGuardFromApp) return legacyGuardFromApp
+    if (legacyGuardFromApp) return { guard: legacyGuardFromApp }
   } catch (_error) {
     // ignore and fallback to standalone constructor
   }
 
-  return createStandaloneGuard()
+  try {
+    return { guard: createStandaloneGuard(options) }
+  } catch (error) {
+    console.error('Authing Guard create instance failed:', error)
+    return { guard: null }
+  }
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -89,7 +138,7 @@ export const useAuthStore = defineStore('auth', {
   }),
 
   getters: {
-    idToken: (state): string => state.user?.token || '',
+    idToken: (state): string => state.user?.token || getStoredIdToken(),
   },
 
   actions: {
@@ -104,6 +153,13 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem(TASK_AUTH_MODE_KEY)
     },
 
+    _clearAuthingSessionCache() {
+      if (!process.client) return
+      localStorage.removeItem(AUTHING_ID_TOKEN_KEY)
+      localStorage.removeItem(AUTHING_ACCESS_TOKEN_KEY)
+      localStorage.removeItem(AUTHING_CODE_CHALLENGE_KEY)
+    },
+
     async checkAuth() {
       if (!process.client) return
       const config = useRuntimeConfig()
@@ -115,7 +171,7 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = getGuardClient()
+        const { guard } = await resolveGuardClient()
         if (!guard || typeof guard.trackSession !== 'function') {
           this.user = null
           this.isLoggedIn = false
@@ -123,15 +179,17 @@ export const useAuthStore = defineStore('auth', {
         }
         const userInfo = await guard.trackSession()
         if (!userInfo) {
-          this.user = null
-          this.isLoggedIn = false
+          const fallbackUser = getFallbackUserFromStoredIdToken()
+          this.user = fallbackUser
+          this.isLoggedIn = !!fallbackUser
           return
         }
         this.user = toAuthingUser(userInfo)
         this.isLoggedIn = true
       } catch (error) {
-        this.user = null
-        this.isLoggedIn = false
+        const fallbackUser = getFallbackUserFromStoredIdToken()
+        this.user = fallbackUser
+        this.isLoggedIn = !!fallbackUser
         console.error('Authing checkAuth failed:', error)
       } finally {
         this.initialized = true
@@ -149,7 +207,7 @@ export const useAuthStore = defineStore('auth', {
       if (!String(config.public.authingAppId || '').trim()) return
       this.loading = true
       try {
-        const guard = getGuardClient()
+        const { guard } = await resolveGuardClient()
         if (!guard || typeof guard.startWithRedirect !== 'function') {
           throw new Error('Authing Guard 未初始化。请刷新页面后重试。')
         }
@@ -172,7 +230,7 @@ export const useAuthStore = defineStore('auth', {
         return
       }
       try {
-        const guard = getGuardClient()
+        const { guard } = await resolveGuardClient()
         if (guard && typeof guard.logout === 'function') {
           await guard.logout()
         }
@@ -183,27 +241,44 @@ export const useAuthStore = defineStore('auth', {
         this.isLoggedIn = false
         this.initialized = true
         this._clearBackendSessionCache()
+        this._clearAuthingSessionCache()
       }
     },
 
-    async handleCallback() {
-      if (!process.client) return
+    async handleCallback(): Promise<boolean> {
+      if (!process.client) return false
       const config = useRuntimeConfig()
-      if (!String(config.public.authingAppId || '').trim()) return
+      if (!String(config.public.authingAppId || '').trim()) return false
       this.loading = true
       try {
-        const guard = getGuardClient()
+        const { guard } = await resolveGuardClient()
         if (!guard || typeof guard.handleRedirectCallback !== 'function') {
           throw new Error('Authing Guard 未初始化，无法处理回调。')
         }
         await guard.handleRedirectCallback()
+        if (typeof guard.trackSession === 'function') {
+          const userInfo = await guard.trackSession()
+          if (userInfo) {
+            this.user = toAuthingUser(userInfo)
+            this.isLoggedIn = true
+          } else {
+            const fallbackUser = getFallbackUserFromStoredIdToken()
+            this.user = fallbackUser
+            this.isLoggedIn = !!fallbackUser
+          }
+        }
       } catch (error) {
+        const fallbackUser = getFallbackUserFromStoredIdToken()
+        this.user = fallbackUser
+        this.isLoggedIn = !!fallbackUser
         console.error('Authing callback failed:', error)
+        return !!fallbackUser
       } finally {
         this.loading = false
       }
       await this.checkAuth()
       this._clearBackendSessionCache()
+      return this.isLoggedIn
     },
 
     async openPasswordReset() {
@@ -228,7 +303,7 @@ export const useAuthStore = defineStore('auth', {
       } catch (error) {
         console.error('Authing openPasswordReset failed:', error)
         try {
-          const fallbackGuard = getGuardClient()
+          const { guard: fallbackGuard } = await resolveGuardClient()
           if (fallbackGuard && typeof fallbackGuard.startWithRedirect === 'function') {
             await fallbackGuard.startWithRedirect()
           }
