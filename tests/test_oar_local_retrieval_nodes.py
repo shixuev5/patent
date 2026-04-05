@@ -29,7 +29,7 @@ class _FakeEmbeddingProvider:
 
 
 def _patch_fake_embeddings(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
+    monkeypatch.setattr(settings, "RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
     monkeypatch.setattr(
         LocalEvidenceRetriever,
         "_build_embedding_provider",
@@ -123,7 +123,7 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
                     },
                     {
                         "doc_id": "EXT2",
-                        "source_type": "tavily_web",
+                        "source_type": "tavily",
                         "title": "文献2",
                         "url": "https://example.com/2",
                         "snippet": long_snippet,

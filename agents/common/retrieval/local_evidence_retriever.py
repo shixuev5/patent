@@ -22,6 +22,7 @@ import numpy as np
 from loguru import logger
 from openai import OpenAI
 
+from agents.common.retrieval.gateway import get_retrieval_base_url, require_retrieval_gateway
 from config import settings
 
 
@@ -120,8 +121,7 @@ class ChunkBuilder:
 class EmbeddingProvider:
     def __init__(self, config: EmbeddingConfig):
         self.config = config
-        api_key = settings.LOCAL_RETRIEVAL_EMBEDDING_API_KEY or settings.LLM_API_KEY
-        base_url = settings.LOCAL_RETRIEVAL_EMBEDDING_BASE_URL or settings.LLM_BASE_URL
+        api_key, base_url = require_retrieval_gateway("embedding")
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._api_key = api_key
         self._base_url = base_url
@@ -602,7 +602,7 @@ class SQLiteHybridIndex:
     def _build_model_signature(self) -> str:
         payload = {
             "model_name": self.embedding_config.model_name,
-            "base_url": str(settings.LOCAL_RETRIEVAL_EMBEDDING_BASE_URL or settings.LLM_BASE_URL or "").strip(),
+            "base_url": str(get_retrieval_base_url("embedding") or "").strip(),
             "normalize": True,
         }
         return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -696,7 +696,7 @@ class HybridRanker:
                     "lexical_score": round(lexical_score, 6),
                     "dense_score": round(dense_score, 6),
                     "fusion_score": fusion_score,
-                    "score": fusion_score,
+                    "relevance_score": fusion_score,
                     "match_terms": item.get("match_terms", []),
                 }
             )
@@ -737,7 +737,7 @@ class LocalEvidenceRetriever:
         self.chunk_builder = ChunkBuilder(chunk_chars=chunk_chars, chunk_overlap=chunk_overlap)
         self.language_router = LanguageRouter()
         self.embedding_config = EmbeddingConfig(
-            model_name=settings.LOCAL_RETRIEVAL_EMBEDDING_MODEL,
+            model_name=settings.RETRIEVAL_EMBEDDING_MODEL,
         )
         self.embedding_provider = self._build_embedding_provider()
         self.index = SQLiteHybridIndex(db_path=self.db_path, embedding_config=self.embedding_config)
@@ -834,7 +834,7 @@ class LocalEvidenceRetriever:
             if str(item.get("chunk_id", "")).strip()
         }
 
-        ranked = sorted(merged, key=lambda x: float(x.get("fusion_score", x.get("score", 0.0))), reverse=True)
+        ranked = sorted(merged, key=lambda x: float(x.get("relevance_score", x.get("fusion_score", 0.0))), reverse=True)
         cards: List[Dict[str, Any]] = []
         selected_ids: List[str] = []
         dropped_ids: List[str] = []
@@ -862,7 +862,7 @@ class LocalEvidenceRetriever:
                     "source_url": str(item.get("source_url", "")).strip() or None,
                     "source_title": str(item.get("source_title", "")).strip() or None,
                     "source_type": str(item.get("source_type", "")).strip() or "comparison_document",
-                    "score": float(item.get("fusion_score", item.get("score", 0.0))),
+                    "relevance_score": float(item.get("relevance_score", item.get("fusion_score", 0.0))),
                 }
             )
             selected_ids.append(candidate_id)
@@ -934,8 +934,8 @@ class LocalEvidenceRetriever:
             "analysis": str(item.get("analysis", "")).strip(),
             "source_url": str(item.get("source_url", "")).strip(),
             "source_title": str(item.get("source_title", "")).strip(),
-            "score": self._safe_float(item.get("score"), 0.0),
-            "fusion_score": self._safe_float(item.get("fusion_score", item.get("score")), 0.0),
+            "fusion_score": self._safe_float(item.get("fusion_score", item.get("relevance_score")), 0.0),
+            "relevance_score": self._safe_float(item.get("relevance_score", item.get("fusion_score")), 0.0),
             "retrieval_channels": item.get("retrieval_channels", []),
             "match_terms": item.get("match_terms", []),
         }
@@ -945,13 +945,8 @@ class LocalEvidenceRetriever:
 
     def _build_embedding_provider(self) -> EmbeddingProvider:
         if not self.embedding_config.model_name:
-            raise ValueError("LOCAL_RETRIEVAL_EMBEDDING_MODEL is required")
-        api_key = settings.LOCAL_RETRIEVAL_EMBEDDING_API_KEY or settings.LLM_API_KEY
-        base_url = settings.LOCAL_RETRIEVAL_EMBEDDING_BASE_URL or settings.LLM_BASE_URL
-        if not api_key or not base_url:
-            raise ValueError(
-                "LOCAL_RETRIEVAL_EMBEDDING_API_KEY/BASE_URL or LLM_API_KEY/BASE_URL are required for online embeddings"
-            )
+            raise ValueError("RETRIEVAL_EMBEDDING_MODEL is required")
+        require_retrieval_gateway("embedding")
         return EmbeddingProvider(self.embedding_config)
 
     def _trim_text(self, text: str, limit: int) -> str:

@@ -603,12 +603,12 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
             if not chunk_id:
                 continue
             current = deduped.get(chunk_id)
-            if not current or float(item.get("score", 0.0)) > float(current.get("score", 0.0)):
+            if not current or float(item.get("relevance_score", 0.0)) > float(current.get("relevance_score", 0.0)):
                 deduped[chunk_id] = item
 
         reranked = sorted(
             deduped.values(),
-            key=lambda x: float(x.get("score", 0.0)),
+            key=lambda x: float(x.get("relevance_score", 0.0)),
             reverse=True,
         )[: settings.LOCAL_RETRIEVAL_RERANK_K]
         if not reranked:

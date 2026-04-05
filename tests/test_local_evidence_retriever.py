@@ -35,7 +35,7 @@ class _FakeEmbeddingProvider:
 
 
 def _patch_fake_embeddings(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
+    monkeypatch.setattr(settings, "RETRIEVAL_EMBEDDING_MODEL", "fake/bge-m3")
     monkeypatch.setattr(
         LocalEvidenceRetriever,
         "_build_embedding_provider",

@@ -1,7 +1,7 @@
 import threading
 from typing import Dict
 from agents.common.search_clients.base import BaseSearchClient
-from agents.common.search_clients.zhihuiya import ZhihuiyaClient
+
 
 class SearchClientFactory:
     _instances: Dict[str, BaseSearchClient] = {}
@@ -12,6 +12,8 @@ class SearchClientFactory:
         provider = provider.lower().strip()
 
         if provider == "zhihuiya" or provider == "patsnap":
+            from agents.common.search_clients.zhihuiya import ZhihuiyaClient
+
             return ZhihuiyaClient()
 
         # 双重检查锁定 (Double-Checked Locking) 确保线程安全且高效

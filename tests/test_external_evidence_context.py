@@ -33,6 +33,7 @@ def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
         ]
 
     monkeypatch.setattr(aggregator, "_search_openalex", _fake_openalex)
+    monkeypatch.setattr(aggregator, "_rerank_results", lambda candidates, queries_by_engine: candidates)
 
     collector = task_usage_tracking.create_task_usage_collector(
         task_id="task-oar-ctx",

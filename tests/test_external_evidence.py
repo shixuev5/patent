@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import builtins
+import importlib
 import os
 
+import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.common.retrieval.external_rerank_service import (
+    ExternalEvidenceRerankError,
+    ExternalEvidenceRerankService,
+)
+from config import settings
 
 
 class _FakeResponse:
@@ -28,6 +36,9 @@ def _clear_external_env(monkeypatch):
         "OPENALEX_API_KEY",
         "OPENALEX_EMAIL",
         "TAVILY_API_KEYS",
+        "RETRIEVAL_API_KEY",
+        "RETRIEVAL_BASE_URL",
+        "RETRIEVAL_RERANK_MODEL",
         "ZHIHUIYA_USERNAME",
         "ZHIHUIYA_PASSWORD",
     ]:
@@ -101,8 +112,12 @@ def test_openalex_search_keeps_anonymous_mode_when_key_missing(monkeypatch):
     results = aggregator._search_openalex(["battery material"], priority_date="2024-12-31", per_query=2)
 
     assert len(results) == 1
-    assert captured["params"]["search"] == "battery material"
-    assert captured["params"]["filter"] == "to_publication_date:2024-12-31"
+    assert captured["params"]["filter"] == (
+        "title_and_abstract.search:battery material,"
+        "language:en,"
+        "has_abstract:true,"
+        "to_publication_date:2024-12-31"
+    )
     assert "api_key" not in captured["params"]
 
 
@@ -140,3 +155,195 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
     assert calls == ["key-a", "key-b"]
     assert len(results) == 1
     assert results[0]["title"] == "paper-b"
+
+
+def test_openalex_query_rewrite_removes_legal_scaffolding():
+    aggregator = ExternalEvidenceAggregator()
+
+    query = aggregator._normalize_openalex_query(
+        "\"locking structure\" AND handbook OR textbook"
+    )
+
+    assert query == "\"locking structure\" AND handbook OR textbook"
+
+
+def test_openalex_query_normalization_removes_filter_delimiters_only():
+    aggregator = ExternalEvidenceAggregator()
+
+    query = aggregator._normalize_openalex_query(
+        "\"large language model\", AND patent claim generation"
+    )
+
+    assert query == "\"large language model\" AND patent claim generation"
+
+
+def test_external_evidence_module_import_does_not_touch_zhihuiya_factory(monkeypatch):
+    original_import = builtins.__import__
+
+    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {
+            "agents.common.search_clients.factory",
+            "agents.common.search_clients.zhihuiya",
+        }:
+            raise AssertionError(f"unexpected import: {name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
+    importlib.reload(external_evidence_module)
+
+
+def test_external_rerank_service_uses_retrieval_gateway(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setenv("RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("RETRIEVAL_RERANK_MODEL", "qwen3-rerank")
+    monkeypatch.setattr(settings, "RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setattr(settings, "RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setattr(settings, "RETRIEVAL_RERANK_MODEL", "qwen3-rerank")
+
+    service = ExternalEvidenceRerankService()
+    captured = {}
+    assert str(service.client.base_url).endswith("/compatible-api/v1/")
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"index": 1, "relevance_score": 0.91},
+                    {"index": 0, "relevance_score": 0.34},
+                ]
+            }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["body"] = json
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
+
+    rows = service.rerank("query-a", ["doc-a", "doc-b"])
+
+    assert captured["url"].endswith("/compatible-api/v1/reranks")
+    assert captured["body"]["model"] == "qwen3-rerank"
+    assert captured["body"]["documents"] == ["doc-a", "doc-b"]
+    assert "Authorization" in captured["headers"]
+    assert rows == [
+        {"index": 1, "relevance_score": 0.91},
+        {"index": 0, "relevance_score": 0.34},
+    ]
+
+
+def test_external_rerank_service_falls_back_to_llm_gateway(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setattr(settings, "RETRIEVAL_API_KEY", "")
+    monkeypatch.setattr(settings, "RETRIEVAL_BASE_URL", "")
+    monkeypatch.setattr(settings, "LLM_API_KEY", "llm-key")
+    monkeypatch.setattr(settings, "LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    service = ExternalEvidenceRerankService()
+
+    assert str(service.client.base_url).endswith("/compatible-api/v1/")
+
+
+def test_search_evidence_reranks_and_rebuilds_doc_ids(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setenv("RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "doc-a",
+                "url": "https://example.com/a",
+                "snippet": "snippet-a",
+                "published": "2024-01-01",
+            },
+            {
+                "source_type": "openalex",
+                "title": "doc-b",
+                "url": "https://example.com/b",
+                "snippet": "snippet-b",
+                "published": "2023-01-01",
+            },
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            assert query == "query-a"
+            assert len(documents) == 2
+            return [
+                {"index": 1, "relevance_score": 0.88},
+                {"index": 0, "relevance_score": 0.22},
+            ]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={"openalex": ["query-a"]},
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert engines == ["openalex"]
+    assert [item["title"] for item in results] == ["doc-b", "doc-a"]
+    assert [item["doc_id"] for item in results] == ["EXT1", "EXT2"]
+    assert meta["retrieval"]["openalex"]["rerank_enabled"] is True
+    assert meta["retrieval"]["openalex"]["results"][0]["relevance_score"] == 0.88
+
+
+def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setenv("RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "large language model patent claim generation",
+                "url": "https://example.com/a",
+                "snippet": "relevant snippet",
+                "published": "2024-01-01",
+            },
+            {
+                "source_type": "openalex",
+                "title": "generic business model",
+                "url": "https://example.com/b",
+                "snippet": "generic snippet",
+                "published": "2024-02-01",
+            },
+        ],
+    )
+
+    class _FailingRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            raise ExternalEvidenceRerankError("timeout")
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _FailingRerank())
+
+    results, _, meta = aggregator.search_evidence(
+        queries={"openalex": ["large language model patent claim generation"]},
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert results[0]["title"] == "large language model patent claim generation"
+    assert meta["retrieval"]["openalex"]["rerank_enabled"] is False
+    assert meta["retrieval"]["openalex"]["rerank_fallback_reason"] == "timeout"

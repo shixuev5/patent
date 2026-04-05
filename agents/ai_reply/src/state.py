@@ -85,18 +85,21 @@ class EvidenceAssessmentQuote(BaseModel):
 class RetrievalResultItem(BaseModel):
     """外部检索结果项（trace记录）"""
     doc_id: Optional[str] = Field(None, description="证据编号，如 EXT1")
-    source_type: str = Field(default="", description="来源类型")
     title: str = Field(default="", description="标题")
     url: Optional[str] = Field(None, description="链接")
     published: Optional[str] = Field(None, description="公开日期")
-    similarity_score: Optional[float] = Field(None, description="相似度分值")
+    relevance_score: float = Field(0.0, description="rerank 相关性分值")
 
 
 class RetrievalEngineTrace(BaseModel):
     """单检索引擎追踪信息"""
     queries: List[str] = Field(default_factory=list, description="该引擎实际执行的查询条件")
     filters: Dict[str, Any] = Field(default_factory=dict, description="该引擎执行过滤条件")
+    raw_result_count: int = Field(0, description="该引擎原始候选数")
     result_count: int = Field(0, description="该引擎入选证据条数")
+    rerank_enabled: bool = Field(False, description="是否使用 rerank 排序")
+    rerank_model: str = Field(default="", description="本次使用的 rerank 模型名")
+    rerank_fallback_reason: str = Field(default="", description="rerank 失败时的兜底原因")
     results: List[RetrievalResultItem] = Field(default_factory=list, description="该引擎入选证据摘要")
 
 

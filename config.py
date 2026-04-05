@@ -106,10 +106,13 @@ class Settings:
     LOCAL_RETRIEVAL_CONTEXT_K = max(1, int(os.getenv("LOCAL_RETRIEVAL_CONTEXT_K", "6")))
     LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS = max(400, int(os.getenv("LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS", "2200")))
     LOCAL_RETRIEVAL_MAX_QUOTE_CHARS = max(80, int(os.getenv("LOCAL_RETRIEVAL_MAX_QUOTE_CHARS", "180")))
-    LOCAL_RETRIEVAL_EMBEDDING_API_KEY = os.getenv("LOCAL_RETRIEVAL_EMBEDDING_API_KEY", "").strip()
-    LOCAL_RETRIEVAL_EMBEDDING_BASE_URL = os.getenv("LOCAL_RETRIEVAL_EMBEDDING_BASE_URL", "").strip()
-    LOCAL_RETRIEVAL_EMBEDDING_MODEL = (
-        os.getenv("LOCAL_RETRIEVAL_EMBEDDING_MODEL", "text-embedding-v4").strip() or "text-embedding-v4"
+    RETRIEVAL_API_KEY = os.getenv("RETRIEVAL_API_KEY", "").strip()
+    RETRIEVAL_BASE_URL = os.getenv("RETRIEVAL_BASE_URL", "").strip()
+    RETRIEVAL_EMBEDDING_MODEL = (
+        os.getenv("RETRIEVAL_EMBEDDING_MODEL", "text-embedding-v4").strip() or "text-embedding-v4"
+    )
+    RETRIEVAL_RERANK_MODEL = (
+        os.getenv("RETRIEVAL_RERANK_MODEL", "qwen3-rerank").strip() or "qwen3-rerank"
     )
     LOCAL_RETRIEVAL_SQLITE_VEC_EXTENSION_PATH = os.getenv(
         "LOCAL_RETRIEVAL_SQLITE_VEC_EXTENSION_PATH", ""

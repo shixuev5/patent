@@ -87,7 +87,7 @@ def build_evidence_cards_from_items(
                 "source_url": str(item.get("source_url", "")).strip() or None,
                 "source_title": str(item.get("source_title", "")).strip() or None,
                 "source_type": str(item.get("source_type", "")).strip() or "comparison_document",
-                "score": 0.9 - index * 0.01,
+                "relevance_score": 0.9 - index * 0.01,
             }
         )
     for index, item in enumerate(external_evidence or []):
@@ -105,7 +105,7 @@ def build_evidence_cards_from_items(
                 "source_url": str(item.get("source_url", "")).strip() or None,
                 "source_title": str(item.get("source_title", "")).strip() or None,
                 "source_type": str(item.get("source_type", "")).strip() or "external_document",
-                "score": 0.6 - index * 0.01,
+                "relevance_score": 0.6 - index * 0.01,
             }
         )
     cards: List[Dict[str, Any]] = []
@@ -113,7 +113,7 @@ def build_evidence_cards_from_items(
     dropped: List[str] = []
     total_chars = 0
     seen_quotes: Set[Tuple[str, str]] = set()
-    for item in sorted(candidates, key=lambda x: float(x.get("score", 0.0)), reverse=True):
+    for item in sorted(candidates, key=lambda x: float(x.get("relevance_score", 0.0)), reverse=True):
         doc_id = str(item.get("doc_id", "")).strip()
         quote = str(item.get("quote", "")).strip()
         dedupe_key = (doc_id, quote)
@@ -133,7 +133,7 @@ def build_evidence_cards_from_items(
                 "source_url": item.get("source_url"),
                 "source_title": item.get("source_title"),
                 "source_type": item.get("source_type"),
-                "score": float(item.get("score", 0.0)),
+                "relevance_score": float(item.get("relevance_score", 0.0)),
             }
         )
         selected.append(str(item.get("candidate_id", "")).strip())
@@ -171,7 +171,7 @@ def build_compact_cards(
     selected: List[str] = []
     dropped: List[str] = []
     total_chars = 0
-    for item in sorted(candidates or [], key=lambda x: float(x.get("score", 0.0)), reverse=True):
+    for item in sorted(candidates or [], key=lambda x: float(x.get("relevance_score", 0.0)), reverse=True):
         candidate_id = str(item.get("candidate_id", "")).strip() or str(item.get("doc_id", "")).strip()
         quote = re.sub(r"\s+", " ", str(item.get("text", "")).strip())
         if len(quote) > max_quote_chars:
@@ -192,7 +192,7 @@ def build_compact_cards(
                 "source_url": str(item.get("source_url", "")).strip() or None,
                 "source_title": str(item.get("source_title", "")).strip() or None,
                 "source_type": str(item.get("source_type", "")).strip() or None,
-                "score": float(item.get("score", 0.0)),
+                "relevance_score": float(item.get("relevance_score", 0.0)),
             }
         )
         selected.append(candidate_id)

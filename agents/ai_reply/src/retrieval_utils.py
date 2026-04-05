@@ -62,7 +62,10 @@ def plan_engine_queries(
                 "请按引擎输出 JSON 查询条件，格式为 "
                 "{\"openalex\": [\"...\"], \"zhihuiya\": [\"...\"], \"tavily\": [\"...\"]}。"
                 f"每个引擎最多 {per_engine_limit} 条。"
-                "openalex 使用英文学术风格关键词；zhihuiya/tavily 使用中文关键词。"
+                "openalex 使用英文、面向论文/教材/综述的学术检索关键词。"
+                "openalex 查询必须是短关键词或布尔短语，优先使用引号、AND/OR/括号组合核心技术术语。"
+                "不要给 openalex 输出自然语言句子，不要写 common general knowledge、prior to filing date、区别特征、审查意见等业务表述。"
+                "zhihuiya/tavily 使用中文关键词。"
                 "只输出 JSON，不要额外文本。"
             ),
         },

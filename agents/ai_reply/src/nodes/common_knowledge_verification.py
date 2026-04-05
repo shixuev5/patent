@@ -293,8 +293,8 @@ class CommonKnowledgeVerificationNode:
             {
                 "openalex": normalize_query_list(
                     [
-                        f"{feature_text} textbook handbook conventional technology",
-                        f"{feature_text} widely used prior to filing",
+                        f"{feature_text} textbook handbook",
+                        f"{feature_text} standard practice review",
                     ],
                     limit=2,
                 ),
@@ -417,8 +417,8 @@ class CommonKnowledgeVerificationNode:
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
         fallback_queries = {
             "openalex": normalize_query_list([
-                f"{feature_text} common general knowledge prior to filing date",
-                f"{feature_text} conventional implementation patent",
+                f"{feature_text} review tutorial",
+                f"{feature_text} standard practice",
                 f"{feature_text} {examiner_opinion.get('reasoning', '')}",
             ], limit=2),
             "zhihuiya": normalize_query_list([
@@ -508,11 +508,11 @@ class CommonKnowledgeVerificationNode:
             if not chunk_id:
                 continue
             current = deduped.get(chunk_id)
-            if not current or float(item.get("score", 0.0)) > float(current.get("score", 0.0)):
+            if not current or float(item.get("relevance_score", 0.0)) > float(current.get("relevance_score", 0.0)):
                 deduped[chunk_id] = item
         sorted_items = sorted(
             deduped.values(),
-            key=lambda x: float(x.get("score", 0.0)),
+            key=lambda x: float(x.get("relevance_score", 0.0)),
             reverse=True,
         )[: settings.LOCAL_RETRIEVAL_CANDIDATE_K]
         return sorted_items, {
@@ -552,7 +552,7 @@ class CommonKnowledgeVerificationNode:
                     "text": snippet,
                     "source_url": str(evidence.get("url", "")).strip(),
                     "source_title": str(evidence.get("title", "")).strip(),
-                    "score": 0.4,
+                    "relevance_score": float(evidence.get("relevance_score", 0.0) or 0.0),
                     "match_terms": [],
                 }
             )
@@ -564,28 +564,23 @@ class CommonKnowledgeVerificationNode:
         flat_queries: List[str],
         top_k: int,
     ) -> List[Dict[str, Any]]:
-        terms: List[str] = []
-        for query in flat_queries:
-            for token in re.split(r"[\s,，。；;:：、（）()\[\]{}]+", str(query)):
-                value = token.strip()
-                if len(value) >= 2 and value not in terms:
-                    terms.append(value)
-
+        _ = flat_queries
         scored: List[Dict[str, Any]] = []
         for item in candidates or []:
             row = self._to_dict(item)
             text = str(row.get("text", "")).strip()
             if not text:
                 continue
-            hit_count = sum(1 for term in terms[:20] if term in text)
-            coverage = hit_count / float(max(1, min(20, len(terms))))
-            base_score = float(row.get("score", 0.0) or 0.0)
-            row["score"] = round(base_score + coverage * 0.35, 6)
-            row["match_terms"] = [term for term in terms[:20] if term in text][:6]
+            source_type = str(row.get("source_type", "")).strip()
+            if source_type == "comparison_document":
+                base_score = float(row.get("relevance_score", row.get("fusion_score", 0.0)) or 0.0)
+            else:
+                base_score = float(row.get("relevance_score", 0.0) or 0.0)
+            row["relevance_score"] = round(max(0.0, min(1.0, base_score)), 6)
             scored.append(row)
 
         deduped: Dict[str, Dict[str, Any]] = {}
-        for item in sorted(scored, key=lambda x: float(x.get("score", 0.0)), reverse=True):
+        for item in sorted(scored, key=lambda x: float(x.get("relevance_score", 0.0)), reverse=True):
             candidate_id = str(item.get("candidate_id", "")).strip() or str(item.get("chunk_id", "")).strip() or str(item.get("doc_id", "")).strip()
             if not candidate_id or candidate_id in deduped:
                 continue
@@ -669,7 +664,7 @@ class CommonKnowledgeVerificationNode:
       "analysis": "该证据如何支持或反驳公知常识的认定",
       "source_url": "https://...",
       "source_title": "文献标题",
-      "source_type": "openalex 或 zhihuiya 或 model_knowledge"
+      "source_type": "openalex 或 zhihuiya 或 tavily 或 model_knowledge"
     }
   ]
 }

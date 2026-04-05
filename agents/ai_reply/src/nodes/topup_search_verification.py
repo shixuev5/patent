@@ -438,8 +438,8 @@ feature_text: {feature_text}
     ) -> Dict[str, List[str]]:
         fallback_queries = {
             "openalex": normalize_query_list([
-                f"{feature_text} prior art conventional method",
-                f"{feature_text} patent disclosure implementation",
+                f"{feature_text} method architecture",
+                f"{feature_text} implementation study",
             ], limit=2),
             "zhihuiya": normalize_query_list([
                 f"{feature_text} 专利 技术公开",
@@ -479,8 +479,8 @@ feature_text: {feature_text}
             {
                 "openalex": normalize_query_list(
                     [
-                        f"{feature_text} {claim_text[:120]} technical effect",
-                        f"{feature_text} distinguishing feature prior art",
+                        f"{feature_text} comparative study",
+                        f"{feature_text} implementation design",
                     ],
                     limit=2,
                 ),
@@ -701,12 +701,12 @@ feature_text: {feature_text}
             if not chunk_id:
                 continue
             existing = deduped.get(chunk_id)
-            if not existing or float(item.get("score", 0.0)) > float(existing.get("score", 0.0)):
+            if not existing or float(item.get("relevance_score", 0.0)) > float(existing.get("relevance_score", 0.0)):
                 deduped[chunk_id] = item
 
         reranked = sorted(
             deduped.values(),
-            key=lambda x: float(x.get("score", 0.0)),
+            key=lambda x: float(x.get("relevance_score", 0.0)),
             reverse=True,
         )[: settings.LOCAL_RETRIEVAL_RERANK_K]
 

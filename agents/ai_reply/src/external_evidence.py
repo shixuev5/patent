@@ -3,6 +3,8 @@
 统一接入 OpenAlex（学术）、智慧芽（专利）和 Tavily（网页）检索能力。
 """
 
+from __future__ import annotations
+
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -12,13 +14,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 from loguru import logger
 
+from agents.common.retrieval.external_rerank_service import (
+    ExternalEvidenceRerankError,
+    ExternalEvidenceRerankService,
+)
 from agents.common.utils.concurrency import submit_with_current_context
-from agents.common.search_clients.factory import SearchClientFactory
 from config import settings
 
 
 class ExternalEvidenceAggregator:
     """统一外部检索聚合器。"""
+
+    _EXTERNAL_PER_QUERY = 8
+    _MAX_RERANK_CANDIDATES = 24
 
     def __init__(self):
         self.openalex_api_keys = self._load_api_keys("OPENALEX_API_KEYS")
@@ -36,8 +44,11 @@ class ExternalEvidenceAggregator:
             default=0.0,
         )
         self.zhihuiya_client = None
+        self._rerank_service: ExternalEvidenceRerankService | None = None
         if self.zhihuiya_enabled:
             try:
+                from agents.common.search_clients.factory import SearchClientFactory
+
                 self.zhihuiya_client = SearchClientFactory.get_client("zhihuiya")
             except Exception as ex:
                 logger.warning(f"初始化智慧芽客户端失败，后续将跳过专利证据检索: {ex}")
@@ -59,38 +70,34 @@ class ExternalEvidenceAggregator:
         if not any(queries_by_engine.values()):
             return [], [], {"retrieval": {}}
 
-        candidates: List[Dict[str, Any]] = []
+        engine_hits: Dict[str, List[Dict[str, Any]]] = {}
         engines: List[str] = []
-
-        openalex_queries = queries_by_engine.get("openalex", [])
-        zhihuiya_queries = queries_by_engine.get("zhihuiya", [])
-        tavily_queries = queries_by_engine.get("tavily", [])
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_map = {}
-            if openalex_queries:
+            if queries_by_engine.get("openalex"):
                 future_map["openalex"] = submit_with_current_context(
                     executor,
                     self._search_openalex,
-                    openalex_queries,
+                    queries_by_engine["openalex"],
                     priority_date,
-                    4,
+                    self._EXTERNAL_PER_QUERY,
                 )
-            if zhihuiya_queries:
+            if queries_by_engine.get("zhihuiya"):
                 future_map["zhihuiya"] = submit_with_current_context(
                     executor,
                     self._search_zhihuiya,
-                    zhihuiya_queries,
+                    queries_by_engine["zhihuiya"],
                     priority_date,
-                    4,
+                    self._EXTERNAL_PER_QUERY,
                     self.zhihuiya_min_similarity_score,
                 )
-            if tavily_queries:
+            if queries_by_engine.get("tavily"):
                 future_map["tavily"] = submit_with_current_context(
                     executor,
                     self._search_tavily,
-                    tavily_queries,
+                    queries_by_engine["tavily"],
                     priority_date,
-                    4,
+                    self._EXTERNAL_PER_QUERY,
                 )
 
             for engine_name in ["openalex", "zhihuiya", "tavily"]:
@@ -103,17 +110,41 @@ class ExternalEvidenceAggregator:
                     logger.warning(f"{engine_name} 检索执行失败: {ex}")
                     hits = []
                 if hits:
-                    candidates.extend(hits)
+                    engine_hits[engine_name] = hits
                     engines.append(engine_name)
 
-        merged = self._interleave_by_source(self._dedupe_results(candidates))
-        final_results = merged[:limit]
+        raw_candidates = [item for hits in engine_hits.values() for item in hits]
+        deduped_candidates = self._interleave_by_source(
+            self._dedupe_results(self._clean_results(raw_candidates))
+        )[: self._MAX_RERANK_CANDIDATES]
+
+        rerank_enabled = False
+        rerank_fallback_reason = ""
+        if deduped_candidates:
+            try:
+                ranked_candidates = self._rerank_results(deduped_candidates, queries_by_engine)
+                rerank_enabled = True
+            except ValueError:
+                raise
+            except ExternalEvidenceRerankError as ex:
+                rerank_fallback_reason = str(ex)
+                logger.warning(f"外部证据 rerank 失败，切换到本地排序兜底: {rerank_fallback_reason}")
+                ranked_candidates = self._fallback_rank_results(deduped_candidates, queries_by_engine)
+        else:
+            ranked_candidates = []
+
+        merged = self._interleave_by_source(ranked_candidates)
+        final_results = [self._finalize_result(item) for item in merged[:limit]]
         for index, item in enumerate(final_results, start=1):
             item["doc_id"] = f"EXT{index}"
+
         retrieval_meta = self._build_retrieval_meta(
             queries_by_engine=queries_by_engine,
             final_results=final_results,
             priority_date=priority_date,
+            engine_hits=engine_hits,
+            rerank_enabled=rerank_enabled,
+            rerank_fallback_reason=rerank_fallback_reason,
         )
         return final_results, engines, retrieval_meta
 
@@ -197,18 +228,15 @@ class ExternalEvidenceAggregator:
                     continue
                 if similarity_score < min_similarity_score:
                     continue
-
                 if not any([title, pn, abstract]):
                     continue
 
                 results.append({
-                    "source_type": "zhihuiya_patent",
+                    "source_type": "zhihuiya",
                     "title": title or pn,
                     "url": f"https://patents.google.com/patent/{pn}" if pn else "",
                     "snippet": abstract[:800],
                     "published": published,
-                    "similarity_score": similarity_score,
-                    "score": similarity_score,
                 })
 
         return results
@@ -242,7 +270,7 @@ class ExternalEvidenceAggregator:
                     continue
 
                 results.append({
-                    "source_type": "tavily_web",
+                    "source_type": "tavily",
                     "title": title,
                     "url": url,
                     "snippet": snippet[:800],
@@ -250,6 +278,129 @@ class ExternalEvidenceAggregator:
                 })
 
         return results
+
+    def _clean_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cleaned: List[Dict[str, Any]] = []
+        for item in results:
+            row = self._to_dict(item)
+            title = str(row.get("title", "")).strip()
+            url = str(row.get("url", "")).strip()
+            snippet = str(row.get("snippet", "")).strip()
+            if not title or not url or not snippet:
+                continue
+            cleaned.append({
+                "source_type": str(row.get("source_type", "")).strip(),
+                "title": title,
+                "url": url,
+                "snippet": snippet[:800],
+                "published": str(row.get("published", "")).strip(),
+            })
+        return cleaned
+
+    def _rerank_results(
+        self,
+        candidates: List[Dict[str, Any]],
+        queries_by_engine: Dict[str, List[str]],
+    ) -> List[Dict[str, Any]]:
+        flat_queries = self._flatten_queries(queries_by_engine)
+        if not flat_queries:
+            return candidates
+
+        documents = [self._build_rerank_document(item) for item in candidates]
+        best_scores = [0.0] * len(candidates)
+        rerank_service = self._get_rerank_service()
+        for query in flat_queries:
+            rows = rerank_service.rerank(query=query, documents=documents)
+            for item in rows:
+                index = int(item.get("index", -1))
+                if 0 <= index < len(best_scores):
+                    best_scores[index] = max(best_scores[index], self._safe_float(item.get("relevance_score"), 0.0))
+
+        ranked: List[Dict[str, Any]] = []
+        for index, item in enumerate(candidates):
+            row = dict(item)
+            row["relevance_score"] = round(best_scores[index], 6)
+            row["_original_rank"] = index
+            ranked.append(row)
+        ranked.sort(
+            key=lambda item: (
+                float(item.get("relevance_score", 0.0)),
+                self._normalize_date(item.get("published")) or "",
+                -int(item.get("_original_rank", 0)),
+            ),
+            reverse=True,
+        )
+        return ranked
+
+    def _fallback_rank_results(
+        self,
+        candidates: List[Dict[str, Any]],
+        queries_by_engine: Dict[str, List[str]],
+    ) -> List[Dict[str, Any]]:
+        flat_queries = self._flatten_queries(queries_by_engine)
+        ranked: List[Dict[str, Any]] = []
+        for index, item in enumerate(candidates):
+            title = str(item.get("title", "")).strip()
+            snippet = str(item.get("snippet", "")).strip()
+            title_norm = self._normalize_search_text(title)
+            body_norm = self._normalize_search_text(f"{title}\n{snippet}")
+            title_tokens = self._tokenize_search_text(title_norm)
+            body_tokens = self._tokenize_search_text(body_norm)
+
+            best_phrase = 0
+            best_title_hits = 0
+            best_coverage = 0.0
+            for query in flat_queries:
+                query_norm = self._normalize_search_text(query)
+                if not query_norm:
+                    continue
+                if query_norm in title_norm:
+                    best_phrase = 1
+                query_tokens = self._tokenize_search_text(query_norm)
+                if not query_tokens:
+                    continue
+                title_hits = len(set(query_tokens) & set(title_tokens))
+                body_hits = len(set(query_tokens) & set(body_tokens))
+                coverage = body_hits / float(len(set(query_tokens)))
+                best_title_hits = max(best_title_hits, title_hits)
+                best_coverage = max(best_coverage, coverage)
+
+            row = dict(item)
+            row["relevance_score"] = round(best_phrase * 1.0 + best_title_hits * 0.2 + best_coverage * 0.1, 6)
+            row["_original_rank"] = index
+            ranked.append(row)
+
+        ranked.sort(
+            key=lambda item: (
+                float(item.get("relevance_score", 0.0)),
+                self._normalize_date(item.get("published")) or "",
+                -int(item.get("_original_rank", 0)),
+            ),
+            reverse=True,
+        )
+        return ranked
+
+    def _build_rerank_document(self, item: Dict[str, Any]) -> str:
+        title = str(item.get("title", "")).strip()
+        snippet = str(item.get("snippet", "")).strip()
+        if snippet:
+            return f"{title}\n\n{snippet}".strip()
+        return title
+
+    def _get_rerank_service(self) -> ExternalEvidenceRerankService:
+        if self._rerank_service is None:
+            self._rerank_service = ExternalEvidenceRerankService()
+        return self._rerank_service
+
+    def _finalize_result(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "source_type": str(item.get("source_type", "")).strip(),
+            "title": str(item.get("title", "")).strip(),
+            "url": str(item.get("url", "")).strip(),
+            "snippet": str(item.get("snippet", "")).strip(),
+            "published": str(item.get("published", "")).strip(),
+            "relevance_score": round(self._safe_float(item.get("relevance_score"), 0.0), 6),
+        }
 
     def _load_api_keys(self, *env_names: str) -> List[str]:
         keys: List[str] = []
@@ -271,11 +422,12 @@ class ExternalEvidenceAggregator:
         priority_date: Optional[str],
         per_query: int,
     ) -> Dict[str, Any]:
-        base_params: Dict[str, Any] = {
-            "search": query,
-            "per-page": per_query,
-        }
+        normalized_query = self._normalize_openalex_query(query)
+        base_params: Dict[str, Any] = {"per-page": per_query}
         filters: List[str] = []
+        if normalized_query:
+            filters.append(f"title_and_abstract.search:{normalized_query}")
+        filters.extend(["language:en", "has_abstract:true"])
         if priority_date:
             filters.append(f"to_publication_date:{priority_date}")
         if filters:
@@ -477,7 +629,7 @@ class ExternalEvidenceAggregator:
             source_type = str(item.get("source_type", "")).strip() or "unknown"
             buckets.setdefault(source_type, []).append(item)
 
-        ordered_source_types = [key for key in ["openalex", "zhihuiya_patent", "tavily_web"] if key in buckets]
+        ordered_source_types = [key for key in ["openalex", "zhihuiya", "tavily"] if key in buckets]
         for source_type in buckets:
             if source_type not in ordered_source_types:
                 ordered_source_types.append(source_type)
@@ -511,10 +663,8 @@ class ExternalEvidenceAggregator:
             "academic": "openalex",
             "zhihuiya": "zhihuiya",
             "patent": "zhihuiya",
-            "zhihuiya_patent": "zhihuiya",
             "tavily": "tavily",
             "web": "tavily",
-            "tavily_web": "tavily",
         }
         for raw_key, raw_queries in queries.items():
             key = alias_map.get(str(raw_key).strip().lower())
@@ -535,11 +685,23 @@ class ExternalEvidenceAggregator:
                 break
         return normalized
 
+    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
+        flat: List[str] = []
+        for engine_queries in queries_by_engine.values():
+            for query in engine_queries:
+                value = str(query).strip()
+                if value and value not in flat:
+                    flat.append(value)
+        return flat
+
     def _build_retrieval_meta(
         self,
         queries_by_engine: Dict[str, List[str]],
         final_results: List[Dict[str, Any]],
         priority_date: Optional[str],
+        engine_hits: Dict[str, List[Dict[str, Any]]],
+        rerank_enabled: bool,
+        rerank_fallback_reason: str,
     ) -> Dict[str, Any]:
         retrieval: Dict[str, Dict[str, Any]] = {}
         for engine, engine_queries in queries_by_engine.items():
@@ -548,46 +710,62 @@ class ExternalEvidenceAggregator:
             filters: Dict[str, Any] = {}
             if priority_date:
                 filters["priority_date_lte"] = priority_date
+            if engine == "openalex":
+                filters["language"] = "en"
+                filters["has_abstract"] = True
+                filters["search_field"] = "title_and_abstract.search"
             if engine == "zhihuiya":
                 filters["min_similarity_score"] = self.zhihuiya_min_similarity_score
             retrieval[engine] = {
                 "queries": engine_queries,
                 "filters": filters,
+                "raw_result_count": len(engine_hits.get(engine, [])),
                 "result_count": 0,
+                "rerank_enabled": rerank_enabled,
+                "rerank_model": str(settings.RETRIEVAL_RERANK_MODEL or "").strip() or "qwen3-rerank",
+                "rerank_fallback_reason": rerank_fallback_reason,
                 "results": [],
             }
 
         for item in final_results:
-            source_type = str(item.get("source_type", "")).strip()
-            engine = self._source_to_engine(source_type)
+            engine = self._source_to_engine(str(item.get("source_type", "")).strip())
             if not engine:
                 continue
             stat = retrieval.setdefault(engine, {
                 "queries": [],
                 "filters": {},
+                "raw_result_count": 0,
                 "result_count": 0,
+                "rerank_enabled": rerank_enabled,
+                "rerank_model": str(settings.RETRIEVAL_RERANK_MODEL or "").strip() or "qwen3-rerank",
+                "rerank_fallback_reason": rerank_fallback_reason,
                 "results": [],
             })
             stat["result_count"] += 1
             stat["results"].append({
                 "doc_id": str(item.get("doc_id", "")).strip() or None,
-                "source_type": source_type,
                 "title": str(item.get("title", "")).strip(),
                 "url": str(item.get("url", "")).strip() or None,
                 "published": str(item.get("published", "")).strip() or None,
-                "similarity_score": self._safe_float(item.get("similarity_score"), default=0.0)
-                if item.get("similarity_score") is not None else None,
+                "relevance_score": round(self._safe_float(item.get("relevance_score"), 0.0), 6),
             })
         return {"retrieval": retrieval}
 
     def _source_to_engine(self, source_type: str) -> str:
-        if source_type == "openalex":
-            return "openalex"
-        if source_type == "zhihuiya_patent":
-            return "zhihuiya"
-        if source_type == "tavily_web":
-            return "tavily"
+        if source_type in {"openalex", "zhihuiya", "tavily"}:
+            return source_type
         return ""
+
+    def _normalize_search_text(self, value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    def _tokenize_search_text(self, value: str) -> List[str]:
+        return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", value)
+
+    def _normalize_openalex_query(self, query: Any) -> str:
+        text = " ".join(str(query or "").split())
+        text = text.replace(",", " ").replace("，", " ")
+        return re.sub(r"\s+", " ", text).strip()
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
