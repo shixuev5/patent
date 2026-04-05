@@ -44,6 +44,21 @@
 
       <div class="task-actions" @click.stop>
         <button
+          v-if="canCreateSearchDraft"
+          class="action-chip info"
+          :disabled="creatingSearchDraft"
+          title="基于当前 AI 分析结果生成 AI 检索草稿"
+          @click="openSearchDraft"
+        >
+          <svg v-if="creatingSearchDraft" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <MagnifyingGlassIcon v-else class="h-4 w-4" />
+          <span>{{ creatingSearchDraft ? '生成中' : '生成检索草稿' }}</span>
+        </button>
+
+        <button
           v-if="displayStatus === 'completed' && task.downloadUrl"
           class="action-btn primary"
           @click="download"
@@ -74,22 +89,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import {
   ArrowDownTrayIcon,
   ArrowPathIcon,
   CheckCircleIcon,
   ClockIcon,
   ExclamationCircleIcon,
+  MagnifyingGlassIcon,
   StopCircleIcon,
   TrashIcon,
   XCircleIcon,
 } from '@heroicons/vue/24/outline'
+import { useRouter } from 'vue-router'
+import { useAiSearchStore } from '~/stores/aiSearch'
 import { useTaskStore } from '~/stores/task'
 import type { Task } from '~/types/task'
 
 const props = defineProps<{ task: Task }>()
 const taskStore = useTaskStore()
+const aiSearchStore = useAiSearchStore()
+const router = useRouter()
+const creatingSearchDraft = ref(false)
 
 const displayStatus = computed(() => {
   if (props.task.status === 'failed' || props.task.status === 'cancelled') return 'error'
@@ -123,6 +144,10 @@ const canDelete = computed(() => {
   return props.task.status !== 'pending' && props.task.status !== 'processing'
 })
 
+const canCreateSearchDraft = computed(() => {
+  return displayStatus.value === 'completed' && props.task.taskType === 'patent_analysis' && !!props.task.backendId
+})
+
 const formatTime = (timestamp: number): string => {
   const now = Date.now()
   const diff = now - timestamp
@@ -136,6 +161,25 @@ const formatTime = (timestamp: number): string => {
 const download = () => taskStore.downloadResult(props.task)
 const retry = () => taskStore.retryTask(props.task)
 const cancel = () => taskStore.cancelTask(props.task)
+const openSearchDraft = async () => {
+  const analysisTaskId = String(props.task.backendId || '').trim()
+  if (!analysisTaskId || creatingSearchDraft.value) return
+  creatingSearchDraft.value = true
+  try {
+    const sessionId = await aiSearchStore.createSessionFromAnalysis(analysisTaskId)
+    if (!sessionId) {
+      throw new Error('AI 检索草稿创建成功，但未返回会话ID。')
+    }
+    await router.push({
+      path: '/search',
+      query: { session: sessionId },
+    })
+  } catch (error) {
+    taskStore.showGlobalNotice('error', error instanceof Error ? error.message : '生成 AI 检索草稿失败，请稍后重试。')
+  } finally {
+    creatingSearchDraft.value = false
+  }
+}
 const deleteTask = () => {
   if (confirm('确定要删除这个任务吗？')) taskStore.deleteTask(props.task.id)
 }
@@ -214,6 +258,12 @@ const deleteTask = () => {
 .action-btn {
   @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition-colors;
 }
+.action-chip {
+  @apply inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60;
+}
+.action-chip.info {
+  @apply border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100/70;
+}
 .action-btn.primary {
   @apply text-cyan-700 hover:border-cyan-100 hover:bg-cyan-50;
 }
@@ -238,6 +288,10 @@ const deleteTask = () => {
 
   .action-btn {
     @apply h-8 w-8 rounded-lg;
+  }
+
+  .action-chip {
+    @apply h-8 rounded-lg px-2.5 text-[11px];
   }
 }
 </style>

@@ -43,7 +43,7 @@ SEARCH_ELEMENTS_SYSTEM_PROMPT = """
 - element_name
 - keywords_zh
 - keywords_en
-- synonyms
+可选字段：
 - notes
 """.strip()
 
@@ -92,13 +92,17 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
             or item.get("name")
             or ""
         ).strip()
+        base_item = {
+            key: value
+            for key, value in item.items()
+            if key != "synonyms"
+        }
         normalized_elements.append(
             {
-                **item,
+                **base_item,
                 "element_name": element_name,
                 "keywords_zh": _normalize_string_list(item.get("keywords_zh") or []),
                 "keywords_en": _normalize_string_list(item.get("keywords_en") or []),
-                "synonyms": _normalize_string_list(item.get("synonyms") or []),
                 "notes": str(item.get("notes") or "").strip(),
             }
         )

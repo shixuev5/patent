@@ -12,6 +12,7 @@ from backend.models import CurrentUser
 
 from backend.ai_search.models import (
     AiSearchAnswerRequest,
+    AiSearchCreateFromAnalysisRequest,
     AiSearchFeatureTableRequest,
     AiSearchMessageRequest,
     AiSearchPlanConfirmRequest,
@@ -36,6 +37,14 @@ async def create_ai_search_session(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return service.create_session(current_user.user_id)
+
+
+@router.post("/api/ai-search/sessions/from-analysis")
+async def create_ai_search_session_from_analysis(
+    request: AiSearchCreateFromAnalysisRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.create_session_from_analysis(current_user.user_id, request.analysisTaskId)
 
 
 @router.get("/api/ai-search/sessions/{session_id}")

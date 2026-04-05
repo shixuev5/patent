@@ -34,6 +34,10 @@ class AiSearchCreateSessionResponse(BaseModel):
     threadId: str
 
 
+class AiSearchCreateFromAnalysisRequest(BaseModel):
+    analysisTaskId: str = Field(..., min_length=1)
+
+
 class AiSearchSessionSummary(BaseModel):
     sessionId: str
     taskId: str
@@ -78,6 +82,7 @@ class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
     phase: str
     messages: List[Dict[str, Any]]
+    sourceSummary: Optional[Dict[str, Any]] = None
     searchElements: Optional[Dict[str, Any]] = None
     currentPlan: Optional[Dict[str, Any]] = None
     candidateDocuments: List[Dict[str, Any]] = Field(default_factory=list)

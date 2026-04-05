@@ -10,10 +10,20 @@ export interface AiSearchSessionSummary {
   updatedAt?: string | null
 }
 
+export interface AiSearchSourceSummary {
+  sourceType: string
+  sourceTaskId?: string
+  sourcePn?: string
+  sourceTitle?: string
+  seedMode?: string
+  summaryText?: string
+}
+
 export interface AiSearchSnapshot {
   session: AiSearchSessionSummary
   phase: string
   messages: Array<Record<string, any>>
+  sourceSummary?: AiSearchSourceSummary | null
   searchElements?: Record<string, any> | null
   currentPlan?: Record<string, any> | null
   candidateDocuments: Array<Record<string, any>>

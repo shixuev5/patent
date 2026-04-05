@@ -254,6 +254,34 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
+    async createSessionFromAnalysis(analysisTaskId: string) {
+      const taskId = String(analysisTaskId || '').trim()
+      if (!taskId) throw new Error('缺少 AI 分析任务ID。')
+      this.loading = true
+      this.error = ''
+      try {
+        const token = await this._ensureToken()
+        const config = useRuntimeConfig()
+        const data = await requestJson<AiSearchCreateSessionResponse>({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/ai-search/sessions/from-analysis',
+          method: 'POST',
+          token,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ analysisTaskId: taskId }),
+        })
+        await this.fetchSessions()
+        return String(data.sessionId || '').trim()
+      } catch (error: any) {
+        this.error = error?.message || '创建 AI 检索草稿失败'
+        throw error instanceof Error ? error : new Error(this.error)
+      } finally {
+        this.loading = false
+      }
+    },
+
     async loadSession(sessionId: string) {
       this.loading = true
       this.error = ''
@@ -277,15 +305,16 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async init() {
+    async init(preferredSessionId: string = '') {
       await this.fetchSessions()
+      const targetId = String(preferredSessionId || this.activeSessionId || this.sessions[0]?.sessionId || '').trim()
+      if (targetId) {
+        await this.loadSession(targetId)
+        return
+      }
       if (!this.sessions.length) {
         await this.createSession()
         return
-      }
-      const targetId = this.activeSessionId || String(this.sessions[0]?.sessionId || '')
-      if (targetId) {
-        await this.loadSession(targetId)
       }
     },
 

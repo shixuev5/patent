@@ -87,10 +87,38 @@
       </aside>
 
       <section class="flex min-h-[calc(100vh-9rem)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-sm shadow-slate-200">
+        <div v-if="sourceSummary" class="border-b border-cyan-200 bg-cyan-50/80 px-4 py-3">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="rounded-full border border-cyan-200 bg-white/80 px-2.5 py-0.5 text-[11px] font-semibold text-cyan-700">
+                  来源于 AI 分析
+                </span>
+                <span v-if="sourceSummary.sourcePn" class="rounded-full border border-cyan-100 bg-cyan-100/70 px-2.5 py-0.5 text-[11px] font-medium text-cyan-900">
+                  {{ sourceSummary.sourcePn }}
+                </span>
+              </div>
+              <p class="mt-2 text-sm font-semibold text-cyan-950">{{ sourceBannerTitle }}</p>
+              <p class="mt-1 text-xs leading-5 text-cyan-800">{{ sourceBannerText }}</p>
+            </div>
+            <p v-if="sourceSummary.sourceTitle" class="max-w-[18rem] text-right text-xs leading-5 text-cyan-900">
+              {{ sourceSummary.sourceTitle }}
+            </p>
+          </div>
+        </div>
+
         <div class="border-b border-slate-200 px-4 py-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="min-w-0 self-center">
-              <p class="truncate text-sm font-semibold text-slate-900">{{ workspaceTitle }}</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <p class="truncate text-sm font-semibold text-slate-900">{{ workspaceTitle }}</p>
+                <span
+                  v-if="sourceSummary"
+                  class="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-0.5 text-[11px] font-medium text-cyan-700"
+                >
+                  分析导入
+                </span>
+              </div>
             </div>
             <div class="flex flex-wrap items-center gap-2 self-center">
               <span class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
@@ -205,7 +233,7 @@
                   <div class="flex items-start justify-between gap-2">
                     <div>
                       <p class="text-sm font-semibold text-slate-900">{{ element.element_name || '未命名要素' }}</p>
-                      <p class="mt-1 text-xs text-slate-500">{{ element.block_id || '-' }} · {{ element.element_role || '-' }}</p>
+                      <p v-if="elementMetaText(element)" class="mt-1 text-xs text-slate-500">{{ elementMetaText(element) }}</p>
                     </div>
                     <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="elementStatusClass(element.status)">
                       {{ element.status || 'unknown' }}
@@ -473,6 +501,7 @@
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import { useAiSearchStore } from '~/stores/aiSearch'
@@ -488,6 +517,8 @@ type SessionGroup = {
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ai-search-sidebar-collapsed'
 
 const aiSearchStore = useAiSearchStore()
+const route = useRoute()
+const router = useRouter()
 const { activityLog, currentSession, error, loading, sessions, streaming } = storeToRefs(aiSearchStore)
 
 const composer = ref('')
@@ -501,6 +532,7 @@ const pendingQuestion = computed<Record<string, any> | null>(() => currentSessio
 const pendingConfirmation = computed<Record<string, any> | null>(() => currentSession.value?.pendingConfirmation || null)
 const candidateDocuments = computed(() => currentSession.value?.candidateDocuments || [])
 const selectedDocuments = computed(() => currentSession.value?.selectedDocuments || [])
+const sourceSummary = computed<Record<string, any> | null>(() => currentSession.value?.sourceSummary || null)
 
 const normalizedPlan = computed<Record<string, any> | null>(() => {
   const currentPlan = currentSession.value?.currentPlan
@@ -575,6 +607,23 @@ const questionReason = computed(() => String(pendingQuestion.value?.reason || ''
 const questionAnswerShape = computed(() => String(pendingQuestion.value?.expected_answer_shape || '').trim())
 
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
+const sourceBannerTitle = computed(() => {
+  if (!sourceSummary.value) return ''
+  if (pendingQuestion.value) return '已从 AI 分析生成检索草稿，当前还需补充少量信息'
+  if (pendingConfirmation.value) return '已从 AI 分析生成检索草稿，确认计划后即可开始检索'
+  return '已从 AI 分析生成检索草稿'
+})
+const sourceBannerText = computed(() => {
+  if (!sourceSummary.value) return ''
+  const fallback = '系统已根据分析结果预填检索要素，并把首轮计划起草放在当前工作台中。'
+  if (pendingQuestion.value) {
+    return '系统已完成第一阶段信息收集，但仍存在缺口。补充当前追问后，会继续起草或刷新检索计划。'
+  }
+  if (pendingConfirmation.value) {
+    return '系统已完成第一阶段信息收集并起草检索计划。你只需要检查计划边界，确认后再开始真实检索。'
+  }
+  return String(sourceSummary.value?.summaryText || '').trim() || fallback
+})
 const layoutClass = computed(() => (sidebarCollapsed.value
   ? 'lg:grid-cols-[3.75rem,minmax(0,1fr)]'
   : 'lg:grid-cols-[15rem,minmax(0,1fr)] xl:grid-cols-[15.5rem,minmax(0,1fr)]'
@@ -696,6 +745,13 @@ const suggestedPanel = computed<PanelKey>(() => {
 const joinValues = (values: unknown): string => {
   if (!Array.isArray(values)) return ''
   return values.map((item) => String(item || '').trim()).filter(Boolean).join('、')
+}
+
+const elementMetaText = (element: Record<string, any>): string => {
+  const blockId = String(element?.block_id || '').trim()
+  const role = String(element?.element_role || '').trim()
+  if (blockId && role) return `${blockId} · ${role}`
+  return blockId || role
 }
 
 const featureCell = (row: Record<string, any>, column: string): string => {
@@ -840,10 +896,19 @@ const generateFeatureTable = async () => {
 
 watch(
   () => currentSession.value?.session.sessionId || '',
-  () => {
+  (sessionId) => {
     openPanel.value = suggestedPanel.value
     composer.value = ''
     answerDraft.value = ''
+    const currentQuerySession = String(route.query.session || '').trim()
+    if (sessionId && sessionId !== currentQuerySession) {
+      router.replace({
+        query: {
+          ...route.query,
+          session: sessionId,
+        },
+      }).catch(() => {})
+    }
   },
 )
 
@@ -898,7 +963,8 @@ onMounted(async () => {
   if (import.meta.client) {
     sidebarCollapsed.value = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
   }
-  await aiSearchStore.init()
+  const preferredSessionId = String(route.query.session || '').trim()
+  await aiSearchStore.init(preferredSessionId)
   openPanel.value = suggestedPanel.value
   await scrollMessagesToBottom()
 })
