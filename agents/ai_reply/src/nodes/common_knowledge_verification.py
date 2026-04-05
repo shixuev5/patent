@@ -14,6 +14,18 @@ from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.ai_reply.src.retrieval_followup import (
+    build_compact_cards,
+    build_evidence_cards_from_items,
+    flatten_queries,
+    has_new_evidence_cards,
+    has_new_queries,
+    merge_evidence_items,
+    merge_local_retrieval_trace,
+    merge_local_retrieval_traces,
+    merge_query_maps,
+    should_run_followup_by_assessment,
+)
 from agents.ai_reply.src.retrieval_utils import (
     build_trace_retrieval,
     normalize_query_list,
@@ -39,7 +51,7 @@ class CommonKnowledgeVerificationNode:
         try:
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
-                "verify_common_knowledge_v8",
+                "verify_common_knowledge_v9",
                 self._verify_common_knowledge,
                 self._state_get(state, "disputes", []),
                 self._state_get(state, "prepared_materials", {}),
@@ -194,37 +206,141 @@ class CommonKnowledgeVerificationNode:
         )
 
         first_assessment = self._to_dict(assessment.get("assessment", {}))
-        first_verdict = str(first_assessment.get("verdict", "")).strip()
-        try:
-            first_confidence = float(first_assessment.get("confidence", 0.0) or 0.0)
-        except Exception:
-            first_confidence = 0.0
-        if first_verdict == "INCONCLUSIVE" or first_confidence < 0.6:
-            expanded_bundle = self._build_compact_cards(
-                candidates=merged_candidates,
-                local_retriever=local_retriever,
-                context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
-                max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
-                max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+        used_doc_ids = self._extract_used_doc_ids(assessment)
+        followup_retrieval_trace: Dict[str, Any] = {}
+        followup_local_trace: Dict[str, Any] = {}
+        if should_run_followup_by_assessment(
+            first_assessment,
+            used_doc_ids=used_doc_ids,
+            evidence_cards=card_bundle.get("cards", []),
+        ):
+            followup_queries = self._build_followup_engine_queries(
+                dispute=dispute,
+                claim_text=claim_text,
+                priority_date=priority_date,
+                primary_queries=queries_by_engine,
+                first_assessment=first_assessment,
             )
-            expanded_cards = expanded_bundle.get("cards", [])
-            if len(expanded_cards) > len(card_bundle.get("cards", [])):
-                assessment = self._verify_single_dispute(
-                    dispute=dispute,
-                    claim_text=claim_text,
-                    queries_by_engine=queries_by_engine,
+            if has_new_queries(queries_by_engine, followup_queries):
+                followup_external_evidence, followup_engines, followup_meta = self.external_evidence_aggregator.search_evidence(
+                    queries=followup_queries,
                     priority_date=priority_date,
-                    evidence_cards=expanded_cards,
-                    retrieval_engines=retrieval_engines,
-                    retrieval_meta=retrieval_meta,
-                    local_retrieval_trace=self._merge_local_retrieval_trace(
-                        local_trace=local_trace,
-                        card_trace=expanded_bundle.get("trace", {}),
-                        flat_queries=flat_queries,
-                        local_doc_ids=local_doc_ids,
-                    ),
+                    limit=8,
                 )
+                followup_flat_queries = flatten_queries(followup_queries)
+                followup_local_candidates, followup_local_trace = self._search_local_candidates(
+                    flat_queries=followup_flat_queries,
+                    local_doc_ids=local_doc_ids,
+                    local_retriever=local_retriever,
+                )
+                followup_external_candidates = self._to_external_candidates(followup_external_evidence)
+                merged_candidates = self._rerank_candidates(
+                    candidates=local_candidates + external_candidates + followup_local_candidates + followup_external_candidates,
+                    flat_queries=flatten_queries(merge_query_maps(queries_by_engine, followup_queries, limit=4)),
+                    top_k=max(settings.LOCAL_RETRIEVAL_RERANK_K, 10),
+                )
+                expanded_bundle = self._build_compact_cards(
+                    candidates=merged_candidates,
+                    local_retriever=local_retriever,
+                    context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
+                    max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
+                    max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
+                )
+                if has_new_evidence_cards(card_bundle.get("cards", []), expanded_bundle.get("cards", [])):
+                    merged_queries = merge_query_maps(queries_by_engine, followup_queries, limit=4)
+                    assessment = self._verify_single_dispute(
+                        dispute=dispute,
+                        claim_text=claim_text,
+                        queries_by_engine=merged_queries,
+                        priority_date=priority_date,
+                        evidence_cards=expanded_bundle.get("cards", []),
+                        retrieval_engines=followup_engines or retrieval_engines,
+                        retrieval_meta=followup_meta or retrieval_meta,
+                        local_retrieval_trace=merge_local_retrieval_trace(
+                            local_trace=merge_local_retrieval_traces(local_trace, followup_local_trace),
+                            card_trace=expanded_bundle.get("trace", {}),
+                            queries=flatten_queries(merged_queries),
+                            doc_filters=local_doc_ids,
+                        ),
+                    )
+                    queries_by_engine = merged_queries
+                    retrieval_engines = followup_engines or retrieval_engines
+                    retrieval_meta = followup_meta or retrieval_meta
+                    followup_retrieval_trace = build_trace_retrieval(
+                        followup_queries,
+                        followup_engines,
+                        followup_meta,
+                    )
+
+        if followup_retrieval_trace:
+            assessment.setdefault("trace", {})
+            assessment["trace"]["followup_retrieval"] = followup_retrieval_trace
+            assessment["trace"]["followup_local_retrieval"] = followup_local_trace
         return assessment
+
+    def _build_followup_engine_queries(
+        self,
+        dispute: Dict[str, Any],
+        claim_text: str,
+        priority_date: Optional[str],
+        primary_queries: Dict[str, List[str]],
+        first_assessment: Dict[str, Any],
+    ) -> Dict[str, List[str]]:
+        feature_text = str(dispute.get("feature_text", "")).strip()
+        reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
+        fallback_queries = merge_query_maps(
+            primary_queries,
+            {
+                "openalex": normalize_query_list(
+                    [
+                        f"{feature_text} textbook handbook conventional technology",
+                        f"{feature_text} widely used prior to filing",
+                    ],
+                    limit=2,
+                ),
+                "zhihuiya": normalize_query_list(
+                    [
+                        f"{feature_text} 教材 手册 公知常识",
+                        f"{feature_text} 常规技术手段 申请日前",
+                    ],
+                    limit=2,
+                ),
+                "tavily": normalize_query_list(
+                    [
+                        f"{feature_text} 公知常识 教材 手册",
+                        f"{feature_text} 技术手段 常见做法 公开资料",
+                    ],
+                    limit=2,
+                ),
+            },
+            limit=4,
+        )
+        user_context = {
+            "priority_date": priority_date or "",
+            "feature_text": feature_text,
+            "claim_text": claim_text[:240],
+            "first_assessment": {
+                "verdict": str(self._to_dict(first_assessment).get("verdict", "")).strip(),
+                "confidence": self._to_dict(first_assessment).get("confidence", 0.0),
+                "reasoning": reasoning[:600],
+            },
+            "primary_queries": primary_queries,
+        }
+        return plan_engine_queries(
+            llm_service=self.llm_service,
+            user_context=user_context,
+            fallback_queries=fallback_queries,
+            scenario="公知常识核查二次检索",
+            per_engine_limit=2,
+        )
+
+    def _extract_used_doc_ids(self, assessment: Dict[str, Any]) -> List[str]:
+        used_doc_ids: List[str] = []
+        for evidence in self._to_dict(assessment).get("evidence", []) or []:
+            doc_id = str(self._to_dict(evidence).get("doc_id", "")).strip()
+            if doc_id and doc_id not in used_doc_ids:
+                used_doc_ids.append(doc_id)
+        return used_doc_ids
 
     def _get_common_knowledge_disputes(self, disputes: List[Any]) -> List[Dict[str, Any]]:
         common_knowledge_disputes: List[Dict[str, Any]] = []
@@ -354,13 +470,7 @@ class CommonKnowledgeVerificationNode:
         return doc_ids
 
     def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
-        flat: List[str] = []
-        for engine_queries in (queries_by_engine or {}).values():
-            for query in engine_queries or []:
-                value = str(query).strip()
-                if value and value not in flat:
-                    flat.append(value)
-        return flat
+        return flatten_queries(queries_by_engine)
 
     def _search_local_candidates(
         self,
@@ -492,58 +602,14 @@ class CommonKnowledgeVerificationNode:
         max_context_chars: int,
         max_quote_chars: int,
     ) -> Dict[str, Any]:
-        if local_retriever:
-            return local_retriever.build_evidence_cards(
-                candidates=candidates,
-                context_k=context_k,
-                max_context_chars=max_context_chars,
-                max_quote_chars=max_quote_chars,
-                read_window=1,
-            )
-
-        cards: List[Dict[str, Any]] = []
-        selected: List[str] = []
-        dropped: List[str] = []
-        total_chars = 0
-        for item in sorted(candidates or [], key=lambda x: float(x.get("score", 0.0)), reverse=True):
-            candidate_id = str(item.get("candidate_id", "")).strip() or str(item.get("doc_id", "")).strip()
-            quote = re.sub(r"\s+", " ", str(item.get("text", "")).strip())
-            if len(quote) > max_quote_chars:
-                quote = quote[: max_quote_chars - 3].rstrip() + "..."
-            if not quote:
-                continue
-            if cards and total_chars + len(quote) > max_context_chars:
-                dropped.append(candidate_id)
-                continue
-            cards.append(
-                {
-                    "candidate_id": candidate_id,
-                    "chunk_id": None,
-                    "doc_id": str(item.get("doc_id", "")).strip(),
-                    "quote": quote,
-                    "location": str(item.get("location", "")).strip(),
-                    "analysis": f"命中关键词：{', '.join(item.get('match_terms', [])[:3])}" if item.get("match_terms") else "",
-                    "source_url": str(item.get("source_url", "")).strip() or None,
-                    "source_title": str(item.get("source_title", "")).strip() or None,
-                    "source_type": str(item.get("source_type", "")).strip() or None,
-                    "score": float(item.get("score", 0.0)),
-                }
-            )
-            selected.append(candidate_id)
-            total_chars += len(quote)
-            if len(cards) >= context_k:
-                break
-        return {
-            "cards": cards,
-            "trace": {
-                "selected_candidates": selected,
-                "dropped_candidates": dropped,
-                "context_chars": total_chars,
-                "context_k": context_k,
-                "max_context_chars": max_context_chars,
-                "max_quote_chars": max_quote_chars,
-            },
-        }
+        return build_compact_cards(
+            candidates,
+            local_retriever,
+            context_k=context_k,
+            max_context_chars=max_context_chars,
+            max_quote_chars=max_quote_chars,
+            read_window=1,
+        )
 
     def _merge_local_retrieval_trace(
         self,
@@ -552,21 +618,12 @@ class CommonKnowledgeVerificationNode:
         flat_queries: List[str],
         local_doc_ids: List[str],
     ) -> Dict[str, Any]:
-        merged = {
-            "enabled": bool(local_trace.get("enabled", False)),
-            "fallback": str(local_trace.get("fallback", "")).strip(),
-            "queries": flat_queries,
-            "queries_by_language": local_trace.get("queries_by_language", {}),
-            "doc_filters": local_doc_ids,
-            "hit_chunks": local_trace.get("hit_chunks", []),
-            "lexical_hits": local_trace.get("lexical_hits", []),
-            "dense_hits": local_trace.get("dense_hits", []),
-            "fusion_hits": local_trace.get("fusion_hits", []),
-            "selected_cards": card_trace.get("selected_candidates", []),
-            "dropped_cards": card_trace.get("dropped_candidates", []),
-            "context_chars": int(card_trace.get("context_chars", 0) or 0),
-        }
-        return merged
+        return merge_local_retrieval_trace(
+            local_trace=local_trace,
+            card_trace=card_trace,
+            queries=flat_queries,
+            doc_filters=local_doc_ids,
+        )
 
     def _build_system_prompt(self) -> str:
         return """你是资深的专利审查与复审专家AI，当前任务是基于外部证据或模型知识，核查“审查员将某技术特征认定为公知常识/常规技术手段”的逻辑争议，并判断申请人的反驳是否成立。

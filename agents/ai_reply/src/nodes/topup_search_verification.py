@@ -15,6 +15,17 @@ from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.ai_reply.src.retrieval_followup import (
+    build_evidence_cards_from_items,
+    flatten_queries,
+    has_new_evidence_cards,
+    has_new_queries,
+    merge_evidence_items,
+    merge_local_retrieval_trace,
+    merge_local_retrieval_traces,
+    merge_query_maps,
+    should_run_followup_by_assessment,
+)
 from agents.ai_reply.src.retrieval_utils import (
     build_trace_retrieval,
     normalize_query_list,
@@ -45,7 +56,7 @@ class TopupSearchVerificationNode:
 
             cache = get_node_cache(self.config, "topup_search_verification")
             result = cache.run_step(
-                "verify_topup_v8",
+                "verify_topup_v9",
                 self._verify_topup,
                 topup_tasks,
                 self._state_get(state, "prepared_materials", {}),
@@ -175,37 +186,76 @@ class TopupSearchVerificationNode:
             limit=6,
         )
         external_evidence = self._to_external_evidence_items(external_candidates)
-
-        evidence_context = local_evidence + external_evidence
-        allowed_doc_ids: Set[str] = {str(item.get("doc_id", "")).strip() for item in evidence_context if item.get("doc_id")}
-        allowed_doc_ids.add("MODEL")
-        evidence_map = {
-            str(item.get("doc_id", "")).strip(): item
-            for item in evidence_context
-            if item.get("doc_id")
-        }
-
-        messages =[
-            {"role": "system", "content": self._build_system_prompt()},
-            {
-                "role": "user",
-                "content": self._build_user_prompt(
-                    task=task,
-                    claim_ids=claim_ids,
-                    claim_text=claim_text,
-                    feature_text=feature_text,
-                    local_evidence=local_evidence,
-                    external_evidence=external_evidence,
-                    external_queries=external_queries,
-                ),
-            },
-        ]
-        response = self.llm_service.invoke_text_json(
-            messages=messages,
-            task_kind="oar_topup_search_verification",
-            temperature=0.05,
+        evidence_cards, card_trace = self._build_evidence_cards(
+            local_evidence=local_evidence,
+            external_evidence=external_evidence,
+            context_k=settings.LOCAL_RETRIEVAL_CONTEXT_K,
+            max_context_chars=settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS,
         )
-        parsed = self._normalize_llm_output(response, allowed_doc_ids, evidence_map)
+        parsed = self._evaluate_with_evidence_cards(
+            task=task,
+            claim_ids=claim_ids,
+            claim_text=claim_text,
+            feature_text=feature_text,
+            evidence_cards=evidence_cards,
+            external_queries=external_queries,
+        )
+
+        followup_retrieval_trace: Dict[str, Any] = {}
+        followup_local_trace: Dict[str, Any] = {}
+        if self._should_run_followup(parsed, evidence_cards):
+            followup_queries = self._build_followup_engine_queries(
+                task=task,
+                claim_text=claim_text,
+                feature_text=feature_text,
+                priority_date=priority_date,
+                primary_queries=external_queries,
+                first_assessment=parsed.get("assessment", {}),
+            )
+            if self._has_new_queries(external_queries, followup_queries):
+                followup_local_evidence, followup_local_trace = self._search_local_evidence(
+                    feature_text=feature_text,
+                    claim_text=claim_text,
+                    comparison_docs=comparison_docs,
+                    local_retriever=local_retriever,
+                    extra_queries=self._flatten_queries(followup_queries),
+                )
+                followup_candidates, followup_engines, followup_meta = self.external_evidence_aggregator.search_evidence(
+                    queries=followup_queries,
+                    priority_date=priority_date,
+                    limit=6,
+                )
+                followup_external_evidence = self._to_external_evidence_items(followup_candidates)
+                merged_local_evidence = self._merge_evidence_items(local_evidence, followup_local_evidence)
+                merged_external_evidence = self._merge_evidence_items(external_evidence, followup_external_evidence)
+                expanded_cards, expanded_card_trace = self._build_evidence_cards(
+                    local_evidence=merged_local_evidence,
+                    external_evidence=merged_external_evidence,
+                    context_k=max(settings.LOCAL_RETRIEVAL_CONTEXT_K, 10),
+                    max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
+                )
+                if self._has_new_evidence_cards(evidence_cards, expanded_cards):
+                    merged_queries = self._merge_query_maps(external_queries, followup_queries)
+                    parsed = self._evaluate_with_evidence_cards(
+                        task=task,
+                        claim_ids=claim_ids,
+                        claim_text=claim_text,
+                        feature_text=feature_text,
+                        evidence_cards=expanded_cards,
+                        external_queries=merged_queries,
+                    )
+                    evidence_cards = expanded_cards
+                    card_trace = expanded_card_trace
+                    local_evidence = merged_local_evidence
+                    local_retrieval_trace = self._merge_local_traces(local_retrieval_trace, followup_local_trace)
+                    retrieval_engines = followup_engines or retrieval_engines
+                    retrieval_meta = followup_meta or retrieval_meta
+                    external_queries = merged_queries
+                    followup_retrieval_trace = build_trace_retrieval(
+                        followup_queries,
+                        followup_engines,
+                        followup_meta,
+                    )
 
         examiner_opinion = parsed["examiner_opinion"]
         applicant_opinion = parsed["applicant_opinion"]
@@ -234,11 +284,54 @@ class TopupSearchVerificationNode:
             "trace": {
                 "used_doc_ids": parsed["used_doc_ids"],
                 "missing_doc_ids":[],
-                "local_retrieval": local_retrieval_trace,
+                "local_retrieval": self._attach_card_trace(local_retrieval_trace, card_trace),
                 "retrieval": build_trace_retrieval(external_queries, retrieval_engines, retrieval_meta),
+                "followup_retrieval": followup_retrieval_trace,
+                "followup_local_retrieval": followup_local_trace,
             },
         }
         return dispute, assessment
+
+    def _evaluate_with_evidence_cards(
+        self,
+        task: Dict[str, Any],
+        claim_ids: List[str],
+        claim_text: str,
+        feature_text: str,
+        evidence_cards: List[Dict[str, Any]],
+        external_queries: Dict[str, List[str]],
+    ) -> Dict[str, Any]:
+        messages = self._build_prefix_messages(evidence_cards)
+        messages.append(
+            {
+                "role": "user",
+                "content": self._build_user_prompt(
+                    task=task,
+                    claim_ids=claim_ids,
+                    claim_text=claim_text,
+                    feature_text=feature_text,
+                    evidence_cards=evidence_cards,
+                    external_queries=external_queries,
+                ),
+            }
+        )
+        allowed_doc_ids: Set[str] = {
+            str(item.get("doc_id", "")).strip()
+            for item in evidence_cards
+            if str(item.get("doc_id", "")).strip()
+        }
+        allowed_doc_ids.add("MODEL")
+        evidence_map = {
+            str(item.get("doc_id", "")).strip(): item
+            for item in evidence_cards
+            if str(item.get("doc_id", "")).strip()
+        }
+        response = self.llm_service.invoke_text_json(
+            messages=messages,
+            task_kind="oar_topup_search_verification",
+            temperature=0.05,
+        )
+        return self._normalize_llm_output(response, allowed_doc_ids, evidence_map)
 
     def _build_system_prompt(self) -> str:
         return """你是一位资深的中国专利局审查专家（熟练掌握《专利审查指南》）。你的核心任务是：针对申请人修改/新增的权利要求特征，基于提供的【本地对比文件证据(D*)】和【外部检索证据(EXT*)】，进行严谨的比对评判，并给出最终裁决。
@@ -316,11 +409,9 @@ class TopupSearchVerificationNode:
         claim_ids: List[str],
         claim_text: str,
         feature_text: str,
-        local_evidence: List[Dict[str, Any]],
-        external_evidence: List[Dict[str, Any]],
+        evidence_cards: List[Dict[str, Any]],
         external_queries: Dict[str, List[str]],
     ) -> str:
-        # 使用 default=str 避免序列化特殊对象（如 datetime、Set 等）崩溃
         return f"""请评判以下补充检索任务：
 
 【任务】
@@ -331,11 +422,9 @@ claim_ids: {json.dumps(claim_ids, ensure_ascii=False)}
 claim_text: {claim_text}
 feature_text: {feature_text}
 
-【本地对比文件证据（D*）】
-{json.dumps(local_evidence, ensure_ascii=False, indent=2, default=str)}
-
-【外部检索证据（EXT*）】
-{json.dumps(external_evidence, ensure_ascii=False, indent=2, default=str)}
+【已提供证据卡】
+- 证据卡内容已在上文逐条提供，请仅基于这些 D*/EXT*/MODEL 证据卡进行判断。
+- 若证据卡不足以支持确定结论，应输出 `INCONCLUSIVE`，不要臆造缺失证据。
 
 【外部检索查询】
 {json.dumps(external_queries, ensure_ascii=False, indent=2, default=str)}"""
@@ -372,6 +461,62 @@ feature_text: {feature_text}
             user_context=user_context,
             fallback_queries=fallback_queries,
             scenario="补充检索核查",
+            per_engine_limit=2,
+        )
+
+    def _build_followup_engine_queries(
+        self,
+        task: Dict[str, Any],
+        claim_text: str,
+        feature_text: str,
+        priority_date: str,
+        primary_queries: Dict[str, List[str]],
+        first_assessment: Dict[str, Any],
+    ) -> Dict[str, List[str]]:
+        reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
+        fallback_queries = self._merge_query_maps(
+            primary_queries,
+            {
+                "openalex": normalize_query_list(
+                    [
+                        f"{feature_text} {claim_text[:120]} technical effect",
+                        f"{feature_text} distinguishing feature prior art",
+                    ],
+                    limit=2,
+                ),
+                "zhihuiya": normalize_query_list(
+                    [
+                        f"{feature_text} 技术效果 对比文件",
+                        f"{feature_text} 区别特征 现有技术",
+                    ],
+                    limit=2,
+                ),
+                "tavily": normalize_query_list(
+                    [
+                        f"{feature_text} {claim_text[:120]}",
+                        f"{feature_text} 技术启示 公开资料",
+                    ],
+                    limit=2,
+                ),
+            },
+        )
+        user_context = {
+            "priority_date": priority_date,
+            "task": task,
+            "feature_text": feature_text,
+            "claim_text": claim_text[:240],
+            "first_assessment": {
+                "verdict": str(self._to_dict(first_assessment).get("verdict", "")).strip(),
+                "confidence": self._to_dict(first_assessment).get("confidence", 0.0),
+                "reasoning": reasoning[:600],
+            },
+            "primary_queries": primary_queries,
+        }
+        return plan_engine_queries(
+            llm_service=self.llm_service,
+            user_context=user_context,
+            fallback_queries=fallback_queries,
+            scenario="补充检索核查二次检索",
             per_engine_limit=2,
         )
 
@@ -514,14 +659,16 @@ feature_text: {feature_text}
         claim_text: str,
         comparison_docs: Dict[str, Dict[str, Any]],
         local_retriever: LocalEvidenceRetriever | None,
+        extra_queries: List[str] | None = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         doc_filters = [doc_id for doc_id in comparison_docs.keys()]
         queries = normalize_query_list(
             [
                 feature_text,
                 f"{feature_text} {claim_text[:120]}",
+                *(extra_queries or []),
             ],
-            limit=2,
+            limit=4,
         )
 
         if not local_retriever:
@@ -626,6 +773,99 @@ feature_text: {feature_text}
             "context_chars": card_bundle.get("trace", {}).get("context_chars", 0),
         }
         return evidence_items, trace
+
+    def _build_prefix_messages(self, evidence_cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self._build_system_prompt()},
+        ]
+        if not evidence_cards:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "当前未检索到有效证据卡。若现有信息不足以支持确定结论，请输出 INCONCLUSIVE。",
+                }
+            )
+            return messages
+
+        for item in evidence_cards:
+            item_dict = self._to_dict(item)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"证据卡 {item_dict.get('doc_id', '')} ({item_dict.get('source_type', 'evidence')})\n"
+                        f"位置: {item_dict.get('location', '')}\n"
+                        f"标题: {item_dict.get('source_title', '')}\n"
+                        f"链接: {item_dict.get('source_url', '')}\n"
+                        f"引用: {item_dict.get('quote', '')}\n"
+                        f"说明: {item_dict.get('analysis', '')}"
+                    ),
+                }
+            )
+        return messages
+
+    def _build_evidence_cards(
+        self,
+        local_evidence: List[Dict[str, Any]],
+        external_evidence: List[Dict[str, Any]],
+        context_k: int,
+        max_context_chars: int,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        return build_evidence_cards_from_items(
+            local_evidence,
+            external_evidence,
+            context_k=context_k,
+            max_context_chars=max_context_chars,
+        )
+
+    def _should_run_followup(self, parsed: Dict[str, Any], evidence_cards: List[Dict[str, Any]]) -> bool:
+        return should_run_followup_by_assessment(
+            self._to_dict(parsed.get("assessment", {})),
+            used_doc_ids=[str(item).strip() for item in parsed.get("used_doc_ids", []) if str(item).strip()],
+            evidence_cards=evidence_cards,
+        )
+
+    def _has_new_queries(
+        self,
+        primary_queries: Dict[str, List[str]],
+        followup_queries: Dict[str, List[str]],
+    ) -> bool:
+        return has_new_queries(primary_queries, followup_queries)
+
+    def _merge_query_maps(
+        self,
+        primary_queries: Dict[str, List[str]],
+        followup_queries: Dict[str, List[str]],
+    ) -> Dict[str, List[str]]:
+        return merge_query_maps(primary_queries, followup_queries, limit=4)
+
+    def _merge_evidence_items(
+        self,
+        primary_items: List[Dict[str, Any]],
+        followup_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        return merge_evidence_items(primary_items, followup_items)
+
+    def _has_new_evidence_cards(
+        self,
+        primary_cards: List[Dict[str, Any]],
+        expanded_cards: List[Dict[str, Any]],
+    ) -> bool:
+        return has_new_evidence_cards(primary_cards, expanded_cards)
+
+    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
+        return flatten_queries(queries_by_engine)
+
+    def _merge_local_traces(self, primary_trace: Dict[str, Any], followup_trace: Dict[str, Any]) -> Dict[str, Any]:
+        return merge_local_retrieval_traces(primary_trace, followup_trace)
+
+    def _attach_card_trace(self, local_trace: Dict[str, Any], card_trace: Dict[str, Any]) -> Dict[str, Any]:
+        return merge_local_retrieval_trace(
+            local_trace=local_trace or {},
+            card_trace=card_trace,
+            queries=list((local_trace or {}).get("queries", [])),
+            doc_filters=list((local_trace or {}).get("doc_filters", [])),
+        )
 
     def _to_external_evidence_items(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         evidence: List[Dict[str, Any]] =[]

@@ -261,3 +261,122 @@ def test_track_amendment_falls_back_to_original_when_previous_missing_for_multi_
         {"claim_id": "1", "old_claim_id": "1", "alignment_kind": "same_number_match", "reason": "unchanged"}
     ]
     assert result["substantive_amendments"][0]["amendment_id"] == "A1"
+
+
+def test_build_system_prompt_tightens_claim_merge_source_boundary_without_over_splitting() -> None:
+    node = AmendmentTrackingNode()
+
+    prompt = node._build_system_prompt()
+
+    assert "旧权利要求明确记载的技术限定内容" in prompt
+    assert "并列备选项" in prompt
+    assert "Markush 式列举" in prompt
+    assert "至少一个" in prompt
+    assert "语法承接表达" in prompt
+    assert "输入" in prompt
+    assert "接收" in prompt
+    assert "控制" in prompt
+    assert "外层动作或连接性措辞" in prompt
+    assert "纯粹的、客观的技术特征陈述" in prompt
+    assert "增加了基于RRC值控制目标加速度的逻辑" in prompt
+    assert "基于轮胎的RRC值控制车辆的目标加速度" in prompt
+    assert "外壳表面设有厚度为0.1mm的防水涂层" in prompt
+    assert "核心限定变化" in prompt
+    assert "单条完整技术特征" in prompt
+    assert "不要为了规避上述要求而把一个原本单一的技术限定拆得更细" in prompt
+
+
+def test_build_user_prompt_emphasizes_objective_feature_rewrite_and_global_traceability() -> None:
+    node = AmendmentTrackingNode()
+
+    prompt = node._build_user_prompt(
+        {
+            "changed_claims_pairs": [
+                {
+                    "claim_id": "1",
+                    "old_text": "旧权1",
+                    "new_text": "新权1",
+                }
+            ],
+            "full_old_claims_context": {"3": "旧权3"},
+        }
+    )
+
+    assert "先对比 `new_text` 和 `old_text`" in prompt
+    assert "对每个新增技术点" in prompt
+    assert "Markush 式列举" in prompt
+    assert "客观技术事实" in prompt
+    assert "不能返回整条权利要求" in prompt
+    assert "old_text` 为空" in prompt
+
+
+def test_track_amendment_accepts_claim_feature_merge_for_markush_selection() -> None:
+    node = AmendmentTrackingNode()
+    node.llm_service = type(
+        "StubLLM",
+        (),
+        {
+            "invoke_text_json": staticmethod(
+                lambda messages, task_kind, temperature: {
+                    "substantive_amendments": [
+                        {
+                            "amendment_id": "A1",
+                            "feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
+                            "feature_before_text": "与所述轮胎有关的信息包括以下项中的至少一个：滚动阻力系数值、均匀性、外径",
+                            "feature_after_text": "基于轮胎的RRC值控制车辆的目标加速度",
+                            "target_claim_ids": ["1"],
+                            "amendment_kind": "claim_feature_merge",
+                            "content_origin": "old_claim",
+                            "source_claim_ids": ["3"],
+                        }
+                    ],
+                }
+            )
+        },
+    )()
+
+    prepared_materials = {
+        "original_patent": {
+            "data": {
+                "claims": [
+                    {
+                        "claim_id": "1",
+                        "claim_text": "一种车辆控制装置，包括控制器，所述控制器控制车辆行驶。",
+                        "claim_type": "independent",
+                        "parent_claim_ids": [],
+                    },
+                    {
+                        "claim_id": "3",
+                        "claim_text": "根据权利要求1所述的车辆控制装置，其中，与所述轮胎有关的信息包括以下项中的至少一个：滚动阻力系数值、均匀性、外径。",
+                        "claim_type": "dependent",
+                        "parent_claim_ids": ["1"],
+                    },
+                ]
+            }
+        },
+        "office_action": {"current_notice_round": 1},
+    }
+    current_claims = [
+        {
+            "claim_id": "1",
+            "claim_text": "一种车辆控制装置，包括控制器，所述控制器基于轮胎的RRC值控制车辆的目标加速度。",
+            "claim_type": "independent",
+            "parent_claim_ids": [],
+        }
+    ]
+
+    result = node._track_amendment(prepared_materials, previous_claims=[], current_claims=current_claims)
+
+    assert result["has_claim_amendment"] is True
+    assert result["substantive_amendments"] == [
+        {
+            "amendment_id": "A1",
+            "target_claim_ids": ["1"],
+            "amendment_kind": "claim_feature_merge",
+            "content_origin": "old_claim",
+            "source_claim_ids": ["3"],
+            "feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
+            "feature_before_text": "与所述轮胎有关的信息包括以下项中的至少一个：滚动阻力系数值、均匀性、外径",
+            "feature_after_text": "基于轮胎的RRC值控制车辆的目标加速度",
+        }
+    ]

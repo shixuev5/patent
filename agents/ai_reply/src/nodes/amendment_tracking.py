@@ -37,7 +37,7 @@ class AmendmentTrackingNode:
         try:
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v9",
+                "track_amendment_v11",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
                 self._state_get(state, "claims_previous_structured", []),
@@ -174,6 +174,9 @@ class AmendmentTrackingNode:
 ### 严格的修改类型（仅限2种）
 1. 从权特征并入
    - 触发条件：新权利要求中新增的特征，其实质内容在【任一旧权利要求】中已经明确记载。
+   - 特殊场景：如果旧权利要求以并列备选项、Markush 式列举或“至少一个”的方式记载了多个候选限定，而新权利要求仅保留其中某一项或某一组具体项，这种“缩小范围/选取特定并列项”的修改，仍属于从权特征并入。
+   - 来源判断必须以【旧权利要求明确记载的技术限定内容】为准，而不是以新权利要求为了成句加入的语法承接表达为准。
+   - 如果旧权利要求仅公开了某个被限定的对象、参数、备选项或范围，而新权利要求在表述时加入了“输入”“接收”“控制”“用于”“包括”等外层动作或连接性措辞，则应将该并入特征概括为旧权利要求真正提供的核心限定内容，不要把这些外层措辞一并当作来源于旧权利要求的内容。
    - amendment_kind 必须为: "claim_feature_merge"
    - content_origin 必须为: "old_claim"
    - source_claim_ids: 必须准确填写来源的旧权利要求编号（例如 ["5"]，绝对不能为空）。
@@ -185,11 +188,15 @@ class AmendmentTrackingNode:
    - source_claim_ids: 必须为严格的空数组 []。
 
 ### 字段提取粒度要求（极其重要）
-- 必须按【单条技术特征】粒度拆分。如果并入了两个不同来源的特征，必须拆分为两个独立的 JSON 对象。
+- 必须按【单条完整技术特征】粒度拆分，通常对应一个完整的动宾结构、控制关系或结构连接关系。如果并入了两个不同来源的特征，必须拆分为两个独立的 JSON 对象。
 - amendment_id: 按顺序生成，如 "A1", "A2"。
-- feature_text: 简明扼要地概括该技术特征（陈述句）。
+- feature_text: 必须写成纯粹的、客观的技术特征陈述，不能写修改动作摘要。严禁使用“增加了”“变更为”“限定为”“并入了”等动作型元语言；应优先概括技术事实本身与核心限定变化，而不是“修改行为”。
+- feature_text 示例：
+  - 错误示范："增加了基于RRC值控制目标加速度的逻辑"
+  - 正确示范："基于轮胎的RRC值控制车辆的目标加速度"
 - feature_before_text: 旧特征原文片段。如果是说明书补入则严格填 ""；如果是从权并入，摘录来源旧权项的原文。
-- feature_after_text: 新特征原文片段。必须是精简的词组或分句，严禁返回整条权利要求的全文！
+- feature_after_text: 新特征原文片段。必须是精简的词组或分句，严禁返回整条权利要求的全文！应优先体现新增技术限定的核心内容，避免带入新权利要求为适配 claim 句法而出现的外层动作或连接性措辞。
+- 不要为了规避上述要求而把一个原本单一的技术限定拆得更细；保持适度概括，维持单条技术特征粒度稳定。
 
 ### 期望输出格式
 必须直接输出合法的 JSON 对象。你的输出必须以 `{` 开头，以 `}` 结尾，绝对不要包含 ```json 等任何 Markdown 标记。
@@ -212,7 +219,7 @@ class AmendmentTrackingNode:
       "amendment_kind": "spec_feature_addition",
       "content_origin": "specification",
       "source_claim_ids": [],
-      "feature_text": "增加防水涂层",
+      "feature_text": "外壳表面设有厚度为0.1mm的防水涂层",
       "feature_before_text": "",
       "feature_after_text": "外壳表面设有厚度为0.1mm的防水涂层"
     }
@@ -225,9 +232,10 @@ class AmendmentTrackingNode:
         return f"""请作为资深专利代理师，分析以下权利要求修改数据。
 
 【分析指引与特殊处理】
-1. 关注 `changed_claims_pairs`：`target_claim_ids` 应填写发生变动的新权项的 `claim_id`。
-2. 全局检索溯源：当你发现新增特征时，务必在 `full_old_claims_context` (旧权全文) 中全局搜寻。找得到就是 `claim_feature_merge`，找不到就是 `spec_feature_addition`。
-3. 全新增加的权利要求：如果某 pair 的 `old_text` 为空，说明这是一个全新添加的权利要求。请提炼该新权项中的核心技术特征，并去旧权文中找源头，判断是合并而来还是说明书引入。
+1. 关注 `changed_claims_pairs`：`target_claim_ids` 应填写发生变动的新权项的 `claim_id`。先对比 `new_text` 和 `old_text`，识别所有新增或发生实质变化的技术点。
+2. 全局检索溯源：对每个新增技术点，务必在 `full_old_claims_context` (旧权全文) 中全局搜寻。找得到就是 `claim_feature_merge`，找不到就是 `spec_feature_addition`。如果旧权以并列备选项、Markush 式列举或“至少一个”公开多个候选限定，而新权只保留其中一项，也应判定为 `claim_feature_merge`。
+3. 客观改写结果：完成溯源后，再将 `feature_text` 改写为客观技术事实，禁止出现“将A修改为B”“增加了”等元语言；`feature_after_text` 只能填写精简词组或分句，不能返回整条权利要求。
+4. 全新增加的权利要求：如果某 pair 的 `old_text` 为空，说明这是一个全新添加的权利要求。仍然要先提炼该新权项中的核心技术特征，再去旧权文中找源头，判断是合并而来还是说明书引入。
 
 【差异数据】
 {json.dumps(payload, ensure_ascii=False, indent=2)}

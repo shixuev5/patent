@@ -42,7 +42,7 @@ class ReportGenerationNode:
 
         try:
             cache = get_node_cache(self.config, "report_generation")
-            report = cache.run_step("generate_report_v16", self._generate_report, state)
+            report = cache.run_step("generate_report_v17", self._generate_report, state)
             output_path = self._save_report(report, state)
 
             updates["final_report"] = report
