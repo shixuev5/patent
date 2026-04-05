@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import types
 
@@ -96,7 +97,7 @@ def test_create_session_and_snapshot(monkeypatch, tmp_path):
     assert listed.total == 1
     assert snapshot.phase == "collecting_requirements"
     assert snapshot.session.taskId == created.taskId
-    assert snapshot.messages[0]["content"] == "请描述检索目标、核心技术方案、关注特征和约束条件。"
+    assert snapshot.messages[0]["content"] == "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。"
 
 
 def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
@@ -199,3 +200,116 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     assert updated_plan["status"] == "superseded"
     assert snapshot.phase == PHASE_DRAFTING_PLAN
     assert any("run.completed" in item for item in events)
+
+
+def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_message(
+        {
+            "message_id": "msg-elements-1",
+            "task_id": created.sessionId,
+            "role": "assistant",
+            "kind": "search_elements_update",
+            "content": "已整理检索要素",
+            "metadata": {
+                "status": "complete",
+                "objective": "检索网络摄像机异常检测方案",
+                "applicants": ["杭州海康威视数字技术股份有限公司"],
+                "filing_date": "2024-03-01",
+                "priority_date": "2023-10-15",
+                "search_elements": [{"element_name": "异常检测", "keywords_zh": ["异常检测"]}],
+                "missing_items": [],
+                "clarification_summary": "已获得核心检索边界。",
+            },
+        }
+    )
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.searchElements is not None
+    assert snapshot.searchElements["applicants"] == ["杭州海康威视数字技术股份有限公司"]
+    assert snapshot.searchElements["filing_date"] == "2024-03-01"
+    assert snapshot.searchElements["priority_date"] == "2023-10-15"
+
+
+def test_resolve_cutoff_date_prefers_priority_date(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+
+    cutoff = service.resolve_cutoff_date(
+        {
+            "filing_date": "2024-03-01",
+            "priority_date": "2023-10-15",
+        }
+    )
+
+    assert cutoff == "2023-10-15"
+
+
+def test_resolve_cutoff_date_falls_back_to_filing_date(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+
+    cutoff = service.resolve_cutoff_date(
+        {
+            "filing_date": "2024-03-01",
+            "priority_date": None,
+        }
+    )
+
+    assert cutoff == "2024-03-01"
+
+
+def test_build_query_text_includes_applicant_and_cutoff_date(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+
+    query_text = service._build_query_text(
+        {
+            "must_terms_zh": ["异常检测", "网络摄像机"],
+            "should_terms_zh": ["边缘计算"],
+            "negative_terms": ["云端"],
+        },
+        {
+            "applicants": ["杭州海康威视数字技术股份有限公司"],
+            "priority_date": "2023-10-15",
+        },
+    )
+
+    assert "AN:(\"杭州海康威视数字技术股份有限公司\")" in query_text
+    assert "PBD:[* TO 20231015]" in query_text
+    assert "\"异常检测\"" in query_text
+
+
+def test_search_patents_passes_cutoff_date_to_semantic_search(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    calls: list[dict] = []
+
+    class _StubClient:
+        def search(self, query, limit=50):
+            calls.append({"method": "search", "query": query, "limit": limit})
+            return []
+
+        def search_semantic(self, text, to_date="", limit=50):
+            calls.append({"method": "search_semantic", "text": text, "to_date": to_date, "limit": limit})
+            return {"total": 0, "results": []}
+
+    monkeypatch.setattr(ai_search_service_module.SearchClientFactory, "get_client", lambda _name: _StubClient())
+
+    result = service._search_patents(
+        {
+            "goal": "",
+            "must_terms_zh": [],
+            "should_terms_zh": [],
+            "negative_terms": [],
+            "result_limit": 10,
+        },
+        {
+            "applicants": ["杭州海康威视数字技术股份有限公司"],
+            "filing_date": "2024-03-01",
+        },
+    )
+
+    assert result["results"] == []
+    assert calls[0]["method"] == "search"
+    assert calls[1]["method"] == "search_semantic"
+    assert calls[1]["to_date"] == "20240301"
+    assert "相关申请人：杭州海康威视数字技术股份有限公司" in calls[1]["text"]

@@ -1,5 +1,5 @@
 """
-AI search agent runtime entrypoints.
+AI 检索 Agent 运行时入口。
 """
 
 from agents.ai_search.src.agents import (
@@ -19,4 +19,3 @@ __all__ = [
     "extract_latest_ai_message",
     "extract_structured_response",
 ]
-

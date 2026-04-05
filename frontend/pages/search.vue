@@ -153,7 +153,7 @@
             </div>
           </section>
 
-          <section v-if="searchElementsObjective || searchElementsMissingItems.length || searchElementsRows.length">
+          <section v-if="searchElementsObjective || searchElementsApplicants || searchElementsFilingDate || searchElementsPriorityDate || searchElementsCutoffDate || searchElementsMissingItems.length || searchElementsRows.length">
             <button type="button" class="accordion-toggle" @click="togglePanel('elements')">
               <span class="accordion-title">
                 检索要素
@@ -165,6 +165,27 @@
               <div v-if="searchElementsObjective" class="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-3">
                 <p class="text-xs font-semibold text-slate-500">目标</p>
                 <p class="mt-1 text-sm text-slate-800">{{ searchElementsObjective }}</p>
+              </div>
+              <div
+                v-if="searchElementsApplicants || searchElementsFilingDate || searchElementsPriorityDate || searchElementsCutoffDate"
+                class="mt-3 grid gap-3 lg:grid-cols-2"
+              >
+                <div v-if="searchElementsApplicants" class="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-3">
+                  <p class="text-xs font-semibold text-slate-500">申请人</p>
+                  <p class="mt-1 text-sm text-slate-800">{{ searchElementsApplicants }}</p>
+                </div>
+                <div v-if="searchElementsCutoffDate" class="rounded-2xl border border-cyan-200 bg-cyan-50/70 px-3 py-3">
+                  <p class="text-xs font-semibold text-cyan-700">生效检索截止日</p>
+                  <p class="mt-1 text-sm font-semibold text-cyan-900">{{ searchElementsCutoffDate }}</p>
+                </div>
+                <div v-if="searchElementsFilingDate" class="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-3">
+                  <p class="text-xs font-semibold text-slate-500">申请日</p>
+                  <p class="mt-1 text-sm text-slate-800">{{ searchElementsFilingDate }}</p>
+                </div>
+                <div v-if="searchElementsPriorityDate" class="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-3">
+                  <p class="text-xs font-semibold text-slate-500">优先权日</p>
+                  <p class="mt-1 text-sm text-slate-800">{{ searchElementsPriorityDate }}</p>
+                </div>
               </div>
               <div v-if="searchElementsMissingItems.length" class="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3">
                 <p class="text-xs font-semibold text-amber-800">待补充信息</p>
@@ -521,6 +542,13 @@ const searchElementsMissingItems = computed<string[]>(() => {
   const items = searchElements.value?.missing_items || []
   return Array.isArray(items) ? items.map((item) => String(item || '').trim()).filter(Boolean) : []
 })
+const searchElementsApplicants = computed(() => {
+  const items = searchElements.value?.applicants || []
+  return Array.isArray(items) ? items.map((item) => String(item || '').trim()).filter(Boolean).join('、') : ''
+})
+const searchElementsFilingDate = computed(() => String(searchElements.value?.filing_date || '').trim())
+const searchElementsPriorityDate = computed(() => String(searchElements.value?.priority_date || '').trim())
+const searchElementsCutoffDate = computed(() => searchElementsPriorityDate.value || searchElementsFilingDate.value)
 
 const confirmationPlanVersion = computed(() => Number(pendingConfirmation.value?.planVersion || activePlanVersion.value || 0))
 const featureTableRows = computed<Array<Record<string, any>>>(() => {
@@ -556,7 +584,7 @@ const sidebarClass = computed(() => (sidebarCollapsed.value ? 'px-2.5 lg:px-2.5'
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
   if (currentSession.value.phase === 'searching') return '检索执行中，当前版本不支持中途修改计划'
-  return '输入检索目标、技术方案、claim 片段或约束条件'
+  return '输入检索目标、技术方案、claim 片段，并尽量补充申请人和申请日/优先权日'
 })
 
 const sortedSessions = computed<AiSearchSessionSummary[]>(() => {

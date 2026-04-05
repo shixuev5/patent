@@ -266,7 +266,7 @@ class AiSearchService:
             task.id,
             "assistant",
             "chat",
-            "请描述检索目标、核心技术方案、关注特征和约束条件。",
+            "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。",
         )
         return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
 
@@ -450,7 +450,72 @@ class AiSearchService:
                 outputs.append(value)
         return outputs
 
-    def _build_query_text(self, batch: Dict[str, Any]) -> str:
+    def _normalize_date_text(self, value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return text
+        if re.fullmatch(r"\d{8}", text):
+            return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+        return None
+
+    def _compact_date_text(self, value: Any) -> str | None:
+        normalized = self._normalize_date_text(value)
+        if not normalized:
+            return None
+        return normalized.replace("-", "")
+
+    def resolve_cutoff_date(self, search_elements: Dict[str, Any]) -> str | None:
+        if not isinstance(search_elements, dict):
+            return None
+        return self._normalize_date_text(search_elements.get("priority_date")) or self._normalize_date_text(search_elements.get("filing_date"))
+
+    def normalize_applicants(self, search_elements: Dict[str, Any]) -> List[str]:
+        if not isinstance(search_elements, dict):
+            return []
+        values = search_elements.get("applicants") or []
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            return []
+        outputs: List[str] = []
+        for item in values:
+            text = str(item or "").strip()
+            if text and text not in outputs:
+                outputs.append(text)
+        return outputs
+
+    def build_search_constraints(self, search_elements: Dict[str, Any]) -> Dict[str, Any]:
+        cutoff_date = self.resolve_cutoff_date(search_elements)
+        return {
+            "applicant_terms": self.normalize_applicants(search_elements),
+            "filing_date": self._normalize_date_text(search_elements.get("filing_date") if isinstance(search_elements, dict) else None),
+            "priority_date": self._normalize_date_text(search_elements.get("priority_date") if isinstance(search_elements, dict) else None),
+            "effective_cutoff_date": cutoff_date,
+            "cutoff_date_yyyymmdd": self._compact_date_text(cutoff_date),
+        }
+
+    def _escape_query_term(self, value: str) -> str:
+        return str(value or "").replace("\\", " ").replace('"', " ").strip()
+
+    def _build_constraint_clauses(self, search_elements: Dict[str, Any]) -> List[str]:
+        constraints = self.build_search_constraints(search_elements)
+        clauses: List[str] = []
+        cutoff = str(constraints.get("cutoff_date_yyyymmdd") or "").strip()
+        if cutoff:
+            clauses.append(f"PBD:[* TO {cutoff}]")
+        applicants = constraints.get("applicant_terms") or []
+        applicant_clauses = [
+            f'AN:("{self._escape_query_term(applicant)}")'
+            for applicant in applicants[:4]
+            if self._escape_query_term(applicant)
+        ]
+        if applicant_clauses:
+            clauses.append(applicant_clauses[0] if len(applicant_clauses) == 1 else "(" + " OR ".join(applicant_clauses) + ")")
+        return clauses
+
+    def _build_query_text(self, batch: Dict[str, Any], search_elements: Optional[Dict[str, Any]] = None) -> str:
         must_terms = self._normalize_query_terms(batch.get("must_terms_zh") or []) + self._normalize_query_terms(batch.get("must_terms_en") or [])
         should_terms = self._normalize_query_terms(batch.get("should_terms_zh") or []) + self._normalize_query_terms(batch.get("should_terms_en") or [])
         negative_terms = self._normalize_query_terms(batch.get("negative_terms") or [])
@@ -461,25 +526,41 @@ class AiSearchService:
             parts.append("(" + " OR ".join(f'"{item}"' for item in should_terms[:8]) + ")")
         if negative_terms:
             parts.append(" ".join(f'NOT "{item}"' for item in negative_terms[:6]))
-        query = " ".join(parts).strip()
-        if query:
-            return query
-        return str(batch.get("goal") or "").strip()
+        query = " ".join(parts).strip() or str(batch.get("goal") or "").strip()
+        constraint_clauses = self._build_constraint_clauses(search_elements or {})
+        if query and constraint_clauses:
+            return f"({query}) AND " + " AND ".join(constraint_clauses)
+        if constraint_clauses:
+            return " AND ".join(constraint_clauses)
+        return query
 
-    def _search_patents(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+    def _search_patents(self, batch: Dict[str, Any], search_elements: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         client = SearchClientFactory.get_client("zhihuiya")
-        query_text = self._build_query_text(batch)
+        query_text = self._build_query_text(batch, search_elements)
         result_limit = int(batch.get("result_limit") or DEFAULT_BATCH_RESULT_LIMIT)
         if query_text:
             result = client.search(query_text, limit=min(result_limit, DEFAULT_BATCH_RESULT_LIMIT))
             if isinstance(result, dict):
                 return result
-        semantic_text = " ".join(
+        constraints = self.build_search_constraints(search_elements or {})
+        semantic_parts = (
             self._normalize_query_terms(batch.get("must_terms_zh") or [])
             + self._normalize_query_terms(batch.get("should_terms_zh") or [])
             + [str(batch.get("goal") or "").strip()]
+        )
+        applicant_terms = constraints.get("applicant_terms") or []
+        if applicant_terms:
+            semantic_parts.append("相关申请人：" + "、".join(applicant_terms))
+        if constraints.get("effective_cutoff_date"):
+            semantic_parts.append(f"检索截止日：{constraints['effective_cutoff_date']}")
+        semantic_text = " ".join(
+            [part for part in semantic_parts if str(part or "").strip()]
         ).strip()
-        return client.search_semantic(semantic_text, limit=min(result_limit, DEFAULT_BATCH_RESULT_LIMIT))
+        return client.search_semantic(
+            semantic_text,
+            to_date=str(constraints.get("cutoff_date_yyyymmdd") or ""),
+            limit=min(result_limit, DEFAULT_BATCH_RESULT_LIMIT),
+        )
 
     def _build_candidate_documents(
         self,
@@ -518,8 +599,10 @@ class AiSearchService:
         search_elements: Dict[str, Any],
         documents: List[Dict[str, Any]],
     ) -> str:
+        constraints = self.build_search_constraints(search_elements)
         return (
             "根据检索要素对下面候选文献做粗筛，只能基于标题、摘要、分类号和来源批次判断。\n"
+            f"检索边界:\n{json.dumps(constraints, ensure_ascii=False)}\n"
             f"检索要素:\n{json.dumps(search_elements, ensure_ascii=False)}\n"
             f"候选文献:\n{json.dumps(documents, ensure_ascii=False)}"
         )
@@ -627,6 +710,7 @@ class AiSearchService:
         documents: List[Dict[str, Any]],
         evidence_map: Dict[str, List[Dict[str, Any]]],
     ) -> str:
+        constraints = self.build_search_constraints(search_elements)
         payload = []
         for item in documents:
             payload.append(
@@ -642,6 +726,7 @@ class AiSearchService:
             )
         return (
             "请根据检索要素与证据段落，对 shortlisted 文献进行精读，判断是否纳入对比文件。\n"
+            f"检索边界:\n{json.dumps(constraints, ensure_ascii=False)}\n"
             f"检索要素:\n{json.dumps(search_elements, ensure_ascii=False)}\n"
             f"shortlist 文献:\n{json.dumps(payload, ensure_ascii=False)}"
         )
@@ -651,6 +736,7 @@ class AiSearchService:
         search_elements: Dict[str, Any],
         selected_documents: List[Dict[str, Any]],
     ) -> str:
+        constraints = self.build_search_constraints(search_elements)
         payload = []
         for item in selected_documents:
             payload.append(
@@ -664,6 +750,7 @@ class AiSearchService:
             )
         return (
             "请基于检索要素和已选对比文件，输出特征对比表。\n"
+            f"检索边界:\n{json.dumps(constraints, ensure_ascii=False)}\n"
             f"检索要素:\n{json.dumps(search_elements, ensure_ascii=False)}\n"
             f"已选对比文件:\n{json.dumps(payload, ensure_ascii=False)}"
         )
@@ -683,7 +770,7 @@ class AiSearchService:
         candidates_by_pn: Dict[str, Dict[str, Any]] = {}
         for batch in query_batches:
             batch_id = str(batch.get("batch_id") or uuid.uuid4().hex[:8]).strip()
-            raw_result = await asyncio.to_thread(self._search_patents, batch)
+            raw_result = await asyncio.to_thread(self._search_patents, batch, search_elements)
             documents = self._build_candidate_documents(task_id, plan_version, raw_result.get("results") or [], batch_id)
             for item in documents:
                 pn = str(item.get("pn") or "").strip().upper()
