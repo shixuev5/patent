@@ -15,6 +15,7 @@ from langgraph.types import interrupt
 from backend.time_utils import utc_now_z
 
 from agents.ai_search.src.checkpointer import AiSearchCheckpointSaver
+from agents.ai_search.src.execution_state import normalize_execution_plan
 from agents.ai_search.src.runtime import AiSearchGuardMiddleware, extract_json_object, large_model
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -27,6 +28,7 @@ from agents.ai_search.src.state import (
     phase_step,
     phase_to_task_status,
 )
+from agents.ai_search.src.subagents.query_executor import build_query_executor_subagent
 from agents.ai_search.src.subagents.search_elements import (
     build_search_elements_subagent,
     normalize_search_elements_payload,
@@ -34,7 +36,7 @@ from agents.ai_search.src.subagents.search_elements import (
 
 
 MAIN_AGENT_SYSTEM_PROMPT = """
-你是 AI 检索主 agent，负责检索要素整理、检索计划生成、计划确认前的版本管理。
+你是 AI 检索主 agent，负责检索要素整理、检索计划生成，以及确认后的动态执行方向决策。
 
 必须遵守：
 1. 每次收到用户需求后，第一步必须调用 `task`，使用 `search-elements` 子 agent。
@@ -42,7 +44,8 @@ MAIN_AGENT_SYSTEM_PROMPT = """
 3. 如果信息不完整，先调用 `update_search_elements` 保存当前要素，再调用 `ask_user_question` 向用户追问。
 4. 一旦信息完整，生成结构化检索计划，并调用 `save_search_plan` 保存。随后调用 `request_plan_confirmation`。
 5. 计划确认前，不允许进行任何专利检索、粗筛、精读或特征对比。
-6. 回答要简洁，不要输出 markdown 代码块，不要输出伪造工具结果。
+6. 计划确认后，如果需要动态执行查询，只能通过 `task` 调用 `query-executor` 子 agent。你只允许看到它的摘要结果，不允许要求它返回候选文献明细。
+7. 回答要简洁，不要输出 markdown 代码块，不要输出伪造工具结果。
 
 `update_search_elements` 的 payload_json 必须是 JSON 对象，字段固定为：
 - status
@@ -62,12 +65,19 @@ MAIN_AGENT_SYSTEM_PROMPT = """
 - negative_constraints
 - execution_notes
 - requires_confirmation
+- execution_policy
+- lanes
+- round_stop_rules
+- screening_entry_rules
+- replan_rules
 
 额外规则：
 1. `applicants` 可以为空数组，但若为空，应在要素摘要中明确提示无法执行申请人追溯检索。
 2. `filing_date` 与 `priority_date` 优先使用 `YYYY-MM-DD`。
 3. 若 `filing_date` 与 `priority_date` 都缺失，必须把“申请日或优先权日”写入 `missing_items`。
 4. 只有当检索目标缺失，或至少一个技术要素缺失时，才应停在追问阶段。
+5. `lanes` 用于表达主 agent 对执行方向和优先级的规划，必须体现 lane_type、priority、enabled_when、batch_specs。
+6. 确认后若进入查询执行阶段，可多轮调用 `query-executor`，但只能基于摘要结果调整方向，不能把候选专利全文或大段列表带回主上下文。
 """.strip()
 
 
@@ -111,6 +121,13 @@ def build_planning_agent(storage: Any, task_id: str):
     def save_search_plan(payload_json: str) -> str:
         payload = extract_json_object(payload_json)
         search_elements_snapshot = normalize_search_elements_payload(payload.get("search_elements_snapshot") or {})
+        normalized_plan = normalize_execution_plan(
+            {
+                **payload,
+                "search_elements_snapshot": search_elements_snapshot,
+            },
+            search_elements_snapshot,
+        )
         latest_plan = storage.get_ai_search_plan(task_id)
         if latest_plan:
             storage.update_ai_search_plan(
@@ -130,8 +147,7 @@ def build_planning_agent(storage: Any, task_id: str):
                 "plan_json": {
                     "plan_version": plan_version,
                     "status": "draft",
-                    **payload,
-                    "search_elements_snapshot": search_elements_snapshot,
+                    **normalized_plan,
                 },
             }
         )
@@ -240,7 +256,10 @@ def build_planning_agent(storage: Any, task_id: str):
         ],
         system_prompt=MAIN_AGENT_SYSTEM_PROMPT,
         middleware=[AiSearchGuardMiddleware()],
-        subagents=[build_search_elements_subagent()],
+        subagents=[
+            build_search_elements_subagent(),
+            build_query_executor_subagent(storage, task_id),
+        ],
         checkpointer=checkpointer,
         backend=StateBackend,
         name=f"ai-search-planning-{task_id}",

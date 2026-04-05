@@ -18,6 +18,7 @@ from config import settings
 
 ALLOWED_SUBAGENTS = {
     "search-elements",
+    "query-executor",
     "coarse-screener",
     "close-reader",
     "feature-comparer",
