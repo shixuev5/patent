@@ -1,12 +1,12 @@
 <template>
-  <div class="space-y-4">
-    <section v-if="error" class="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-      {{ error }}
-    </section>
-
-    <section class="grid items-start gap-4" :class="layoutClass">
-      <aside class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 lg:sticky lg:top-14" :class="sidebarClass">
-        <div v-if="sidebarCollapsed" class="mb-1 flex flex-col items-center gap-3">
+  <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <section class="mx-auto grid min-h-0 w-full max-w-6xl flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
+      <aside
+        v-if="showDesktopSidebar"
+        class="order-2 flex h-full min-h-0 flex-col rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 lg:order-1"
+        :class="sidebarClass"
+      >
+        <div v-if="showCollapsedSidebarRail" class="mb-1 flex flex-col items-center gap-3">
           <button
             type="button"
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
@@ -49,13 +49,13 @@
           </button>
         </div>
 
-        <div v-if="!sidebarCollapsed && loading && !sessions.length" class="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-[13px] text-slate-500">
+        <div v-if="!sidebarCollapsed && loading && !sessions.length" class="flex-1 rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-[13px] text-slate-500">
           正在加载会话...
         </div>
-        <div v-else-if="!sidebarCollapsed && !sessions.length" class="rounded-2xl bg-slate-50/90 px-3 py-6 text-center text-[13px] text-slate-500">
+        <div v-else-if="!sidebarCollapsed && !sessions.length" class="flex-1 rounded-2xl bg-slate-50/90 px-3 py-6 text-center text-[13px] text-slate-500">
           暂无会话
         </div>
-        <div v-else-if="!sidebarCollapsed" class="max-h-[72vh] space-y-4 overflow-y-auto pr-1">
+        <div v-else-if="!sidebarCollapsed" class="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <section
             v-for="group in groupedSessions"
             :key="group.key"
@@ -86,7 +86,7 @@
         </div>
       </aside>
 
-      <section class="flex min-h-[calc(100vh-9rem)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-sm shadow-slate-200">
+      <section class="order-1 flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-sm shadow-slate-200 lg:order-2">
         <div v-if="sourceSummary" class="border-b border-cyan-200 bg-cyan-50/80 px-4 py-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
@@ -111,6 +111,15 @@
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="min-w-0 self-center">
               <div class="flex flex-wrap items-center gap-2">
+                <button
+                  v-if="isMobileViewport"
+                  type="button"
+                  class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm shadow-slate-200/70 transition hover:bg-slate-100 lg:hidden"
+                  :aria-label="sidebarCollapsed ? '展开历史会话' : '收起历史会话'"
+                  @click="toggleSidebar"
+                >
+                  <Bars3Icon class="h-4 w-4" />
+                </button>
                 <p class="truncate text-sm font-semibold text-slate-900">{{ workspaceTitle }}</p>
                 <span
                   v-if="sourceSummary"
@@ -127,6 +136,16 @@
               <span class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
                 计划 V{{ activePlanVersion || 0 }}
               </span>
+              <button
+                v-if="isMobileViewport"
+                type="button"
+                class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 lg:hidden"
+                aria-label="新建会话"
+                :disabled="loading"
+                @click="createSession"
+              >
+                <PlusIcon class="h-4 w-4" />
+              </button>
             </div>
           </div>
         </div>
@@ -405,8 +424,8 @@
           </section>
         </div>
 
-        <div ref="messageListRef" class="flex-1 overflow-y-auto px-4 py-4">
-          <div v-if="!conversationEntries.length" class="flex h-full min-h-[18rem] items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
+        <div ref="messageListRef" class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+          <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
             描述检索目标、技术方案、claim 片段或约束条件。
           </div>
 
@@ -471,8 +490,8 @@
             <div class="relative">
               <textarea
                 v-model="composer"
-                rows="4"
-                class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+                rows="2"
+                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
                 :disabled="inputDisabled || !currentSession"
                 :placeholder="inputPlaceholder"
                 @keydown.meta.enter.prevent="submitMessage"
@@ -494,13 +513,81 @@
         </div>
       </section>
     </section>
+
+    <transition name="drawer-fade">
+      <div
+        v-if="showMobileSessionDrawer"
+        class="fixed inset-x-0 bottom-0 top-[56px] z-40 bg-slate-950/14 lg:hidden"
+        @click="toggleSidebar"
+      />
+    </transition>
+
+    <transition name="drawer-slide">
+      <aside
+        v-if="showMobileSessionDrawer"
+        class="fixed bottom-0 left-0 top-[56px] z-50 flex w-[17.5rem] max-w-[86vw] flex-col border-r border-slate-200 bg-white shadow-2xl shadow-slate-300/30 lg:hidden"
+      >
+        <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div>
+            <p class="text-sm font-semibold text-slate-900">历史会话</p>
+            <p class="text-[11px] text-slate-500">{{ mobileSessionSummary }}</p>
+          </div>
+          <button
+            type="button"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
+            aria-label="关闭历史会话抽屉"
+            @click="toggleSidebar"
+          >
+            <ChevronLeftIcon class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto px-3 py-3">
+          <div v-if="loading && !sessions.length" class="rounded-2xl border border-dashed border-slate-200 px-3 py-5 text-center text-[13px] text-slate-500">
+            正在加载会话...
+          </div>
+          <div v-else-if="!sessions.length" class="rounded-2xl bg-slate-50/90 px-3 py-5 text-center text-[13px] text-slate-500">
+            暂无会话
+          </div>
+          <div v-else class="space-y-3">
+            <section
+              v-for="group in groupedSessions"
+              :key="group.key"
+              class="space-y-2"
+            >
+              <p class="px-1 text-[11px] font-semibold tracking-[0.18em] text-slate-400">{{ group.label }}</p>
+              <button
+                v-for="session in group.items"
+                :key="session.sessionId"
+                type="button"
+                class="w-full rounded-2xl border px-3 py-3 text-left transition"
+                :class="sessionCardClass(session.sessionId)"
+                @click="selectSession(session.sessionId)"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-900">{{ session.title }}</p>
+                  <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="phaseBadgeClass(session.phase)">
+                    {{ phaseLabel(session.phase) }}
+                  </span>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <span>V{{ session.activePlanVersion || 0 }}</span>
+                  <span>{{ session.selectedDocumentCount || 0 }} 篇</span>
+                </div>
+                <p class="mt-1 text-[10px] text-slate-400">{{ formatTime(session.updatedAt || session.createdAt) }}</p>
+              </button>
+            </section>
+          </div>
+        </div>
+      </aside>
+    </transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '@heroicons/vue/24/outline'
+import { Bars3Icon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
@@ -517,6 +604,7 @@ type SessionGroup = {
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ai-search-sidebar-collapsed'
 
 const aiSearchStore = useAiSearchStore()
+const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
 const { activityLog, currentSession, error, loading, sessions, streaming } = storeToRefs(aiSearchStore)
@@ -526,6 +614,8 @@ const answerDraft = ref('')
 const messageListRef = ref<HTMLElement | null>(null)
 const openPanel = ref<PanelKey>('plan')
 const sidebarCollapsed = ref(false)
+const isMobileViewport = ref(false)
+const viewportReady = ref(false)
 
 const messages = computed(() => currentSession.value?.messages || [])
 const pendingQuestion = computed<Record<string, any> | null>(() => currentSession.value?.pendingQuestion || null)
@@ -629,6 +719,14 @@ const layoutClass = computed(() => (sidebarCollapsed.value
   : 'lg:grid-cols-[15rem,minmax(0,1fr)] xl:grid-cols-[15.5rem,minmax(0,1fr)]'
 ))
 const sidebarClass = computed(() => (sidebarCollapsed.value ? 'px-2.5 lg:px-2.5' : ''))
+const showCollapsedSidebarRail = computed(() => !isMobileViewport.value && sidebarCollapsed.value)
+const showDesktopSidebar = computed(() => viewportReady.value && !isMobileViewport.value)
+const showMobileSessionDrawer = computed(() => isMobileViewport.value && !sidebarCollapsed.value)
+const mobileSessionSummary = computed(() => {
+  if (loading.value && !sessions.value.length) return '正在加载会话...'
+  if (!sessions.value.length) return ''
+  return `共 ${sessions.value.length} 个会话，当前优先展示检索工作台`
+})
 
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
@@ -841,6 +939,12 @@ const toggleSidebar = () => {
   sidebarCollapsed.value = !sidebarCollapsed.value
 }
 
+const syncViewport = () => {
+  if (!import.meta.client) return
+  isMobileViewport.value = window.innerWidth < 1024
+  viewportReady.value = true
+}
+
 const scrollMessagesToBottom = async () => {
   await nextTick()
   const el = messageListRef.value
@@ -855,6 +959,7 @@ const createSession = async () => {
 const selectSession = async (sessionId: string) => {
   if (!sessionId || sessionId === currentSession.value?.session.sessionId) return
   await aiSearchStore.loadSession(sessionId)
+  if (isMobileViewport.value) sidebarCollapsed.value = true
 }
 
 const submitMessage = async () => {
@@ -952,6 +1057,15 @@ watch(
 )
 
 watch(
+  error,
+  (value, previousValue) => {
+    const text = String(value || '').trim()
+    if (!text || text === previousValue) return
+    showMessage('error', text)
+  },
+)
+
+watch(
   sidebarCollapsed,
   (value) => {
     if (!import.meta.client) return
@@ -959,19 +1073,36 @@ watch(
   },
 )
 
+watch(
+  isMobileViewport,
+  (value, previousValue) => {
+    if (!import.meta.client || value === previousValue) return
+    const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+    sidebarCollapsed.value = value ? true : storedCollapsed
+  },
+)
+
 onMounted(async () => {
   if (import.meta.client) {
-    sidebarCollapsed.value = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+    syncViewport()
+    const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+    sidebarCollapsed.value = isMobileViewport.value ? true : storedCollapsed
+    window.addEventListener('resize', syncViewport)
   }
   const preferredSessionId = String(route.query.session || '').trim()
   await aiSearchStore.init(preferredSessionId)
   openPanel.value = suggestedPanel.value
   await scrollMessagesToBottom()
 })
+
+onBeforeUnmount(() => {
+  if (!import.meta.client) return
+  window.removeEventListener('resize', syncViewport)
+})
 </script>
 
 <style scoped>
-  .accordion-toggle {
+.accordion-toggle {
   @apply flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-slate-50;
 }
 
@@ -999,5 +1130,23 @@ onMounted(async () => {
   .accordion-body {
     @apply px-3 py-3;
   }
+}
+
+.drawer-fade-enter-active,
+.drawer-fade-leave-active,
+.drawer-slide-enter-active,
+.drawer-slide-leave-active {
+  transition: all 0.22s ease;
+}
+
+.drawer-fade-enter-from,
+.drawer-fade-leave-to {
+  opacity: 0;
+}
+
+.drawer-slide-enter-from,
+.drawer-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-100%);
 }
 </style>

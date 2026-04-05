@@ -16,7 +16,7 @@
 
           <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
             产品按审查员工作链路设计，让审查员从信息拉取转向方向与结果判断。
-            当前工作链重点由 AI 分析与 AI 答复驱动，并通过 AI 检索与 AI 撰写形成完整协同闭环。
+            当前工作链重点由 AI 分析、AI 检索与 AI 答复协同驱动，并由 AI 撰写补齐通知书草案组织与表达效率。
           </p>
 
           <div class="mt-5 flex flex-wrap gap-3">
@@ -36,7 +36,7 @@
             <div class="orbit-ring orbit-ring-b" />
 
             <div class="orbit-node orbit-top orbit-strong">AI 分析</div>
-            <div class="orbit-node orbit-left orbit-soft">AI 检索</div>
+            <div class="orbit-node orbit-left orbit-strong">AI 检索</div>
             <div class="orbit-node orbit-right orbit-soft">AI 撰写</div>
             <div class="orbit-node orbit-bottom orbit-strong">AI 答复</div>
 
@@ -142,15 +142,15 @@ const phaseCards = [
   {
     stage: '阶段2',
     title: '专利检索',
-    stageDescription: '围绕焦点组织证据线索，提高检索准确性。',
+    stageDescription: '围绕争议焦点组织检索路径与证据池，减少无效检索往返。',
     capability: 'AI 检索',
-    capabilityDescription: '组织候选证据路径，减少无效检索。',
-    soft: true,
+    capabilityDescription: '点亮证据线索与候选结果，提升检索命中率与工作连续性。',
+    soft: false,
   },
   {
     stage: '阶段3',
     title: '通知书撰写',
-    stageDescription: '统一条理与依据结构，减少重复撰写。',
+    stageDescription: '在主工作链结果上补齐草案结构与表述，减少重复组织。',
     capability: 'AI 撰写',
     capabilityDescription: '生成草案框架，降低格式与措辞重复劳动。',
     soft: true,
@@ -272,7 +272,9 @@ onMounted(() => {
 
 .orbit-strong {
   background: #dff6ff;
+  border-color: #67e8f9;
   color: #0e7490;
+  box-shadow: 0 10px 22px rgba(34, 211, 238, 0.2);
 }
 
 .orbit-soft {

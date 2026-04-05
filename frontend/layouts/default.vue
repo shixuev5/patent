@@ -1,7 +1,9 @@
 <template>
-  <div class="app-shell flex min-h-screen flex-col">
+  <div class="app-shell flex min-h-dvh flex-col">
+    <AppGlobalMessage />
+
     <header class="app-header sticky top-0 z-40 border-b border-slate-200/80 bg-white/90 backdrop-blur-xl">
-      <div class="mx-auto flex h-14 w-full max-w-6xl items-center px-4 sm:px-6 md:grid md:grid-cols-[auto_1fr_auto] md:gap-4">
+      <div class="mx-auto flex h-14 w-full max-w-6xl items-center px-3 sm:px-6 md:grid md:grid-cols-[auto_1fr_auto] md:gap-4">
         <NuxtLink to="/" class="flex items-center gap-2">
           <span class="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-600/90 text-xs font-bold text-white">AI</span>
           <div class="leading-tight">
@@ -22,6 +24,9 @@
         <div class="ml-auto flex items-center gap-1.5 md:hidden">
           <NuxtLink to="/tasks" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
             AI任务
+          </NuxtLink>
+          <NuxtLink to="/search" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
+            AI检索
           </NuxtLink>
           <div class="relative md:hidden">
             <button
@@ -53,13 +58,6 @@
               >
                 欢迎，{{ displayUserName }}
               </p>
-              <NuxtLink
-                to="/search"
-                class="mt-1 block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-                @click="closeMobileMenu"
-              >
-                AI 检索
-              </NuxtLink>
               <NuxtLink
                 to="/account"
                 class="block rounded-lg px-2.5 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
@@ -189,19 +187,19 @@
       </div>
     </div>
 
-    <main class="mx-auto w-full max-w-6xl flex-1 px-4 pb-8 pt-5 sm:px-6 sm:pt-7">
+    <main class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-3 sm:p-6">
       <slot />
     </main>
 
     <footer class="border-t border-slate-200/80 bg-white/70">
-      <div class="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-slate-500 sm:px-6">
-        <p>Copyright © {{ currentYear }} aipatents.cn. All rights reserved.</p>
-        <div class="flex flex-wrap items-center gap-3">
+      <div class="mx-auto grid w-full max-w-6xl grid-cols-[1fr_auto] items-center gap-3 px-4 py-3 text-xs text-slate-500 sm:px-6 md:grid-cols-[1fr_auto_1fr]">
+        <div class="hidden md:block" />
+        <p class="text-left whitespace-nowrap md:justify-self-center md:text-center">Copyright © {{ currentYear }} aipatents.cn. All rights reserved.</p>
+        <div class="justify-self-end flex shrink-0 items-center gap-3 whitespace-nowrap">
           <p class="inline-flex items-center gap-1.5">
             <span class="inline-block h-1.5 w-1.5 rounded-full" :class="isServiceHealthy ? 'bg-emerald-500' : 'bg-rose-500'" />
             服务{{ serviceStatusText }}
           </p>
-          <p>版本 v{{ versionText }}</p>
         </div>
       </div>
     </footer>
@@ -239,7 +237,6 @@ const isServiceHealthy = computed(() => {
 })
 
 const serviceStatusText = computed(() => (isServiceHealthy.value ? '正常' : '异常'))
-const versionText = computed(() => serviceVersion.value || '--')
 const displayUserName = computed(() => {
   const candidates = [
     authStore.user?.name,
@@ -392,4 +389,5 @@ onBeforeUnmount(() => {
 .mobile-task-btn:active {
   color: white !important;
 }
+
 </style>

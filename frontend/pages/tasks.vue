@@ -1,19 +1,5 @@
 <template>
   <div class="space-y-4">
-    <transition name="toast">
-      <div
-        v-if="taskStore.globalNotice.show"
-        class="fixed top-16 left-1/2 z-50 -translate-x-1/2 rounded-full border px-5 py-3 text-sm font-semibold shadow-lg backdrop-blur-md"
-        :class="taskStore.globalNotice.type === 'success'
-          ? 'border-emerald-200/70 bg-emerald-50/95 text-emerald-700 shadow-emerald-200/60'
-          : taskStore.globalNotice.type === 'error'
-          ? 'border-rose-200/70 bg-rose-50/95 text-rose-700 shadow-rose-200/60'
-          : 'border-blue-200/70 bg-blue-50/95 text-blue-700 shadow-blue-200/60'"
-      >
-        {{ taskStore.globalNotice.text }}
-      </div>
-    </transition>
-
     <section class="rounded-3xl border border-slate-200 bg-white/92 p-4 shadow-sm shadow-slate-200 sm:p-5">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -239,6 +225,7 @@ import type { CreateTaskInput } from '~/types/task'
 const config = useRuntimeConfig()
 const taskStore = useTaskStore()
 const authStore = useAuthStore()
+const { showMessage } = useGlobalMessage()
 
 const mode = ref<'patent_analysis' | 'ai_review' | 'ai_reply'>('patent_analysis')
 
@@ -505,17 +492,12 @@ watch(
     await refreshUsageForCurrentMode()
   },
 )
+
+watch(
+  () => [taskStore.globalNotice.show, taskStore.globalNotice.type, taskStore.globalNotice.text] as const,
+  ([show, type, text]) => {
+    if (!show || !text) return
+    showMessage(type, text)
+  },
+)
 </script>
-
-<style scoped>
-.toast-enter-active,
-.toast-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.toast-enter-from,
-.toast-leave-to {
-  opacity: 0;
-  transform: translate(-50%, -6px);
-}
-</style>

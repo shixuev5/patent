@@ -19,6 +19,10 @@
 - 条目也支持方括号形式：`- [feature] xxx`
 - 条目未标注类型时默认按 `improvement`
 
+## v1.2.0 - 2026-04-05 - AI 答复上线
+- feature: AI 答复功能正式推出
+- feature: 提供 AI 检索功能（Beta）
+
 ## v1.1.0 - 2026-03-07 - 个人空间上新
 - feature: 增加用户登录认证
 - feature: 增加个人空间页面
