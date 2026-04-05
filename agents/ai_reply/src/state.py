@@ -91,9 +91,16 @@ class RetrievalResultItem(BaseModel):
     relevance_score: float = Field(0.0, description="rerank 相关性分值")
 
 
+class RetrievalQueryItem(BaseModel):
+    """单条外部检索查询描述"""
+    text: str = Field(default="", description="实际执行的检索文本")
+    mode: str = Field(default="", description="检索模式，如 boolean/lexical/semantic/web")
+    intent: str = Field(default="", description="检索意图，如 anchor/expansion/reference/technical")
+
+
 class RetrievalEngineTrace(BaseModel):
     """单检索引擎追踪信息"""
-    queries: List[str] = Field(default_factory=list, description="该引擎实际执行的查询条件")
+    queries: List[RetrievalQueryItem] = Field(default_factory=list, description="该引擎实际执行的查询条件")
     filters: Dict[str, Any] = Field(default_factory=dict, description="该引擎执行过滤条件")
     raw_result_count: int = Field(0, description="该引擎原始候选数")
     result_count: int = Field(0, description="该引擎入选证据条数")

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from agents.ai_reply.src.retrieval_utils import make_query_spec
 from agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
 from agents.ai_reply.src.state import WorkflowConfig
 from agents.common.retrieval import LocalEvidenceRetriever
@@ -140,7 +141,10 @@ def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     monkeypatch.setattr(
         node,
         "_build_engine_queries",
-        lambda dispute, claim_text, priority_date: {"openalex": ["query-1"], "tavily": ["query-2"]},
+        lambda dispute, claim_text, priority_date: {
+            "openalex": [make_query_spec("query-1", "boolean", "anchor")],
+            "tavily": [make_query_spec("query-2", "web", "technical")],
+        },
     )
 
     disputes = [

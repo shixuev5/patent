@@ -1,4 +1,5 @@
 from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from agents.ai_reply.src.retrieval_utils import make_query_spec
 
 
 def test_common_knowledge_verification_runs_followup_search_on_low_confidence(monkeypatch) -> None:
@@ -9,7 +10,7 @@ def test_common_knowledge_verification_runs_followup_search_on_low_confidence(mo
 
     def _fake_search_evidence(**kwargs):
         external_calls.append(kwargs["queries"])
-        if any("教材" in query for queries in kwargs["queries"].values() for query in queries):
+        if any("教材" in str((query or {}).get("text", "")) for queries in kwargs["queries"].values() for query in queries):
             return (
                 [
                     {
@@ -88,18 +89,18 @@ def test_common_knowledge_verification_runs_followup_search_on_low_confidence(mo
         node,
         "_build_engine_queries",
         lambda *args, **kwargs: {
-            "openalex": ["locking structure common knowledge"],
-            "zhihuiya": ["锁定结构 公知常识"],
-            "tavily": ["锁定结构 常规手段"],
+            "openalex": [make_query_spec('"locking structure" AND handbook', "boolean", "anchor")],
+            "zhihuiya": [make_query_spec('"锁定结构" AND 公知常识', "lexical", "core_patent")],
+            "tavily": [make_query_spec("锁定结构 技术手段 常规做法 公开资料", "web", "technical")],
         },
     )
     monkeypatch.setattr(
         node,
         "_build_followup_engine_queries",
         lambda *args, **kwargs: {
-            "openalex": ["locking structure textbook handbook"],
-            "zhihuiya": ["锁定结构 教材 手册 公知常识"],
-            "tavily": ["锁定结构 教材 手册"],
+            "openalex": [make_query_spec('"locking structure" AND textbook AND handbook', "boolean", "anchor")],
+            "zhihuiya": [make_query_spec('"锁定结构" AND 教材 AND 手册', "lexical", "core_patent")],
+            "tavily": [make_query_spec("锁定结构 教材 手册 标准 PDF 高校", "web", "reference")],
         },
     )
     monkeypatch.setattr(node.external_evidence_aggregator, "search_evidence", _fake_search_evidence)

@@ -8,43 +8,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Set, Tuple
 
-from agents.ai_reply.src.retrieval_utils import normalize_query_list
-
-
-def flatten_queries(queries_by_engine: Dict[str, List[str]]) -> List[str]:
-    flat: List[str] = []
-    for engine_queries in (queries_by_engine or {}).values():
-        for query in engine_queries or []:
-            value = str(query).strip()
-            if value and value not in flat:
-                flat.append(value)
-    return flat
-
-
-def merge_query_maps(
-    primary_queries: Dict[str, List[str]],
-    followup_queries: Dict[str, List[str]],
-    *,
-    limit: int = 4,
-) -> Dict[str, List[str]]:
-    merged: Dict[str, List[str]] = {}
-    for engine in {"openalex", "zhihuiya", "tavily"}:
-        merged[engine] = normalize_query_list(
-            list(primary_queries.get(engine, [])) + list(followup_queries.get(engine, [])),
-            limit=limit,
-        )
-    return merged
-
-
-def has_new_queries(
-    primary_queries: Dict[str, List[str]],
-    followup_queries: Dict[str, List[str]],
-) -> bool:
-    for engine, queries in (followup_queries or {}).items():
-        primary = set(primary_queries.get(engine, []))
-        if any(str(query).strip() and str(query).strip() not in primary for query in (queries or [])):
-            return True
-    return False
+from agents.ai_reply.src.retrieval_utils import (
+    QuerySpec,
+    normalize_query_list,
+)
 
 
 def merge_evidence_items(

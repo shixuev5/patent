@@ -1,4 +1,5 @@
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
+from agents.ai_reply.src.retrieval_utils import make_query_spec
 
 
 def test_topup_search_verification_builds_prefix_messages_from_evidence_cards() -> None:
@@ -61,7 +62,7 @@ def test_topup_search_verification_runs_followup_search_on_low_confidence(monkey
 
     def _fake_search_evidence(**kwargs):
         external_search_calls.append(kwargs["queries"])
-        if any("区别特征" in query for queries in kwargs["queries"].values() for query in queries):
+        if any("区别特征" in str((query or {}).get("text", "")) for queries in kwargs["queries"].values() for query in queries):
             return (
                 [
                     {
@@ -119,18 +120,18 @@ def test_topup_search_verification_runs_followup_search_on_low_confidence(monkey
         node,
         "_build_engine_queries",
         lambda *args, **kwargs: {
-            "openalex": ["rrc target acceleration prior art"],
-            "zhihuiya": ["RRC 目标加速度 专利 技术公开"],
-            "tavily": ["RRC 目标加速度 技术公开资料"],
+            "openalex": [make_query_spec('"rrc target acceleration" AND implementation', "boolean", "anchor")],
+            "zhihuiya": [make_query_spec('"RRC 目标加速度" AND 专利 AND 技术公开', "lexical", "core_patent")],
+            "tavily": [make_query_spec("RRC 目标加速度 技术公开 实现方案 白皮书 论文", "web", "technical")],
         },
     )
     monkeypatch.setattr(
         node,
         "_build_followup_engine_queries",
         lambda *args, **kwargs: {
-            "openalex": ["rrc target acceleration distinguishing feature"],
-            "zhihuiya": ["RRC 目标加速度 区别特征 现有技术"],
-            "tavily": ["RRC 目标加速度 区别特征 公开资料"],
+            "openalex": [make_query_spec('"rrc target acceleration" AND comparative study', "boolean", "anchor")],
+            "zhihuiya": [make_query_spec('"RRC 目标加速度" AND 区别特征 AND 现有技术', "lexical", "core_patent")],
+            "tavily": [make_query_spec("RRC 目标加速度 区别特征 技术公开 实现方案", "web", "technical")],
         },
     )
     monkeypatch.setattr(node.external_evidence_aggregator, "search_evidence", _fake_search_evidence)

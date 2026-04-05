@@ -17,18 +17,21 @@ from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_followup import (
     build_evidence_cards_from_items,
-    flatten_queries,
     has_new_evidence_cards,
-    has_new_queries,
     merge_evidence_items,
     merge_local_retrieval_trace,
     merge_local_retrieval_traces,
-    merge_query_maps,
     should_run_followup_by_assessment,
 )
 from agents.ai_reply.src.retrieval_utils import (
+    ENGINE_HINTS,
+    QuerySpec,
     build_trace_retrieval,
+    extract_must_keep_phrases,
+    flatten_query_texts,
+    make_query_spec,
     normalize_query_list,
+    normalize_query_specs,
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import Dispute, EvidenceAssessment
@@ -212,13 +215,31 @@ class TopupSearchVerificationNode:
                 primary_queries=external_queries,
                 first_assessment=parsed.get("assessment", {}),
             )
-            if self._has_new_queries(external_queries, followup_queries):
+            primary_query_keys = {
+                (
+                    " ".join(str((item or {}).get("text", "")).split()),
+                    str((item or {}).get("mode", "")).strip().lower(),
+                    str((item or {}).get("intent", "")).strip().lower(),
+                )
+                for engine_queries in external_queries.values()
+                for item in engine_queries
+            }
+            if any(
+                (
+                    " ".join(str((query or {}).get("text", "")).split()),
+                    str((query or {}).get("mode", "")).strip().lower(),
+                    str((query or {}).get("intent", "")).strip().lower(),
+                ) not in primary_query_keys
+                and " ".join(str((query or {}).get("text", "")).split())
+                for engine_queries in followup_queries.values()
+                for query in engine_queries
+            ):
                 followup_local_evidence, followup_local_trace = self._search_local_evidence(
                     feature_text=feature_text,
                     claim_text=claim_text,
                     comparison_docs=comparison_docs,
                     local_retriever=local_retriever,
-                    extra_queries=self._flatten_queries(followup_queries),
+                    extra_queries=flatten_query_texts(followup_queries),
                 )
                 followup_candidates, followup_engines, followup_meta = self.external_evidence_aggregator.search_evidence(
                     queries=followup_queries,
@@ -235,7 +256,14 @@ class TopupSearchVerificationNode:
                     max_context_chars=max(settings.LOCAL_RETRIEVAL_MAX_CONTEXT_CHARS, 3200),
                 )
                 if self._has_new_evidence_cards(evidence_cards, expanded_cards):
-                    merged_queries = self._merge_query_maps(external_queries, followup_queries)
+                    merged_queries = {
+                        engine: normalize_query_specs(
+                            list(external_queries.get(engine, [])) + list(followup_queries.get(engine, [])),
+                            engine=engine,
+                            limit=4,
+                        )
+                        for engine in {"openalex", "zhihuiya", "tavily"}
+                    }
                     parsed = self._evaluate_with_evidence_cards(
                         task=task,
                         claim_ids=claim_ids,
@@ -299,7 +327,7 @@ class TopupSearchVerificationNode:
         claim_text: str,
         feature_text: str,
         evidence_cards: List[Dict[str, Any]],
-        external_queries: Dict[str, List[str]],
+        external_queries: Dict[str, List[QuerySpec]],
     ) -> Dict[str, Any]:
         messages = self._build_prefix_messages(evidence_cards)
         messages.append(
@@ -410,7 +438,7 @@ class TopupSearchVerificationNode:
         claim_text: str,
         feature_text: str,
         evidence_cards: List[Dict[str, Any]],
-        external_queries: Dict[str, List[str]],
+        external_queries: Dict[str, List[QuerySpec]],
     ) -> str:
         return f"""请评判以下补充检索任务：
 
@@ -435,23 +463,26 @@ feature_text: {feature_text}
         claim_text: str,
         feature_text: str,
         priority_date: str,
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, List[QuerySpec]]:
         fallback_queries = {
-            "openalex": normalize_query_list([
-                f"{feature_text} method architecture",
-                f"{feature_text} implementation study",
-            ], limit=2),
-            "zhihuiya": normalize_query_list([
-                f"{feature_text} 专利 技术公开",
-                f"{feature_text} 本领域公知",
-            ], limit=2),
-            "tavily": normalize_query_list([
-                f"{feature_text} 技术公开资料",
-                f"{feature_text} {claim_text[:120]}",
-            ], limit=2),
+            "openalex": normalize_query_specs([
+                make_query_spec(f"\"{feature_text}\" AND implementation", "boolean", "anchor"),
+                make_query_spec(f"\"{feature_text}\" AND architecture", "boolean", "expansion"),
+            ], engine="openalex", limit=2),
+            "zhihuiya": normalize_query_specs([
+                make_query_spec(f"\"{feature_text}\" AND 专利 AND 技术公开", "lexical", "core_patent"),
+                make_query_spec(f"{feature_text} 专利技术公开 现有技术", "semantic", "expansion"),
+            ], engine="zhihuiya", limit=2),
+            "tavily": normalize_query_specs([
+                make_query_spec(f"{feature_text} 技术公开 实现方案 白皮书 论文 产品文档", "web", "technical"),
+                make_query_spec(f"{feature_text} 教材 手册 标准 PDF 高校", "web", "reference"),
+            ], engine="tavily", limit=2),
         }
         user_context = {
             "priority_date": priority_date,
+            "retrieval_goal": "topup_search",
+            "engine_hints": dict(ENGINE_HINTS),
+            "must_keep_phrases": extract_must_keep_phrases(feature_text, claim_text),
             "task": task,
             "feature_text": feature_text,
             "claim_text": claim_text[:240],
@@ -470,38 +501,49 @@ feature_text: {feature_text}
         claim_text: str,
         feature_text: str,
         priority_date: str,
-        primary_queries: Dict[str, List[str]],
+        primary_queries: Dict[str, List[QuerySpec]],
         first_assessment: Dict[str, Any],
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, List[QuerySpec]]:
         reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
-        fallback_queries = self._merge_query_maps(
-            primary_queries,
-            {
-                "openalex": normalize_query_list(
+        extra_fallback_queries = {
+                "openalex": normalize_query_specs(
                     [
-                        f"{feature_text} comparative study",
-                        f"{feature_text} implementation design",
+                        make_query_spec(f"\"{feature_text}\" AND comparative study", "boolean", "anchor"),
+                        make_query_spec(f"\"{feature_text}\" AND implementation design", "boolean", "expansion"),
                     ],
+                    engine="openalex",
                     limit=2,
                 ),
-                "zhihuiya": normalize_query_list(
+                "zhihuiya": normalize_query_specs(
                     [
-                        f"{feature_text} 技术效果 对比文件",
-                        f"{feature_text} 区别特征 现有技术",
+                        make_query_spec(f"\"{feature_text}\" AND 技术效果 AND 对比文件", "lexical", "core_patent"),
+                        make_query_spec(f"{feature_text} 区别特征 现有技术 技术效果", "semantic", "expansion"),
                     ],
+                    engine="zhihuiya",
                     limit=2,
                 ),
-                "tavily": normalize_query_list(
+                "tavily": normalize_query_specs(
                     [
-                        f"{feature_text} {claim_text[:120]}",
-                        f"{feature_text} 技术启示 公开资料",
+                        make_query_spec(f"{feature_text} 技术启示 实现方案 白皮书 论文 产品文档", "web", "technical"),
+                        make_query_spec(f"{feature_text} 教材 手册 标准 PDF 高校", "web", "reference"),
                     ],
+                    engine="tavily",
                     limit=2,
                 ),
-            },
-        )
+        }
+        fallback_queries = {
+            engine: normalize_query_specs(
+                list(primary_queries.get(engine, [])) + list(extra_fallback_queries.get(engine, [])),
+                engine=engine,
+                limit=4,
+            )
+            for engine in {"openalex", "zhihuiya", "tavily"}
+        }
         user_context = {
             "priority_date": priority_date,
+            "retrieval_goal": "followup_topup_search",
+            "engine_hints": dict(ENGINE_HINTS),
+            "must_keep_phrases": extract_must_keep_phrases(feature_text, claim_text, primary_queries),
             "task": task,
             "feature_text": feature_text,
             "claim_text": claim_text[:240],
@@ -825,20 +867,6 @@ feature_text: {feature_text}
             evidence_cards=evidence_cards,
         )
 
-    def _has_new_queries(
-        self,
-        primary_queries: Dict[str, List[str]],
-        followup_queries: Dict[str, List[str]],
-    ) -> bool:
-        return has_new_queries(primary_queries, followup_queries)
-
-    def _merge_query_maps(
-        self,
-        primary_queries: Dict[str, List[str]],
-        followup_queries: Dict[str, List[str]],
-    ) -> Dict[str, List[str]]:
-        return merge_query_maps(primary_queries, followup_queries, limit=4)
-
     def _merge_evidence_items(
         self,
         primary_items: List[Dict[str, Any]],
@@ -852,9 +880,6 @@ feature_text: {feature_text}
         expanded_cards: List[Dict[str, Any]],
     ) -> bool:
         return has_new_evidence_cards(primary_cards, expanded_cards)
-
-    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
-        return flatten_queries(queries_by_engine)
 
     def _merge_local_traces(self, primary_trace: Dict[str, Any], followup_trace: Dict[str, Any]) -> Dict[str, Any]:
         return merge_local_retrieval_traces(primary_trace, followup_trace)

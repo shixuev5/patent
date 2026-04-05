@@ -16,19 +16,19 @@ from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_followup import (
     build_compact_cards,
-    build_evidence_cards_from_items,
-    flatten_queries,
     has_new_evidence_cards,
-    has_new_queries,
-    merge_evidence_items,
     merge_local_retrieval_trace,
     merge_local_retrieval_traces,
-    merge_query_maps,
     should_run_followup_by_assessment,
 )
 from agents.ai_reply.src.retrieval_utils import (
+    ENGINE_HINTS,
+    QuerySpec,
     build_trace_retrieval,
-    normalize_query_list,
+    extract_must_keep_phrases,
+    flatten_query_texts,
+    make_query_spec,
+    normalize_query_specs,
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import EvidenceAssessment
@@ -169,7 +169,7 @@ class CommonKnowledgeVerificationNode:
         if not external_evidence:
             logger.warning("外部证据为空，将仅基于模型知识进行低置信度判断")
 
-        flat_queries = self._flatten_queries(queries_by_engine)
+        flat_queries = flatten_query_texts(queries_by_engine)
         local_candidates, local_trace = self._search_local_candidates(
             flat_queries=flat_queries,
             local_doc_ids=local_doc_ids,
@@ -221,22 +221,48 @@ class CommonKnowledgeVerificationNode:
                 primary_queries=queries_by_engine,
                 first_assessment=first_assessment,
             )
-            if has_new_queries(queries_by_engine, followup_queries):
+            primary_query_keys = {
+                (
+                    " ".join(str((item or {}).get("text", "")).split()),
+                    str((item or {}).get("mode", "")).strip().lower(),
+                    str((item or {}).get("intent", "")).strip().lower(),
+                )
+                for engine_queries in queries_by_engine.values()
+                for item in engine_queries
+            }
+            if any(
+                (
+                    " ".join(str((query or {}).get("text", "")).split()),
+                    str((query or {}).get("mode", "")).strip().lower(),
+                    str((query or {}).get("intent", "")).strip().lower(),
+                ) not in primary_query_keys
+                and " ".join(str((query or {}).get("text", "")).split())
+                for engine_queries in followup_queries.values()
+                for query in engine_queries
+            ):
                 followup_external_evidence, followup_engines, followup_meta = self.external_evidence_aggregator.search_evidence(
                     queries=followup_queries,
                     priority_date=priority_date,
                     limit=8,
                 )
-                followup_flat_queries = flatten_queries(followup_queries)
+                followup_flat_queries = flatten_query_texts(followup_queries)
                 followup_local_candidates, followup_local_trace = self._search_local_candidates(
                     flat_queries=followup_flat_queries,
                     local_doc_ids=local_doc_ids,
                     local_retriever=local_retriever,
                 )
                 followup_external_candidates = self._to_external_candidates(followup_external_evidence)
+                merged_queries = {
+                    engine: normalize_query_specs(
+                        list(queries_by_engine.get(engine, [])) + list(followup_queries.get(engine, [])),
+                        engine=engine,
+                        limit=4,
+                    )
+                    for engine in {"openalex", "zhihuiya", "tavily"}
+                }
                 merged_candidates = self._rerank_candidates(
                     candidates=local_candidates + external_candidates + followup_local_candidates + followup_external_candidates,
-                    flat_queries=flatten_queries(merge_query_maps(queries_by_engine, followup_queries, limit=4)),
+                    flat_queries=flatten_query_texts(merged_queries),
                     top_k=max(settings.LOCAL_RETRIEVAL_RERANK_K, 10),
                 )
                 expanded_bundle = self._build_compact_cards(
@@ -247,7 +273,6 @@ class CommonKnowledgeVerificationNode:
                     max_quote_chars=settings.LOCAL_RETRIEVAL_MAX_QUOTE_CHARS,
                 )
                 if has_new_evidence_cards(card_bundle.get("cards", []), expanded_bundle.get("cards", [])):
-                    merged_queries = merge_query_maps(queries_by_engine, followup_queries, limit=4)
                     assessment = self._verify_single_dispute(
                         dispute=dispute,
                         claim_text=claim_text,
@@ -259,7 +284,7 @@ class CommonKnowledgeVerificationNode:
                         local_retrieval_trace=merge_local_retrieval_trace(
                             local_trace=merge_local_retrieval_traces(local_trace, followup_local_trace),
                             card_trace=expanded_bundle.get("trace", {}),
-                            queries=flatten_queries(merged_queries),
+                            queries=flatten_query_texts(merged_queries),
                             doc_filters=local_doc_ids,
                         ),
                     )
@@ -283,40 +308,50 @@ class CommonKnowledgeVerificationNode:
         dispute: Dict[str, Any],
         claim_text: str,
         priority_date: Optional[str],
-        primary_queries: Dict[str, List[str]],
+        primary_queries: Dict[str, List[QuerySpec]],
         first_assessment: Dict[str, Any],
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, List[QuerySpec]]:
         feature_text = str(dispute.get("feature_text", "")).strip()
         reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
-        fallback_queries = merge_query_maps(
-            primary_queries,
-            {
-                "openalex": normalize_query_list(
+        extra_fallback_queries = {
+                "openalex": normalize_query_specs(
                     [
-                        f"{feature_text} textbook handbook",
-                        f"{feature_text} standard practice review",
+                        make_query_spec(f"\"{feature_text}\" AND textbook AND handbook", "boolean", "anchor"),
+                        make_query_spec(f"\"{feature_text}\" AND standard practice review", "boolean", "expansion"),
                     ],
+                    engine="openalex",
                     limit=2,
                 ),
-                "zhihuiya": normalize_query_list(
+                "zhihuiya": normalize_query_specs(
                     [
-                        f"{feature_text} 教材 手册 公知常识",
-                        f"{feature_text} 常规技术手段 申请日前",
+                        make_query_spec(f"\"{feature_text}\" AND 教材 AND 手册", "lexical", "core_patent"),
+                        make_query_spec(f"{feature_text} 常规技术手段 申请日前 公知常识", "semantic", "expansion"),
                     ],
+                    engine="zhihuiya",
                     limit=2,
                 ),
-                "tavily": normalize_query_list(
+                "tavily": normalize_query_specs(
                     [
-                        f"{feature_text} 公知常识 教材 手册",
-                        f"{feature_text} 技术手段 常见做法 公开资料",
+                        make_query_spec(f"{feature_text} 教材 手册 标准 综述 PDF 高校 研究院", "web", "reference"),
+                        make_query_spec(f"{feature_text} 技术手段 常见做法 技术公开 论文", "web", "technical"),
                     ],
+                    engine="tavily",
                     limit=2,
                 ),
-            },
-            limit=4,
-        )
+        }
+        fallback_queries = {
+            engine: normalize_query_specs(
+                list(primary_queries.get(engine, [])) + list(extra_fallback_queries.get(engine, [])),
+                engine=engine,
+                limit=4,
+            )
+            for engine in {"openalex", "zhihuiya", "tavily"}
+        }
         user_context = {
             "priority_date": priority_date or "",
+            "retrieval_goal": "followup_common_knowledge",
+            "engine_hints": dict(ENGINE_HINTS),
+            "must_keep_phrases": extract_must_keep_phrases(feature_text, claim_text, primary_queries),
             "feature_text": feature_text,
             "claim_text": claim_text[:240],
             "first_assessment": {
@@ -411,29 +446,29 @@ class CommonKnowledgeVerificationNode:
         dispute: Dict[str, Any],
         claim_text: str,
         priority_date: Optional[str],
-    ) -> Dict[str, List[str]]:
+    ) -> Dict[str, List[QuerySpec]]:
         feature_text = str(dispute.get("feature_text", "")).strip()
         examiner_opinion = self._to_dict(dispute.get("examiner_opinion", {}))
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
         fallback_queries = {
-            "openalex": normalize_query_list([
-                f"{feature_text} review tutorial",
-                f"{feature_text} standard practice",
-                f"{feature_text} {examiner_opinion.get('reasoning', '')}",
-            ], limit=2),
-            "zhihuiya": normalize_query_list([
-                f"{feature_text} 本领域公知常识",
-                f"{feature_text} 技术手段 常见实现",
-                f"{feature_text} {applicant_opinion.get('core_conflict', '')}",
-            ], limit=2),
-            "tavily": normalize_query_list([
-                f"{feature_text} 本领域公知 常见做法",
-                f"{feature_text} 技术原理 公开资料",
-                f"{feature_text} {claim_text[:120]}",
-            ], limit=2),
+            "openalex": normalize_query_specs([
+                make_query_spec(f"\"{feature_text}\" AND review AND tutorial", "boolean", "anchor"),
+                make_query_spec(f"\"{feature_text}\" AND standard practice", "boolean", "expansion"),
+            ], engine="openalex", limit=2),
+            "zhihuiya": normalize_query_specs([
+                make_query_spec(f"\"{feature_text}\" AND 本领域公知常识", "lexical", "core_patent"),
+                make_query_spec(f"{feature_text} 技术手段 常见实现 {applicant_opinion.get('core_conflict', '')}", "semantic", "expansion"),
+            ], engine="zhihuiya", limit=2),
+            "tavily": normalize_query_specs([
+                make_query_spec(f"{feature_text} 教材 手册 标准 综述 PDF 高校 研究院", "web", "reference"),
+                make_query_spec(f"{feature_text} 技术原理 技术公开 论文 产品文档", "web", "technical"),
+            ], engine="tavily", limit=2),
         }
         user_context = {
             "priority_date": priority_date or "",
+            "retrieval_goal": "common_knowledge",
+            "engine_hints": dict(ENGINE_HINTS),
+            "must_keep_phrases": extract_must_keep_phrases(feature_text, claim_text),
             "feature_text": feature_text,
             "claim_text": claim_text[:240],
             "examiner_reasoning": examiner_opinion.get("reasoning", ""),
@@ -468,9 +503,6 @@ class CommonKnowledgeVerificationNode:
             if doc_id and doc_id not in doc_ids:
                 doc_ids.append(doc_id)
         return doc_ids
-
-    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
-        return flatten_queries(queries_by_engine)
 
     def _search_local_candidates(
         self,
@@ -715,7 +747,7 @@ class CommonKnowledgeVerificationNode:
         self,
         dispute: Dict[str, Any],
         claim_text: str,
-        queries_by_engine: Dict[str, List[str]],
+        queries_by_engine: Dict[str, List[QuerySpec]],
         priority_date: Optional[str],
         evidence_cards: List[Dict[str, Any]],
         retrieval_engines: List[str],
@@ -726,7 +758,7 @@ class CommonKnowledgeVerificationNode:
         applicant_opinion = self._to_dict(dispute.get("applicant_opinion", {}))
 
         prefix_messages = self._build_prefix_messages(evidence_cards, priority_date)
-        flat_queries = self._flatten_queries(queries_by_engine)
+        flat_queries = flatten_query_texts(queries_by_engine)
         dispute_prompt = f"""请核查以下逻辑争议项：
 dispute_id: {dispute.get("dispute_id", "")}
 claim_ids: {json.dumps(self._normalize_claim_ids(dispute.get("claim_ids", [])), ensure_ascii=False)}

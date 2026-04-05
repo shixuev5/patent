@@ -6,6 +6,7 @@ import os
 
 import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.ai_reply.src.retrieval_utils import make_query_spec
 from agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
@@ -109,7 +110,11 @@ def test_openalex_search_keeps_anonymous_mode_when_key_missing(monkeypatch):
 
     monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
-    results = aggregator._search_openalex(["battery material"], priority_date="2024-12-31", per_query=2)
+    results = aggregator._search_openalex(
+        [make_query_spec("battery material", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
 
     assert len(results) == 1
     assert captured["params"]["filter"] == (
@@ -150,7 +155,11 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
 
     monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
-    results = aggregator._search_openalex(["solid electrolyte"], priority_date="2024-12-31", per_query=2)
+    results = aggregator._search_openalex(
+        [make_query_spec("solid electrolyte", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
 
     assert calls == ["key-a", "key-b"]
     assert len(results) == 1
@@ -175,6 +184,101 @@ def test_openalex_query_normalization_removes_filter_delimiters_only():
     )
 
     assert query == "\"large language model\" AND patent claim generation"
+
+
+def test_zhihuiya_search_executes_lexical_and_semantic_queries(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, limit=50):
+            self.calls.append(("lexical", query, limit))
+            return {
+                "results": [
+                    {
+                        "title": "基于人工智能的专利申请撰写方法及系统",
+                        "pn": "US20240303416A1",
+                        "abstract": "基于该简短描述撰写一个或多个专利权利要求。",
+                        "publication_date": "2024-09-12",
+                        "score": "88",
+                    }
+                ]
+            }
+
+        def search_semantic(self, text, to_date="", limit=50):
+            self.calls.append(("semantic", text, to_date, limit))
+            return {
+                "results": [
+                    {
+                        "title": "一种基于人工智能的专利撰写方法及撰写系统",
+                        "pn": "CN108491368A",
+                        "abstract": "神经网络撰写模块智能生成独立权利要求。",
+                        "publication_date": "2018-09-04",
+                        "score": "77",
+                    }
+                ]
+            }
+
+    aggregator.zhihuiya_client = _FakeClient()
+
+    results = aggregator._search_zhihuiya(
+        [
+            make_query_spec("\"专利权利要求\" AND 生成", "lexical", "core_patent"),
+            make_query_spec("专利权利要求 自动生成", "semantic", "expansion"),
+        ],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert len(results) == 2
+    assert aggregator.zhihuiya_client.calls[0][0] == "lexical"
+    assert aggregator.zhihuiya_client.calls[1][0] == "semantic"
+    assert results[0]["pn"] == "US20240303416A1"
+
+
+def test_tavily_search_uses_advanced_params(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    aggregator.tavily_api_keys = ["tvly-key"]
+    captured = {}
+
+    def _fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = dict(json or {})
+        return _FakeResponse(
+            {
+                "results": [
+                    {
+                        "title": "低信号文章",
+                        "url": "https://blog.csdn.net/demo/article/details/1",
+                        "content": "低信号内容",
+                        "published_date": "2024-01-01",
+                    },
+                    {
+                        "title": "高校 PDF 教材",
+                        "url": "https://example.edu/reference.pdf",
+                        "content": "高信号内容",
+                        "published_date": "2023-01-01",
+                    },
+                ]
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.post", _fake_post)
+
+    results = aggregator._search_tavily(
+        [make_query_spec("锁定结构 教材 手册 标准 PDF 高校", "web", "reference")],
+        priority_date="2024-12-31",
+        per_query=3,
+    )
+
+    assert captured["json"]["search_depth"] == "advanced"
+    assert captured["json"]["topic"] == "general"
+    assert captured["json"]["chunks_per_source"] == 3
+    assert captured["json"]["end_date"] == "2024-12-31"
+    assert len(results) == 2
+    assert results[1]["url"] == "https://example.edu/reference.pdf"
 
 
 def test_external_evidence_module_import_does_not_touch_zhihuiya_factory(monkeypatch):
@@ -292,7 +396,7 @@ def test_search_evidence_reranks_and_rebuilds_doc_ids(monkeypatch):
     monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
 
     results, engines, meta = aggregator.search_evidence(
-        queries={"openalex": ["query-a"]},
+        queries={"openalex": [make_query_spec("query-a", "boolean", "anchor")]},
         priority_date="2024-12-31",
         limit=2,
     )
@@ -302,6 +406,8 @@ def test_search_evidence_reranks_and_rebuilds_doc_ids(monkeypatch):
     assert [item["doc_id"] for item in results] == ["EXT1", "EXT2"]
     assert meta["retrieval"]["openalex"]["rerank_enabled"] is True
     assert meta["retrieval"]["openalex"]["results"][0]["relevance_score"] == 0.88
+    assert meta["retrieval"]["openalex"]["queries"][0]["mode"] == "boolean"
+    assert meta["retrieval"]["openalex"]["queries"][0]["intent"] == "anchor"
 
 
 def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
@@ -339,7 +445,7 @@ def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
     monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _FailingRerank())
 
     results, _, meta = aggregator.search_evidence(
-        queries={"openalex": ["large language model patent claim generation"]},
+        queries={"openalex": [make_query_spec("large language model patent claim generation", "boolean", "anchor")]},
         priority_date="2024-12-31",
         limit=2,
     )
@@ -347,3 +453,51 @@ def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
     assert results[0]["title"] == "large language model patent claim generation"
     assert meta["retrieval"]["openalex"]["rerank_enabled"] is False
     assert meta["retrieval"]["openalex"]["rerank_fallback_reason"] == "timeout"
+
+
+def test_search_evidence_collapses_duplicate_zhihuiya_variants(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_zhihuiya",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "zhihuiya",
+                "title": "基于人工智能的专利申请撰写方法及系统",
+                "url": "https://patents.google.com/patent/US20240303416A1",
+                "snippet": "根据简短描述撰写一个或多个专利权利要求。",
+                "published": "2024-09-12",
+                "pn": "US20240303416A1",
+            },
+            {
+                "source_type": "zhihuiya",
+                "title": "基于人工智能的专利申请撰写方法及系统",
+                "url": "https://patents.google.com/patent/US20240220714A1",
+                "snippet": "根据简短描述撰写一个或多个专利权利要求。",
+                "published": "2024-07-04",
+                "pn": "US20240220714A1",
+            },
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            return [
+                {"index": 0, "relevance_score": 0.92},
+                {"index": 1, "relevance_score": 0.91},
+            ]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={"zhihuiya": [make_query_spec("\"专利权利要求\" AND 生成", "lexical", "core_patent")]},
+        priority_date="2024-12-31",
+        limit=4,
+    )
+
+    assert engines == ["zhihuiya"]
+    assert len(results) == 1
+    assert results[0]["url"].endswith("US20240303416A1")
+    assert meta["retrieval"]["zhihuiya"]["result_count"] == 1

@@ -1,6 +1,7 @@
 import os
 
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from agents.ai_reply.src.retrieval_utils import make_query_spec
 from backend import task_usage_tracking
 
 
@@ -13,12 +14,6 @@ def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
 
     aggregator = ExternalEvidenceAggregator()
     captured_context = {}
-
-    monkeypatch.setattr(
-        aggregator,
-        "_normalize_engine_queries",
-        lambda _: {"openalex": ["query-a"], "zhihuiya": [], "tavily": []},
-    )
 
     def _fake_openalex(*args, **kwargs):
         captured_context.update(task_usage_tracking.get_current_task_usage_context())
@@ -42,7 +37,11 @@ def test_external_evidence_workers_keep_task_usage_context(monkeypatch):
     )
 
     with task_usage_tracking.task_usage_collection(collector):
-        evidence, engines, _ = aggregator.search_evidence({}, priority_date="2025-12-31", limit=8)
+        evidence, engines, _ = aggregator.search_evidence(
+            {"openalex": [make_query_spec("query-a", "boolean", "anchor")]},
+            priority_date="2025-12-31",
+            limit=8,
+        )
 
     assert evidence
     assert engines == ["openalex"]

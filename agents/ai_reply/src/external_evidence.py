@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 from loguru import logger
 
+from agents.ai_reply.src.retrieval_utils import (
+    ENGINE_ALIASES,
+    QuerySpec,
+    flatten_query_texts,
+    normalize_query_specs,
+)
 from agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
@@ -56,7 +62,7 @@ class ExternalEvidenceAggregator:
 
     def search_evidence(
         self,
-        queries: Dict[str, List[str]],
+        queries: Dict[str, List[QuerySpec]],
         priority_date: Optional[str],
         limit: int = 8,
     ) -> Tuple[List[Dict[str, Any]], List[str], Dict[str, Any]]:
@@ -66,7 +72,11 @@ class ExternalEvidenceAggregator:
         Returns:
             (evidence_list, retrieval_engines, retrieval_meta)
         """
-        queries_by_engine = self._normalize_engine_queries(queries)
+        queries_by_engine: Dict[str, List[QuerySpec]] = {"openalex": [], "zhihuiya": [], "tavily": []}
+        for key, value in (queries or {}).items():
+            engine = ENGINE_ALIASES.get(str(key).strip().lower())
+            if engine and isinstance(value, list):
+                queries_by_engine[engine] = normalize_query_specs(value, engine=engine, limit=4)
         if not any(queries_by_engine.values()):
             return [], [], {"retrieval": {}}
 
@@ -133,6 +143,7 @@ class ExternalEvidenceAggregator:
         else:
             ranked_candidates = []
 
+        ranked_candidates = self._collapse_ranked_duplicates(ranked_candidates)
         merged = self._interleave_by_source(ranked_candidates)
         final_results = [self._finalize_result(item) for item in merged[:limit]]
         for index, item in enumerate(final_results, start=1):
@@ -150,15 +161,18 @@ class ExternalEvidenceAggregator:
 
     def _search_openalex(
         self,
-        queries: List[str],
+        queries: List[QuerySpec],
         priority_date: Optional[str],
         per_query: int,
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
 
         for query in queries:
+            query_text = " ".join(str((query or {}).get("text", "")).split())
+            if not query_text:
+                continue
             data = self._openalex_search_with_key_rotation(
-                query=query,
+                query=query_text,
                 priority_date=priority_date,
                 per_query=per_query,
             )
@@ -191,7 +205,7 @@ class ExternalEvidenceAggregator:
 
     def _search_zhihuiya(
         self,
-        queries: List[str],
+        queries: List[QuerySpec],
         priority_date: Optional[str],
         per_query: int,
         min_similarity_score: float = 0.0,
@@ -202,10 +216,17 @@ class ExternalEvidenceAggregator:
         to_date = priority_date.replace("-", "") if priority_date else ""
         results: List[Dict[str, Any]] = []
         for query in queries:
+            query_text = " ".join(str((query or {}).get("text", "")).split())
+            query_mode = str((query or {}).get("mode", "")).strip().lower()
+            if not query_text:
+                continue
             try:
-                raw_docs = self.zhihuiya_client.search_semantic(query, to_date=to_date, limit=per_query) or []
+                if query_mode == "lexical":
+                    raw_docs = self.zhihuiya_client.search(query_text, limit=per_query) or []
+                else:
+                    raw_docs = self.zhihuiya_client.search_semantic(query_text, to_date=to_date, limit=per_query) or []
             except Exception as ex:
-                logger.warning(f"智慧芽语义检索失败，query={query[:100]} error={ex}")
+                logger.warning(f"智慧芽检索失败，mode={query_mode} query={query_text[:100]} error={ex}")
                 continue
 
             docs: List[Dict[str, Any]] = []
@@ -237,13 +258,14 @@ class ExternalEvidenceAggregator:
                     "url": f"https://patents.google.com/patent/{pn}" if pn else "",
                     "snippet": abstract[:800],
                     "published": published,
+                    "pn": pn,
                 })
 
         return results
 
     def _search_tavily(
         self,
-        queries: List[str],
+        queries: List[QuerySpec],
         priority_date: Optional[str],
         per_query: int,
     ) -> List[Dict[str, Any]]:
@@ -253,7 +275,14 @@ class ExternalEvidenceAggregator:
 
         results: List[Dict[str, Any]] = []
         for query in queries:
-            data = self._tavily_search_with_key_rotation(query=query, per_query=per_query)
+            query_text = " ".join(str((query or {}).get("text", "")).split())
+            if not query_text:
+                continue
+            data = self._tavily_search_with_key_rotation(
+                query=query_text,
+                priority_date=priority_date,
+                per_query=per_query,
+            )
             if not data:
                 continue
 
@@ -294,15 +323,16 @@ class ExternalEvidenceAggregator:
                 "url": url,
                 "snippet": snippet[:800],
                 "published": str(row.get("published", "")).strip(),
+                "pn": str(row.get("pn", "")).strip(),
             })
         return cleaned
 
     def _rerank_results(
         self,
         candidates: List[Dict[str, Any]],
-        queries_by_engine: Dict[str, List[str]],
+        queries_by_engine: Dict[str, List[QuerySpec]],
     ) -> List[Dict[str, Any]]:
-        flat_queries = self._flatten_queries(queries_by_engine)
+        flat_queries = flatten_query_texts(queries_by_engine)
         if not flat_queries:
             return candidates
 
@@ -335,9 +365,9 @@ class ExternalEvidenceAggregator:
     def _fallback_rank_results(
         self,
         candidates: List[Dict[str, Any]],
-        queries_by_engine: Dict[str, List[str]],
+        queries_by_engine: Dict[str, List[QuerySpec]],
     ) -> List[Dict[str, Any]]:
-        flat_queries = self._flatten_queries(queries_by_engine)
+        flat_queries = flatten_query_texts(queries_by_engine)
         ranked: List[Dict[str, Any]] = []
         for index, item in enumerate(candidates):
             title = str(item.get("title", "")).strip()
@@ -488,7 +518,12 @@ class ExternalEvidenceAggregator:
         logger.warning(f"OpenAlex 所有 key 均不可用，query={query[:100]}")
         return {}
 
-    def _tavily_search_with_key_rotation(self, query: str, per_query: int) -> Dict[str, Any]:
+    def _tavily_search_with_key_rotation(
+        self,
+        query: str,
+        priority_date: Optional[str],
+        per_query: int,
+    ) -> Dict[str, Any]:
         total_keys = len(self.tavily_api_keys)
         if total_keys == 0:
             return {}
@@ -499,11 +534,15 @@ class ExternalEvidenceAggregator:
             payload = {
                 "api_key": api_key,
                 "query": query,
-                "search_depth": "basic",
+                "search_depth": "advanced",
+                "topic": "general",
+                "chunks_per_source": 3,
                 "max_results": per_query,
                 "include_answer": False,
                 "include_raw_content": False,
             }
+            if priority_date:
+                payload["end_date"] = priority_date
             try:
                 response = requests.post(
                     self.tavily_base_url,
@@ -623,6 +662,29 @@ class ExternalEvidenceAggregator:
             deduped.append(item)
         return deduped
 
+    def _collapse_ranked_duplicates(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        collapsed: List[Dict[str, Any]] = []
+        seen_general: Set[str] = set()
+        seen_zhihuiya: Set[str] = set()
+        for item in results:
+            row = self._to_dict(item)
+            source_type = str(row.get("source_type", "")).strip()
+            title = self._normalize_search_text(row.get("title"))
+            snippet = self._normalize_search_text(str(row.get("snippet", ""))[:180])
+            url = str(row.get("url", "")).strip()
+            general_key = url or f"{title}::{snippet[:120]}"
+            if general_key in seen_general:
+                continue
+            if source_type == "zhihuiya":
+                pn = str(row.get("pn", "")).strip().upper()
+                duplicate_keys = [key for key in [pn, title, f"{title}::{snippet}"] if key]
+                if any(key in seen_zhihuiya for key in duplicate_keys):
+                    continue
+                seen_zhihuiya.update(duplicate_keys)
+            seen_general.add(general_key)
+            collapsed.append(item)
+        return collapsed
+
     def _interleave_by_source(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         buckets: Dict[str, List[Dict[str, Any]]] = {}
         for item in results:
@@ -647,56 +709,9 @@ class ExternalEvidenceAggregator:
                 break
         return merged
 
-    def _normalize_engine_queries(self, queries: Dict[str, List[str]]) -> Dict[str, List[str]]:
-        engine_queries: Dict[str, List[str]] = {
-            "openalex": [],
-            "zhihuiya": [],
-            "tavily": [],
-        }
-
-        if not isinstance(queries, dict):
-            return engine_queries
-
-        alias_map = {
-            "openalex": "openalex",
-            "scholar": "openalex",
-            "academic": "openalex",
-            "zhihuiya": "zhihuiya",
-            "patent": "zhihuiya",
-            "tavily": "tavily",
-            "web": "tavily",
-        }
-        for raw_key, raw_queries in queries.items():
-            key = alias_map.get(str(raw_key).strip().lower())
-            if not key:
-                continue
-            normalized = self._normalize_query_list(raw_queries if isinstance(raw_queries, list) else [], limit=4)
-            if normalized:
-                engine_queries[key] = normalized
-        return engine_queries
-
-    def _normalize_query_list(self, queries: List[Any], limit: int = 4) -> List[str]:
-        normalized: List[str] = []
-        for query in queries or []:
-            value = " ".join(str(query).split())
-            if value and value not in normalized:
-                normalized.append(value)
-            if len(normalized) >= limit:
-                break
-        return normalized
-
-    def _flatten_queries(self, queries_by_engine: Dict[str, List[str]]) -> List[str]:
-        flat: List[str] = []
-        for engine_queries in queries_by_engine.values():
-            for query in engine_queries:
-                value = str(query).strip()
-                if value and value not in flat:
-                    flat.append(value)
-        return flat
-
     def _build_retrieval_meta(
         self,
-        queries_by_engine: Dict[str, List[str]],
+        queries_by_engine: Dict[str, List[QuerySpec]],
         final_results: List[Dict[str, Any]],
         priority_date: Optional[str],
         engine_hits: Dict[str, List[Dict[str, Any]]],
@@ -716,6 +731,12 @@ class ExternalEvidenceAggregator:
                 filters["search_field"] = "title_and_abstract.search"
             if engine == "zhihuiya":
                 filters["min_similarity_score"] = self.zhihuiya_min_similarity_score
+            if engine == "tavily":
+                filters["search_depth"] = "advanced"
+                filters["topic"] = "general"
+                filters["chunks_per_source"] = 3
+                if priority_date:
+                    filters["end_date"] = priority_date
             retrieval[engine] = {
                 "queries": engine_queries,
                 "filters": filters,
