@@ -22,12 +22,17 @@ from backend.storage import TaskType
 from backend.time_utils import utc_now_z
 
 from .checkpointer import AiSearchCheckpointSaver
-from .models import (
+from .state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_DRAFTING_PLAN,
+    build_plan_summary,
+    get_ai_search_meta,
+    merge_ai_search_meta,
+    phase_progress,
+    phase_step,
+    phase_to_task_status,
 )
-from .state import build_plan_summary, get_ai_search_meta, merge_ai_search_meta, phase_progress, phase_step, phase_to_task_status
 
 
 ALLOWED_SUBAGENTS = {

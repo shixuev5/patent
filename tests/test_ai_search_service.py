@@ -7,14 +7,14 @@ import types
 import pytest
 from fastapi import HTTPException
 
-stub_ai_search_agents = types.ModuleType("backend.ai_search.agents")
+stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
 stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
 stub_ai_search_agents.build_planning_agent = lambda storage, task_id: None
 stub_ai_search_agents.extract_latest_ai_message = lambda values: ""
 stub_ai_search_agents.extract_structured_response = lambda values: {}
-sys.modules.setdefault("backend.ai_search.agents", stub_ai_search_agents)
+sys.modules.setdefault("agents.ai_search.main", stub_ai_search_agents)
 
 stub_search_clients_pkg = types.ModuleType("agents.common.search_clients")
 stub_search_clients_pkg.__path__ = []
@@ -46,14 +46,16 @@ sys.modules.setdefault("agents.common.retrieval.local_evidence_retriever", stub_
 from backend.ai_search import service as ai_search_service_module
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
+    SEARCH_IN_PROGRESS_CODE,
+    STALE_PLAN_CONFIRMATION_CODE,
+)
+from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_DRAFTING_PLAN,
     PHASE_SEARCHING,
-    SEARCH_IN_PROGRESS_CODE,
-    STALE_PLAN_CONFIRMATION_CODE,
+    merge_ai_search_meta,
 )
-from backend.ai_search.state import merge_ai_search_meta
 from backend.storage import TaskStatus
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage.sqlite_storage import SQLiteTaskStorage

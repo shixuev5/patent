@@ -1,5 +1,5 @@
 """
-AI search API models and shared constants.
+AI search API models and route error codes.
 """
 
 from __future__ import annotations
@@ -7,53 +7,18 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
-
-
-PHASE_COLLECTING_REQUIREMENTS = "collecting_requirements"
-PHASE_AWAITING_USER_ANSWER = "awaiting_user_answer"
-PHASE_DRAFTING_PLAN = "drafting_plan"
-PHASE_AWAITING_PLAN_CONFIRMATION = "awaiting_plan_confirmation"
-PHASE_SEARCHING = "searching"
-PHASE_RESULTS_READY = "results_ready"
-PHASE_COMPLETED = "completed"
-PHASE_FAILED = "failed"
-PHASE_CANCELLED = "cancelled"
-
-AI_SEARCH_PHASES = {
-    PHASE_COLLECTING_REQUIREMENTS,
-    PHASE_AWAITING_USER_ANSWER,
-    PHASE_DRAFTING_PLAN,
+from agents.ai_search.src.state import (
+    AI_SEARCH_PHASES,
     PHASE_AWAITING_PLAN_CONFIRMATION,
-    PHASE_SEARCHING,
-    PHASE_RESULTS_READY,
-    PHASE_COMPLETED,
-    PHASE_FAILED,
+    PHASE_AWAITING_USER_ANSWER,
     PHASE_CANCELLED,
-}
-
-AI_SEARCH_PROGRESS = {
-    PHASE_COLLECTING_REQUIREMENTS: 10,
-    PHASE_AWAITING_USER_ANSWER: 20,
-    PHASE_DRAFTING_PLAN: 35,
-    PHASE_AWAITING_PLAN_CONFIRMATION: 35,
-    PHASE_SEARCHING: 50,
-    PHASE_RESULTS_READY: 80,
-    PHASE_COMPLETED: 100,
-    PHASE_FAILED: 100,
-    PHASE_CANCELLED: 100,
-}
-
-AI_SEARCH_STEP = {
-    PHASE_COLLECTING_REQUIREMENTS: "整理检索需求",
-    PHASE_AWAITING_USER_ANSWER: "补全检索要素",
-    PHASE_DRAFTING_PLAN: "起草检索计划",
-    PHASE_AWAITING_PLAN_CONFIRMATION: "等待计划确认",
-    PHASE_SEARCHING: "执行专利检索",
-    PHASE_RESULTS_READY: "精读候选文献",
-    PHASE_COMPLETED: "当前轮完成",
-    PHASE_FAILED: "当前轮失败",
-    PHASE_CANCELLED: "会话已终止",
-}
+    PHASE_COLLECTING_REQUIREMENTS,
+    PHASE_COMPLETED,
+    PHASE_DRAFTING_PLAN,
+    PHASE_FAILED,
+    PHASE_RESULTS_READY,
+    PHASE_SEARCHING,
+)
 
 SEARCH_IN_PROGRESS_CODE = "SEARCH_IN_PROGRESS"
 PENDING_QUESTION_EXISTS_CODE = "PENDING_QUESTION_EXISTS"
