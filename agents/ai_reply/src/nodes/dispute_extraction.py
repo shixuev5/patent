@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.ai_reply.src.state import Dispute
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from agents.common.utils.llm import get_llm_service
 
 
@@ -32,6 +32,7 @@ class DisputeExtractionNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "dispute_extraction")
 
             prepared_materials = self._to_dict(self._state_get(state, "prepared_materials"))
@@ -73,6 +74,14 @@ class DisputeExtractionNode:
                 f"提取到 {len(applicant_arguments or [])} 个申请人论点，生成 {len(valid_disputes)} 个争辩焦点"
             )
 
+        except PipelineCancelled as exc:
+            logger.warning(f"争辩焦点提取节点已取消: {exc}")
+            updates["errors"] = [{
+                "node_name": "dispute_extraction",
+                "error_message": str(exc),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as exc:
             logger.error(f"争辩焦点提取失败: {exc}")
             updates["errors"] = [{

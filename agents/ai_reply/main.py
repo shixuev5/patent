@@ -70,9 +70,9 @@ def create_workflow(config: WorkflowConfig = None):
     # 1. document_processing 固定流向 patent_retrieval
     workflow.add_conditional_edges(
         "document_processing",
-        lambda state: "failed" if state.status == "failed" else "patent_retrieval",
+        lambda state: "handle_error" if state.status in {"failed", "cancelled"} else "patent_retrieval",
         {
-            "failed": "handle_error",
+            "handle_error": "handle_error",
             "patent_retrieval": "patent_retrieval",
         }
     )
@@ -80,8 +80,8 @@ def create_workflow(config: WorkflowConfig = None):
     # 2. 通用路由工厂函数：统一错误处理逻辑
     def create_router(next_node):
         def router(state):
-            if state.status == "failed":
-                return "failed"
+            if state.status in {"failed", "cancelled"}:
+                return "handle_error"
             return next_node
         return router
 
@@ -91,8 +91,8 @@ def create_workflow(config: WorkflowConfig = None):
         return getattr(item, key, default)
 
     def route_from_analysis_parallel(state):
-        if state.status == "failed":
-            return "failed"
+        if state.status in {"failed", "cancelled"}:
+            return "handle_error"
 
         if _item_get(state, "early_rejection_reason", "") or _item_get(state, "added_matter_risk", False):
             return "report_generation"
@@ -124,13 +124,13 @@ def create_workflow(config: WorkflowConfig = None):
         return next_nodes
 
     # 为所有单向节点绑定统一的条件路由
-    workflow.add_conditional_edges("patent_retrieval", create_router("data_preparation"), {"failed": "handle_error", "data_preparation": "data_preparation"})
-    workflow.add_conditional_edges("data_preparation", create_router("analysis_parallel"), {"failed": "handle_error", "analysis_parallel": "analysis_parallel"})
+    workflow.add_conditional_edges("patent_retrieval", create_router("data_preparation"), {"handle_error": "handle_error", "data_preparation": "data_preparation"})
+    workflow.add_conditional_edges("data_preparation", create_router("analysis_parallel"), {"handle_error": "handle_error", "analysis_parallel": "analysis_parallel"})
     workflow.add_conditional_edges(
         "analysis_parallel",
         route_from_analysis_parallel,
         {
-            "failed": "handle_error",
+            "handle_error": "handle_error",
             "report_generation": "report_generation",
             "evidence_verification": "evidence_verification",
             "common_knowledge_verification": "common_knowledge_verification",
@@ -145,26 +145,26 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_conditional_edges(
         "verification_join",
         create_router("rejection_drafting"),
-        {"failed": "handle_error", "rejection_drafting": "rejection_drafting"},
+        {"handle_error": "handle_error", "rejection_drafting": "rejection_drafting"},
     )
     workflow.add_conditional_edges(
         "rejection_drafting",
         create_router("claim_review_drafting"),
-        {"failed": "handle_error", "claim_review_drafting": "claim_review_drafting"},
+        {"handle_error": "handle_error", "claim_review_drafting": "claim_review_drafting"},
     )
     workflow.add_conditional_edges(
         "claim_review_drafting",
         create_router("report_generation"),
-        {"failed": "handle_error", "report_generation": "report_generation"},
+        {"handle_error": "handle_error", "report_generation": "report_generation"},
     )
 
     # 报告生成后进入最终渲染节点
     workflow.add_conditional_edges(
         "report_generation",
         create_router("final_report_render"),
-        {"failed": "handle_error", "final_report_render": "final_report_render"},
+        {"handle_error": "handle_error", "final_report_render": "final_report_render"},
     )
-    workflow.add_conditional_edges("final_report_render", create_router("end"), {"failed": "handle_error", "end": END})
+    workflow.add_conditional_edges("final_report_render", create_router("end"), {"handle_error": "handle_error", "end": END})
 
     # 错误处理节点直接结束
     workflow.add_edge("handle_error", END)

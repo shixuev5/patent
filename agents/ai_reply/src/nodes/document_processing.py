@@ -13,7 +13,7 @@ from agents.common.parsers.word_parser import WordParser
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 from agents.common.patent_structuring import extract_structured_claims
 from agents.ai_reply.src.state import WorkflowState, ParsedFile, StructuredClaim
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from config import settings
 
 
@@ -93,6 +93,7 @@ class DocumentProcessingNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             # 获取节点缓存
             cache = get_node_cache(self.config, "document_processing")
 
@@ -119,6 +120,14 @@ class DocumentProcessingNode:
             updates["status"] = "completed"
             logger.success("文档处理节点执行成功")
 
+        except PipelineCancelled as e:
+            logger.warning(f"文档处理节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "document_processing",
+                "error_message": str(e),
+                "error_type": "cancelled"
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"文档处理节点执行失败: {e}")
             error_message = str(e)

@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 
 
 class RejectionDraftingNode:
@@ -28,6 +28,7 @@ class RejectionDraftingNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "rejection_drafting")
             drafted = cache.run_step(
                 "draft_rejection_reasons_v3",
@@ -44,6 +45,14 @@ class RejectionDraftingNode:
                 updates["status"] = "completed"
                 updates["progress"] = 91.0
                 logger.info("无需要统一润色的驳回项")
+        except PipelineCancelled as e:
+            logger.warning(f"统一驳回正文生成节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "rejection_drafting",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"统一驳回正文生成失败: {e}")
             updates["errors"] = [{

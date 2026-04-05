@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from loguru import logger
 from agents.common.retrieval import LocalEvidenceRetriever
 from agents.ai_reply.src.state import WorkflowState
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from config import settings
 
 
@@ -30,6 +30,7 @@ class DataPreparationNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "data_preparation")
 
             prepared_materials = cache.run_step(
@@ -44,6 +45,14 @@ class DataPreparationNode:
             updates["status"] = "completed"
             logger.success("数据准备节点执行成功")
 
+        except PipelineCancelled as e:
+            logger.warning(f"数据准备节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "data_preparation",
+                "error_message": str(e),
+                "error_type": "cancelled"
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"数据准备节点执行失败: {e}")
             error_message = str(e)

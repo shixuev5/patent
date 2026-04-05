@@ -12,6 +12,7 @@ from agents.ai_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
 from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
 from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
 from agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled
 from agents.common.utils.concurrency import submit_with_current_context
 
 
@@ -32,6 +33,7 @@ class AnalysisParallelNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             with ThreadPoolExecutor(max_workers=2) as executor:
                 amendment_future = submit_with_current_context(
                     executor,
@@ -48,12 +50,26 @@ class AnalysisParallelNode:
 
             merged = self._merge_branch_updates(amendment_updates, dispute_updates)
             updates.update(merged)
-            if merged.get("errors"):
+            branch_statuses = {
+                str(amendment_updates.get("status", "")).strip(),
+                str(dispute_updates.get("status", "")).strip(),
+            }
+            if "cancelled" in branch_statuses:
+                updates["status"] = "cancelled"
+            elif merged.get("errors"):
                 updates["status"] = "failed"
             else:
                 updates["status"] = "completed"
                 updates["progress"] = 68.0
             logger.info("并行分析节点执行完成")
+        except PipelineCancelled as exc:
+            logger.warning(f"并行分析节点已取消: {exc}")
+            updates["errors"] = [{
+                "node_name": "analysis_parallel",
+                "error_message": str(exc),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as exc:
             logger.error(f"并行分析节点执行失败: {exc}")
             updates["errors"] = [{
@@ -73,7 +89,7 @@ class AnalysisParallelNode:
             updates = node(local_state)
             branch_updates.update(updates)
             local_state.update(updates)
-            if str(updates.get("status", "")).strip() == "failed":
+            if str(updates.get("status", "")).strip() in {"failed", "cancelled"}:
                 break
         return branch_updates
 

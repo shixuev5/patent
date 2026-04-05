@@ -32,7 +32,7 @@ from agents.ai_reply.src.retrieval_utils import (
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import EvidenceAssessment
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from config import settings
 
 
@@ -49,6 +49,7 @@ class CommonKnowledgeVerificationNode:
         updates = {}
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "common_knowledge_verification")
             assessments = cache.run_step(
                 "verify_common_knowledge_v9",
@@ -68,6 +69,14 @@ class CommonKnowledgeVerificationNode:
             ]
             logger.info(f"完成 {len(assessments)} 个逻辑争议项的公知常识核查")
 
+        except PipelineCancelled as e:
+            logger.warning(f"公知常识核查节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "common_knowledge_verification",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"公知常识核查节点执行失败: {e}")
             updates["errors"] = [{

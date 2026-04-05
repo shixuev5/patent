@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Set
 
 from loguru import logger
 
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 
 
 class AmendmentStrategyNode:
@@ -25,6 +25,7 @@ class AmendmentStrategyNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "amendment_strategy")
             result = cache.run_step(
                 "build_amendment_strategy_v3",
@@ -41,6 +42,14 @@ class AmendmentStrategyNode:
             logger.info(
                 f"策略路由完成，复用任务: {len(updates['reuse_oa_tasks'])}，补充检索任务: {len(updates['topup_tasks'])}"
             )
+        except PipelineCancelled as e:
+            logger.warning(f"修改审查策略路由节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "amendment_strategy",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"修改审查策略路由失败: {e}")
             updates["errors"] = [{

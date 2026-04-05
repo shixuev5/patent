@@ -35,7 +35,7 @@ from agents.ai_reply.src.retrieval_utils import (
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import Dispute, EvidenceAssessment
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from config import settings
 
 
@@ -52,6 +52,7 @@ class TopupSearchVerificationNode:
         updates = {}
 
         try:
+            ensure_not_cancelled(self.config)
             topup_tasks = self._state_get(state, "topup_tasks", []) or[]
             if not topup_tasks:
                 logger.info("无补充检索任务，跳过")
@@ -77,6 +78,14 @@ class TopupSearchVerificationNode:
             logger.info(
                 f"补充检索完成，新增争议项: {len(updates.get('disputes', []))}，核查结果: {len(updates.get('evidence_assessments',[]))}"
             )
+        except PipelineCancelled as e:
+            logger.warning(f"补充检索与评判节点已取消: {e}")
+            updates["errors"] =[{
+                "node_name": "topup_search_verification",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"补充检索与评判失败: {e}")
             updates["errors"] =[{

@@ -61,7 +61,11 @@
           <ArrowPathIcon class="w-4 h-4" />
         </button>
 
-        <button class="action-btn danger" @click="deleteTask" title="删除">
+        <button v-if="canCancel" class="action-btn warning" @click="cancel" title="取消">
+          <StopCircleIcon class="w-4 h-4" />
+        </button>
+
+        <button v-if="canDelete" class="action-btn danger" @click="deleteTask" title="删除">
           <TrashIcon class="w-4 h-4" />
         </button>
       </div>
@@ -77,6 +81,7 @@ import {
   CheckCircleIcon,
   ClockIcon,
   ExclamationCircleIcon,
+  StopCircleIcon,
   TrashIcon,
   XCircleIcon,
 } from '@heroicons/vue/24/outline'
@@ -105,7 +110,17 @@ const taskTypeLabel = computed(() => {
 })
 
 const canRetry = computed(() => {
-  return (props.task.taskType === 'patent_analysis' || props.task.taskType === 'ai_review') && !!props.task.pn
+  if (!props.task.backendId) return false
+  if (props.task.status !== 'failed' && props.task.status !== 'cancelled') return false
+  return props.task.taskType === 'patent_analysis' || props.task.taskType === 'ai_review' || props.task.taskType === 'ai_reply'
+})
+
+const canCancel = computed(() => {
+  return !!props.task.backendId && (props.task.status === 'pending' || props.task.status === 'processing')
+})
+
+const canDelete = computed(() => {
+  return props.task.status !== 'pending' && props.task.status !== 'processing'
 })
 
 const formatTime = (timestamp: number): string => {
@@ -120,6 +135,7 @@ const formatTime = (timestamp: number): string => {
 
 const download = () => taskStore.downloadResult(props.task)
 const retry = () => taskStore.retryTask(props.task)
+const cancel = () => taskStore.cancelTask(props.task)
 const deleteTask = () => {
   if (confirm('确定要删除这个任务吗？')) taskStore.deleteTask(props.task.id)
 }
@@ -203,6 +219,9 @@ const deleteTask = () => {
 }
 .action-btn.secondary {
   @apply text-slate-600 hover:border-slate-200 hover:bg-slate-100;
+}
+.action-btn.warning {
+  @apply text-amber-700 hover:border-amber-100 hover:bg-amber-50;
 }
 .action-btn.danger {
   @apply text-rose-600 hover:border-rose-100 hover:bg-rose-50;

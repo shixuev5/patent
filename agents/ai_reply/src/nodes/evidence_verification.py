@@ -12,7 +12,7 @@ from loguru import logger
 from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from agents.ai_reply.src.state import EvidenceAssessment
 from config import settings
 
@@ -32,6 +32,7 @@ class EvidenceVerificationNode:
         updates = {}
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "evidence_verification")
             assessments = cache.run_step(
                 "verify_evidence_v7",
@@ -51,6 +52,14 @@ class EvidenceVerificationNode:
             ]
             logger.info(f"完成 {len(assessments)} 个争议项的事实核查")
 
+        except PipelineCancelled as e:
+            logger.warning(f"证据核查节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "evidence_verification",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"证据核查节点执行失败: {e}")
             updates["errors"] = [{

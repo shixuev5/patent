@@ -16,6 +16,10 @@ def handle_error(state: WorkflowState) -> WorkflowState:
     Returns:
         更新后的状态
     """
+    if str(state.status or "").strip().lower() == "cancelled":
+        logger.warning("工作流已取消")
+        return state
+
     logger.error(f"工作流执行过程中出现错误，共 {len(state.errors)} 个错误")
     for error in state.errors:
         logger.error(f"节点 {error.node_name}: {error.error_message}")

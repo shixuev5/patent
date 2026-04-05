@@ -16,7 +16,7 @@ from agents.ai_reply.src.state import (
     StructuredClaim,
     SubstantiveAmendment,
 )
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 
 
 class AmendmentTrackingNode:
@@ -35,6 +35,7 @@ class AmendmentTrackingNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
                 "track_amendment_v11",
@@ -75,6 +76,14 @@ class AmendmentTrackingNode:
                     len(updates["structural_adjustments"]),
                 )
             )
+        except PipelineCancelled as e:
+            logger.warning(f"修改差异分析节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "amendment_tracking",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"修改差异分析失败: {e}")
             updates["errors"] = [{

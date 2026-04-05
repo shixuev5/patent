@@ -61,7 +61,7 @@
               <div v-if="taskStore.groupedTasks.processing.length > 0" class="warning-box mt-4">
                 <ExclamationCircleIcon class="w-5 h-5 flex-shrink-0" />
                 <p>
-                  注意：有 <strong>{{ taskStore.groupedTasks.processing.length }}</strong> 个任务正在处理中，清空会中断这些任务。
+                  当前有 <strong>{{ taskStore.groupedTasks.processing.length }}</strong> 个任务正在处理中，清空时会跳过这些任务。
                 </p>
               </div>
             </div>

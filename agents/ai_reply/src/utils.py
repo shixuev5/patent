@@ -33,6 +33,10 @@ _PATENT_APPLICATION_PATTERNS = [
 ]
 
 
+class PipelineCancelled(RuntimeError):
+    """工作流取消异常。"""
+
+
 def normalize_patent_identifier(value: str) -> str:
     """统一专利标识符的常见分隔符与大小写。"""
     return re.sub(r"[\s\-/]+", "", str(value or "").strip()).upper()
@@ -141,3 +145,9 @@ def get_node_cache(config: WorkflowConfig, node_name: str) -> StepCache:
     cache_file = Path(config.cache_dir) / f"{node_name}_cache.json"
     logger.debug(f"节点 {node_name} 缓存文件路径: {cache_file}")
     return StepCache(cache_file)
+
+
+def ensure_not_cancelled(config: WorkflowConfig | None) -> None:
+    cancel_event = getattr(config, "cancel_event", None) if config is not None else None
+    if cancel_event is not None and cancel_event.is_set():
+        raise PipelineCancelled("任务已取消")

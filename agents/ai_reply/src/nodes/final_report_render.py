@@ -14,7 +14,7 @@ from agents.common.rendering.report_render import (
 from agents.common.utils.serialization import item_get
 from agents.ai_reply.src.report_markdown import build_final_report_markdown
 from agents.ai_reply.src.report_styles import OAR_REPORT_CSS
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 
 
 class FinalReportRenderNode:
@@ -33,6 +33,7 @@ class FinalReportRenderNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "final_report_render")
             artifacts = cache.run_step("render_final_report_v10", self._render_report, state)
 
@@ -40,6 +41,14 @@ class FinalReportRenderNode:
             updates["status"] = "completed"
             updates["progress"] = 100.0
             logger.info(f"最终报告渲染完成: {artifacts}")
+        except PipelineCancelled as ex:
+            logger.warning(f"最终报告渲染节点已取消: {ex}")
+            updates["errors"] = [{
+                "node_name": "final_report_render",
+                "error_message": str(ex),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as ex:
             logger.error(f"最终报告渲染失败: {ex}")
             updates["errors"] = [{

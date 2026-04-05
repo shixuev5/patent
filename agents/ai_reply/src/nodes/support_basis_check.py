@@ -10,7 +10,7 @@ from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
 from agents.ai_reply.src.state import SupportFinding
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 
 
 class SupportBasisCheckNode:
@@ -29,6 +29,7 @@ class SupportBasisCheckNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "support_basis_check")
             result = cache.run_step(
                 "check_support_basis_v5",
@@ -46,6 +47,14 @@ class SupportBasisCheckNode:
             updates["status"] = "completed"
             updates["progress"] = 64.0
             logger.info(f"支持依据核查完成，超范围风险: {updates['added_matter_risk']}")
+        except PipelineCancelled as e:
+            logger.warning(f"支持依据核查节点已取消: {e}")
+            updates["errors"] = [{
+                "node_name": "support_basis_check",
+                "error_message": str(e),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"支持依据核查失败: {e}")
             updates["errors"] = [{

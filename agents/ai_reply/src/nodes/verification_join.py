@@ -4,7 +4,10 @@
 """
 
 from typing import Any
+
 from loguru import logger
+
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled
 
 
 class VerificationJoinNode:
@@ -21,8 +24,22 @@ class VerificationJoinNode:
             "progress": 88.0,
         }
 
+        try:
+            ensure_not_cancelled(self.config)
+        except PipelineCancelled as exc:
+            updates["status"] = "cancelled"
+            updates["errors"] = [{
+                "node_name": "verification_join",
+                "error_message": str(exc),
+                "error_type": "cancelled",
+            }]
+            return updates
+
         if self._state_get(state, "status") == "failed":
             updates["status"] = "failed"
+            return updates
+        if self._state_get(state, "status") == "cancelled":
+            updates["status"] = "cancelled"
             return updates
 
         verification_error_nodes = {

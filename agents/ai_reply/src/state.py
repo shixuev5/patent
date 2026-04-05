@@ -353,6 +353,7 @@ class WorkflowConfig(BaseModel):
     cache_dir: str = Field(".cache", description="缓存目录")
     timeout: int = Field(300, description="API调用超时时间(秒)")
     max_retries: int = Field(3, description="API调用最大重试次数")
+    cancel_event: Any = Field(default=None, description="取消事件")
     pdf_parser: str = Field("local", description="PDF解析器: local 或 online")
     enable_checkpoint: bool = Field(False, description="是否启用 LangGraph checkpoint")
     checkpoint_ns: str = Field("ai_reply", description="checkpoint 命名空间")

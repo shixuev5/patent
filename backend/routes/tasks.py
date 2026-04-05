@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -229,6 +230,246 @@ def _collect_upload_paths(task: Any) -> List[str]:
             dedup.append(path)
             seen.add(path)
     return dedup
+
+
+def _task_status_value(task: Any) -> str:
+    status = getattr(task, "status", "")
+    if hasattr(status, "value"):
+        status = status.value
+    return str(status or "").strip().lower()
+
+
+def _is_running_task(task: Any) -> bool:
+    return _task_status_value(task) in {"pending", "processing"}
+
+
+def _is_retryable_task(task: Any) -> bool:
+    return _task_status_value(task) in {"failed", "cancelled"}
+
+
+def _task_input_files(task: Any) -> List[Dict[str, Any]]:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    raw_items = metadata.get("input_files")
+    if not isinstance(raw_items, list):
+        return []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _copy_existing_upload_file(
+    task_id: str,
+    *,
+    source_path: str,
+    subdir: str,
+    prefix: str,
+    original_name: Optional[str],
+) -> str:
+    source = Path(str(source_path or "").strip())
+    if not source.exists() or not source.is_file():
+        raise HTTPException(status_code=409, detail=f"原任务输入文件不存在，无法重试：{source}")
+
+    safe_name = Path(str(original_name or source.name or f"{prefix}.dat")).name
+    upload_dir = settings.UPLOAD_DIR / task_id / subdir
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    destination = upload_dir / f"{prefix}_{safe_name}"
+    shutil.copy2(source, destination)
+    return str(destination)
+
+
+def _copy_retry_input_item(
+    *,
+    new_task_id: str,
+    task_type: str,
+    item: Dict[str, Any],
+    comparison_index: int = 0,
+) -> Dict[str, Any]:
+    file_type = str(item.get("file_type") or "").strip()
+    original_name = str(item.get("original_name") or "").strip() or None
+    source_path = str(item.get("stored_path") or "").strip()
+
+    if task_type in {TaskType.PATENT_ANALYSIS.value, TaskType.AI_REVIEW.value}:
+        stored_path = _copy_existing_upload_file(
+            new_task_id,
+            source_path=source_path,
+            subdir="patent",
+            prefix="source",
+            original_name=original_name,
+        )
+        copied: Dict[str, Any] = {
+            "file_type": "patent_pdf",
+            "original_name": original_name or Path(stored_path).name,
+            "stored_path": stored_path,
+        }
+        sha256 = _compute_file_sha256(stored_path)
+        if sha256:
+            copied["sha256"] = sha256
+        return copied
+
+    prefix = {
+        "office_action": "office_action",
+        "response": "response",
+        "claims_previous": "claims_previous",
+        "claims_current": "claims_current",
+    }.get(file_type)
+    if not prefix and file_type == "comparison_doc":
+        prefix = f"comparison_{max(1, comparison_index)}"
+    if not prefix:
+        raise HTTPException(status_code=409, detail=f"原任务输入文件类型不支持重试：{file_type or 'unknown'}")
+
+    stored_path = _copy_existing_upload_file(
+        new_task_id,
+        source_path=source_path,
+        subdir="office_action",
+        prefix=prefix,
+        original_name=original_name,
+    )
+    return {
+        "file_type": file_type,
+        "original_name": original_name or Path(stored_path).name,
+        "stored_path": stored_path,
+    }
+
+
+def _build_retry_title(task: Any, task_type: str) -> str:
+    input_files = _task_input_files(task)
+    preferred_filename: Optional[str] = None
+    if task_type == TaskType.AI_REPLY.value:
+        preferred_filename = next(
+            (
+                str(item.get("original_name") or "").strip()
+                for item in input_files
+                if str(item.get("file_type") or "").strip() == "office_action"
+                and str(item.get("original_name") or "").strip()
+            ),
+            None,
+        )
+    elif input_files:
+        preferred_filename = next(
+            (
+                str(item.get("original_name") or "").strip()
+                for item in input_files
+                if str(item.get("original_name") or "").strip()
+            ),
+            None,
+        )
+    return _build_task_title(
+        task_type,
+        pn=getattr(task, "pn", None) if task_type != TaskType.AI_REPLY.value else None,
+        filename=preferred_filename or getattr(task, "title", None),
+    )
+
+
+def _enqueue_pipeline_task(
+    task: Any,
+    *,
+    upload_file_path: Optional[str] = None,
+    input_sha256: Optional[str] = None,
+    input_files: Optional[List[Dict[str, str]]] = None,
+) -> None:
+    task_type = _task_type(task)
+    cancel_event = Event()
+    RUNNING_TASKS[task.id] = cancel_event
+    try:
+        if task_type == TaskType.PATENT_ANALYSIS.value:
+            pipeline_task = asyncio.create_task(
+                run_patent_analysis_task(
+                    task.id,
+                    getattr(task, "pn", None),
+                    upload_file_path,
+                    input_sha256=input_sha256,
+                    cancel_event=cancel_event,
+                )
+            )
+        elif task_type == TaskType.AI_REVIEW.value:
+            pipeline_task = asyncio.create_task(
+                run_ai_review_task(
+                    task.id,
+                    getattr(task, "pn", None),
+                    upload_file_path,
+                    input_sha256=input_sha256,
+                    cancel_event=cancel_event,
+                )
+            )
+        else:
+            pipeline_task = asyncio.create_task(
+                run_ai_reply_task(
+                    task.id,
+                    input_files or [],
+                    cancel_event=cancel_event,
+                )
+            )
+    except Exception:
+        RUNNING_TASKS.pop(task.id, None)
+        raise
+
+    pipeline_task.add_done_callback(lambda _task, task_id=task.id: RUNNING_TASKS.pop(task_id, None))
+
+
+def _prepare_retry_task(
+    source_task: Any,
+    *,
+    current_user: CurrentUser,
+) -> tuple[Any, Optional[str], Optional[str], Optional[List[Dict[str, str]]]]:
+    task_type = _task_type(source_task)
+    source_input_files = _task_input_files(source_task)
+    title = _build_retry_title(source_task, task_type)
+    pn = getattr(source_task, "pn", None) if task_type != TaskType.AI_REPLY.value else None
+    retry_task = task_manager.create_task(
+        owner_id=current_user.user_id,
+        task_type=task_type,
+        pn=pn,
+        title=title,
+    )
+
+    retry_metadata: Dict[str, Any] = {
+        "task_type": task_type,
+        "retry_of": source_task.id,
+    }
+
+    upload_file_path: Optional[str] = None
+    input_sha256: Optional[str] = None
+    input_files: Optional[List[Dict[str, str]]] = None
+
+    if task_type == TaskType.AI_REPLY.value:
+        if not source_input_files:
+            raise HTTPException(status_code=409, detail="原任务缺少可复用输入文件，无法重试。")
+        copied_inputs: List[Dict[str, str]] = []
+        comparison_index = 0
+        for item in source_input_files:
+            if str(item.get("file_type") or "").strip() == "comparison_doc":
+                comparison_index += 1
+            copied_inputs.append(
+                _copy_retry_input_item(
+                    new_task_id=retry_task.id,
+                    task_type=task_type,
+                    item=item,
+                    comparison_index=comparison_index,
+                )
+            )
+        retry_metadata["input_files"] = copied_inputs
+        input_files = copied_inputs
+    else:
+        retry_metadata["input_files"] = []
+        patent_source = next(
+            (
+                item for item in source_input_files
+                if str(item.get("file_type") or "").strip() == "patent_pdf"
+            ),
+            None,
+        )
+        if patent_source:
+            copied_item = _copy_retry_input_item(
+                new_task_id=retry_task.id,
+                task_type=task_type,
+                item=patent_source,
+            )
+            retry_metadata["input_files"] = [copied_item]
+            upload_file_path = copied_item["stored_path"]
+            input_sha256 = str(copied_item.get("sha256") or "").strip() or None
+        elif not getattr(source_task, "pn", None):
+            raise HTTPException(status_code=409, detail="原任务缺少可复用文件或专利号，无法重试。")
+
+    task_manager.storage.update_task(retry_task.id, metadata=retry_metadata)
+    return retry_task, upload_file_path, input_sha256, input_files
 
 
 def _cleanup_task_resources(task: Any):
@@ -1248,6 +1489,7 @@ async def run_ai_reply_task(
             config = WorkflowConfig(
                 cache_dir=str(output_dir / ".cache"),
                 pdf_parser=os.getenv("PDF_PARSER", "local"),
+                cancel_event=cancel_event,
                 enable_checkpoint=True,
                 checkpoint_ns=TaskType.AI_REPLY.value,
                 checkpointer=_get_oar_checkpointer(task_id),
@@ -1344,6 +1586,19 @@ async def run_ai_reply_task(
             return
 
         status = str(result.get("status", "failed")).strip().lower()
+        if status == "cancelled":
+            task_manager.cancel_task(task_id, "任务已取消")
+            task_logger.warning("任务已取消")
+            emit_system_log(
+                category="task_execution",
+                event_name="task_cancelled",
+                owner_id=owner_id,
+                task_id=task_id,
+                task_type=TaskType.AI_REPLY.value,
+                success=False,
+                message="流程返回 cancelled",
+            )
+            return
         if status == "failed":
             errors = result.get("errors") or []
             first_error = ""
@@ -1616,29 +1871,7 @@ async def create_task(
             else:
                 task_manager.storage.update_task(task.id, metadata=task_metadata)
 
-            cancel_event = Event()
-            RUNNING_TASKS[task.id] = cancel_event
-            if task_type == TaskType.PATENT_ANALYSIS.value:
-                pipeline_task = asyncio.create_task(
-                    run_patent_analysis_task(
-                        task.id,
-                        pn,
-                        upload_file_path,
-                        input_sha256=upload_sha256,
-                        cancel_event=cancel_event,
-                    )
-                )
-            else:
-                pipeline_task = asyncio.create_task(
-                    run_ai_review_task(
-                        task.id,
-                        pn,
-                        upload_file_path,
-                        input_sha256=upload_sha256,
-                        cancel_event=cancel_event,
-                    )
-                )
-            pipeline_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
+            _enqueue_pipeline_task(task, upload_file_path=upload_file_path, input_sha256=upload_sha256)
 
             return TaskResponse(
                 taskId=task.id,
@@ -1752,16 +1985,7 @@ async def create_task(
         }
         task_manager.storage.update_task(task.id, metadata=task_metadata)
 
-        cancel_event = Event()
-        RUNNING_TASKS[task.id] = cancel_event
-        workflow_task = asyncio.create_task(
-            run_ai_reply_task(
-                task.id,
-                input_files,
-                cancel_event=cancel_event,
-            )
-        )
-        workflow_task.add_done_callback(lambda _task: RUNNING_TASKS.pop(task.id, None))
+        _enqueue_pipeline_task(task, input_files=input_files)
 
         return TaskResponse(
             taskId=task.id,
@@ -1786,17 +2010,110 @@ async def get_task(task_id: str, current_user: CurrentUser = Depends(_get_curren
     return _task_to_response(task)
 
 
+@router.post("/api/tasks/{task_id}/cancel", response_model=TaskResponse)
+async def cancel_task(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
+    task = _get_owned_task(task_id, current_user.user_id)
+    task_type = _task_type(task)
+    status = _task_status_value(task)
+    emit_system_log(
+        category="task_execution",
+        event_name="task_cancel_requested",
+        owner_id=current_user.user_id,
+        task_id=task_id,
+        task_type=task_type,
+        success=status in {"pending", "processing", "cancelled"},
+        message="请求取消任务",
+        payload={"status": status},
+    )
+    if status == "cancelled":
+        return TaskResponse(taskId=task_id, status="cancelled", message="任务已取消。")
+    if status not in {"pending", "processing"}:
+        raise HTTPException(status_code=409, detail="仅进行中的任务支持取消。")
+
+    runtime = RUNNING_TASKS.get(task_id)
+    if runtime:
+        runtime.set()
+    task_manager.cancel_task(task_id, "任务已取消")
+    return TaskResponse(taskId=task_id, status="cancelled", message="任务已取消。")
+
+
+@router.post("/api/tasks/{task_id}/retry", response_model=TaskResponse)
+async def retry_task(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
+    source_task = _get_owned_task(task_id, current_user.user_id)
+    task_type = _task_type(source_task)
+    status = _task_status_value(source_task)
+    emit_system_log(
+        category="task_execution",
+        event_name="task_retry_requested",
+        owner_id=current_user.user_id,
+        task_id=task_id,
+        task_type=task_type,
+        success=_is_retryable_task(source_task),
+        message="请求重试任务",
+        payload={"status": status},
+    )
+    if not _is_retryable_task(source_task):
+        raise HTTPException(status_code=409, detail="仅失败或已取消的任务支持重试。")
+
+    _enforce_daily_quota(current_user.user_id, task_type=task_type)
+
+    retry_task_entity: Any = None
+    try:
+        retry_task_entity, upload_file_path, input_sha256, input_files = _prepare_retry_task(
+            source_task,
+            current_user=current_user,
+        )
+        _enqueue_pipeline_task(
+            retry_task_entity,
+            upload_file_path=upload_file_path,
+            input_sha256=input_sha256,
+            input_files=input_files,
+        )
+        emit_system_log(
+            category="task_execution",
+            event_name="task_retry_created",
+            owner_id=current_user.user_id,
+            task_id=retry_task_entity.id,
+            task_type=task_type,
+            success=True,
+            message="重试任务已创建",
+            payload={"retry_of": task_id},
+        )
+        return TaskResponse(
+            taskId=retry_task_entity.id,
+            status="pending",
+            message="重试任务已创建并开始处理。",
+        )
+    except HTTPException:
+        if retry_task_entity is not None:
+            _cleanup_path(retry_task_entity.output_dir)
+            _cleanup_path(settings.UPLOAD_DIR / retry_task_entity.id)
+            task_manager.delete_task(retry_task_entity.id)
+        raise
+    except Exception as exc:
+        if retry_task_entity is not None:
+            _cleanup_path(retry_task_entity.output_dir)
+            _cleanup_path(settings.UPLOAD_DIR / retry_task_entity.id)
+            task_manager.delete_task(retry_task_entity.id)
+        raise HTTPException(status_code=500, detail="重试任务创建失败，请稍后重试。") from exc
+
+
 @router.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
     task = _get_owned_task(task_id, current_user.user_id)
-    runtime = RUNNING_TASKS.get(task_id)
+    if _is_running_task(task):
+        emit_system_log(
+            category="task_execution",
+            event_name="task_delete_rejected_running",
+            owner_id=current_user.user_id,
+            task_id=task_id,
+            task_type=_task_type(task),
+            success=False,
+            message="运行中的任务不可删除",
+        )
+        raise HTTPException(status_code=409, detail="请先取消任务。")
 
-    if task.status.value in {"processing", "pending"} and runtime:
-        runtime.set()
-    if task.status.value in {"processing", "pending"}:
-        task_manager.cancel_task(task_id, "任务已取消")
-
-    if task.status.value == "completed":
+    if _task_status_value(task) == "completed":
         _cleanup_upload_only(task)
     else:
         _cleanup_task_resources(task)
@@ -1822,14 +2139,13 @@ async def delete_task(task_id: str, current_user: CurrentUser = Depends(_get_cur
 async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
     tasks = task_manager.list_tasks(owner_id=current_user.user_id, limit=1000)
     deleted = 0
+    skipped_running = 0
     for task in tasks:
-        runtime = RUNNING_TASKS.get(task.id)
-        if task.status.value in {"processing", "pending"} and runtime:
-            runtime.set()
-        if task.status.value in {"processing", "pending"}:
-            task_manager.cancel_task(task.id, "任务已取消")
+        if _is_running_task(task):
+            skipped_running += 1
+            continue
 
-        if task.status.value == "completed":
+        if _task_status_value(task) == "completed":
             _cleanup_upload_only(task)
         else:
             _cleanup_task_resources(task)
@@ -1847,9 +2163,9 @@ async def clear_tasks(current_user: CurrentUser = Depends(_get_current_user)):
         owner_id=current_user.user_id,
         success=True,
         message="批量删除任务",
-        payload={"deleted": deleted},
+        payload={"deleted": deleted, "skipped_running": skipped_running},
     )
-    return {"deleted": deleted}
+    return {"deleted": deleted, "skipped_running": skipped_running}
 
 
 @router.get("/api/tasks/{task_id}/download")

@@ -12,7 +12,7 @@ from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.patent_structuring import extract_structured_data
 from agents.ai_reply.src.state import WorkflowState
-from agents.ai_reply.src.utils import is_patent_document, get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache, is_patent_document
 from backend.utils import _build_r2_storage
 from config import settings
 
@@ -191,6 +191,7 @@ class PatentRetrievalNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             # 获取节点缓存
             cache = get_node_cache(self.config, "patent_retrieval")
 
@@ -208,6 +209,14 @@ class PatentRetrievalNode:
             logger.success("专利检索节点执行成功")
             updates["progress"] = 40.0
 
+        except PipelineCancelled as e:
+            logger.warning(f"专利检索节点已取消: {e}")
+            updates["errors"] = state.errors + [{
+                "node_name": "patent_retrieval",
+                "error_message": str(e),
+                "error_type": "cancelled"
+            }]
+            updates["status"] = "cancelled"
         except Exception as e:
             logger.error(f"专利检索节点执行失败: {e}")
             updates["errors"] = state.errors + [{

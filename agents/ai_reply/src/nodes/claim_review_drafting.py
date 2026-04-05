@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Set
 from loguru import logger
 
 from agents.ai_reply.src.state import ReviewUnit
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from agents.common.utils.llm import get_llm_service
 
 
@@ -28,6 +28,7 @@ class ClaimReviewDraftingNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "claim_review_drafting")
             review_units = cache.run_step(
                 "draft_review_units_v5",
@@ -48,6 +49,14 @@ class ClaimReviewDraftingNode:
             updates["status"] = "completed"
             updates["progress"] = 94.0
             logger.info(f"完成 {len(updates['review_units'])} 个重组评述单元")
+        except PipelineCancelled as exc:
+            logger.warning(f"重组评述生成节点已取消: {exc}")
+            updates["errors"] = [{
+                "node_name": "claim_review_drafting",
+                "error_message": str(exc),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as exc:
             logger.error(f"重组评述生成失败: {exc}")
             updates["errors"] = [{

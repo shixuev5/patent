@@ -61,8 +61,7 @@ const normalizeTaskType = (taskType?: string): TaskType => {
 }
 
 const normalizeStatus = (status: string): Task['status'] => {
-  if (status === 'failed' || status === 'cancelled') return 'error'
-  if (status === 'pending' || status === 'processing' || status === 'completed' || status === 'error') {
+  if (status === 'pending' || status === 'processing' || status === 'completed' || status === 'error' || status === 'failed' || status === 'cancelled') {
     return status
   }
   return 'processing'
@@ -102,7 +101,7 @@ const toTaskFromServer = (serverTask: any): Task => ({
   currentStep: serverTask.step || '等待处理',
   error: serverTask.error,
   createdAt: new Date(serverTask.created_at).getTime(),
-  updatedAt: Date.now(),
+  updatedAt: serverTask.updated_at ? new Date(serverTask.updated_at).getTime() : Date.now(),
   downloadUrl: serverTask.status === 'completed' ? `/api/tasks/${serverTask.id}/download` : undefined,
 })
 
@@ -203,12 +202,12 @@ export const useTaskStore = defineStore('tasks', {
 
     pruneTasksForCache(tasks: Task[]): Task[] {
       const active = tasks.filter((task) => task.status === 'pending' || task.status === 'processing')
-      const completed = tasks
-        .filter((task) => task.status === 'completed')
+      const terminal = tasks
+        .filter((task) => task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'error')
         .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
         .slice(0, MAX_COMPLETED_CACHE_COUNT)
 
-      return [...active, ...completed].sort((a, b) => b.createdAt - a.createdAt)
+      return [...active, ...terminal].sort((a, b) => b.createdAt - a.createdAt)
     },
 
     loadTasksFromStorage() {
@@ -330,6 +329,13 @@ export const useTaskStore = defineStore('tasks', {
         taskRef.downloadUrl = serverTask?.downloadUrl || `/api/tasks/${serverTask?.id || taskRef.backendId}/download`
         taskRef.progress = 100
         taskRef.error = undefined
+      }
+      if (normalized === 'cancelled') {
+        taskRef.currentStep = '已取消'
+        taskRef.error = typeof serverTask?.error === 'string' && serverTask.error ? serverTask.error : '任务已取消。'
+      }
+      if (normalized === 'failed' && !taskRef.error) {
+        taskRef.error = '任务执行失败。'
       }
       if (normalized === 'error' && !taskRef.error) {
         taskRef.error = '任务执行失败。'
@@ -925,7 +931,7 @@ export const useTaskStore = defineStore('tasks', {
     startProgressPolling(task: Task) {
       const taskRef = this.resolveTaskRef(task)
       const backendId = taskRef.backendId
-      if (!backendId || taskRef.status === 'completed' || taskRef.status === 'error') return
+      if (!backendId || taskRef.status === 'completed' || taskRef.status === 'error' || taskRef.status === 'failed' || taskRef.status === 'cancelled') return
       if (this.progressPollers[backendId]) return
 
       const poll = async () => {
@@ -934,7 +940,7 @@ export const useTaskStore = defineStore('tasks', {
           this.stopProgressPolling(backendId)
           return
         }
-        if (currentTask.status === 'completed' || currentTask.status === 'error') {
+        if (currentTask.status === 'completed' || currentTask.status === 'error' || currentTask.status === 'failed' || currentTask.status === 'cancelled') {
           this.stopProgressPolling(backendId)
           return
         }
@@ -942,7 +948,7 @@ export const useTaskStore = defineStore('tasks', {
         if (!ok) return
         const refreshedTask = this.resolveTaskRef(taskRef)
         const refreshedStatus: Task['status'] = refreshedTask.status
-        if (refreshedStatus === 'completed' || refreshedStatus === 'error') {
+        if (refreshedStatus === 'completed' || refreshedStatus === 'error' || refreshedStatus === 'failed' || refreshedStatus === 'cancelled') {
           this.stopProgressPolling(backendId)
         }
       }
@@ -1017,15 +1023,27 @@ export const useTaskStore = defineStore('tasks', {
           token: this.authToken,
         })
         if (!response.ok) throw new Error(await this.parseApiError(response))
-        this.stopAllTracking()
-        this.tasks = []
+        const data = await response.json() as { deleted?: number; skipped_running?: number }
+        const remainingBackendIds = new Set(
+          this.tasks
+            .filter((task) => task.status === 'pending' || task.status === 'processing')
+            .map((task) => task.backendId)
+            .filter((value): value is string => !!value),
+        )
+        Object.keys(this.progressPollers).forEach((backendId) => {
+          if (!remainingBackendIds.has(backendId)) this.stopProgressPolling(backendId)
+        })
+        this.tasks = this.tasks.filter((task) => task.status === 'pending' || task.status === 'processing')
         await this.invalidateTaskAndUsageQueries()
-        if (process.client) {
-          const storageKey = this.getCurrentTaskStorageKey()
-          if (storageKey) localStorage.removeItem(storageKey)
+        this.saveToStorage()
+        if ((data?.skipped_running || 0) > 0) {
+          this.showGlobalNotice('info', `已清空 ${data?.deleted || 0} 个终态任务，跳过 ${(data?.skipped_running || 0)} 个进行中任务。`)
+        } else {
+          this.showGlobalNotice('success', `已清空 ${data?.deleted || 0} 个任务。`)
         }
       } catch (error) {
         console.error('清空任务失败：', error)
+        this.showGlobalNotice('error', error instanceof Error ? error.message : '清空任务失败，请稍后重试。')
       }
     },
 
@@ -1079,23 +1097,93 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     async retryTask(task: Task) {
-      if ((task.taskType !== 'patent_analysis' && task.taskType !== 'ai_review') || !task.pn) {
-        this.showGlobalNotice('error', '该任务类型不支持直接重试，请重新上传文件创建新任务。')
+      const taskRef = this.resolveTaskRef(task)
+      if (!taskRef.backendId) {
+        this.showGlobalNotice('error', '原任务缺少服务端记录，无法重试。')
         return
       }
 
-      task.status = 'pending'
-      task.progress = 0
-      task.currentStep = '等待处理'
-      task.error = undefined
-      task.updatedAt = Date.now()
-      this.saveToStorage()
-
-      const input: CreateTaskInput = {
-        taskType: task.taskType,
-        patentNumber: task.pn || task.title,
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        this.showGlobalNotice('error', '认证失败，请刷新后重试。')
+        return
       }
-      await this.submitTask(task, input)
+
+      try {
+        const config = useRuntimeConfig()
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/tasks/${taskRef.backendId}/retry`,
+          method: 'POST',
+          token: this.authToken,
+        })
+        if (!response.ok) throw new Error(await this.parseApiError(response))
+        const data = await response.json() as { taskId?: string; status?: string; message?: string }
+        if (!data?.taskId) throw new Error('重试任务创建失败。')
+
+        const retriedTask: Task = {
+          id: generateId(),
+          backendId: data.taskId,
+          title: taskRef.title,
+          taskType: taskRef.taskType,
+          pn: taskRef.pn,
+          status: normalizeStatus(data.status || 'pending'),
+          progress: 0,
+          currentStep: '等待处理',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        this.tasks.unshift(retriedTask)
+        this.saveToStorage()
+        await this.invalidateTaskAndUsageQueries()
+        await this.fetchUsage(taskRef.taskType)
+        await this.fetchTaskSnapshot(retriedTask)
+        const latestTaskRef = this.resolveTaskRef(retriedTask)
+        if (latestTaskRef.status === 'pending' || latestTaskRef.status === 'processing') {
+          this.startProgressPolling(latestTaskRef)
+        }
+        this.showGlobalNotice('success', data.message || '重试任务已创建并开始处理。')
+      } catch (error) {
+        console.error('重试任务失败：', error)
+        this.showGlobalNotice('error', error instanceof Error ? error.message : '重试任务失败，请稍后重试。')
+      }
+    },
+
+    async cancelTask(task: Task) {
+      const taskRef = this.resolveTaskRef(task)
+      if (!taskRef.backendId) {
+        this.showGlobalNotice('error', '任务尚未创建完成，暂时无法取消。')
+        return
+      }
+
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        this.showGlobalNotice('error', '认证失败，请刷新后重试。')
+        return
+      }
+
+      try {
+        const config = useRuntimeConfig()
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/tasks/${taskRef.backendId}/cancel`,
+          method: 'POST',
+          token: this.authToken,
+        })
+        if (!response.ok) throw new Error(await this.parseApiError(response))
+        const data = await response.json() as { message?: string }
+        this.stopProgressPolling(taskRef.backendId)
+        taskRef.status = 'cancelled'
+        taskRef.currentStep = '已取消'
+        taskRef.error = data?.message || '任务已取消。'
+        taskRef.updatedAt = Date.now()
+        this.saveToStorage()
+        await this.invalidateTaskAndUsageQueries()
+        this.showGlobalNotice('success', data?.message || '任务已取消。')
+      } catch (error) {
+        console.error('取消任务失败：', error)
+        this.showGlobalNotice('error', error instanceof Error ? error.message : '取消任务失败，请稍后重试。')
+      }
     },
 
     saveToStorage() {

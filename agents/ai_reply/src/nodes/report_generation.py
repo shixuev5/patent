@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from loguru import logger
 
-from agents.ai_reply.src.utils import get_node_cache
+from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from agents.common.utils.serialization import item_get, to_jsonable
 
 
@@ -41,6 +41,7 @@ class ReportGenerationNode:
         }
 
         try:
+            ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "report_generation")
             report = cache.run_step("generate_report_v17", self._generate_report, state)
             output_path = self._save_report(report, state)
@@ -49,6 +50,14 @@ class ReportGenerationNode:
             updates["progress"] = 97.0
             updates["status"] = "completed"
             logger.info(f"报告已生成: {output_path}")
+        except PipelineCancelled as exc:
+            logger.warning(f"报告生成节点已取消: {exc}")
+            updates["errors"] = [{
+                "node_name": "report_generation",
+                "error_message": str(exc),
+                "error_type": "cancelled",
+            }]
+            updates["status"] = "cancelled"
         except Exception as exc:
             logger.error(f"报告生成节点执行失败: {exc}")
             updates["errors"] = [{
