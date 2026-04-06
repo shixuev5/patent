@@ -102,6 +102,49 @@ def test_create_session_and_snapshot(monkeypatch, tmp_path):
     assert snapshot.phase == "collecting_requirements"
     assert snapshot.session.taskId == created.taskId
     assert snapshot.messages[0]["content"] == "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。"
+    assert snapshot.session.pinned is False
+
+
+def test_update_session_supports_rename_and_pin(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    renamed = service.update_session(created.sessionId, "guest_ai_search", title="新的检索标题")
+    pinned = service.update_session(created.sessionId, "guest_ai_search", pinned=True)
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    listed = service.list_sessions("guest_ai_search")
+
+    assert renamed.title == "新的检索标题"
+    assert pinned.pinned is True
+    assert snapshot.session.title == "新的检索标题"
+    assert snapshot.session.pinned is True
+    assert listed.items[0].title == "新的检索标题"
+    assert listed.items[0].pinned is True
+
+
+def test_delete_session_soft_deletes_ai_search_task(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    result = service.delete_session(created.sessionId, "guest_ai_search")
+    deleted_task = storage.get_task(created.sessionId)
+
+    assert result == {"deleted": True}
+    assert deleted_task is not None
+    assert deleted_task.deleted_at is not None
+    assert service.list_sessions("guest_ai_search").total == 0
+
+
+def test_delete_session_rejects_searching_phase(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_SEARCHING)
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.delete_session(created.sessionId, "guest_ai_search")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "检索执行中，请稍后再删除会话。"
 
 
 def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):

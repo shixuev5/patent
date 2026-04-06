@@ -44,6 +44,7 @@ class AiSearchSessionSummary(BaseModel):
     title: str
     status: str
     phase: str
+    pinned: bool = False
     activePlanVersion: Optional[int] = None
     selectedDocumentCount: int = 0
     createdAt: Optional[str] = None
@@ -57,6 +58,11 @@ class AiSearchSessionListResponse(BaseModel):
 
 class AiSearchMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
+
+
+class AiSearchSessionUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
 
 
 class AiSearchAnswerRequest(BaseModel):

@@ -22,7 +22,7 @@
         rows="4"
         class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
         :disabled="inputDisabled"
-        placeholder="继续输入对当前检索计划的调整意见"
+        placeholder="请输入补充要求。"
         @input="onInput"
         @keydown.meta.enter.prevent="$emit('submit')"
         @keydown.ctrl.enter.prevent="$emit('submit')"

@@ -291,6 +291,7 @@ class AiSearchService:
             title=str(task.title or "未命名 AI 检索会话"),
             status=task.status.value,
             phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
+            pinned=bool(meta.get("pinned")),
             activePlanVersion=meta.get("active_plan_version"),
             selectedDocumentCount=int(meta.get("selected_document_count") or 0),
             createdAt=utc_now_z() if not getattr(task, "created_at", None) else task.created_at.isoformat(),
@@ -629,6 +630,42 @@ class AiSearchService:
             if str(task.task_type or "") == TaskType.AI_SEARCH.value
         ]
         return AiSearchSessionListResponse(items=[self._session_summary(task) for task in tasks], total=len(tasks))
+
+    def update_session(
+        self,
+        session_id: str,
+        owner_id: str,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> AiSearchSessionSummary:
+        task = self._get_owned_session_task(session_id, owner_id)
+
+        updates: Dict[str, Any] = {}
+        if title is not None:
+            normalized_title = str(title).strip()
+            if not normalized_title:
+                raise HTTPException(status_code=422, detail="会话标题不能为空。")
+            updates["title"] = normalized_title
+        if pinned is not None:
+            updates["metadata"] = merge_ai_search_meta(task, pinned=bool(pinned))
+
+        if not updates:
+            return self._session_summary(task)
+
+        self.storage.update_task(session_id, **updates)
+        updated = self._get_owned_session_task(session_id, owner_id)
+        return self._session_summary(updated)
+
+    def delete_session(self, session_id: str, owner_id: str) -> Dict[str, bool]:
+        task = self._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
+        if phase == PHASE_SEARCHING:
+            raise HTTPException(status_code=409, detail="检索执行中，请稍后再删除会话。")
+
+        task_manager.delete_task(session_id)
+        return {"deleted": True}
 
     def _planning_config(self, thread_id: str) -> Dict[str, Any]:
         return {

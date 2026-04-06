@@ -46,6 +46,11 @@ const normalizeMessages = (messages: Array<Record<string, any>> | undefined) => 
   return Array.isArray(messages) ? messages : []
 }
 
+const toMillis = (value?: string | null): number => {
+  const ts = Date.parse(String(value || ''))
+  return Number.isFinite(ts) ? ts : 0
+}
+
 export const useAiSearchStore = defineStore('aiSearch', {
   state: () => ({
     sessions: [] as Array<Record<string, any>>,
@@ -87,6 +92,27 @@ export const useAiSearchStore = defineStore('aiSearch', {
       } else {
         this.sessions.unshift(summary)
       }
+    },
+
+    _syncCurrentSessionSummary(summary: Record<string, any>) {
+      if (!this.currentSession || this.currentSession.session.sessionId !== summary.sessionId) return
+      this.currentSession.session = {
+        ...this.currentSession.session,
+        ...summary,
+      }
+    },
+
+    _sortedSessionIds(excludeSessionId?: string) {
+      return [...this.sessions]
+        .filter((item) => item.sessionId !== excludeSessionId)
+        .sort((left, right) => {
+          if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
+          const diff = toMillis(right.updatedAt || right.createdAt) - toMillis(left.updatedAt || left.createdAt)
+          if (diff !== 0) return diff
+          return String(right.sessionId || '').localeCompare(String(left.sessionId || ''))
+        })
+        .map((item) => String(item.sessionId || '').trim())
+        .filter(Boolean)
     },
 
     _applySnapshot(snapshot: AiSearchSnapshot) {
@@ -307,7 +333,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     async init(preferredSessionId: string = '') {
       await this.fetchSessions()
-      const targetId = String(preferredSessionId || this.activeSessionId || this.sessions[0]?.sessionId || '').trim()
+      const targetId = String(preferredSessionId || this.activeSessionId || this._sortedSessionIds()[0] || '').trim()
       if (targetId) {
         await this.loadSession(targetId)
         return
@@ -470,6 +496,71 @@ export const useAiSearchStore = defineStore('aiSearch', {
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
+      }
+    },
+
+    async updateSession(sessionId: string, payload: { title?: string, pinned?: boolean }) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      this.loading = true
+      this.error = ''
+      try {
+        const token = await this._ensureToken()
+        const config = useRuntimeConfig()
+        const data = await requestJson<Record<string, any>>({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}`,
+          method: 'PATCH',
+          token,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        })
+        this._upsertSessionSummary(data)
+        this._syncCurrentSessionSummary(data)
+      } catch (error: any) {
+        this.error = error?.message || '更新会话失败'
+        throw error instanceof Error ? error : new Error(this.error)
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async deleteSession(sessionId: string) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      const wasActive = this.activeSessionId === targetSessionId
+      this.loading = true
+      this.error = ''
+      try {
+        const token = await this._ensureToken()
+        const config = useRuntimeConfig()
+        await requestJson<{ deleted: boolean }>({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}`,
+          method: 'DELETE',
+          token,
+        })
+        this.sessions = this.sessions.filter((item) => item.sessionId !== targetSessionId)
+        if (!wasActive) return
+
+        this.currentSession = null
+        this.activeSessionId = ''
+        this.activityLog = []
+
+        await this.fetchSessions()
+        const nextSessionId = this._sortedSessionIds()[0]
+        if (nextSessionId) {
+          await this.loadSession(nextSessionId)
+          return
+        }
+        await this.createSession()
+      } catch (error: any) {
+        this.error = error?.message || '删除会话失败'
+        throw error instanceof Error ? error : new Error(this.error)
+      } finally {
+        this.loading = false
       }
     },
   },

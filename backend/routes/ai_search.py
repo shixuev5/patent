@@ -16,6 +16,7 @@ from backend.ai_search.models import (
     AiSearchFeatureTableRequest,
     AiSearchMessageRequest,
     AiSearchPlanConfirmRequest,
+    AiSearchSessionUpdateRequest,
     AiSearchSelectedDocumentsPatchRequest,
 )
 from backend.ai_search.service import AiSearchService
@@ -53,6 +54,28 @@ async def get_ai_search_session(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return service.get_snapshot(session_id, current_user.user_id)
+
+
+@router.patch("/api/ai-search/sessions/{session_id}")
+async def update_ai_search_session(
+    session_id: str,
+    request: AiSearchSessionUpdateRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.update_session(
+        session_id,
+        current_user.user_id,
+        title=request.title,
+        pinned=request.pinned,
+    )
+
+
+@router.delete("/api/ai-search/sessions/{session_id}")
+async def delete_ai_search_session(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.delete_session(session_id, current_user.user_id)
 
 
 @router.post("/api/ai-search/sessions/{session_id}/messages/stream")

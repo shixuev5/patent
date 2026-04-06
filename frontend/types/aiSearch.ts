@@ -4,6 +4,7 @@ export interface AiSearchSessionSummary {
   title: string
   status: string
   phase: string
+  pinned: boolean
   activePlanVersion?: number | null
   selectedDocumentCount: number
   createdAt?: string | null

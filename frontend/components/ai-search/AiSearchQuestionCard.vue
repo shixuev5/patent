@@ -10,7 +10,7 @@
       :value="modelValue"
       rows="4"
       class="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-      placeholder="补充主 agent 需要的信息"
+      placeholder="请输入补充信息。"
       @input="onInput"
     />
     <div class="flex justify-end">

@@ -102,6 +102,7 @@ def build_planning_agent(storage: Any, task_id: str):
         return None
 
     def update_search_elements(payload_json: str) -> str:
+        """保存结构化检索要素，并在要素完整后推进到起草计划阶段。"""
         payload = normalize_search_elements_payload(extract_json_object(payload_json))
         storage.create_ai_search_message(
             {
@@ -119,6 +120,7 @@ def build_planning_agent(storage: Any, task_id: str):
         return "search elements updated"
 
     def save_search_plan(payload_json: str) -> str:
+        """持久化当前检索计划草案，并生成新的 plan version。"""
         payload = extract_json_object(payload_json)
         search_elements_snapshot = normalize_search_elements_payload(payload.get("search_elements_snapshot") or {})
         normalized_plan = normalize_execution_plan(
@@ -159,6 +161,7 @@ def build_planning_agent(storage: Any, task_id: str):
         return json.dumps({"plan_version": plan_version}, ensure_ascii=False)
 
     def ask_user_question(prompt: str, reason: str, expected_answer_shape: str) -> str:
+        """创建或恢复一条追问，挂起执行并等待用户回答。"""
         task = storage.get_task(task_id)
         meta = get_ai_search_meta(task)
         question_id = str(meta.get("pending_question_id") or "").strip()
@@ -204,6 +207,7 @@ def build_planning_agent(storage: Any, task_id: str):
         plan_summary: str,
         confirmation_label: str = "确认检索计划",
     ) -> str:
+        """请求用户确认指定版本的检索计划，并在确认后更新计划状态。"""
         task = storage.get_task(task_id)
         meta = get_ai_search_meta(task)
         pending_plan_version = meta.get("pending_confirmation_plan_version")

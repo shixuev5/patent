@@ -62,26 +62,17 @@
             class="space-y-2"
           >
             <p class="px-1 text-[11px] font-semibold tracking-[0.18em] text-slate-400">{{ group.label }}</p>
-            <button
+            <AiSearchSessionListItem
               v-for="session in group.items"
               :key="session.sessionId"
-              type="button"
-              class="w-full rounded-2xl border px-3 py-3 text-left transition"
-              :class="sessionCardClass(session.sessionId)"
-              @click="selectSession(session.sessionId)"
-            >
-              <div class="flex items-start justify-between gap-2">
-                <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-900">{{ session.title }}</p>
-                <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="phaseBadgeClass(session.phase)">
-                  {{ phaseLabel(session.phase) }}
-                </span>
-              </div>
-              <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                <span>V{{ session.activePlanVersion || 0 }}</span>
-                <span>{{ session.selectedDocumentCount || 0 }} 篇</span>
-              </div>
-              <p class="mt-1 text-[10px] text-slate-400">{{ formatTime(session.updatedAt || session.createdAt) }}</p>
-            </button>
+              :session="session"
+              :active="session.sessionId === currentSession?.session.sessionId"
+              :busy="sessionActionBusy"
+              @select="selectSession"
+              @rename="renameSession"
+              @toggle-pin="toggleSessionPin"
+              @delete="deleteSession"
+            />
           </section>
         </div>
       </aside>
@@ -108,9 +99,9 @@
         </div>
 
         <div class="border-b border-slate-200 px-4 py-2">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="min-w-0 self-center">
-              <div class="flex flex-wrap items-center gap-2">
+          <div class="flex items-center justify-between gap-2 overflow-hidden">
+            <div class="flex min-w-0 items-center gap-2 overflow-hidden">
+              <div class="flex min-w-0 items-center gap-2 overflow-hidden">
                 <button
                   v-if="isMobileViewport"
                   type="button"
@@ -121,21 +112,18 @@
                   <Bars3Icon class="h-4 w-4" />
                 </button>
                 <p class="truncate text-sm font-semibold text-slate-900">{{ workspaceTitle }}</p>
+                <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                  {{ activePhaseLabel }}
+                </span>
                 <span
                   v-if="sourceSummary"
-                  class="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-0.5 text-[11px] font-medium text-cyan-700"
+                  class="shrink-0 rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-700"
                 >
                   分析导入
                 </span>
               </div>
             </div>
-            <div class="flex flex-wrap items-center gap-2 self-center">
-              <span class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                {{ activePhaseLabel }}
-              </span>
-              <span class="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                计划 V{{ activePlanVersion || 0 }}
-              </span>
+            <div class="flex shrink-0 items-center gap-2 self-center">
               <button
                 v-if="isMobileViewport"
                 type="button"
@@ -153,10 +141,7 @@
         <div class="border-b border-slate-200">
           <section v-if="hasDisplayedPlan">
             <button type="button" class="accordion-toggle" @click="togglePanel('plan')">
-              <span class="accordion-title">
-                检索计划
-                <span class="accordion-meta">V{{ activePlanVersion || 0 }}</span>
-              </span>
+              <span class="accordion-title">检索计划</span>
               <ChevronDownIcon class="accordion-icon" :class="{ 'rotate-180': openPanel === 'plan' }" />
             </button>
             <div v-if="openPanel === 'plan'" class="accordion-body">
@@ -432,9 +417,9 @@
           <div v-else class="space-y-4">
             <template v-for="entry in conversationEntries" :key="entry.id">
             <article v-if="entry.entryType === 'system'" class="flex justify-center">
-              <div class="w-full rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-2.5">
+              <div class="w-full rounded-2xl border border-slate-200/80 bg-slate-50/60 px-3 py-2.5">
                 <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-medium text-slate-600">{{ entry.content }}</p>
+                  <p class="text-xs font-medium text-slate-500">{{ entry.content }}</p>
                   <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="phaseBadgeClass(entry.phase)">
                     {{ phaseLabel(entry.phase) }}
                   </span>
@@ -451,14 +436,9 @@
                 class="max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
                 :class="entry.role === 'user'
                   ? 'bg-cyan-700 text-white shadow-cyan-100'
-                  : entry.kind === 'question'
-                    ? 'border border-amber-200 bg-amber-50 text-amber-900'
-                    : 'border border-slate-200 bg-slate-50 text-slate-700'"
+                  : 'border border-slate-200 bg-slate-50 text-slate-700'"
               >
                 <p class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
-                <p class="mt-2 text-[11px]" :class="entry.role === 'user' ? 'text-cyan-100/90' : 'text-slate-400'">
-                  {{ messageLabel(entry.kind) }}
-                </p>
               </div>
             </article>
             </template>
@@ -528,10 +508,7 @@
         class="fixed bottom-0 left-0 top-[56px] z-50 flex w-[17.5rem] max-w-[86vw] flex-col border-r border-slate-200 bg-white shadow-2xl shadow-slate-300/30 lg:hidden"
       >
         <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div>
-            <p class="text-sm font-semibold text-slate-900">历史会话</p>
-            <p class="text-[11px] text-slate-500">{{ mobileSessionSummary }}</p>
-          </div>
+          <p class="text-sm font-semibold text-slate-900">历史会话</p>
           <button
             type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
@@ -556,26 +533,17 @@
               class="space-y-2"
             >
               <p class="px-1 text-[11px] font-semibold tracking-[0.18em] text-slate-400">{{ group.label }}</p>
-              <button
+              <AiSearchSessionListItem
                 v-for="session in group.items"
                 :key="session.sessionId"
-                type="button"
-                class="w-full rounded-2xl border px-3 py-3 text-left transition"
-                :class="sessionCardClass(session.sessionId)"
-                @click="selectSession(session.sessionId)"
-              >
-                <div class="flex items-start justify-between gap-2">
-                  <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-900">{{ session.title }}</p>
-                  <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="phaseBadgeClass(session.phase)">
-                    {{ phaseLabel(session.phase) }}
-                  </span>
-                </div>
-                <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <span>V{{ session.activePlanVersion || 0 }}</span>
-                  <span>{{ session.selectedDocumentCount || 0 }} 篇</span>
-                </div>
-                <p class="mt-1 text-[10px] text-slate-400">{{ formatTime(session.updatedAt || session.createdAt) }}</p>
-              </button>
+                :session="session"
+                :active="session.sessionId === currentSession?.session.sessionId"
+                :busy="sessionActionBusy"
+                @select="selectSession"
+                @rename="renameSession"
+                @toggle-pin="toggleSessionPin"
+                @delete="deleteSession"
+              />
             </section>
           </div>
         </div>
@@ -591,6 +559,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
+import AiSearchSessionListItem from '~/components/ai-search/AiSearchSessionListItem.vue'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import type { AiSearchSessionSummary } from '~/types/aiSearch'
 
@@ -722,20 +691,17 @@ const sidebarClass = computed(() => (sidebarCollapsed.value ? 'px-2.5 lg:px-2.5'
 const showCollapsedSidebarRail = computed(() => !isMobileViewport.value && sidebarCollapsed.value)
 const showDesktopSidebar = computed(() => viewportReady.value && !isMobileViewport.value)
 const showMobileSessionDrawer = computed(() => isMobileViewport.value && !sidebarCollapsed.value)
-const mobileSessionSummary = computed(() => {
-  if (loading.value && !sessions.value.length) return '正在加载会话...'
-  if (!sessions.value.length) return ''
-  return `共 ${sessions.value.length} 个会话，当前优先展示检索工作台`
-})
+const sessionActionBusy = computed(() => loading.value || streaming.value)
 
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
-  if (currentSession.value.phase === 'searching') return '检索执行中，当前版本不支持中途修改计划'
-  return '输入检索目标、技术方案、claim 片段，并尽量补充申请人和申请日/优先权日'
+  if (currentSession.value.phase === 'searching') return '检索执行中，请稍后再补充消息。'
+  return '请输入检索目标或补充要求。'
 })
 
 const sortedSessions = computed<AiSearchSessionSummary[]>(() => {
   return [...sessions.value].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1
     const diff = toMillis(right.updatedAt || right.createdAt) - toMillis(left.updatedAt || left.createdAt)
     if (diff !== 0) return diff
     return String(right.sessionId || '').localeCompare(String(left.sessionId || ''))
@@ -744,8 +710,18 @@ const sortedSessions = computed<AiSearchSessionSummary[]>(() => {
 
 const groupedSessions = computed<SessionGroup[]>(() => {
   const groups = new Map<string, SessionGroup>()
+  const pinnedItems = sortedSessions.value.filter((session) => session.pinned)
+  const regularItems = sortedSessions.value.filter((session) => !session.pinned)
 
-  for (const session of sortedSessions.value) {
+  if (pinnedItems.length) {
+    groups.set('pinned', {
+      key: 'pinned',
+      label: '置顶',
+      items: pinnedItems,
+    })
+  }
+
+  for (const session of regularItems) {
     const bucket = resolveSessionGroup(session.updatedAt || session.createdAt)
     const existing = groups.get(bucket.key)
     if (existing) {
@@ -859,14 +835,6 @@ const featureCell = (row: Record<string, any>, column: string): string => {
   return String(value ?? '')
 }
 
-const formatTime = (value?: string | null): string => {
-  const text = String(value || '').trim()
-  if (!text) return '--'
-  const date = new Date(text)
-  if (Number.isNaN(date.getTime())) return text
-  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-}
-
 const phaseLabel = (phase: string): string => {
   const map: Record<string, string> = {
     collecting_requirements: '整理需求',
@@ -880,12 +848,6 @@ const phaseLabel = (phase: string): string => {
     cancelled: '已终止',
   }
   return map[phase] || phase || '未知阶段'
-}
-
-const messageLabel = (kind?: string): string => {
-  if (kind === 'question') return '追问'
-  if (kind === 'answer') return '回答'
-  return kind === 'chat' ? '对话' : '消息'
 }
 
 const phaseBadgeClass = (phase: string): string => {
@@ -902,13 +864,6 @@ const phaseBadgeClass = (phase: string): string => {
     return 'border border-rose-200 bg-rose-50 text-rose-700'
   }
   return 'border border-slate-200 bg-slate-50 text-slate-600'
-}
-
-const sessionCardClass = (sessionId: string): string => {
-  if (sessionId === currentSession.value?.session.sessionId) {
-    return 'border-cyan-300 bg-cyan-50/70 shadow-sm shadow-cyan-100'
-  }
-  return 'border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-white'
 }
 
 const elementStatusClass = (status?: string): string => {
@@ -960,6 +915,38 @@ const selectSession = async (sessionId: string) => {
   if (!sessionId || sessionId === currentSession.value?.session.sessionId) return
   await aiSearchStore.loadSession(sessionId)
   if (isMobileViewport.value) sidebarCollapsed.value = true
+}
+
+const renameSession = async (sessionId: string, title: string) => {
+  const nextTitle = String(title || '').trim()
+  if (!nextTitle) return
+  try {
+    await aiSearchStore.updateSession(sessionId, { title: nextTitle })
+  } catch (_error) {
+    // Store-level error watcher already surfaces the message.
+  }
+}
+
+const toggleSessionPin = async (sessionId: string, pinned: boolean) => {
+  try {
+    await aiSearchStore.updateSession(sessionId, { pinned })
+  } catch (_error) {
+    // Store-level error watcher already surfaces the message.
+  }
+}
+
+const deleteSession = async (sessionId: string) => {
+  const target = sessions.value.find((item) => item.sessionId === sessionId)
+  const title = String(target?.title || '该会话').trim()
+  if (!window.confirm(`确定删除“${title}”吗？此操作不可撤销。`)) return
+  try {
+    await aiSearchStore.deleteSession(sessionId)
+  } catch (_error) {
+    return
+  }
+  if (isMobileViewport.value && currentSession.value?.session.sessionId !== sessionId) {
+    sidebarCollapsed.value = true
+  }
 }
 
 const submitMessage = async () => {
