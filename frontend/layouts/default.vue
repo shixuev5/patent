@@ -249,6 +249,12 @@ const displayUserName = computed(() => {
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const showAdminEntry = computed(() => adminUsageStore.isAdmin)
 
+const hasAuthCallbackParams = () => {
+  if (!process.client) return false
+  const search = new URLSearchParams(window.location.search)
+  return search.has('code') && search.has('state')
+}
+
 const navClass = (active: boolean) => {
   return active
     ? 'rounded-full bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-700'
@@ -352,6 +358,14 @@ watch(
 )
 
 onMounted(async () => {
+  if (hasAuthingEnabled.value && route.path !== '/auth/callback' && hasAuthCallbackParams()) {
+    const handled = await authStore.handleCallback()
+    if (handled) {
+      await refreshAdminAccess(true)
+      await navigateTo({ path: route.path, query: {}, hash: route.hash }, { replace: true })
+      return
+    }
+  }
   if (hasAuthingEnabled.value) await authStore.ensureInitialized()
   await refreshAdminAccess(false)
   fetchHealthStats()
