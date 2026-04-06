@@ -65,6 +65,8 @@ def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
         "pending_confirmation_plan_version": None,
         "selected_document_count": 0,
         "current_feature_table_id": None,
+        "todos": [],
+        "current_task": None,
         "pinned": False,
     }
 

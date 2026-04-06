@@ -1,11 +1,9 @@
-"""
-AI 检索 Agent 共享运行时工具。
-"""
+"""AI 检索 Agent 共享运行时工具。"""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -16,7 +14,7 @@ from pydantic import BaseModel
 from config import settings
 
 
-ALLOWED_SUBAGENTS = {
+ALL_AI_SEARCH_SUBAGENTS = {
     "search-elements",
     "query-executor",
     "coarse-screener",
@@ -24,39 +22,76 @@ ALLOWED_SUBAGENTS = {
     "feature-comparer",
 }
 
-BLOCKED_TOOLS = {
-    "ls",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob",
-    "grep",
-    "execute",
+READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
+WRITE_FILESYSTEM_TOOLS = {"write_file", "edit_file"}
+EXECUTION_TOOLS = {"execute"}
+
+ROLE_TOOL_POLICIES: dict[str, dict[str, set[str]]] = {
+    "main-agent": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS,
+        "allowed_subagents": set(ALL_AI_SEARCH_SUBAGENTS),
+    },
+    "search-elements": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "query-executor": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "coarse-screener": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "close-reader": {
+        "blocked_tools": WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "feature-comparer": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
 }
 
 
 class AiSearchGuardMiddleware(AgentMiddleware):
+    def __init__(
+        self,
+        role: str,
+        *,
+        blocked_tools: Optional[Sequence[str]] = None,
+        allowed_subagents: Optional[Sequence[str]] = None,
+    ) -> None:
+        self.role = str(role or "main-agent").strip() or "main-agent"
+        defaults = ROLE_TOOL_POLICIES.get(self.role, ROLE_TOOL_POLICIES["main-agent"])
+        self.blocked_tools = set(blocked_tools or defaults["blocked_tools"])
+        self.allowed_subagents = set(allowed_subagents or defaults["allowed_subagents"])
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler,
     ) -> ToolMessage | Command[Any]:
         tool_name = str(request.tool_call.get("name") or "").strip()
-        if tool_name in BLOCKED_TOOLS:
+        if tool_name in self.blocked_tools:
             return ToolMessage(
-                content=f"工具 `{tool_name}` 在 AI 检索中不可用。",
+                content=f"工具 `{tool_name}` 对 `{self.role}` 不可用。",
                 name=tool_name or "blocked_tool",
                 tool_call_id=request.tool_call["id"],
             )
         if tool_name == "task":
             subagent_type = str((request.tool_call.get("args") or {}).get("subagent_type") or "").strip()
-            if subagent_type not in ALLOWED_SUBAGENTS:
+            if subagent_type not in self.allowed_subagents:
                 return ToolMessage(
-                    content=f"子 agent `{subagent_type or 'unknown'}` 不允许在 AI 检索中使用。",
+                    content=f"子 agent `{subagent_type or 'unknown'}` 不允许由 `{self.role}` 调用。",
                     name="task",
                     tool_call_id=request.tool_call["id"],
                 )
         return handler(request)
+
+
+def build_guard_middleware(role: str) -> AiSearchGuardMiddleware:
+    return AiSearchGuardMiddleware(role)
 
 
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:

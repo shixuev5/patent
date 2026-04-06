@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from agents.ai_search.src.runtime import AiSearchGuardMiddleware, large_model
+from agents.ai_search.src.runtime import build_guard_middleware, large_model
 
 
 DATE_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -143,5 +143,5 @@ def build_search_elements_subagent() -> dict:
         "system_prompt": SEARCH_ELEMENTS_SYSTEM_PROMPT,
         "model": large_model(),
         "tools": [],
-        "middleware": [AiSearchGuardMiddleware()],
+        "middleware": [build_guard_middleware("search-elements")],
     }

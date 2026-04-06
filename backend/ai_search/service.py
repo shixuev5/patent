@@ -16,12 +16,11 @@ from langgraph.types import Command
 
 from agents.ai_search.main import (
     build_feature_comparer_agent,
-    build_planning_agent,
+    build_main_agent,
     extract_latest_ai_message,
     extract_structured_response,
 )
-from agents.ai_search.src.execution import run_query_execution_rounds
-from agents.ai_search.src.screening import build_feature_prompt, run_screening_pipeline
+from agents.ai_search.src.screening import build_feature_prompt
 from agents.ai_search.src.subagents.search_elements import normalize_search_elements_payload
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -63,7 +62,7 @@ from .models import (
 
 task_manager = get_pipeline_manager()
 
-PLANNING_CHECKPOINT_NS = "ai_search_planning"
+MAIN_AGENT_CHECKPOINT_NS = "ai_search_main"
 DEFAULT_MESSAGE_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_DRAFTING_PLAN,
@@ -554,7 +553,7 @@ class AiSearchService:
 
         try:
             previous_assistant = self._latest_assistant_chat(task.id)
-            result = self._run_planning_agent(
+            result = self._run_main_agent(
                 task.id,
                 thread_id,
                 {"messages": [{"role": "user", "content": seed_prompt}]},
@@ -667,27 +666,27 @@ class AiSearchService:
         task_manager.delete_task(session_id)
         return {"deleted": True}
 
-    def _planning_config(self, thread_id: str) -> Dict[str, Any]:
+    def _main_agent_config(self, thread_id: str) -> Dict[str, Any]:
         return {
             "configurable": {
                 "thread_id": thread_id,
-                "checkpoint_ns": PLANNING_CHECKPOINT_NS,
+                "checkpoint_ns": MAIN_AGENT_CHECKPOINT_NS,
             }
         }
 
-    def _planning_state_config(self, agent: Any, thread_id: str) -> Dict[str, Any]:
-        config = self._planning_config(thread_id)
+    def _main_agent_state_config(self, agent: Any, thread_id: str) -> Dict[str, Any]:
+        config = self._main_agent_config(thread_id)
         config["configurable"]["__pregel_checkpointer"] = agent.checkpointer
         return config
 
-    def _run_planning_agent(self, task_id: str, thread_id: str, payload: Any) -> Dict[str, Any]:
-        agent = build_planning_agent(self.storage, task_id)
-        config = self._planning_config(thread_id)
+    def _run_main_agent(self, task_id: str, thread_id: str, payload: Any) -> Dict[str, Any]:
+        agent = build_main_agent(self.storage, task_id)
+        config = self._main_agent_config(thread_id)
         interrupted = False
         for chunk in agent.stream(payload, config):
             if "__interrupt__" in chunk:
                 interrupted = True
-        state = agent.get_state(self._planning_state_config(agent, thread_id))
+        state = agent.get_state(self._main_agent_state_config(agent, thread_id))
         values = state.values if state else {}
         return {"interrupted": interrupted, "values": values}
 
@@ -757,7 +756,7 @@ class AiSearchService:
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
         result = await asyncio.to_thread(
-            self._run_planning_agent,
+            self._run_main_agent,
             task.id,
             thread_id,
             {"messages": [{"role": "user", "content": content}]},
@@ -788,7 +787,7 @@ class AiSearchService:
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
         result = await asyncio.to_thread(
-            self._run_planning_agent,
+            self._run_main_agent,
             task.id,
             thread_id,
             Command(resume=answer),
@@ -823,68 +822,20 @@ class AiSearchService:
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
         planning_result = await asyncio.to_thread(
-            self._run_planning_agent,
+            self._run_main_agent,
             task.id,
             thread_id,
             Command(resume={"confirmed": True, "plan_version": plan_version}),
         )
         assistant_text = extract_latest_ai_message(planning_result["values"])
+        snapshot = self.get_snapshot(task.id, owner_id)
         if assistant_text and assistant_text != previous_assistant:
             self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=plan_version)
-            yield self._format_event("message.completed", task.id, PHASE_SEARCHING, {"content": assistant_text})
-        yield self._format_event("plan.confirmed", task.id, PHASE_SEARCHING, {"planVersion": plan_version})
-        async for event in self._run_search_pipeline(task.id, owner_id, plan_version):
-            yield event
-
-    async def _run_search_pipeline(self, task_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        task = self.storage.get_task(task_id)
-        if not task:
-            self._raise_session_not_found()
-        plan = self.storage.get_ai_search_plan(task_id, plan_version)
-        if not plan:
-            self._raise_invalid_phase(PHASE_SEARCHING, "当前计划不存在。")
-        self._update_phase(task_id, PHASE_SEARCHING, active_plan_version=plan_version)
-        yield self._format_event("execution.round.started", task_id, PHASE_SEARCHING, {"planVersion": plan_version})
-        execution_result = await asyncio.to_thread(run_query_execution_rounds, self.storage, task_id, plan_version)
-        for summary in execution_result.get("summaries") or []:
-            yield self._format_event("execution.round.completed", task_id, PHASE_SEARCHING, summary)
-        candidate_records = self.storage.list_ai_search_documents(task_id, plan_version)
-        yield self._format_event(
-            "documents.updated",
-            task_id,
-            PHASE_SEARCHING,
-            {"count": len(candidate_records), "items": candidate_records},
-        )
-        if not candidate_records:
-            self._append_message(task_id, "assistant", "chat", "当前计划未检索到候选文献。", plan_version=plan_version)
-            self._update_phase(task_id, PHASE_RESULTS_READY, selected_document_count=0)
-            snapshot = self.get_snapshot(task_id, owner_id)
-            yield self._format_event("execution.stopped", task_id, snapshot.phase, {"selectedCount": 0})
-            yield self._format_event("run.completed", task_id, snapshot.phase, {"selectedCount": 0})
-            return
-
-        yield self._format_event("execution.screening_entered", task_id, PHASE_SEARCHING, {"candidateCount": len(candidate_records)})
-        screening_result = await asyncio.to_thread(run_screening_pipeline, self.storage, task_id, plan_version)
-        selected_count = int(screening_result.get("selected_count") or 0)
-        self._append_message(
-            task_id,
-            "assistant",
-            "chat",
-            f"已完成动态检索、粗筛和精读，推荐 {selected_count} 篇对比文件。",
-            plan_version=plan_version,
-        )
-        self._update_phase(
-            task_id,
-            PHASE_RESULTS_READY,
-            active_plan_version=plan_version,
-            selected_document_count=selected_count,
-            current_feature_table_id=None,
-        )
-        snapshot = self.get_snapshot(task_id, owner_id)
+            yield self._format_event("message.completed", task.id, snapshot.phase, {"content": assistant_text})
+        yield self._format_event("plan.confirmed", task.id, snapshot.phase, {"planVersion": plan_version})
         async for event in self._emit_snapshot_events(snapshot):
             yield event
-        yield self._format_event("execution.stopped", task_id, snapshot.phase, {"selectedCount": selected_count})
-        yield self._format_event("run.completed", task_id, snapshot.phase, {"selectedCount": selected_count})
+        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": planning_result["interrupted"]})
 
     def patch_selected_documents(
         self,
@@ -930,7 +881,7 @@ class AiSearchService:
         selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
         self._update_phase(
             task.id,
-            PHASE_RESULTS_READY,
+            PHASE_COMPLETED,
             selected_document_count=selected_count,
             current_feature_table_id=None,
         )

@@ -102,7 +102,7 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert storage.put_ai_search_checkpoint(
         {
             "thread_id": "thread-1",
-            "checkpoint_ns": "ai_search_planning",
+            "checkpoint_ns": "ai_search_main",
             "checkpoint_id": "cp-1",
             "checkpoint_json": checkpoint_json,
             "metadata_json": metadata_json,
@@ -112,7 +112,7 @@ def test_ai_search_storage_roundtrip(tmp_path):
         [
             {
                 "thread_id": "thread-1",
-                "checkpoint_ns": "ai_search_planning",
+                "checkpoint_ns": "ai_search_main",
                 "channel": "messages",
                 "version": "1",
                 "typed_value_json": encode_typed_value(("json", b'["hello"]')),
@@ -123,9 +123,9 @@ def test_ai_search_storage_roundtrip(tmp_path):
         [
             {
                 "thread_id": "thread-1",
-                "checkpoint_ns": "ai_search_planning",
+                "checkpoint_ns": "ai_search_main",
                 "checkpoint_id": "cp-1",
-                "task_id": "planner",
+                "task_id": "main-agent",
                 "write_idx": 0,
                 "channel": "messages",
                 "typed_value_json": encode_typed_value(("json", b'"delta"')),
@@ -133,10 +133,10 @@ def test_ai_search_storage_roundtrip(tmp_path):
             }
         ]
     ) >= 1
-    checkpoint = storage.get_ai_search_checkpoint("thread-1", "ai_search_planning", "cp-1")
+    checkpoint = storage.get_ai_search_checkpoint("thread-1", "ai_search_main", "cp-1")
     assert checkpoint is not None
     assert checkpoint["checkpoint_id"] == "cp-1"
-    assert storage.get_ai_search_checkpoint_blobs("thread-1", "ai_search_planning", {"messages": 1})["messages"]
-    writes = storage.list_ai_search_checkpoint_writes("thread-1", "ai_search_planning", "cp-1")
+    assert storage.get_ai_search_checkpoint_blobs("thread-1", "ai_search_main", {"messages": 1})["messages"]
+    writes = storage.list_ai_search_checkpoint_writes("thread-1", "ai_search_main", "cp-1")
     assert len(writes) == 1
-    assert writes[0]["task_id"] == "planner"
+    assert writes[0]["task_id"] == "main-agent"

@@ -14,7 +14,7 @@ stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
 stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
-stub_ai_search_agents.build_planning_agent = lambda storage, task_id: None
+stub_ai_search_agents.build_main_agent = lambda storage, task_id: None
 stub_ai_search_agents.build_query_executor_agent = lambda: None
 stub_ai_search_agents.extract_latest_ai_message = lambda values: ""
 stub_ai_search_agents.extract_structured_response = lambda values: {}
@@ -234,7 +234,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         service,
-        "_run_planning_agent",
+        "_run_main_agent",
         lambda task_id, thread_id, payload: {"interrupted": False, "values": {"messages": []}},
     )
 
@@ -249,7 +249,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     assert any("run.completed" in item for item in events)
 
 
-def test_run_planning_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_path):
+def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
 
     class _FakeState:
@@ -263,20 +263,20 @@ def test_run_planning_agent_reads_state_with_explicit_checkpointer(monkeypatch, 
         def stream(self, payload, config):
             assert payload == {"messages": [{"role": "user", "content": "测试"}]}
             assert config["configurable"]["thread_id"] == "ai-search-task-1"
-            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
             yield {"messages": []}
 
         def get_state(self, config):
             self.state_config = config
             assert config["configurable"]["thread_id"] == "ai-search-task-1"
-            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
             assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
             return _FakeState()
 
     fake_agent = _FakeAgent()
-    monkeypatch.setattr(ai_search_service_module, "build_planning_agent", lambda storage, task_id: fake_agent)
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: fake_agent)
 
-    result = service._run_planning_agent("task-1", "ai-search-task-1", {"messages": [{"role": "user", "content": "测试"}]})
+    result = service._run_main_agent("task-1", "ai-search-task-1", {"messages": [{"role": "user", "content": "测试"}]})
 
     assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
     assert fake_agent.state_config is not None
@@ -498,7 +498,7 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         )
         return {"interrupted": True, "values": {"messages": []}}
 
-    monkeypatch.setattr(service, "_run_planning_agent", _fake_planning)
+    monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
     monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索草稿已生成，请确认计划。")
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
@@ -555,7 +555,7 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
         )
         return {"interrupted": True, "values": {"messages": []}}
 
-    monkeypatch.setattr(service, "_run_planning_agent", _fake_planning)
+    monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
     monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "还需要你补充一个核心技术要素。")
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)

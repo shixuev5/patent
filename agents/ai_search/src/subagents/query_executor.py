@@ -8,7 +8,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.state import StateBackend
 
 from agents.ai_search.src.execution_state import ExecutionRoundSummary
-from agents.ai_search.src.runtime import AiSearchGuardMiddleware, default_model
+from agents.ai_search.src.runtime import build_guard_middleware, default_model
 from agents.ai_search.src.tools.search_tools import build_search_tools
 
 
@@ -44,7 +44,7 @@ def build_query_executor_agent(storage: object, task_id: str):
         model=default_model(),
         tools=build_search_tools(storage, task_id),
         system_prompt=QUERY_EXECUTOR_SYSTEM_PROMPT,
-        middleware=[AiSearchGuardMiddleware()],
+        middleware=[build_guard_middleware("query-executor")],
         response_format=ExecutionRoundSummary,
         backend=StateBackend,
         name=f"ai-search-query-executor-{task_id}",
@@ -58,5 +58,5 @@ def build_query_executor_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": QUERY_EXECUTOR_SYSTEM_PROMPT,
         "model": default_model(),
         "tools": build_search_tools(storage, task_id),
-        "middleware": [AiSearchGuardMiddleware()],
+        "middleware": [build_guard_middleware("query-executor")],
     }

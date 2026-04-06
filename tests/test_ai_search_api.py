@@ -41,15 +41,15 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
         def stream(self, payload, config):
             assert payload == {"messages": [{"role": "user", "content": "请帮我检索相关方案"}]}
             assert config["configurable"]["thread_id"].startswith("ai-search-")
-            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
             yield {"messages": []}
 
         def get_state(self, config):
-            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
             assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
             return _FakeState()
 
-    monkeypatch.setattr(ai_search_service_module, "build_planning_agent", lambda storage, task_id: _FakeAgent())
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
     monkeypatch.setattr(
         ai_search_service_module,
         "extract_latest_ai_message",

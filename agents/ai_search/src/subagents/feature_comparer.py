@@ -11,7 +11,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.state import StateBackend
 from pydantic import BaseModel, Field
 
-from agents.ai_search.src.runtime import AiSearchGuardMiddleware, large_model
+from agents.ai_search.src.runtime import build_guard_middleware, large_model
 
 
 FEATURE_COMPARER_SYSTEM_PROMPT = """
@@ -39,8 +39,19 @@ def build_feature_comparer_agent():
         model=large_model(),
         tools=[],
         system_prompt=FEATURE_COMPARER_SYSTEM_PROMPT,
-        middleware=[AiSearchGuardMiddleware()],
+        middleware=[build_guard_middleware("feature-comparer")],
         response_format=FeatureCompareOutput,
         backend=StateBackend,
         name="ai-search-feature-comparer",
     )
+
+
+def build_feature_comparer_subagent() -> dict:
+    return {
+        "name": "feature-comparer",
+        "description": "基于已选文献和关键证据段落生成特征对比表。",
+        "system_prompt": FEATURE_COMPARER_SYSTEM_PROMPT,
+        "model": large_model(),
+        "tools": [],
+        "middleware": [build_guard_middleware("feature-comparer")],
+    }

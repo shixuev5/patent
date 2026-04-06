@@ -3723,7 +3723,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40.0" },
-    { name = "deepagents", specifier = ">=0.4.4" },
+    { name = "deepagents", specifier = ">=0.4.12" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "langchain-openai", specifier = ">=1.0.1" },
     { name = "langgraph", specifier = ">=1.0.6" },
