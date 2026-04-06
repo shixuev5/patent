@@ -11,6 +11,8 @@ import pytest
 from fastapi import HTTPException
 
 stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
+stub_ai_search_agents.build_claim_decomposer_agent = lambda: None
+stub_ai_search_agents.build_claim_search_strategist_agent = lambda: None
 stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
@@ -50,13 +52,16 @@ sys.modules.setdefault("agents.common.retrieval.local_evidence_retriever", stub_
 from backend.ai_search import service as ai_search_service_module
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
+    RESUME_NOT_AVAILABLE_CODE,
     SEARCH_IN_PROGRESS_CODE,
     STALE_PLAN_CONFIRMATION_CODE,
 )
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
+    PHASE_CLOSE_READ,
     PHASE_DRAFTING_PLAN,
+    PHASE_GENERATE_FEATURE_TABLE,
     PHASE_SEARCHING,
     merge_ai_search_meta,
 )
@@ -158,6 +163,75 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
 
 
+def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_SEARCHING,
+        current_task="execute_search",
+        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round"}],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "继续上次失败的执行")))
+
+    assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
+
+
+def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_SEARCHING,
+        current_task="execute_search",
+        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round", "last_error": "timeout"}],
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_run_main_agent",
+        lambda task_id, thread_id, payload: (
+            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "继续恢复检索。"}]}}
+            if "继续当前失败的 AI 检索执行" in payload["messages"][0]["content"]
+            else (_ for _ in ()).throw(AssertionError("unexpected resume payload"))
+        ),
+    )
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.phase == PHASE_SEARCHING
+    assert snapshot.resumeAction is not None
+    assert snapshot.resumeAction["lastError"] == "timeout"
+    assert any("message.completed" in item for item in events)
+
+
+def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_SEARCHING,
+        current_task="execute_search",
+        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "in_progress", "resume_from": "run_search_round"}],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
+
+    assert exc_info.value.detail["code"] == RESUME_NOT_AVAILABLE_CODE
+
+
 def test_stream_message_rejects_when_question_pending(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
@@ -209,6 +283,104 @@ def test_stream_plan_confirmation_rejects_stale_version(monkeypatch, tmp_path):
         asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
 
     assert exc_info.value.detail["code"] == STALE_PLAN_CONFIRMATION_CODE
+
+
+def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(
+        {
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "confirmed",
+            "objective": "测试目标",
+            "search_elements_json": {"status": "complete", "search_elements": []},
+            "plan_json": {"plan_version": 1},
+        }
+    )
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+                "user_pinned": False,
+                "user_removed": False,
+                "coarse_status": "kept",
+                "close_read_status": "selected",
+            }
+        ]
+    )
+    storage.create_ai_search_feature_table(
+        {
+            "feature_table_id": "ft-1",
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "completed",
+            "table_json": [{"feature": "A"}],
+            "summary_markdown": "旧特征表",
+        }
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        "completed",
+        active_plan_version=1,
+        current_feature_table_id="ft-1",
+    )
+
+    snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, ["doc-1"], [])
+
+    assert snapshot.phase == PHASE_GENERATE_FEATURE_TABLE
+    assert snapshot.featureTable is None
+
+
+def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_empty(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(
+        {
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "confirmed",
+            "objective": "测试目标",
+            "search_elements_json": {"status": "complete", "search_elements": []},
+            "plan_json": {"plan_version": 1},
+        }
+    )
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+                "user_pinned": False,
+                "user_removed": False,
+                "coarse_status": "kept",
+                "close_read_status": "selected",
+            }
+        ]
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_GENERATE_FEATURE_TABLE,
+        active_plan_version=1,
+        current_feature_table_id=None,
+    )
+
+    snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])
+
+    assert snapshot.phase == PHASE_CLOSE_READ
+    assert snapshot.selectedDocuments == []
 
 
 def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
@@ -280,6 +452,108 @@ def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_
 
     assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
     assert fake_agent.state_config is not None
+
+
+def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(
+        {
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "confirmed",
+            "objective": "测试目标",
+            "search_elements_json": {"status": "complete", "search_elements": []},
+            "plan_json": {"plan_version": 1},
+        }
+    )
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+                "user_pinned": False,
+                "user_removed": False,
+                "coarse_status": "kept",
+                "close_read_status": "selected",
+                "key_passages_json": [{"passage": "证据"}],
+            }
+        ]
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_GENERATE_FEATURE_TABLE,
+        active_plan_version=1,
+        current_feature_table_id=None,
+    )
+
+    class _FakeFeatureAgent:
+        def invoke(self, payload):
+            assert "生成特征对比表" in payload["messages"][0]["content"]
+            storage.create_ai_search_feature_table(
+                {
+                    "feature_table_id": "ft-new",
+                    "task_id": created.sessionId,
+                    "plan_version": 1,
+                    "status": "completed",
+                    "table_json": [{"feature": "A"}],
+                    "summary_markdown": "新特征表",
+                }
+            )
+            storage.create_ai_search_message(
+                {
+                    "message_id": "msg-feature-result",
+                    "task_id": created.sessionId,
+                    "plan_version": 1,
+                    "role": "assistant",
+                    "kind": "feature_compare_result",
+                    "content": "可以结束",
+                    "metadata": {
+                        "table_rows": [{"feature": "A"}],
+                        "summary_markdown": "新特征表",
+                        "overall_findings": "可以结束",
+                        "coverage_gaps": [],
+                        "follow_up_search_hints": [],
+                        "creativity_readiness": "ready",
+                        "readiness_rationale": "证据充分",
+                    },
+                }
+            )
+            storage.update_task(
+                created.sessionId,
+                metadata=merge_ai_search_meta(
+                    storage.get_task(created.sessionId),
+                    current_phase=PHASE_GENERATE_FEATURE_TABLE,
+                    active_plan_version=1,
+                    current_feature_table_id="ft-new",
+                    current_task="generate_feature_table",
+                ),
+            )
+            return {"messages": [{"role": "assistant", "content": "done"}]}
+
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "build_feature_comparer_agent",
+        lambda storage_arg, task_id_arg: (
+            _FakeFeatureAgent()
+            if storage_arg is storage and task_id_arg == created.sessionId
+            else (_ for _ in ()).throw(AssertionError("unexpected feature agent binding"))
+        ),
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_feature_table(created.sessionId, "guest_ai_search", 1)))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.phase == "completed"
+    assert snapshot.featureTable is not None
+    assert snapshot.featureTable["feature_table_id"] == "ft-new"
+    assert any("feature_table.updated" in item for item in events)
 
 
 def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):

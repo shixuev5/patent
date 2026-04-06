@@ -69,7 +69,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     inputDisabled: (state) => {
       const phase = state.currentSession?.phase || ''
-      return state.streaming || phase === 'searching' || !!state.currentSession?.pendingQuestion
+      return state.streaming || phase === 'searching' || !!state.currentSession?.pendingQuestion || !!state.currentSession?.resumeAction?.available
     },
   },
 
@@ -493,6 +493,23 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '生成特征对比表失败'
+      } finally {
+        this.streaming = false
+        await this.loadSession(this.activeSessionId)
+      }
+    },
+
+    async resumeExecution() {
+      if (!this.activeSessionId) return
+      this.error = ''
+      this.streaming = true
+      try {
+        await this._postStream(
+          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/resume/stream`,
+          {},
+        )
+      } catch (error: any) {
+        this.error = error?.message || '恢复执行失败'
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)

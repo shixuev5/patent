@@ -81,3 +81,24 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
     assert events[0]["type"] == "message.completed"
     assert events[0]["payload"]["content"] == "好的，我先整理检索计划。"
     assert events[-1]["type"] == "run.completed"
+
+
+def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    async def _fake_resume(session_id: str, owner_id: str):
+        assert owner_id == "guest_ai_search"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'searching', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+
+    monkeypatch.setattr(service, "stream_resume", _fake_resume)
+
+    client = TestClient(app, raise_server_exceptions=False)
+
+    created = client.post("/api/ai-search/sessions")
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/ai-search/sessions/{session_id}/resume/stream")
+
+    assert response.status_code == 200
+    assert "run.completed" in response.text

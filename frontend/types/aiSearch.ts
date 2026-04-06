@@ -32,6 +32,7 @@ export interface AiSearchSnapshot {
   featureTable?: Record<string, any> | null
   pendingQuestion?: Record<string, any> | null
   pendingConfirmation?: Record<string, any> | null
+  resumeAction?: Record<string, any> | null
 }
 
 export interface AiSearchSessionListResponse {

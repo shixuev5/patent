@@ -526,6 +526,33 @@
             @confirm="confirmPlan"
           />
 
+          <section v-else-if="resumeAction?.available" class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-amber-900">
+                  {{ resumeTaskTitle || '当前执行步骤' }}失败，需要显式恢复
+                </p>
+                <p class="mt-1 text-xs leading-5 text-amber-800">
+                  系统不会把恢复当成普通聊天消息。点击下方按钮后，会从当前失败步骤继续执行。
+                </p>
+                <p v-if="resumeLastError" class="mt-2 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900">
+                  上次错误：{{ resumeLastError }}
+                </p>
+                <p v-if="resumeAttemptCount > 0" class="mt-2 text-[11px] text-amber-700">
+                  已尝试 {{ resumeAttemptCount }} 次
+                </p>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                :disabled="streaming"
+                @click="resumeExecution"
+              >
+                恢复执行
+              </button>
+            </div>
+          </section>
+
           <section v-else>
             <div class="relative">
               <textarea
@@ -655,6 +682,7 @@ const mobileDrawerOpen = ref(false)
 const messages = computed(() => currentSession.value?.messages || [])
 const pendingQuestion = computed<Record<string, any> | null>(() => currentSession.value?.pendingQuestion || null)
 const pendingConfirmation = computed<Record<string, any> | null>(() => currentSession.value?.pendingConfirmation || null)
+const resumeAction = computed<Record<string, any> | null>(() => currentSession.value?.resumeAction || null)
 const candidateDocuments = computed(() => currentSession.value?.candidateDocuments || [])
 const selectedDocuments = computed(() => currentSession.value?.selectedDocuments || [])
 const sourceSummary = computed<Record<string, any> | null>(() => currentSession.value?.sourceSummary || null)
@@ -739,6 +767,9 @@ const hasDetailPanels = computed(() => (
 const activePhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || 'collecting_requirements'))
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
 const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
+const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
+const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
+const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
 
 const questionPrompt = computed(() => String(pendingQuestion.value?.prompt || '').trim())
 const questionReason = computed(() => String(pendingQuestion.value?.reason || '').trim())
@@ -782,6 +813,7 @@ const canSubmitHeaderRename = computed(() => {
 
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
+  if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
   if (currentSession.value.phase === 'searching') return '检索执行中，请稍后再补充消息。'
   return '请输入检索目标或补充要求。'
 })
@@ -1078,6 +1110,7 @@ const submitMessage = async () => {
   const content = composer.value.trim()
   if (!content) return
   if (pendingQuestion.value) return
+  if (resumeAction.value?.available) return
   if (streaming.value || !currentSession.value) return
   composer.value = ''
   await aiSearchStore.sendMessage(content)
@@ -1109,6 +1142,11 @@ const removeSelectedDocument = async (documentId: string) => {
 const generateFeatureTable = async () => {
   if (!activePlanVersion.value || !selectedDocuments.value.length) return
   await aiSearchStore.generateFeatureTable(activePlanVersion.value)
+}
+
+const resumeExecution = async () => {
+  if (!resumeAction.value?.available) return
+  await aiSearchStore.resumeExecution()
 }
 
 watch(

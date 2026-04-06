@@ -26,6 +26,7 @@ PLAN_CONFIRMATION_REQUIRED_CODE = "PLAN_CONFIRMATION_REQUIRED"
 STALE_PLAN_CONFIRMATION_CODE = "STALE_PLAN_CONFIRMATION"
 INVALID_SESSION_PHASE_CODE = "INVALID_SESSION_PHASE"
 AI_SEARCH_SESSION_NOT_FOUND_CODE = "AI_SEARCH_SESSION_NOT_FOUND"
+RESUME_NOT_AVAILABLE_CODE = "RESUME_NOT_AVAILABLE"
 
 
 class AiSearchCreateSessionResponse(BaseModel):
@@ -96,3 +97,4 @@ class AiSearchSnapshotResponse(BaseModel):
     featureTable: Optional[Dict[str, Any]] = None
     pendingQuestion: Optional[Dict[str, Any]] = None
     pendingConfirmation: Optional[Dict[str, Any]] = None
+    resumeAction: Optional[Dict[str, Any]] = None

@@ -18,9 +18,8 @@ from agents.ai_search.main import (
     build_feature_comparer_agent,
     build_main_agent,
     extract_latest_ai_message,
-    extract_structured_response,
 )
-from agents.ai_search.src.subagents.feature_comparer import build_feature_prompt
+from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.subagents.search_elements import normalize_search_elements_payload
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
@@ -56,6 +55,7 @@ from .models import (
     INVALID_SESSION_PHASE_CODE,
     PENDING_QUESTION_EXISTS_CODE,
     PLAN_CONFIRMATION_REQUIRED_CODE,
+    RESUME_NOT_AVAILABLE_CODE,
     SEARCH_IN_PROGRESS_CODE,
     STALE_PLAN_CONFIRMATION_CODE,
     AiSearchCreateSessionResponse,
@@ -355,6 +355,23 @@ class AiSearchService:
         candidate = [item for item in documents if str(item.get("stage") or "") != "selected"]
         return candidate, selected
 
+    def _resume_action(self, task: Any) -> Optional[Dict[str, Any]]:
+        meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or "").strip()
+        current_todo = self._current_todo(task)
+        if phase not in ACTIVE_EXECUTION_PHASES or not isinstance(current_todo, dict):
+            return None
+        if str(current_todo.get("status") or "").strip() != "failed":
+            return None
+        return {
+            "available": True,
+            "currentTask": str(meta.get("current_task") or "").strip(),
+            "taskTitle": str(current_todo.get("title") or "").strip(),
+            "resumeFrom": str(current_todo.get("resume_from") or "").strip(),
+            "attemptCount": int(current_todo.get("attempt_count") or 0),
+            "lastError": str(current_todo.get("last_error") or "").strip(),
+        }
+
     def _source_summary(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)
         source_type = str(meta.get("source_type") or "").strip()
@@ -398,11 +415,12 @@ class AiSearchService:
         feature_table = None
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
-        if active_plan_version > 0:
+        current_feature_table_id = str(meta.get("current_feature_table_id") or "").strip()
+        if active_plan_version > 0 and current_feature_table_id:
             feature_table = self.storage.get_ai_search_feature_table(
                 task.id,
                 active_plan_version,
-                feature_table_id=str(meta.get("current_feature_table_id") or "").strip() or None,
+                feature_table_id=current_feature_table_id,
             )
         return AiSearchSnapshotResponse(
             session=self._session_summary(task),
@@ -416,6 +434,7 @@ class AiSearchService:
             featureTable=feature_table,
             pendingQuestion=self._pending_question(task, messages),
             pendingConfirmation=self._pending_confirmation(task, current_plan),
+            resumeAction=self._resume_action(task),
         )
 
     def _update_phase(self, task_id: str, phase: str, **meta_updates: Any) -> None:
@@ -460,6 +479,44 @@ class AiSearchService:
             if str(item.get("role") or "") == "assistant" and str(item.get("kind") or "") == "chat":
                 return str(item.get("content") or "").strip()
         return ""
+
+    def _current_todo(self, task: Any) -> Optional[Dict[str, Any]]:
+        meta = get_ai_search_meta(task)
+        current_task = str(meta.get("current_task") or "").strip()
+        todos = meta.get("todos") if isinstance(meta.get("todos"), list) else []
+        if not current_task:
+            return None
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("key") or "").strip() == current_task:
+                return item
+        return None
+
+    def _build_resume_prompt(self, resume_action: Dict[str, Any]) -> str:
+        payload = {
+            "current_task": resume_action.get("currentTask"),
+            "task_title": resume_action.get("taskTitle"),
+            "resume_from": resume_action.get("resumeFrom"),
+            "attempt_count": resume_action.get("attemptCount"),
+            "last_error": resume_action.get("lastError"),
+        }
+        return (
+            "继续当前失败的 AI 检索执行。"
+            "这不是新的用户需求，不要回到需求收集或计划确认。"
+            "先读取当前 todo、execution state、documents 与 gap context，"
+            "仅围绕当前失败步骤恢复并推进到下一个合法阶段。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _require_resume_action(self, task: Any) -> Dict[str, Any]:
+        resume_action = self._resume_action(task)
+        if resume_action is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "当前没有可恢复的失败执行步骤。"},
+            )
+        return resume_action
 
     def create_session(self, owner_id: str) -> AiSearchCreateSessionResponse:
         _enforce_daily_quota(owner_id, task_type=TaskType.AI_SEARCH.value)
@@ -742,7 +799,7 @@ class AiSearchService:
         if phase in ACTIVE_EXECUTION_PHASES:
             raise HTTPException(
                 status_code=409,
-                detail={"code": SEARCH_IN_PROGRESS_CODE, "message": "检索执行中，暂不支持发送新消息。"},
+                detail={"code": SEARCH_IN_PROGRESS_CODE, "message": "检索执行阶段不支持发送普通消息；如需继续失败步骤，请调用 resume 接口。"},
             )
         if phase == PHASE_AWAITING_USER_ANSWER and meta.get("pending_question_id"):
             raise HTTPException(
@@ -766,6 +823,28 @@ class AiSearchService:
             task.id,
             thread_id,
             {"messages": [{"role": "user", "content": content}]},
+        )
+        assistant_text = extract_latest_ai_message(result["values"])
+        active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
+        if assistant_text and assistant_text != previous_assistant:
+            self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
+            yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
+        snapshot = self.get_snapshot(task.id, owner_id)
+        async for event in self._emit_snapshot_events(snapshot):
+            yield event
+        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+
+    async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        task = self._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+        resume_action = self._require_resume_action(task)
+        previous_assistant = self._latest_assistant_chat(task.id)
+        result = await asyncio.to_thread(
+            self._run_main_agent,
+            task.id,
+            thread_id,
+            {"messages": [{"role": "user", "content": self._build_resume_prompt(resume_action)}]},
         )
         assistant_text = extract_latest_ai_message(result["values"])
         active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
@@ -872,6 +951,8 @@ class AiSearchService:
                 stage="selected",
                 user_pinned=True,
                 user_removed=False,
+                close_read_status="selected",
+                close_read_reason="用户手动加入对比文件",
                 agent_reason="用户手动加入对比文件",
             )
         for document_id in remove_ids:
@@ -882,14 +963,18 @@ class AiSearchService:
                 stage="rejected",
                 user_pinned=False,
                 user_removed=True,
+                close_read_status="rejected",
+                close_read_reason="用户手动移出对比文件",
                 agent_reason="用户手动移出对比文件",
             )
         selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
+        next_phase = PHASE_GENERATE_FEATURE_TABLE if selected_count > 0 else PHASE_CLOSE_READ
         self._update_phase(
             task.id,
-            PHASE_COMPLETED,
+            next_phase,
             selected_document_count=selected_count,
             current_feature_table_id=None,
+            current_task="generate_feature_table" if selected_count > 0 else "close_read",
         )
         return self.get_snapshot(task.id, owner_id)
 
@@ -901,46 +986,53 @@ class AiSearchService:
             raise HTTPException(
                 status_code=409,
                 detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许生成活动计划版本的特征对比表。"},
-            )
+        )
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
             self._raise_invalid_phase(PHASE_GENERATE_FEATURE_TABLE, "当前没有已选对比文件。")
-        plan = self.storage.get_ai_search_plan(task.id, plan_version) or {}
-        search_elements = plan.get("search_elements_json") if isinstance(plan.get("search_elements_json"), dict) else {}
-        self._update_phase(task.id, PHASE_GENERATE_FEATURE_TABLE, active_plan_version=plan_version)
-        yield self._format_event("subagent.started", task.id, PHASE_GENERATE_FEATURE_TABLE, {"name": "feature-comparer"})
-        feature_agent = build_feature_comparer_agent()
-        result = await asyncio.to_thread(
-            feature_agent.invoke,
-            {"messages": [{"role": "user", "content": build_feature_prompt(search_elements, selected_documents)}]},
-        )
-        structured = extract_structured_response(result)
-        feature_table_id = uuid.uuid4().hex
-        self.storage.create_ai_search_feature_table(
-            {
-                "feature_table_id": feature_table_id,
-                "task_id": task.id,
-                "plan_version": plan_version,
-                "status": "completed",
-                "table_json": structured.get("table_rows") or [],
-                "summary_markdown": structured.get("summary_markdown") or "",
-            }
-        )
-        self._append_message(
-            task.id,
-            "assistant",
-            "chat",
-            str(structured.get("overall_findings") or "特征对比表已生成。"),
-            plan_version=plan_version,
-        )
         self._update_phase(
             task.id,
-            PHASE_COMPLETED,
-            current_feature_table_id=feature_table_id,
-            selected_document_count=len(selected_documents),
+            PHASE_GENERATE_FEATURE_TABLE,
+            active_plan_version=plan_version,
+            current_task="generate_feature_table",
         )
-        yield self._format_event("subagent.completed", task.id, PHASE_COMPLETED, {"name": "feature-comparer"})
+        yield self._format_event("subagent.started", task.id, PHASE_GENERATE_FEATURE_TABLE, {"name": "feature-comparer"})
+        feature_agent = build_feature_comparer_agent(self.storage, task.id)
+        await asyncio.to_thread(
+            feature_agent.invoke,
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "请基于当前活动计划和已选对比文件生成特征对比表，并使用工具加载上下文后持久化结果。",
+                    }
+                ]
+            },
+        )
+        refreshed_task = self.storage.get_task(task.id)
+        refreshed_meta = get_ai_search_meta(refreshed_task)
+        feature_table_id = str(refreshed_meta.get("current_feature_table_id") or "").strip()
+        progress = AiSearchAgentContext(self.storage, task.id).evaluate_gap_progress_payload(plan_version)
+        final_phase = PHASE_COMPLETED if str(progress.get("recommended_action") or "") == "complete_execution" else PHASE_GENERATE_FEATURE_TABLE
+        self._update_phase(
+            task.id,
+            final_phase,
+            current_feature_table_id=feature_table_id or None,
+            selected_document_count=len(selected_documents),
+            current_task=None if final_phase == PHASE_COMPLETED else "generate_feature_table",
+        )
+        yield self._format_event(
+            "subagent.completed",
+            task.id,
+            final_phase,
+            {"name": "feature-comparer", "recommendedAction": progress.get("recommended_action")},
+        )
         snapshot = self.get_snapshot(task.id, owner_id)
         async for event in self._emit_snapshot_events(snapshot):
             yield event
-        yield self._format_event("run.completed", task.id, snapshot.phase, {"featureTableId": feature_table_id})
+        yield self._format_event(
+            "run.completed",
+            task.id,
+            snapshot.phase,
+            {"featureTableId": feature_table_id or None, "recommendedAction": progress.get("recommended_action")},
+        )

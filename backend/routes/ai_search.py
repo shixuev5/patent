@@ -91,6 +91,18 @@ async def stream_ai_search_messages(
     )
 
 
+@router.post("/api/ai-search/sessions/{session_id}/resume/stream")
+async def stream_ai_search_resume(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return StreamingResponse(
+        service.stream_resume(session_id, current_user.user_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.post("/api/ai-search/sessions/{session_id}/answers/stream")
 async def stream_ai_search_answers(
     session_id: str,
