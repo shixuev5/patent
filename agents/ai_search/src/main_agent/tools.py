@@ -35,7 +35,14 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         task = context.storage.get_task(context.task_id)
         meta = get_ai_search_meta(task)
         todos = context._current_todos(task)
-        return json.dumps({"todos": todos, "current_task": meta.get("current_task")}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "todos": todos,
+                "current_task": meta.get("current_task"),
+                "search_mode": context.current_search_mode(),
+            },
+            ensure_ascii=False,
+        )
 
     def write_todos(payload_json: str) -> str:
         """写入当前任务清单。"""
@@ -332,6 +339,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             {
                 "plan_version": version,
                 "phase": str(meta.get("current_phase") or ""),
+                "search_mode": context.current_search_mode(),
                 "todos": todos,
                 "current_task": meta.get("current_task"),
                 "recovery": {

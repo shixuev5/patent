@@ -19,6 +19,7 @@ from agents.ai_search.main import (
     build_main_agent,
     extract_latest_ai_message,
 )
+from agents.ai_search.src.claim_support import load_structured_claims_from_patent_data
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.subagents.search_elements import normalize_search_elements_payload
 from agents.ai_search.src.state import (
@@ -35,9 +36,12 @@ from agents.ai_search.src.state import (
     PHASE_FAILED,
     PHASE_GENERATE_FEATURE_TABLE,
     PHASE_SEARCH_STRATEGY,
+    SEARCH_MODE_CLAIM_AWARE,
+    SEARCH_MODE_TOPIC,
     build_plan_summary,
     default_ai_search_meta,
     get_ai_search_meta,
+    get_ai_search_mode,
     latest_search_elements,
     merge_ai_search_meta,
     phase_progress,
@@ -68,6 +72,7 @@ from .models import (
 task_manager = get_pipeline_manager()
 
 MAIN_AGENT_CHECKPOINT_NS = "ai_search_main"
+MAIN_AGENT_PROGRESS_POLL_SECONDS = 5.0
 DEFAULT_MESSAGE_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_DRAFTING_PLAN,
@@ -77,6 +82,10 @@ DEFAULT_MESSAGE_PHASES = {
     PHASE_COMPLETED,
 }
 DATE_PART_RE = re.compile(r"\d+")
+CLAIM_TEXT_HINT_RE = re.compile(
+    r"(权利要求\s*[0-9一二三四五六七八九十]+|claim\s*[0-9]+|^\s*[0-9]+\s*[.、])",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _load_json_file(path_value: Any) -> Optional[Dict[str, Any]]:
@@ -226,6 +235,8 @@ def _seed_prompt_from_analysis(
     analysis_payload: Dict[str, Any],
     patent_payload: Optional[Dict[str, Any]],
     seeded_search_elements: Dict[str, Any],
+    *,
+    search_mode: str,
 ) -> str:
     patent_data = patent_payload if isinstance(patent_payload, dict) else {}
     biblio = patent_data.get("bibliographic_data") if isinstance(patent_data.get("bibliographic_data"), dict) else {}
@@ -244,6 +255,7 @@ def _seed_prompt_from_analysis(
             "title": str(report_core.get("ai_title") or biblio.get("invention_title") or "").strip(),
         },
         "goal": "基于 AI 分析结果生成 AI 检索草稿。如果信息已足够，直接生成待确认检索计划；如果仍缺关键信息，只追问缺失项。不要开始真实检索执行。",
+        "search_mode": search_mode,
         "analysis_summary": {
             "technical_problem": str(report_core.get("technical_problem") or report.get("technical_problem") or "").strip(),
             "technical_means": str(report_core.get("technical_means") or report.get("technical_means") or "").strip(),
@@ -254,9 +266,25 @@ def _seed_prompt_from_analysis(
     }
     return (
         "请根据以下 AI 分析结果生成一份 AI 检索草稿。"
-        "要求：先整理检索要素，再决定是直接产出待确认计划，还是仅追问缺失项；不要启动真实检索。\n\n"
+        "要求：先整理检索要素，再决定是直接产出待确认计划，还是仅追问缺失项；不要启动真实检索。"
+        "严格遵守给定的 search_mode；若是 topic_search，不要进入 claim decomposition。\n\n"
         f"{json.dumps(seed_context, ensure_ascii=False, indent=2)}"
     )
+
+
+def _has_usable_patent_claims(patent_payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(patent_payload, dict):
+        return False
+    return bool(load_structured_claims_from_patent_data(patent_payload))
+
+
+def _infer_search_mode_from_message(content: str) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return SEARCH_MODE_TOPIC
+    if "权利要求" in text or CLAIM_TEXT_HINT_RE.search(text):
+        return SEARCH_MODE_CLAIM_AWARE
+    return SEARCH_MODE_TOPIC
 
 
 class AiSearchService:
@@ -383,6 +411,7 @@ class AiSearchService:
             "sourcePn": str(meta.get("source_pn") or "").strip(),
             "sourceTitle": str(meta.get("source_title") or "").strip(),
             "seedMode": str(meta.get("seed_mode") or "").strip(),
+            "searchMode": get_ai_search_mode(task),
             "summaryText": "已从 AI 分析结果导入检索上下文，系统已预填检索要素并起草检索草稿。",
         }
 
@@ -493,6 +522,46 @@ class AiSearchService:
                 return item
         return None
 
+    def _resolve_main_checkpoint_ns(self, thread_id: str) -> str:
+        checkpoints = self.storage.list_ai_search_checkpoints(thread_id, limit=50)
+        for item in checkpoints:
+            checkpoint_ns = str(item.get("checkpoint_ns") or "")
+            if not checkpoint_ns.startswith("tools:"):
+                return checkpoint_ns
+        return MAIN_AGENT_CHECKPOINT_NS
+
+    def _resolve_resume_checkpoint_id(self, thread_id: str, checkpoint_ns: str) -> Optional[str]:
+        checkpoints = self.storage.list_ai_search_checkpoints(
+            thread_id,
+            checkpoint_ns=checkpoint_ns,
+            limit=200,
+        )
+        for item in checkpoints:
+            checkpoint_id = str(item.get("checkpoint_id") or "").strip()
+            if not checkpoint_id:
+                continue
+            writes = self.storage.list_ai_search_checkpoint_writes(thread_id, checkpoint_ns, checkpoint_id)
+            channels = {str(write.get("channel") or "").strip() for write in writes}
+            if "__interrupt__" in channels:
+                return checkpoint_id
+        return None
+
+    def _snapshot_marker(self, snapshot: AiSearchSnapshotResponse) -> str:
+        payload = {
+            "phase": snapshot.phase,
+            "message_count": len(snapshot.messages),
+            "last_message_id": str(snapshot.messages[-1].get("message_id") or "") if snapshot.messages else "",
+            "plan_version": int((snapshot.currentPlan or {}).get("plan_version") or 0) if snapshot.currentPlan else 0,
+            "plan_status": str((snapshot.currentPlan or {}).get("status") or "") if snapshot.currentPlan else "",
+            "pending_question_id": str((snapshot.pendingQuestion or {}).get("question_id") or (snapshot.pendingQuestion or {}).get("questionId") or ""),
+            "pending_confirmation_plan_version": int((snapshot.pendingConfirmation or {}).get("planVersion") or 0) if snapshot.pendingConfirmation else 0,
+            "candidate_count": len(snapshot.candidateDocuments),
+            "selected_count": len(snapshot.selectedDocuments),
+            "feature_table_id": str((snapshot.featureTable or {}).get("feature_table_id") or ""),
+            "resume_available": bool((snapshot.resumeAction or {}).get("available")),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
     def _build_resume_prompt(self, resume_action: Dict[str, Any]) -> str:
         payload = {
             "current_task": resume_action.get("currentTask"),
@@ -572,7 +641,13 @@ class AiSearchService:
             if isinstance(analysis_payload.get("metadata"), dict) else ""
         ).strip() or str(getattr(analysis_task, "pn", "") or "").strip()
         source_title = str(getattr(analysis_task, "title", "") or "").strip()
-        seed_prompt = _seed_prompt_from_analysis(analysis_payload, patent_payload, seeded_search_elements)
+        search_mode = SEARCH_MODE_CLAIM_AWARE if _has_usable_patent_claims(patent_payload) else SEARCH_MODE_TOPIC
+        seed_prompt = _seed_prompt_from_analysis(
+            analysis_payload,
+            patent_payload,
+            seeded_search_elements,
+            search_mode=search_mode,
+        )
         task = task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
@@ -581,6 +656,7 @@ class AiSearchService:
         thread_id = f"ai-search-{task.id}"
         seed_meta = default_ai_search_meta(thread_id)
         seed_meta["current_phase"] = PHASE_DRAFTING_PLAN
+        seed_meta["search_mode"] = search_mode
         self.storage.update_task(
             task.id,
             metadata=merge_ai_search_meta(
@@ -729,22 +805,28 @@ class AiSearchService:
         task_manager.delete_task(session_id)
         return {"deleted": True}
 
-    def _main_agent_config(self, thread_id: str) -> Dict[str, Any]:
-        return {
+    def _main_agent_config(self, thread_id: str, *, for_resume: bool = False) -> Dict[str, Any]:
+        checkpoint_ns = self._resolve_main_checkpoint_ns(thread_id)
+        config: Dict[str, Any] = {
             "configurable": {
                 "thread_id": thread_id,
-                "checkpoint_ns": MAIN_AGENT_CHECKPOINT_NS,
+                "checkpoint_ns": checkpoint_ns,
             }
         }
+        if for_resume:
+            checkpoint_id = self._resolve_resume_checkpoint_id(thread_id, checkpoint_ns)
+            if checkpoint_id:
+                config["configurable"]["checkpoint_id"] = checkpoint_id
+        return config
 
     def _main_agent_state_config(self, agent: Any, thread_id: str) -> Dict[str, Any]:
         config = self._main_agent_config(thread_id)
         config["configurable"]["__pregel_checkpointer"] = agent.checkpointer
         return config
 
-    def _run_main_agent(self, task_id: str, thread_id: str, payload: Any) -> Dict[str, Any]:
+    def _run_main_agent(self, task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False) -> Dict[str, Any]:
         agent = build_main_agent(self.storage, task_id)
-        config = self._main_agent_config(thread_id)
+        config = self._main_agent_config(thread_id, for_resume=for_resume)
         interrupted = False
         for chunk in agent.stream(payload, config):
             if "__interrupt__" in chunk:
@@ -792,6 +874,17 @@ class AiSearchService:
         }
         return f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
 
+    def _stream_error_payload(self, exc: Exception) -> Dict[str, Any]:
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+            if isinstance(detail, dict):
+                return {
+                    "code": str(detail.get("code") or "STREAM_ERROR"),
+                    "message": str(detail.get("message") or "当前流式轮次执行失败。"),
+                }
+            return {"code": "STREAM_ERROR", "message": str(detail or "当前流式轮次执行失败。")}
+        return {"code": "STREAM_ERROR", "message": str(exc or "当前流式轮次执行失败。")}
+
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
@@ -814,25 +907,65 @@ class AiSearchService:
             self.storage.update_ai_search_plan(task.id, active_plan_version, status="superseded", superseded_at=utc_now_z())
             self._update_phase(task.id, PHASE_DRAFTING_PLAN, pending_confirmation_plan_version=None)
 
+        current_mode = get_ai_search_mode(task)
+        inferred_mode = _infer_search_mode_from_message(content)
+        if (
+            str(meta.get("source_type") or "").strip() != "analysis"
+            and phase in {PHASE_COLLECTING_REQUIREMENTS, PHASE_DRAFTING_PLAN}
+            and int(meta.get("active_plan_version") or 0) <= 0
+            and inferred_mode != current_mode
+        ):
+            self.storage.update_task(
+                task.id,
+                metadata=merge_ai_search_meta(task, search_mode=inferred_mode),
+            )
+            task = self._get_owned_session_task(session_id, owner_id)
+            meta = get_ai_search_meta(task)
+
         self._append_message(task.id, "user", "chat", content)
         self._update_phase(task.id, PHASE_DRAFTING_PLAN)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
-        result = await asyncio.to_thread(
-            self._run_main_agent,
-            task.id,
-            thread_id,
-            {"messages": [{"role": "user", "content": content}]},
+        result_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_main_agent,
+                task.id,
+                thread_id,
+                {"messages": [{"role": "user", "content": content}]},
+            )
         )
-        assistant_text = extract_latest_ai_message(result["values"])
-        active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-        if assistant_text and assistant_text != previous_assistant:
-            self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
-            yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
-        snapshot = self.get_snapshot(task.id, owner_id)
-        async for event in self._emit_snapshot_events(snapshot):
-            yield event
-        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        try:
+            previous_marker = self._snapshot_marker(self.get_snapshot(task.id, owner_id))
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(result_task), timeout=MAIN_AGENT_PROGRESS_POLL_SECONDS)
+                    break
+                except asyncio.TimeoutError:
+                    snapshot = self.get_snapshot(task.id, owner_id)
+                    marker = self._snapshot_marker(snapshot)
+                    if marker != previous_marker:
+                        async for event in self._emit_snapshot_events(snapshot):
+                            yield event
+                        previous_marker = marker
+                    current_meta = get_ai_search_meta(self.storage.get_task(task.id))
+                    yield self._format_event(
+                        "run.heartbeat",
+                        task.id,
+                        snapshot.phase,
+                        {"currentTask": current_meta.get("current_task"), "phase": snapshot.phase},
+                    )
+            assistant_text = extract_latest_ai_message(result["values"])
+            active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
+            if assistant_text and assistant_text != previous_assistant:
+                self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
+                yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
+            snapshot = self.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_events(snapshot):
+                yield event
+            yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        except Exception as exc:
+            snapshot = self.get_snapshot(task.id, owner_id)
+            yield self._format_event("run.error", task.id, snapshot.phase, self._stream_error_payload(exc))
 
     async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)
@@ -840,21 +973,46 @@ class AiSearchService:
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         resume_action = self._require_resume_action(task)
         previous_assistant = self._latest_assistant_chat(task.id)
-        result = await asyncio.to_thread(
-            self._run_main_agent,
-            task.id,
-            thread_id,
-            {"messages": [{"role": "user", "content": self._build_resume_prompt(resume_action)}]},
+        result_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_main_agent,
+                task.id,
+                thread_id,
+                {"messages": [{"role": "user", "content": self._build_resume_prompt(resume_action)}]},
+            )
         )
-        assistant_text = extract_latest_ai_message(result["values"])
-        active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-        if assistant_text and assistant_text != previous_assistant:
-            self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
-            yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
-        snapshot = self.get_snapshot(task.id, owner_id)
-        async for event in self._emit_snapshot_events(snapshot):
-            yield event
-        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        try:
+            previous_marker = self._snapshot_marker(self.get_snapshot(task.id, owner_id))
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(result_task), timeout=MAIN_AGENT_PROGRESS_POLL_SECONDS)
+                    break
+                except asyncio.TimeoutError:
+                    snapshot = self.get_snapshot(task.id, owner_id)
+                    marker = self._snapshot_marker(snapshot)
+                    if marker != previous_marker:
+                        async for event in self._emit_snapshot_events(snapshot):
+                            yield event
+                        previous_marker = marker
+                    current_meta = get_ai_search_meta(self.storage.get_task(task.id))
+                    yield self._format_event(
+                        "run.heartbeat",
+                        task.id,
+                        snapshot.phase,
+                        {"currentTask": current_meta.get("current_task"), "phase": snapshot.phase},
+                    )
+            assistant_text = extract_latest_ai_message(result["values"])
+            active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
+            if assistant_text and assistant_text != previous_assistant:
+                self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
+                yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
+            snapshot = self.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_events(snapshot):
+                yield event
+            yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        except Exception as exc:
+            snapshot = self.get_snapshot(task.id, owner_id)
+            yield self._format_event("run.error", task.id, snapshot.phase, self._stream_error_payload(exc))
 
     async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)
@@ -871,22 +1029,48 @@ class AiSearchService:
         self._append_message(task.id, "user", "answer", answer, question_id=question_id)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
-        result = await asyncio.to_thread(
-            self._run_main_agent,
-            task.id,
-            thread_id,
-            Command(resume=answer),
+        result_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_main_agent,
+                task.id,
+                thread_id,
+                Command(resume=answer),
+                for_resume=True,
+            )
         )
-        assistant_text = extract_latest_ai_message(result["values"])
-        active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-        if assistant_text and assistant_text != previous_assistant:
-            self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
-            yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
-        snapshot = self.get_snapshot(task.id, owner_id)
-        yield self._format_event("question.resolved", task.id, snapshot.phase, {"questionId": question_id, "answer": answer})
-        async for event in self._emit_snapshot_events(snapshot):
-            yield event
-        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        try:
+            previous_marker = self._snapshot_marker(self.get_snapshot(task.id, owner_id))
+            while True:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(result_task), timeout=MAIN_AGENT_PROGRESS_POLL_SECONDS)
+                    break
+                except asyncio.TimeoutError:
+                    snapshot = self.get_snapshot(task.id, owner_id)
+                    marker = self._snapshot_marker(snapshot)
+                    if marker != previous_marker:
+                        async for event in self._emit_snapshot_events(snapshot):
+                            yield event
+                        previous_marker = marker
+                    current_meta = get_ai_search_meta(self.storage.get_task(task.id))
+                    yield self._format_event(
+                        "run.heartbeat",
+                        task.id,
+                        snapshot.phase,
+                        {"currentTask": current_meta.get("current_task"), "phase": snapshot.phase},
+                    )
+            assistant_text = extract_latest_ai_message(result["values"])
+            active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
+            if assistant_text and assistant_text != previous_assistant:
+                self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
+                yield self._format_event("message.completed", task.id, self.get_snapshot(task.id, owner_id).phase, {"content": assistant_text})
+            snapshot = self.get_snapshot(task.id, owner_id)
+            yield self._format_event("question.resolved", task.id, snapshot.phase, {"questionId": question_id, "answer": answer})
+            async for event in self._emit_snapshot_events(snapshot):
+                yield event
+            yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": result["interrupted"]})
+        except Exception as exc:
+            snapshot = self.get_snapshot(task.id, owner_id)
+            yield self._format_event("run.error", task.id, snapshot.phase, self._stream_error_payload(exc))
 
     async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)
@@ -906,21 +1090,53 @@ class AiSearchService:
             )
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         previous_assistant = self._latest_assistant_chat(task.id)
-        planning_result = await asyncio.to_thread(
-            self._run_main_agent,
-            task.id,
-            thread_id,
-            Command(resume={"confirmed": True, "plan_version": plan_version}),
+        planning_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._run_main_agent,
+                task.id,
+                thread_id,
+                Command(resume={"confirmed": True, "plan_version": plan_version}),
+                for_resume=True,
+            )
         )
-        assistant_text = extract_latest_ai_message(planning_result["values"])
-        snapshot = self.get_snapshot(task.id, owner_id)
-        if assistant_text and assistant_text != previous_assistant:
-            self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=plan_version)
-            yield self._format_event("message.completed", task.id, snapshot.phase, {"content": assistant_text})
-        yield self._format_event("plan.confirmed", task.id, snapshot.phase, {"planVersion": plan_version})
-        async for event in self._emit_snapshot_events(snapshot):
-            yield event
-        yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": planning_result["interrupted"]})
+        try:
+            previous_marker = self._snapshot_marker(self.get_snapshot(task.id, owner_id))
+            while True:
+                try:
+                    planning_result = await asyncio.wait_for(asyncio.shield(planning_task), timeout=MAIN_AGENT_PROGRESS_POLL_SECONDS)
+                    break
+                except asyncio.TimeoutError:
+                    snapshot = self.get_snapshot(task.id, owner_id)
+                    marker = self._snapshot_marker(snapshot)
+                    if marker != previous_marker:
+                        async for event in self._emit_snapshot_events(snapshot):
+                            yield event
+                        previous_marker = marker
+                    current_meta = get_ai_search_meta(self.storage.get_task(task.id))
+                    yield self._format_event(
+                        "run.heartbeat",
+                        task.id,
+                        snapshot.phase,
+                        {"currentTask": current_meta.get("current_task"), "phase": snapshot.phase},
+                    )
+            assistant_text = extract_latest_ai_message(planning_result["values"])
+            snapshot = self.get_snapshot(task.id, owner_id)
+            updated_plan = self.storage.get_ai_search_plan(task.id, plan_version)
+            if not updated_plan or str(updated_plan.get("status") or "") != "confirmed":
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": PLAN_CONFIRMATION_REQUIRED_CODE, "message": "计划确认未生效，请重试。"},
+                )
+            if assistant_text and assistant_text != previous_assistant:
+                self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=plan_version)
+                yield self._format_event("message.completed", task.id, snapshot.phase, {"content": assistant_text})
+            yield self._format_event("plan.confirmed", task.id, snapshot.phase, {"planVersion": plan_version})
+            async for event in self._emit_snapshot_events(snapshot):
+                yield event
+            yield self._format_event("run.completed", task.id, snapshot.phase, {"interrupted": planning_result["interrupted"]})
+        except Exception as exc:
+            snapshot = self.get_snapshot(task.id, owner_id)
+            yield self._format_event("run.error", task.id, snapshot.phase, self._stream_error_payload(exc))
 
     def patch_selected_documents(
         self,

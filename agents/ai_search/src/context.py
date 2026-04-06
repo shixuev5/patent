@@ -10,6 +10,7 @@ from agents.ai_search.src.execution_state import normalize_execution_plan
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.state import (
     get_ai_search_meta,
+    get_ai_search_mode,
     merge_ai_search_meta,
     phase_progress,
     phase_step,
@@ -23,8 +24,19 @@ from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_
 from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
 from backend.time_utils import utc_now_z
+from backend.utils import _build_r2_storage
 
 _UNSET = object()
+
+
+def _load_json_bytes(raw: Optional[bytes]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 class AiSearchAgentContext:
@@ -156,6 +168,10 @@ class AiSearchAgentContext:
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
 
+    def current_search_mode(self) -> str:
+        task = self.storage.get_task(self.task_id)
+        return get_ai_search_mode(task)
+
     def current_search_elements(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
         if version > 0:
@@ -190,10 +206,22 @@ class AiSearchAgentContext:
         if not source_task:
             return {}
         patent_path = Path(str(getattr(source_task, "output_dir", "") or "")) / "patent.json"
-        if not patent_path.exists() or not patent_path.is_file():
+        if patent_path.exists() and patent_path.is_file():
+            try:
+                payload = json.loads(patent_path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+
+        metadata = source_task.metadata if isinstance(source_task.metadata, dict) else {}
+        output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+        patent_r2_key = str(output_files.get("patent_r2_key") or "").strip()
+        if not patent_r2_key:
             return {}
         try:
-            payload = json.loads(patent_path.read_text(encoding="utf-8"))
+            r2_storage = _build_r2_storage()
+            payload = _load_json_bytes(r2_storage.get_bytes(patent_r2_key))
         except Exception:
             return {}
         return payload if isinstance(payload, dict) else {}

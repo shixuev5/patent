@@ -2,13 +2,29 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from deepagents.backends.state import StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware
+from langchain.agents.middleware import TodoListMiddleware
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
 from agents.ai_search.src.runtime import AiSearchGuardMiddleware
-from agents.ai_search.src.state import PHASE_CLOSE_READ, PHASE_DRAFTING_PLAN, PHASE_EXECUTE_SEARCH
+from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
+from agents.ai_search.src.state import (
+    PHASE_AWAITING_PLAN_CONFIRMATION,
+    PHASE_AWAITING_USER_ANSWER,
+    PHASE_CLOSE_READ,
+    PHASE_DRAFTING_PLAN,
+    PHASE_EXECUTE_SEARCH,
+    SEARCH_MODE_CLAIM_AWARE,
+    SEARCH_MODE_TOPIC,
+)
 
 
 class _StubStorage:
-    def __init__(self, phase: str):
-        self._task = SimpleNamespace(metadata={"ai_search": {"current_phase": phase}})
+    def __init__(self, phase: str, search_mode: str = SEARCH_MODE_TOPIC):
+        self._task = SimpleNamespace(metadata={"ai_search": {"current_phase": phase, "search_mode": search_mode}})
 
     def get_task(self, _task_id: str):
         return self._task
@@ -48,6 +64,45 @@ def test_main_agent_phase_protocol_blocks_wrong_subagent():
     assert result.content == "子 agent `query-executor` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
+def test_topic_search_blocks_claim_decomposition_tool():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_TOPIC),
+        task_id="task-topic",
+    )
+    request = SimpleNamespace(tool_call={"name": "start_claim_decomposition", "id": "call-topic-1", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result.content == "工具 `start_claim_decomposition` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
+
+
+def test_topic_search_blocks_claim_search_strategist_subagent():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_TOPIC),
+        task_id="task-topic-2",
+    )
+    request = SimpleNamespace(tool_call={"name": "task", "id": "call-topic-2", "args": {"subagent_type": "claim-search-strategist"}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result.content == "子 agent `claim-search-strategist` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
+
+
+def test_claim_aware_search_allows_claim_decomposition_tool():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_CLAIM_AWARE),
+        task_id="task-claim-aware",
+    )
+    request = SimpleNamespace(tool_call={"name": "start_claim_decomposition", "id": "call-claim-1", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
 def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_phase():
     middleware = AiSearchGuardMiddleware(
         "query-executor",
@@ -72,3 +127,45 @@ def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
     assert result == "ok"
+
+
+def test_main_agent_allows_interrupt_tool_resume_in_awaiting_user_answer():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_AWAITING_USER_ANSWER),
+        task_id="task-4",
+    )
+    request = SimpleNamespace(tool_call={"name": "ask_user_question", "id": "call-7", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
+def test_main_agent_allows_interrupt_tool_resume_in_awaiting_plan_confirmation():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_AWAITING_PLAN_CONFIRMATION),
+        task_id="task-5",
+    )
+    request = SimpleNamespace(tool_call={"name": "request_plan_confirmation", "id": "call-8", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
+def test_close_reader_subagent_middleware_names_are_unique():
+    spec = build_close_reader_subagent(object(), "task-runtime")
+    middleware = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=StateBackend),
+        SummarizationMiddleware(model=spec["model"], backend=StateBackend),
+        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+        PatchToolCallsMiddleware(),
+        *list(spec.get("middleware", [])),
+    ]
+
+    names = [item.name for item in middleware]
+
+    assert len(set(names)) == len(names)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,8 @@ from backend.ai_search.models import (
     SEARCH_IN_PROGRESS_CODE,
     STALE_PLAN_CONFIRMATION_CODE,
 )
+import agents.ai_search.src.context as ai_search_context_module
+from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
@@ -63,6 +66,9 @@ from agents.ai_search.src.state import (
     PHASE_DRAFTING_PLAN,
     PHASE_GENERATE_FEATURE_TABLE,
     PHASE_SEARCHING,
+    SEARCH_MODE_CLAIM_AWARE,
+    SEARCH_MODE_TOPIC,
+    get_ai_search_mode,
     merge_ai_search_meta,
 )
 from backend.storage import TaskStatus, TaskType
@@ -108,6 +114,15 @@ def test_create_session_and_snapshot(monkeypatch, tmp_path):
     assert snapshot.session.taskId == created.taskId
     assert snapshot.messages[0]["content"] == "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。"
     assert snapshot.session.pinned is False
+
+
+def test_create_session_defaults_to_topic_search(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+
+    created = service.create_session("guest_ai_search")
+    task = storage.get_task(created.sessionId)
+
+    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC
 
 
 def test_update_session_supports_rename_and_pin(monkeypatch, tmp_path):
@@ -163,6 +178,30 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
 
 
+def test_stream_message_upgrades_to_claim_aware_search_for_claim_like_input(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    monkeypatch.setattr(
+        service,
+        "_run_main_agent",
+        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
+    )
+
+    asyncio.run(
+        _collect_stream(
+            service.stream_message(
+                created.sessionId,
+                "guest_ai_search",
+                "请围绕权利要求1的处理器和存储器限定来规划检索。",
+            )
+        )
+    )
+
+    task = storage.get_task(created.sessionId)
+
+    assert get_ai_search_mode(task) == SEARCH_MODE_CLAIM_AWARE
+
+
 def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
@@ -194,7 +233,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     monkeypatch.setattr(
         service,
         "_run_main_agent",
-        lambda task_id, thread_id, payload: (
+        lambda task_id, thread_id, payload, **kwargs: (
             {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "继续恢复检索。"}]}}
             if "继续当前失败的 AI 检索执行" in payload["messages"][0]["content"]
             else (_ for _ in ()).throw(AssertionError("unexpected resume payload"))
@@ -283,6 +322,39 @@ def test_stream_plan_confirmation_rejects_stale_version(monkeypatch, tmp_path):
         asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
 
     assert exc_info.value.detail["code"] == STALE_PLAN_CONFIRMATION_CODE
+
+
+def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_plan(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(
+        {
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "awaiting_confirmation",
+            "objective": "待确认计划",
+            "search_elements_json": {"status": "complete"},
+            "plan_json": {"plan_version": 1},
+        }
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_AWAITING_PLAN_CONFIRMATION,
+        active_plan_version=1,
+        pending_confirmation_plan_version=1,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_run_main_agent",
+        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
+
+    assert any("run.error" in item for item in events)
+    assert any(ai_search_service_module.PLAN_CONFIRMATION_REQUIRED_CODE in item for item in events)
 
 
 def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(monkeypatch, tmp_path):
@@ -407,7 +479,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(
         service,
         "_run_main_agent",
-        lambda task_id, thread_id, payload: {"interrupted": False, "values": {"messages": []}},
+        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
     )
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "把日期范围缩窄到最近五年")))
@@ -452,6 +524,119 @@ def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_
 
     assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
     assert fake_agent.state_config is not None
+
+
+def test_run_main_agent_reuses_existing_empty_checkpoint_namespace(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    assert storage.put_ai_search_checkpoint(
+        {
+            "thread_id": "ai-search-task-2",
+            "checkpoint_ns": "",
+            "checkpoint_id": "0001",
+            "checkpoint_json": json.dumps({"id": "0001"}),
+            "metadata_json": json.dumps({"source": "main"}),
+        }
+    )
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        def stream(self, payload, config):
+            assert payload == {"messages": [{"role": "user", "content": "测试恢复"}]}
+            assert config["configurable"]["thread_id"] == "ai-search-task-2"
+            assert config["configurable"]["checkpoint_ns"] == ""
+            yield {"messages": []}
+
+        def get_state(self, config):
+            assert config["configurable"]["thread_id"] == "ai-search-task-2"
+            assert config["configurable"]["checkpoint_ns"] == ""
+            assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: _FakeAgent())
+
+    result = service._run_main_agent("task-2", "ai-search-task-2", {"messages": [{"role": "user", "content": "测试恢复"}]})
+
+    assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
+
+
+def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    assert storage.put_ai_search_checkpoint(
+        {
+            "thread_id": "ai-search-task-3",
+            "checkpoint_ns": "",
+            "checkpoint_id": "0001",
+            "checkpoint_json": json.dumps({"id": "0001"}),
+            "metadata_json": json.dumps({"source": "main"}),
+        }
+    )
+    assert storage.put_ai_search_checkpoint(
+        {
+            "thread_id": "ai-search-task-3",
+            "checkpoint_ns": "",
+            "checkpoint_id": "0002",
+            "checkpoint_json": json.dumps({"id": "0002"}),
+            "metadata_json": json.dumps({"source": "main"}),
+        }
+    )
+    assert storage.put_ai_search_checkpoint_writes(
+        [
+            {
+                "thread_id": "ai-search-task-3",
+                "checkpoint_ns": "",
+                "checkpoint_id": "0001",
+                "task_id": "writer-1",
+                "write_idx": -3,
+                "channel": "__interrupt__",
+                "typed_value_json": json.dumps({"type": "msgpack", "data": ""}),
+            },
+            {
+                "thread_id": "ai-search-task-3",
+                "checkpoint_ns": "",
+                "checkpoint_id": "0002",
+                "task_id": "writer-2",
+                "write_idx": -4,
+                "channel": "__resume__",
+                "typed_value_json": json.dumps({"type": "msgpack", "data": ""}),
+            },
+        ]
+    )
+
+    config = service._main_agent_config("ai-search-task-3", for_resume=True)
+
+    assert config["configurable"]["checkpoint_ns"] == ""
+    assert config["configurable"]["checkpoint_id"] == "0001"
+
+
+def test_stream_message_emits_heartbeat_during_long_running_main_agent(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(
+        service,
+        "_run_main_agent",
+        lambda task_id, thread_id, payload, **kwargs: (
+            time.sleep(0.03),
+            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "已生成计划。"}]}},
+        )[1],
+    )
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+
+    assert any("run.heartbeat" in item for item in events)
+    assert any("message.completed" in item for item in events)
+    assert events[-1].startswith("data: ")
+    assert "run.completed" in events[-1]
 
 
 def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
@@ -705,6 +890,52 @@ def test_seed_search_elements_from_analysis_keeps_optional_fields_missing():
     assert "未提供申请人" in payload["clarification_summary"]
 
 
+def test_load_source_patent_data_falls_back_to_r2_when_local_patent_json_missing(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(storage, owner_id="guest_ai_search", tmp_path=tmp_path)
+    patent_path = Path(str(analysis_task.output_dir)) / "patent.json"
+    patent_path.unlink()
+    patent_payload = {
+        **_build_patent_payload(),
+        "claims": [
+            {
+                "claim_id": "1",
+                "claim_type": "independent",
+                "claim_text": "一种异常检测系统，包括处理器和存储器。",
+                "parent_claim_ids": [],
+            }
+        ],
+    }
+    storage.update_task(
+        analysis_task.id,
+        metadata={
+            "output_files": {
+                "json": str(Path(analysis_task.output_dir) / "analysis.json"),
+                "pn": "CN123456A",
+                "patent_r2_key": "patent/CN123456A/patent.json",
+            }
+        },
+    )
+
+    class _FakeR2Storage:
+        def get_bytes(self, key: str):
+            assert key == "patent/CN123456A/patent.json"
+            return json.dumps(patent_payload, ensure_ascii=False).encode("utf-8")
+
+    monkeypatch.setattr(ai_search_context_module, "_build_r2_storage", lambda: _FakeR2Storage())
+
+    created = service.create_session("guest_ai_search")
+    storage.update_task(
+        created.sessionId,
+        metadata=merge_ai_search_meta(storage.get_task(created.sessionId), source_task_id=analysis_task.id),
+    )
+
+    payload = AiSearchAgentContext(storage, created.sessionId).load_source_patent_data()
+
+    assert payload["bibliographic_data"]["publication_number"] == "CN123456A"
+    assert payload["claims"][0]["claim_id"] == "1"
+
+
 def test_create_session_from_analysis_validates_source_task(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     other_owner_task = _create_completed_analysis_task(storage, owner_id="other-user", tmp_path=tmp_path)
@@ -744,6 +975,17 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         owner_id="guest_ai_search",
         tmp_path=tmp_path,
         analysis_payload=_build_analysis_payload(include_semantic=False),
+        patent_payload={
+            **_build_patent_payload(),
+            "claims": [
+                {
+                    "claim_id": "1",
+                    "claim_type": "independent",
+                    "claim_text": "一种异常检测系统，包括处理器和存储器。",
+                    "parent_claim_ids": [],
+                }
+            ],
+        },
     )
 
     def _fake_planning(task_id, thread_id, payload):
@@ -777,16 +1019,19 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    task = storage.get_task(created.sessionId)
 
     assert snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION
     assert snapshot.sourceSummary is not None
     assert snapshot.sourceSummary["sourceType"] == "analysis"
     assert snapshot.sourceSummary["sourceTaskId"] == analysis_task.id
     assert snapshot.sourceSummary["sourcePn"] == "CN123456A"
+    assert snapshot.sourceSummary["searchMode"] == SEARCH_MODE_CLAIM_AWARE
     assert snapshot.pendingConfirmation is not None
     assert snapshot.searchElements is not None
     assert snapshot.searchElements["search_elements"][0]["element_name"] == "异常检测"
     assert snapshot.messages[0]["content"] == "已从 AI 分析结果导入检索上下文，正在生成检索草稿。"
+    assert get_ai_search_mode(task) == SEARCH_MODE_CLAIM_AWARE
 
 
 def test_create_session_from_analysis_can_pause_for_missing_information(monkeypatch, tmp_path):
@@ -834,9 +1079,11 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    task = storage.get_task(created.sessionId)
 
     assert snapshot.phase == PHASE_AWAITING_USER_ANSWER
     assert snapshot.pendingQuestion is not None
     assert snapshot.pendingQuestion["question_id"] == "q-seed-1"
     assert snapshot.searchElements is not None
     assert snapshot.searchElements["status"] == "needs_answer"
+    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC

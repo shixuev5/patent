@@ -11,7 +11,13 @@ from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from agents.ai_search.src.state import allowed_main_agent_subagents, allowed_main_agent_tools, allowed_role_tools, get_ai_search_meta
+from agents.ai_search.src.state import (
+    allowed_main_agent_subagents,
+    allowed_main_agent_tools,
+    allowed_role_tools,
+    get_ai_search_meta,
+    get_ai_search_mode,
+)
 from config import settings
 
 
@@ -82,12 +88,12 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         self.blocked_tools = set(blocked_tools or defaults["blocked_tools"])
         self.allowed_subagents = set(allowed_subagents or defaults["allowed_subagents"])
 
-    def _current_phase(self) -> str:
+    def _current_task_state(self) -> tuple[str, str]:
         if self.storage is None or not self.task_id:
-            return ""
+            return "", ""
         task = self.storage.get_task(self.task_id)
         meta = get_ai_search_meta(task)
-        return str(meta.get("current_phase") or "").strip()
+        return str(meta.get("current_phase") or "").strip(), get_ai_search_mode(task)
 
     def wrap_tool_call(
         self,
@@ -95,7 +101,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         handler,
     ) -> ToolMessage | Command[Any]:
         tool_name = str(request.tool_call.get("name") or "").strip()
-        phase = self._current_phase()
+        phase, search_mode = self._current_task_state()
         if tool_name in self.blocked_tools:
             return ToolMessage(
                 content=f"工具 `{tool_name}` 对 `{self.role}` 不可用。",
@@ -104,7 +110,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
             )
         if phase:
             if self.role == "main-agent":
-                allowed_tools = allowed_main_agent_tools(phase)
+                allowed_tools = allowed_main_agent_tools(phase, search_mode)
                 if tool_name != "task" and tool_name not in allowed_tools:
                     return ToolMessage(
                         content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
@@ -128,7 +134,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
                     tool_call_id=request.tool_call["id"],
                 )
             if phase and self.role == "main-agent":
-                allowed_subagents = allowed_main_agent_subagents(phase)
+                allowed_subagents = allowed_main_agent_subagents(phase, search_mode)
                 if subagent_type not in allowed_subagents:
                     return ToolMessage(
                         content=f"子 agent `{subagent_type or 'unknown'}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",

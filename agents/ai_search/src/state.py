@@ -26,6 +26,14 @@ PHASE_CANCELLED = "cancelled"
 PHASE_SEARCHING = PHASE_EXECUTE_SEARCH
 PHASE_RESULTS_READY = PHASE_GENERATE_FEATURE_TABLE
 
+SEARCH_MODE_TOPIC = "topic_search"
+SEARCH_MODE_CLAIM_AWARE = "claim_aware_search"
+
+AI_SEARCH_MODES = {
+    SEARCH_MODE_TOPIC,
+    SEARCH_MODE_CLAIM_AWARE,
+}
+
 AI_SEARCH_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_AWAITING_USER_ANSWER,
@@ -113,11 +121,11 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         "subagents": {"search-elements", "claim-decomposer", "claim-search-strategist"},
     },
     PHASE_AWAITING_USER_ANSWER: {
-        "tools": set(),
+        "tools": {"ask_user_question"},
         "subagents": set(),
     },
     PHASE_AWAITING_PLAN_CONFIRMATION: {
-        "tools": set(),
+        "tools": {"request_plan_confirmation"},
         "subagents": set(),
     },
     PHASE_EXECUTE_SEARCH: {
@@ -189,11 +197,28 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     },
 }
 
+TOPIC_MODE_BLOCKED_MAIN_AGENT_TOOLS = {
+    "get_claim_context",
+    "start_claim_decomposition",
+    "start_search_strategy",
+}
+
+TOPIC_MODE_BLOCKED_MAIN_AGENT_SUBAGENTS = {
+    "claim-decomposer",
+    "claim-search-strategist",
+}
+
+CLAIM_AWARE_PHASES = {
+    PHASE_CLAIM_DECOMPOSITION,
+    PHASE_SEARCH_STRATEGY,
+}
+
 
 def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
     return {
         "thread_id": thread_id,
         "current_phase": PHASE_COLLECTING_REQUIREMENTS,
+        "search_mode": SEARCH_MODE_TOPIC,
         "active_plan_version": None,
         "pending_question_id": None,
         "pending_confirmation_plan_version": None,
@@ -246,6 +271,17 @@ def phase_step(phase: str) -> str:
     return str(AI_SEARCH_STEP.get(phase, AI_SEARCH_STEP[PHASE_COLLECTING_REQUIREMENTS]))
 
 
+def get_ai_search_mode(task: Any) -> str:
+    meta = get_ai_search_meta(task)
+    explicit_mode = str(meta.get("search_mode") or "").strip()
+    if explicit_mode in AI_SEARCH_MODES:
+        return explicit_mode
+    phase = str(meta.get("current_phase") or "").strip()
+    if phase in CLAIM_AWARE_PHASES:
+        return SEARCH_MODE_CLAIM_AWARE
+    return SEARCH_MODE_TOPIC
+
+
 def build_plan_summary(plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(plan, dict):
         return {}
@@ -272,14 +308,20 @@ def latest_search_elements(messages: list[dict[str, Any]]) -> Optional[Dict[str,
     return None
 
 
-def allowed_main_agent_tools(phase: str) -> set[str]:
+def allowed_main_agent_tools(phase: str, search_mode: str = SEARCH_MODE_TOPIC) -> set[str]:
     policy = MAIN_AGENT_PHASE_TOOL_POLICY.get(phase) or {}
-    return set(policy.get("tools") or set())
+    tools = set(policy.get("tools") or set())
+    if search_mode == SEARCH_MODE_TOPIC:
+        tools.difference_update(TOPIC_MODE_BLOCKED_MAIN_AGENT_TOOLS)
+    return tools
 
 
-def allowed_main_agent_subagents(phase: str) -> set[str]:
+def allowed_main_agent_subagents(phase: str, search_mode: str = SEARCH_MODE_TOPIC) -> set[str]:
     policy = MAIN_AGENT_PHASE_TOOL_POLICY.get(phase) or {}
-    return set(policy.get("subagents") or set())
+    subagents = set(policy.get("subagents") or set())
+    if search_mode == SEARCH_MODE_TOPIC:
+        subagents.difference_update(TOPIC_MODE_BLOCKED_MAIN_AGENT_SUBAGENTS)
+    return subagents
 
 
 def allowed_role_tools(role: str, phase: str) -> Optional[set[str]]:
