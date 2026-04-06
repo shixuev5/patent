@@ -17,6 +17,20 @@ def normalize_query_terms(values: Sequence[Any]) -> List[str]:
     return outputs
 
 
+def _gap_seed_terms(batch: Dict[str, Any]) -> List[str]:
+    outputs: List[str] = []
+    for key in ("seed_terms", "targeted_terms"):
+        outputs.extend(normalize_query_terms(batch.get(key) or []))
+    return normalize_query_terms(outputs)
+
+
+def _gap_pivot_terms(batch: Dict[str, Any]) -> List[str]:
+    outputs: List[str] = []
+    for key in ("pivot_terms", "replan_focus"):
+        outputs.extend(normalize_query_terms(batch.get(key) or []))
+    return normalize_query_terms(outputs)
+
+
 def normalize_date_text(value: Any) -> Optional[str]:
     text = str(value or "").strip()
     if not text:
@@ -90,8 +104,16 @@ def build_constraint_clauses(search_elements: Dict[str, Any]) -> List[str]:
 
 
 def build_query_text(batch: Dict[str, Any], search_elements: Optional[Dict[str, Any]] = None) -> str:
-    must_terms = normalize_query_terms(batch.get("must_terms_zh") or []) + normalize_query_terms(batch.get("must_terms_en") or [])
-    should_terms = normalize_query_terms(batch.get("should_terms_zh") or []) + normalize_query_terms(batch.get("should_terms_en") or [])
+    must_terms = (
+        normalize_query_terms(batch.get("must_terms_zh") or [])
+        + normalize_query_terms(batch.get("must_terms_en") or [])
+        + _gap_seed_terms(batch)
+    )
+    should_terms = (
+        normalize_query_terms(batch.get("should_terms_zh") or [])
+        + normalize_query_terms(batch.get("should_terms_en") or [])
+        + _gap_pivot_terms(batch)
+    )
     negative_terms = normalize_query_terms(batch.get("negative_terms") or [])
     parts: List[str] = []
     if must_terms:
@@ -116,8 +138,17 @@ def build_semantic_text(batch: Dict[str, Any], search_elements: Optional[Dict[st
         + normalize_query_terms(batch.get("should_terms_zh") or [])
         + normalize_query_terms(batch.get("must_terms_en") or [])
         + normalize_query_terms(batch.get("should_terms_en") or [])
+        + _gap_seed_terms(batch)
+        + _gap_pivot_terms(batch)
         + [str(batch.get("goal") or "").strip()]
     )
+    gap_type = str(batch.get("gap_type") or "").strip()
+    limitation_id = str(batch.get("limitation_id") or "").strip()
+    claim_id = str(batch.get("claim_id") or "").strip()
+    if gap_type:
+        semantic_parts.append(f"gap类型：{gap_type}")
+    if claim_id or limitation_id:
+        semantic_parts.append(f"目标限制：{claim_id} {limitation_id}".strip())
     applicant_terms = constraints.get("applicant_terms") or []
     if applicant_terms:
         semantic_parts.append("相关申请人：" + "、".join(applicant_terms))

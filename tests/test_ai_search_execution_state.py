@@ -1,4 +1,6 @@
 from agents.ai_search.src.execution_state import (
+    decide_search_transition,
+    enrich_execution_round_summary,
     normalize_execution_plan,
     should_enter_screening,
     should_stop_execution,
@@ -58,3 +60,52 @@ def test_execution_rules_stop_and_enter_screening():
             {"new_unique_candidates": 0, "stop_signal": ""},
         ],
     ) is True
+
+
+def test_enrich_execution_round_summary_backfills_decision_fields():
+    enriched = enrich_execution_round_summary(
+        {
+            "round_id": "round-1",
+            "lane_results": [{"lane_type": "semantic", "new_unique_candidates": 2}],
+            "new_unique_candidates": 2,
+            "deduped_hits": 1,
+            "candidate_pool_size": 3,
+        }
+    )
+
+    assert enriched["result_signal"] == "incremental"
+    assert enriched["coverage_signal"] == "emerging"
+    assert enriched["novelty_signal"] == "low"
+    assert enriched["next_lane_priority"] == "boolean"
+    assert enriched["lane_strategy_hint"] == "semantic_recall_working_consider_boolean_narrowing"
+
+
+def test_decide_search_transition_replans_after_repeated_zero_results():
+    normalized = normalize_execution_plan({}, {})
+
+    decision = decide_search_transition(
+        normalized,
+        [
+            {"round_id": "r1", "new_unique_candidates": 0, "deduped_hits": 0, "candidate_pool_size": 0},
+            {"round_id": "r2", "new_unique_candidates": 0, "deduped_hits": 0, "candidate_pool_size": 0},
+        ],
+    )
+
+    assert decision["recommended_action"] == "replan_search"
+    assert decision["transition_hint"] == "repeated_zero_results"
+
+
+def test_decide_search_transition_enters_screen_after_plateau_with_pool():
+    normalized = normalize_execution_plan({}, {})
+
+    decision = decide_search_transition(
+        normalized,
+        [
+            {"round_id": "r1", "new_unique_candidates": 2, "deduped_hits": 0, "candidate_pool_size": 6},
+            {"round_id": "r2", "new_unique_candidates": 0, "deduped_hits": 4, "candidate_pool_size": 6},
+            {"round_id": "r3", "new_unique_candidates": 0, "deduped_hits": 2, "candidate_pool_size": 6},
+        ],
+    )
+
+    assert decision["recommended_action"] == "enter_coarse_screen"
+    assert decision["transition_hint"] == "stable_pool_without_increment"

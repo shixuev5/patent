@@ -69,3 +69,25 @@ def test_build_search_constraints_and_semantic_text():
 
     assert constraints["cutoff_date_yyyymmdd"] == "20240301"
     assert "相关申请人：杭州海康威视数字技术股份有限公司" in semantic_text
+
+
+def test_gap_seed_terms_are_applied_to_query_and_semantic_text():
+    batch = {
+        "goal": "补强区别特征",
+        "must_terms_zh": ["异常检测"],
+        "should_terms_zh": ["网络摄像机"],
+        "seed_terms": ["参数窗口", "约束条件"],
+        "pivot_terms": ["边缘端部署"],
+        "gap_type": "combination_gap",
+        "claim_id": "1",
+        "limitation_id": "1-L3",
+    }
+
+    query_text = build_query_text(batch, {})
+    semantic_text = build_semantic_text(batch, {})
+
+    assert "\"参数窗口\"" in query_text
+    assert "\"约束条件\"" in query_text
+    assert "\"边缘端部署\"" in query_text
+    assert "gap类型：combination_gap" in semantic_text
+    assert "目标限制：1 1-L3" in semantic_text

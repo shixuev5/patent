@@ -1,6 +1,4 @@
-"""
-AI 检索查询执行工具。
-"""
+"""Search backend tools used by the query-executor specialist."""
 
 from __future__ import annotations
 
@@ -237,11 +235,20 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
             search_elements = json.loads(search_elements_json) if search_elements_json else {}
         except Exception:
             search_elements = {}
+        batch = {
+            **batch,
+            "lane_type": str(lane_type or "").strip(),
+        }
         constraints = build_search_constraints(search_elements)
         payload: Dict[str, Any] = {
             "plan_version": int(plan_version),
             "lane_type": str(lane_type or "").strip(),
             "batch_id": str(batch.get("batch_id") or "").strip(),
+            "gap_type": str(batch.get("gap_type") or "").strip(),
+            "claim_id": str(batch.get("claim_id") or "").strip(),
+            "limitation_id": str(batch.get("limitation_id") or "").strip(),
+            "seed_terms": batch.get("seed_terms") or [],
+            "pivot_terms": batch.get("pivot_terms") or [],
             "query_text": build_query_text(batch, search_elements),
             "semantic_text": build_semantic_text(batch, search_elements),
             "cutoff_date": str(constraints.get("cutoff_date_yyyymmdd") or ""),

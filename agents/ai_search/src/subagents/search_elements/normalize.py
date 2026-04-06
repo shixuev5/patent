@@ -1,51 +1,13 @@
-"""
-检索要素子 agent 定义。
-"""
+"""Normalization helpers for structured search elements."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
 
-from agents.ai_search.src.runtime import build_guard_middleware, large_model
-
 
 DATE_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 COMPACT_DATE_TEXT_RE = re.compile(r"^\d{8}$")
-
-
-SEARCH_ELEMENTS_SYSTEM_PROMPT = """
-你是 `search-elements` 子 agent。
-
-唯一职责：从用户输入和当前上下文中构建检索要素表。
-
-要求：
-1. 只做信息抽取与澄清判断，不做专利检索。
-2. 优先提取：检索目标、申请人、申请日、优先权日、技术要素。
-3. `applicants` 可以为空数组；若为空，在 `clarification_summary` 中注明当前无法执行申请人追溯检索。
-4. `filing_date` 与 `priority_date` 优先使用 `YYYY-MM-DD`；若都缺失，必须把“申请日或优先权日”写入 `missing_items`。
-5. 只有当“检索目标”缺失，或“至少一个技术要素”缺失时，才返回 `status=needs_answer`。
-6. 即使缺少日期，只要检索目标和至少一个技术要素明确，也可以返回 `status=complete`。
-7. 最终输出必须是一个 JSON 对象，不要加任何解释文字或 markdown。
-8. 若无法从上下文推断某字段，不要编造。
-
-顶层输出字段固定：
-- status
-- objective
-- applicants
-- filing_date
-- priority_date
-- search_elements
-- missing_items
-- clarification_summary
-
-`search_elements` 每项至少包含：
-- element_name
-- keywords_zh
-- keywords_en
-可选字段：
-- notes
-""".strip()
 
 
 def _normalize_string_list(values: Any) -> List[str]:
@@ -133,15 +95,4 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
         "search_elements": normalized_elements,
         "missing_items": missing_items,
         "clarification_summary": clarification_summary,
-    }
-
-
-def build_search_elements_subagent() -> dict:
-    return {
-        "name": "search-elements",
-        "description": "根据用户需求整理结构化检索要素，并提取申请人和日期边界。",
-        "system_prompt": SEARCH_ELEMENTS_SYSTEM_PROMPT,
-        "model": large_model(),
-        "tools": [],
-        "middleware": [build_guard_middleware("search-elements")],
     }

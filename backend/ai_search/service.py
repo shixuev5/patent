@@ -20,17 +20,22 @@ from agents.ai_search.main import (
     extract_latest_ai_message,
     extract_structured_response,
 )
-from agents.ai_search.src.screening import build_feature_prompt
+from agents.ai_search.src.subagents.feature_comparer import build_feature_prompt
 from agents.ai_search.src.subagents.search_elements import normalize_search_elements_payload
 from agents.ai_search.src.state import (
+    ACTIVE_EXECUTION_PHASES,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
+    PHASE_CLAIM_DECOMPOSITION,
+    PHASE_CLOSE_READ,
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_COMPLETED,
+    PHASE_COARSE_SCREEN,
     PHASE_DRAFTING_PLAN,
+    PHASE_EXECUTE_SEARCH,
     PHASE_FAILED,
-    PHASE_RESULTS_READY,
-    PHASE_SEARCHING,
+    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_SEARCH_STRATEGY,
     build_plan_summary,
     default_ai_search_meta,
     get_ai_search_meta,
@@ -66,8 +71,9 @@ MAIN_AGENT_CHECKPOINT_NS = "ai_search_main"
 DEFAULT_MESSAGE_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_DRAFTING_PLAN,
+    PHASE_CLAIM_DECOMPOSITION,
+    PHASE_SEARCH_STRATEGY,
     PHASE_AWAITING_PLAN_CONFIRMATION,
-    PHASE_RESULTS_READY,
     PHASE_COMPLETED,
 }
 DATE_PART_RE = re.compile(r"\d+")
@@ -660,7 +666,7 @@ class AiSearchService:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
-        if phase == PHASE_SEARCHING:
+        if phase in ACTIVE_EXECUTION_PHASES:
             raise HTTPException(status_code=409, detail="检索执行中，请稍后再删除会话。")
 
         task_manager.delete_task(session_id)
@@ -733,7 +739,7 @@ class AiSearchService:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
-        if phase == PHASE_SEARCHING:
+        if phase in ACTIVE_EXECUTION_PHASES:
             raise HTTPException(
                 status_code=409,
                 detail={"code": SEARCH_IN_PROGRESS_CODE, "message": "检索执行中，暂不支持发送新消息。"},
@@ -854,7 +860,7 @@ class AiSearchService:
                 detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许操作活动计划版本。"},
             )
         phase = str(meta.get("current_phase") or "")
-        if phase not in {PHASE_RESULTS_READY, PHASE_COMPLETED}:
+        if phase not in {PHASE_CLOSE_READ, PHASE_GENERATE_FEATURE_TABLE, PHASE_COMPLETED}:
             self._raise_invalid_phase(phase, "当前阶段不允许调整对比文件。")
         add_ids = [str(item).strip() for item in (add_document_ids or []) if str(item).strip()]
         remove_ids = [str(item).strip() for item in (remove_document_ids or []) if str(item).strip()]
@@ -898,10 +904,11 @@ class AiSearchService:
             )
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
-            self._raise_invalid_phase(PHASE_RESULTS_READY, "当前没有已选对比文件。")
+            self._raise_invalid_phase(PHASE_GENERATE_FEATURE_TABLE, "当前没有已选对比文件。")
         plan = self.storage.get_ai_search_plan(task.id, plan_version) or {}
         search_elements = plan.get("search_elements_json") if isinstance(plan.get("search_elements_json"), dict) else {}
-        yield self._format_event("subagent.started", task.id, PHASE_RESULTS_READY, {"name": "feature-comparer"})
+        self._update_phase(task.id, PHASE_GENERATE_FEATURE_TABLE, active_plan_version=plan_version)
+        yield self._format_event("subagent.started", task.id, PHASE_GENERATE_FEATURE_TABLE, {"name": "feature-comparer"})
         feature_agent = build_feature_comparer_agent()
         result = await asyncio.to_thread(
             feature_agent.invoke,
