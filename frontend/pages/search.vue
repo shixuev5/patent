@@ -2,11 +2,11 @@
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
     <section class="mx-auto grid min-h-0 w-full max-w-6xl flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
       <aside
-        v-if="showDesktopSidebar"
-        class="order-2 flex h-full min-h-0 flex-col rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 lg:order-1"
+        class="order-2 hidden h-full min-h-0 flex-col lg:order-1 lg:flex"
         :class="sidebarClass"
       >
-        <div v-if="showCollapsedSidebarRail" class="mb-1 flex flex-col items-center gap-3">
+        <div v-if="showCollapsedSidebarRail" class="rounded-[2rem] border border-slate-200 bg-white/95 px-2 py-3 shadow-sm shadow-slate-200">
+          <div class="flex flex-col items-center gap-3">
           <button
             type="button"
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700"
@@ -24,6 +24,7 @@
           >
             <PlusIcon class="h-3.5 w-3.5" />
           </button>
+          </div>
         </div>
 
         <div v-else class="mb-3 space-y-3">
@@ -41,7 +42,7 @@
           </div>
           <button
             type="button"
-            class="w-full rounded-xl bg-cyan-700 px-3 py-2.5 text-[13px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            class="w-full rounded-lg bg-cyan-700 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             :disabled="loading"
             @click="createSession"
           >
@@ -77,7 +78,9 @@
         </div>
       </aside>
 
-      <section class="order-1 flex h-full min-h-0 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-sm shadow-slate-200 lg:order-2">
+      <section
+        class="order-1 flex h-full min-h-0 min-w-0 w-full self-stretch justify-self-stretch flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white/95 shadow-sm shadow-slate-200 lg:order-2"
+      >
         <div v-if="sourceSummary" class="border-b border-cyan-200 bg-cyan-50/80 px-4 py-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
@@ -100,18 +103,78 @@
 
         <div class="border-b border-slate-200 px-4 py-2">
           <div class="flex items-center justify-between gap-2 overflow-hidden">
-            <div class="flex min-w-0 items-center gap-2 overflow-hidden">
-              <div class="flex min-w-0 items-center gap-2 overflow-hidden">
+            <div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+              <div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                 <button
-                  v-if="isMobileViewport"
                   type="button"
                   class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm shadow-slate-200/70 transition hover:bg-slate-100 lg:hidden"
-                  :aria-label="sidebarCollapsed ? '展开历史会话' : '收起历史会话'"
+                  :aria-label="showMobileSessionDrawer ? '收起历史会话' : '展开历史会话'"
                   @click="toggleSidebar"
                 >
                   <Bars3Icon class="h-4 w-4" />
                 </button>
-                <p class="truncate text-sm font-semibold text-slate-900">{{ workspaceTitle }}</p>
+                <div class="flex min-w-0 items-center gap-2 overflow-hidden">
+                  <template v-if="headerEditing && currentSession">
+                    <input
+                      ref="headerTitleInputRef"
+                      v-model.trim="headerTitleDraft"
+                      type="text"
+                      class="w-full max-w-[26rem] rounded-xl border border-cyan-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                      maxlength="120"
+                      placeholder="输入会话标题"
+                      @keydown.enter.prevent="submitHeaderRename"
+                      @keydown.esc.prevent="cancelHeaderRename"
+                    />
+                    <button
+                      type="button"
+                      class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-200 bg-cyan-50 text-cyan-700 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      :disabled="sessionActionBusy || !canSubmitHeaderRename"
+                      aria-label="保存会话标题"
+                      title="保存"
+                      @click="submitHeaderRename"
+                    >
+                      <CheckIcon class="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100"
+                      aria-label="取消重命名"
+                      title="取消"
+                      @click="cancelHeaderRename"
+                    >
+                      <XMarkIcon class="h-4 w-4" />
+                    </button>
+                  </template>
+                  <template v-else>
+                    <p class="truncate whitespace-nowrap text-sm font-semibold text-slate-900" :title="workspaceTitle">{{ workspaceTitle }}</p>
+                    <button
+                      v-if="currentSession"
+                      type="button"
+                      class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-700 lg:inline-flex"
+                      :disabled="sessionActionBusy"
+                      aria-label="重命名当前会话"
+                      title="重命名当前会话"
+                      @click="startHeaderRename"
+                    >
+                      <PencilSquareIcon class="h-4 w-4" />
+                    </button>
+                  </template>
+                </div>
+                <div class="flex shrink-0 items-center gap-2 lg:hidden">
+                  <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                    {{ activePhaseLabel }}
+                  </span>
+                  <span
+                    v-if="sourceSummary"
+                    class="shrink-0 rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-700"
+                  >
+                    分析导入
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="flex shrink-0 items-center gap-2 self-center">
+              <div class="hidden shrink-0 items-center gap-2 lg:flex">
                 <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
                   {{ activePhaseLabel }}
                 </span>
@@ -122,10 +185,7 @@
                   分析导入
                 </span>
               </div>
-            </div>
-            <div class="flex shrink-0 items-center gap-2 self-center">
               <button
-                v-if="isMobileViewport"
                 type="button"
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 lg:hidden"
                 aria-label="新建会话"
@@ -138,7 +198,43 @@
           </div>
         </div>
 
-        <div class="border-b border-slate-200">
+        <div ref="messageListRef" class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+          <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
+            描述检索目标、技术方案、claim 片段或约束条件。
+          </div>
+
+          <div v-else class="space-y-4">
+            <template v-for="entry in conversationEntries" :key="entry.id">
+            <article v-if="entry.entryType === 'system'" class="flex justify-center">
+              <div class="w-full rounded-2xl border border-slate-200/80 bg-slate-50/60 px-3 py-2.5">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="text-xs font-medium text-slate-500">{{ entry.content }}</p>
+                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="phaseBadgeClass(entry.phase)">
+                    {{ phaseLabel(entry.phase) }}
+                  </span>
+                </div>
+              </div>
+            </article>
+
+            <article
+              v-else
+              class="flex"
+              :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
+            >
+              <div
+                class="max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
+                :class="entry.role === 'user'
+                  ? 'bg-cyan-700 text-white shadow-cyan-100'
+                  : 'border border-slate-200 bg-slate-50 text-slate-700'"
+              >
+                <p class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
+              </div>
+            </article>
+            </template>
+          </div>
+        </div>
+
+        <div v-if="hasDetailPanels" class="border-t border-slate-200">
           <section v-if="hasDisplayedPlan">
             <button type="button" class="accordion-toggle" @click="togglePanel('plan')">
               <span class="accordion-title">检索计划</span>
@@ -409,42 +505,6 @@
           </section>
         </div>
 
-        <div ref="messageListRef" class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
-          <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
-            描述检索目标、技术方案、claim 片段或约束条件。
-          </div>
-
-          <div v-else class="space-y-4">
-            <template v-for="entry in conversationEntries" :key="entry.id">
-            <article v-if="entry.entryType === 'system'" class="flex justify-center">
-              <div class="w-full rounded-2xl border border-slate-200/80 bg-slate-50/60 px-3 py-2.5">
-                <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-medium text-slate-500">{{ entry.content }}</p>
-                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="phaseBadgeClass(entry.phase)">
-                    {{ phaseLabel(entry.phase) }}
-                  </span>
-                </div>
-              </div>
-            </article>
-
-            <article
-              v-else
-              class="flex"
-              :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
-            >
-              <div
-                class="max-w-[90%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
-                :class="entry.role === 'user'
-                  ? 'bg-cyan-700 text-white shadow-cyan-100'
-                  : 'border border-slate-200 bg-slate-50 text-slate-700'"
-              >
-                <p class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
-              </div>
-            </article>
-            </template>
-          </div>
-        </div>
-
         <div class="border-t border-slate-200 px-4 py-4">
           <AiSearchQuestionCard
             v-if="pendingQuestion"
@@ -471,12 +531,16 @@
               <textarea
                 v-model="composer"
                 rows="2"
-                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pb-8 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
                 :disabled="inputDisabled || !currentSession"
                 :placeholder="inputPlaceholder"
+                @keydown.enter.exact.prevent="onComposerEnter"
                 @keydown.meta.enter.prevent="submitMessage"
                 @keydown.ctrl.enter.prevent="submitMessage"
               />
+              <span class="pointer-events-none absolute bottom-3 left-4 text-[11px] text-slate-400">
+                Enter 发送，Shift+Enter 换行
+              </span>
               <button
                 type="button"
                 class="absolute bottom-3 right-3 rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -553,9 +617,9 @@
 </template>
 
 <script setup lang="ts">
-import { Bars3Icon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from '@heroicons/vue/24/outline'
+import { Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
@@ -580,11 +644,13 @@ const { activityLog, currentSession, error, loading, sessions, streaming } = sto
 
 const composer = ref('')
 const answerDraft = ref('')
+const headerTitleDraft = ref('')
+const headerTitleInputRef = ref<HTMLInputElement | null>(null)
+const headerEditing = ref(false)
 const messageListRef = ref<HTMLElement | null>(null)
-const openPanel = ref<PanelKey>('plan')
+const openPanel = ref<PanelKey | null>('plan')
 const sidebarCollapsed = ref(false)
-const isMobileViewport = ref(false)
-const viewportReady = ref(false)
+const mobileDrawerOpen = ref(false)
 
 const messages = computed(() => currentSession.value?.messages || [])
 const pendingQuestion = computed<Record<string, any> | null>(() => currentSession.value?.pendingQuestion || null)
@@ -656,6 +722,19 @@ const featureTableColumns = computed<string[]>(() => {
   return columns
 })
 const featureTableSummary = computed(() => String(currentSession.value?.featureTable?.summary_markdown || '').trim())
+const hasDetailPanels = computed(() => (
+  hasDisplayedPlan.value
+  || !!searchElementsObjective.value
+  || !!searchElementsApplicants.value
+  || !!searchElementsFilingDate.value
+  || !!searchElementsPriorityDate.value
+  || !!searchElementsCutoffDate.value
+  || searchElementsMissingItems.value.length > 0
+  || searchElementsRows.value.length > 0
+  || candidateDocuments.value.length > 0
+  || selectedDocuments.value.length > 0
+  || featureTableRows.value.length > 0
+))
 
 const activePhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || 'collecting_requirements'))
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
@@ -684,20 +763,33 @@ const sourceBannerText = computed(() => {
   return String(sourceSummary.value?.summaryText || '').trim() || fallback
 })
 const layoutClass = computed(() => (sidebarCollapsed.value
-  ? 'lg:grid-cols-[3.75rem,minmax(0,1fr)]'
+  ? 'lg:grid-cols-[auto,minmax(0,1fr)]'
   : 'lg:grid-cols-[15rem,minmax(0,1fr)] xl:grid-cols-[15.5rem,minmax(0,1fr)]'
 ))
-const sidebarClass = computed(() => (sidebarCollapsed.value ? 'px-2.5 lg:px-2.5' : ''))
-const showCollapsedSidebarRail = computed(() => !isMobileViewport.value && sidebarCollapsed.value)
-const showDesktopSidebar = computed(() => viewportReady.value && !isMobileViewport.value)
-const showMobileSessionDrawer = computed(() => isMobileViewport.value && !sidebarCollapsed.value)
+const sidebarClass = computed(() => (
+  sidebarCollapsed.value
+    ? 'items-center'
+    : 'rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200'
+))
+const showCollapsedSidebarRail = computed(() => sidebarCollapsed.value)
+const showMobileSessionDrawer = computed(() => mobileDrawerOpen.value)
 const sessionActionBusy = computed(() => loading.value || streaming.value)
+const canSubmitHeaderRename = computed(() => {
+  const nextTitle = headerTitleDraft.value.trim()
+  const currentTitle = String(currentSession.value?.session.title || '').trim()
+  return !!currentSession.value && !!nextTitle && nextTitle !== currentTitle
+})
 
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
   if (currentSession.value.phase === 'searching') return '检索执行中，请稍后再补充消息。'
   return '请输入检索目标或补充要求。'
 })
+
+const onComposerEnter = (event: KeyboardEvent) => {
+  if (event.isComposing || inputDisabled.value || !currentSession.value || !composer.value.trim()) return
+  submitMessage()
+}
 
 const sortedSessions = computed<AiSearchSessionSummary[]>(() => {
   return [...sessions.value].sort((left, right) => {
@@ -887,17 +979,20 @@ const documentStageClass = (stage?: string): string => {
 }
 
 const togglePanel = (panel: PanelKey) => {
-  openPanel.value = panel
+  openPanel.value = openPanel.value === panel ? null : panel
+}
+
+const isDesktopViewport = (): boolean => {
+  if (!import.meta.client) return false
+  return window.matchMedia('(min-width: 1024px)').matches
 }
 
 const toggleSidebar = () => {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-}
-
-const syncViewport = () => {
-  if (!import.meta.client) return
-  isMobileViewport.value = window.innerWidth < 1024
-  viewportReady.value = true
+  if (isDesktopViewport()) {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+    return
+  }
+  mobileDrawerOpen.value = !mobileDrawerOpen.value
 }
 
 const scrollMessagesToBottom = async () => {
@@ -914,7 +1009,37 @@ const createSession = async () => {
 const selectSession = async (sessionId: string) => {
   if (!sessionId || sessionId === currentSession.value?.session.sessionId) return
   await aiSearchStore.loadSession(sessionId)
-  if (isMobileViewport.value) sidebarCollapsed.value = true
+  if (!isDesktopViewport()) mobileDrawerOpen.value = false
+}
+
+const syncHeaderRenameDraft = () => {
+  headerTitleDraft.value = String(currentSession.value?.session.title || '').trim()
+}
+
+const startHeaderRename = async () => {
+  if (!currentSession.value || sessionActionBusy.value) return
+  headerEditing.value = true
+  syncHeaderRenameDraft()
+  await nextTick()
+  headerTitleInputRef.value?.focus()
+  headerTitleInputRef.value?.select()
+}
+
+const cancelHeaderRename = () => {
+  headerEditing.value = false
+  syncHeaderRenameDraft()
+}
+
+const submitHeaderRename = async () => {
+  const sessionId = String(currentSession.value?.session.sessionId || '').trim()
+  const nextTitle = headerTitleDraft.value.trim()
+  if (!sessionId) return
+  if (!nextTitle || nextTitle === String(currentSession.value?.session.title || '').trim()) {
+    cancelHeaderRename()
+    return
+  }
+  headerEditing.value = false
+  await renameSession(sessionId, nextTitle)
 }
 
 const renameSession = async (sessionId: string, title: string) => {
@@ -944,8 +1069,8 @@ const deleteSession = async (sessionId: string) => {
   } catch (_error) {
     return
   }
-  if (isMobileViewport.value && currentSession.value?.session.sessionId !== sessionId) {
-    sidebarCollapsed.value = true
+  if (!isDesktopViewport() && currentSession.value?.session.sessionId !== sessionId) {
+    mobileDrawerOpen.value = false
   }
 }
 
@@ -992,6 +1117,8 @@ watch(
     openPanel.value = suggestedPanel.value
     composer.value = ''
     answerDraft.value = ''
+    headerEditing.value = false
+    syncHeaderRenameDraft()
     const currentQuerySession = String(route.query.session || '').trim()
     if (sessionId && sessionId !== currentQuerySession) {
       router.replace({
@@ -1001,6 +1128,13 @@ watch(
         },
       }).catch(() => {})
     }
+  },
+)
+
+watch(
+  () => currentSession.value?.session.title || '',
+  () => {
+    if (!headerEditing.value) syncHeaderRenameDraft()
   },
 )
 
@@ -1060,21 +1194,11 @@ watch(
   },
 )
 
-watch(
-  isMobileViewport,
-  (value, previousValue) => {
-    if (!import.meta.client || value === previousValue) return
-    const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
-    sidebarCollapsed.value = value ? true : storedCollapsed
-  },
-)
-
 onMounted(async () => {
   if (import.meta.client) {
-    syncViewport()
     const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
-    sidebarCollapsed.value = isMobileViewport.value ? true : storedCollapsed
-    window.addEventListener('resize', syncViewport)
+    sidebarCollapsed.value = storedCollapsed
+    mobileDrawerOpen.value = false
   }
   const preferredSessionId = String(route.query.session || '').trim()
   await aiSearchStore.init(preferredSessionId)
@@ -1082,10 +1206,6 @@ onMounted(async () => {
   await scrollMessagesToBottom()
 })
 
-onBeforeUnmount(() => {
-  if (!import.meta.client) return
-  window.removeEventListener('resize', syncViewport)
-})
 </script>
 
 <style scoped>

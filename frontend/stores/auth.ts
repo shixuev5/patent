@@ -22,15 +22,37 @@ interface GuardResolution {
   guard: GuardClient | null
 }
 
+const UTF8_DECODER = process.client ? new TextDecoder('utf-8', { fatal: false }) : null
+
+const decodeBase64Utf8 = (base64Text: string): string => {
+  const binary = atob(base64Text)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return UTF8_DECODER ? UTF8_DECODER.decode(bytes) : binary
+}
+
+const normalizeUserText = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (!text) return undefined
+  if (!process.client || !UTF8_DECODER) return text
+  try {
+    const bytes = Uint8Array.from(text, (char) => char.charCodeAt(0))
+    const repaired = UTF8_DECODER.decode(bytes).trim()
+    return repaired || text
+  } catch (_error) {
+    return text
+  }
+}
+
 const toAuthingUser = (userInfo: unknown): AuthingUser => {
   const info = userInfo as any
   return {
     sub: info.sub || info.id,
-    name: info.name,
-    nickname: info.nickname,
-    email: info.email,
-    phone: info.phone,
-    picture: info.picture || info.photo,
+    name: normalizeUserText(info.name),
+    nickname: normalizeUserText(info.nickname),
+    email: normalizeUserText(info.email),
+    phone: normalizeUserText(info.phone),
+    picture: normalizeUserText(info.picture || info.photo),
     email_verified: info.email_verified ?? info.emailVerified,
     phone_verified: info.phone_verified ?? info.phoneVerified,
     updated_at: info.updated_at ?? info.updatedAt,
@@ -46,7 +68,7 @@ const parseJwtPayload = (token: string): Record<string, unknown> | null => {
     const payload = parts[1]
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-    const decoded = atob(padded)
+    const decoded = decodeBase64Utf8(padded)
     return JSON.parse(decoded) as Record<string, unknown>
   } catch (_error) {
     return null
@@ -67,11 +89,11 @@ const getFallbackUserFromStoredIdToken = (): AuthingUser | null => {
   if (!sub) return null
   return {
     sub,
-    name: typeof payload?.name === 'string' ? payload.name : undefined,
-    nickname: typeof payload?.nickname === 'string' ? payload.nickname : undefined,
-    email: typeof payload?.email === 'string' ? payload.email : undefined,
-    phone: typeof payload?.phone_number === 'string' ? payload.phone_number : undefined,
-    picture: typeof payload?.picture === 'string' ? payload.picture : undefined,
+    name: normalizeUserText(payload?.name),
+    nickname: normalizeUserText(payload?.nickname),
+    email: normalizeUserText(payload?.email),
+    phone: normalizeUserText(payload?.phone_number),
+    picture: normalizeUserText(payload?.picture),
     email_verified: typeof payload?.email_verified === 'boolean' ? payload.email_verified : undefined,
     updated_at: typeof payload?.updated_at === 'string' ? payload.updated_at : undefined,
     token,

@@ -249,6 +249,39 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     assert any("run.completed" in item for item in events)
 
 
+def test_run_planning_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+            self.state_config = None
+
+        def stream(self, payload, config):
+            assert payload == {"messages": [{"role": "user", "content": "测试"}]}
+            assert config["configurable"]["thread_id"] == "ai-search-task-1"
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            yield {"messages": []}
+
+        def get_state(self, config):
+            self.state_config = config
+            assert config["configurable"]["thread_id"] == "ai-search-task-1"
+            assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.PLANNING_CHECKPOINT_NS
+            assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
+            return _FakeState()
+
+    fake_agent = _FakeAgent()
+    monkeypatch.setattr(ai_search_service_module, "build_planning_agent", lambda storage, task_id: fake_agent)
+
+    result = service._run_planning_agent("task-1", "ai-search-task-1", {"messages": [{"role": "user", "content": "测试"}]})
+
+    assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
+    assert fake_agent.state_config is not None
+
+
 def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")

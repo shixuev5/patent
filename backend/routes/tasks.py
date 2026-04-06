@@ -52,6 +52,9 @@ ALLOWED_TASK_TYPES = {
     TaskType.AI_REVIEW.value,
     TaskType.AI_REPLY.value,
 }
+KNOWN_TASK_TYPES = ALLOWED_TASK_TYPES | {
+    TaskType.AI_SEARCH.value,
+}
 VISIBLE_TASK_TYPES = {
     TaskType.PATENT_ANALYSIS.value,
     TaskType.AI_REVIEW.value,
@@ -163,11 +166,11 @@ def _normalize_task_type(raw: Optional[str]) -> str:
 
 def _task_type(task: Any) -> str:
     raw_task_type = str(getattr(task, "task_type", "")).strip().lower()
-    if raw_task_type in ALLOWED_TASK_TYPES:
+    if raw_task_type in KNOWN_TASK_TYPES:
         return raw_task_type
     metadata = task.metadata if isinstance(task.metadata, dict) else {}
     metadata_type = str(metadata.get("task_type", "")).strip().lower()
-    if metadata_type in ALLOWED_TASK_TYPES:
+    if metadata_type in KNOWN_TASK_TYPES:
         return metadata_type
     return TaskType.PATENT_ANALYSIS.value
 

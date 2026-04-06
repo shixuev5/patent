@@ -6,13 +6,19 @@
       <p v-if="reason" class="mt-2 text-xs text-amber-700">原因：{{ reason }}</p>
       <p v-if="answerShape" class="mt-1 text-xs text-amber-700">期望答案：{{ answerShape }}</p>
     </div>
-    <textarea
-      :value="modelValue"
-      rows="4"
-      class="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-      placeholder="请输入补充信息。"
-      @input="onInput"
-    />
+    <div class="relative">
+      <textarea
+        :value="modelValue"
+        rows="4"
+        class="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 pb-8 text-sm text-slate-900 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+        placeholder="请输入补充信息。"
+        @input="onInput"
+        @keydown.enter.exact.prevent="onEnter"
+      />
+      <span class="pointer-events-none absolute bottom-3 left-4 text-[11px] text-slate-400">
+        Enter 提交，Shift+Enter 换行
+      </span>
+    </div>
     <div class="flex justify-end">
       <button
         type="button"
@@ -42,5 +48,10 @@ const emit = defineEmits<{
 
 const onInput = (event: Event) => {
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
+}
+
+const onEnter = (event: KeyboardEvent) => {
+  if (event.isComposing || props.disabled) return
+  emit('submit')
 }
 </script>

@@ -240,3 +240,17 @@ def test_clear_tasks_deletes_only_terminal_tasks(monkeypatch, tmp_path: Path) ->
     assert completed_task.id not in remaining_ids
     assert failed_task.id not in remaining_ids
     assert manager.get_task(running_task.id) is not None
+
+
+def test_list_tasks_hides_ai_search_sessions(monkeypatch, tmp_path: Path) -> None:
+    manager = _mount_task_manager(monkeypatch, tmp_path)
+    analysis_task = manager.create_task(owner_id="authing:user-10", task_type="patent_analysis", pn="CN10", title="CN10")
+    search_task = manager.create_task(owner_id="authing:user-10", task_type="ai_search", title="AI 检索会话")
+    manager.complete_task(analysis_task.id, output_files={"pdf": "dummy.pdf"})
+    manager.start_task(search_task.id)
+
+    result = asyncio.run(tasks_route.list_tasks(CurrentUser(user_id="authing:user-10")))
+
+    returned_ids = {item["id"] for item in result["tasks"]}
+    assert analysis_task.id in returned_ids
+    assert search_task.id not in returned_ids

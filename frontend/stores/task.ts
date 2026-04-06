@@ -54,11 +54,12 @@ export interface TaskSubmitResult {
 }
 
 const normalizeTaskType = (taskType?: string): TaskType => {
-  if (taskType === 'ai_search') return 'ai_search'
   if (taskType === 'ai_reply') return 'ai_reply'
   if (taskType === 'ai_review') return 'ai_review'
   return 'patent_analysis'
 }
+
+const isHiddenTaskType = (taskType?: string): boolean => String(taskType || '').trim().toLowerCase() === 'ai_search'
 
 const normalizeStatus = (status: string): Task['status'] => {
   if (status === 'pending' || status === 'processing' || status === 'completed' || status === 'error' || status === 'failed' || status === 'cancelled') {
@@ -201,8 +202,10 @@ export const useTaskStore = defineStore('tasks', {
     },
 
     pruneTasksForCache(tasks: Task[]): Task[] {
-      const active = tasks.filter((task) => task.status === 'pending' || task.status === 'processing')
+      const visibleTasks = tasks.filter((task) => !isHiddenTaskType(task.taskType))
+      const active = visibleTasks.filter((task) => task.status === 'pending' || task.status === 'processing')
       const terminal = tasks
+        .filter((task) => !isHiddenTaskType(task.taskType))
         .filter((task) => task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'error')
         .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
         .slice(0, MAX_COMPLETED_CACHE_COUNT)
@@ -231,11 +234,13 @@ export const useTaskStore = defineStore('tasks', {
 
         const parsedTasks = Array.isArray(parsed?.tasks) ? parsed.tasks : []
         this.tasks = this.pruneTasksForCache(
-          parsedTasks.map((task: any) => ({
-            ...task,
-            taskType: normalizeTaskType(task.taskType),
-            status: normalizeStatus(task.status),
-          })),
+          parsedTasks
+            .filter((task: any) => !isHiddenTaskType(task?.taskType))
+            .map((task: any) => ({
+              ...task,
+              taskType: normalizeTaskType(task.taskType),
+              status: normalizeStatus(task.status),
+            })),
         )
       } catch (error) {
         console.error('解析本地任务缓存失败：', error)
@@ -310,7 +315,9 @@ export const useTaskStore = defineStore('tasks', {
         gcTime: 30 * 60 * 1000,
       })
       if (!Array.isArray(data?.tasks)) return []
-      return data.tasks.map((item: any) => toTaskFromServer(item))
+      return data.tasks
+        .filter((item: any) => !isHiddenTaskType(item?.taskType))
+        .map((item: any) => toTaskFromServer(item))
     },
 
     applyServerTaskSnapshot(task: Task, serverTask: any) {
@@ -602,8 +609,6 @@ export const useTaskStore = defineStore('tasks', {
     getTaskPointCost(usage: UsageResponse, taskType: TaskType): number {
       const raw = taskType === 'ai_reply'
         ? usage.costPerTask.officeActionReply
-        : taskType === 'ai_search'
-          ? usage.costPerTask.aiSearch
         : taskType === 'ai_review'
           ? usage.costPerTask.aiReview
           : usage.costPerTask.patentAnalysis
@@ -631,7 +636,7 @@ export const useTaskStore = defineStore('tasks', {
         analysisCount: (currentUsage.createdToday.analysisCount || 0) + (taskType === 'patent_analysis' ? 1 : 0),
         reviewCount: (currentUsage.createdToday.reviewCount || 0) + (taskType === 'ai_review' ? 1 : 0),
         replyCount: (currentUsage.createdToday.replyCount || 0) + (taskType === 'ai_reply' ? 1 : 0),
-        searchCount: (currentUsage.createdToday.searchCount || 0) + (taskType === 'ai_search' ? 1 : 0),
+        searchCount: currentUsage.createdToday.searchCount || 0,
         totalCount: (currentUsage.createdToday.totalCount || 0) + 1,
       }
 
@@ -696,8 +701,8 @@ export const useTaskStore = defineStore('tasks', {
         dailyPointLimit: detail.dailyPointLimit,
         usedPoints: detail.usedPoints,
         remainingPoints: detail.remainingPoints,
-        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, aiReview: 1, officeActionReply: 2 },
-        createdToday: baseUsage?.createdToday || { analysisCount: 0, reviewCount: 0, replyCount: 0, totalCount: 0 },
+        costPerTask: baseUsage?.costPerTask || { patentAnalysis: 1, aiReview: 1, officeActionReply: 2, aiSearch: 1 },
+        createdToday: baseUsage?.createdToday || { analysisCount: 0, reviewCount: 0, replyCount: 0, searchCount: 0, totalCount: 0 },
         requestedTaskType: detail.taskType,
         requestedTaskPoints: detail.requiredPoints,
         canCreateRequestedTask: false,

@@ -45,7 +45,7 @@
       <div class="task-actions" @click.stop>
         <button
           v-if="canCreateSearchDraft"
-          class="action-chip info"
+          class="action-btn search"
           :disabled="creatingSearchDraft"
           title="基于当前 AI 分析结果生成 AI 检索草稿"
           @click="openSearchDraft"
@@ -55,7 +55,6 @@
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
           <MagnifyingGlassIcon v-else class="h-4 w-4" />
-          <span>{{ creatingSearchDraft ? '生成中' : '生成检索草稿' }}</span>
         </button>
 
         <button
@@ -124,7 +123,6 @@ const showPatentNumber = computed(() => {
 })
 
 const taskTypeLabel = computed(() => {
-  if (props.task.taskType === 'ai_search') return 'AI 检索'
   if (props.task.taskType === 'ai_reply') return 'AI 答复'
   if (props.task.taskType === 'ai_review') return 'AI 审查'
   return 'AI 分析'
@@ -256,10 +254,13 @@ const deleteTask = () => {
   @apply flex flex-shrink-0 items-center gap-1.5;
 }
 .action-btn {
-  @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition-colors;
+  @apply inline-flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-60;
 }
 .action-chip {
   @apply inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60;
+}
+.action-btn.search {
+  @apply text-cyan-700 hover:border-cyan-100 hover:bg-cyan-50;
 }
 .action-chip.info {
   @apply border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100/70;

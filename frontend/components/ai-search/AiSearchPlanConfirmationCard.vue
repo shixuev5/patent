@@ -20,13 +20,17 @@
       <textarea
         :value="modelValue"
         rows="4"
-        class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+        class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pb-8 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
         :disabled="inputDisabled"
         placeholder="请输入补充要求。"
         @input="onInput"
+        @keydown.enter.exact.prevent="onEnter"
         @keydown.meta.enter.prevent="$emit('submit')"
         @keydown.ctrl.enter.prevent="$emit('submit')"
       />
+      <span class="pointer-events-none absolute bottom-3 left-4 text-[11px] text-slate-400">
+        Enter 发送，Shift+Enter 换行
+      </span>
       <button
         type="button"
         class="absolute bottom-3 right-3 rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -40,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+const props = defineProps<{
   modelValue: string
   inputDisabled: boolean
   submitDisabled: boolean
@@ -55,5 +59,10 @@ const emit = defineEmits<{
 
 const onInput = (event: Event) => {
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
+}
+
+const onEnter = (event: KeyboardEvent) => {
+  if (event.isComposing || props.inputDisabled || props.submitDisabled) return
+  emit('submit')
 }
 </script>

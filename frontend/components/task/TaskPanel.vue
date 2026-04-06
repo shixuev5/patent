@@ -38,7 +38,7 @@
         <div v-if="taskStore.tasks.length === 0" class="empty-state">
           <InboxIcon class="w-14 h-14 text-slate-300 mb-4" />
           <p class="text-slate-600 font-medium">暂无任务</p>
-          <p class="text-sm text-slate-500 mt-1">创建 AI 分析或 AI 答复任务后，会在这里显示处理进度</p>
+          <p class="text-sm text-slate-500 mt-1">创建 AI 分析、AI 审查或 AI 答复任务后，会在这里显示处理进度</p>
         </div>
         <div v-else class="task-list">
           <TaskCard v-for="task in taskStore.sortedTasks" :key="task.id" :task="task" />

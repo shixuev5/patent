@@ -1,7 +1,7 @@
 <template>
   <div
     ref="rootRef"
-    class="w-full rounded-2xl border px-3 py-3 text-left transition"
+    class="w-full rounded-xl border px-2.5 py-2 text-left transition"
     :class="active
       ? 'border-cyan-300 bg-cyan-50/70 shadow-sm shadow-cyan-100'
       : 'border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-white'"
@@ -42,9 +42,10 @@
           v-else
           type="button"
           class="block w-full text-left"
+          :title="session.title"
           @click="$emit('select', session.sessionId)"
         >
-          <p class="line-clamp-2 text-[13px] font-semibold leading-5 text-slate-900">
+          <p class="truncate whitespace-nowrap text-[12px] font-semibold leading-5 text-slate-900">
             {{ session.title }}
           </p>
         </button>
@@ -53,12 +54,12 @@
       <div v-if="!editing" class="relative shrink-0">
         <button
           type="button"
-          class="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:text-slate-700 disabled:cursor-not-allowed disabled:bg-slate-100"
+          class="flex h-6 w-6 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300"
           :disabled="busy"
           aria-label="会话操作"
           @click.stop="toggleMenu"
         >
-          <EllipsisHorizontalIcon class="h-4 w-4" />
+          <EllipsisHorizontalIcon class="h-3.5 w-3.5" />
         </button>
 
         <div

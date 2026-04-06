@@ -675,6 +675,11 @@ class AiSearchService:
             }
         }
 
+    def _planning_state_config(self, agent: Any, thread_id: str) -> Dict[str, Any]:
+        config = self._planning_config(thread_id)
+        config["configurable"]["__pregel_checkpointer"] = agent.checkpointer
+        return config
+
     def _run_planning_agent(self, task_id: str, thread_id: str, payload: Any) -> Dict[str, Any]:
         agent = build_planning_agent(self.storage, task_id)
         config = self._planning_config(thread_id)
@@ -682,7 +687,7 @@ class AiSearchService:
         for chunk in agent.stream(payload, config):
             if "__interrupt__" in chunk:
                 interrupted = True
-        state = agent.get_state(config)
+        state = agent.get_state(self._planning_state_config(agent, thread_id))
         values = state.values if state else {}
         return {"interrupted": interrupted, "values": values}
 
