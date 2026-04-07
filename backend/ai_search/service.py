@@ -645,7 +645,14 @@ class AiSearchService:
                     "message": str(detail.get("message") or "当前流式轮次执行失败。"),
                 }
             return {"code": "STREAM_ERROR", "message": str(detail or "当前流式轮次执行失败。")}
-        return {"code": "STREAM_ERROR", "message": str(exc or "当前流式轮次执行失败。")}
+        message = str(exc or "当前流式轮次执行失败。").strip()
+        lowered = message.lower()
+        if "failed to generate json schema" in lowered or "tool argument schemas must be json-serializable" in lowered:
+            return {
+                "code": "TOOL_SCHEMA_INIT_FAILED",
+                "message": "AI 检索工具初始化失败，请稍后重试。",
+            }
+        return {"code": "STREAM_ERROR", "message": message or "当前流式轮次执行失败。"}
 
     def _current_phase_value(self, task_id: str, fallback: str = PHASE_COLLECTING_REQUIREMENTS) -> str:
         task = self.storage.get_task(task_id)

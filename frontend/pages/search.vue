@@ -238,15 +238,6 @@
                       <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
                     </div>
                   </div>
-                  <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-3">
-                    <span
-                      v-for="item in pendingAssistantStatusItems"
-                      :key="`pending-status-${item}`"
-                      class="rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-500"
-                    >
-                      {{ item }}
-                    </span>
-                  </div>
                 </template>
                 <template v-else-if="entry.role === 'assistant'">
                   <AiSearchMarkdown :content="entry.content" />
@@ -584,7 +575,7 @@
               <textarea
                 v-model="composer"
                 rows="2"
-                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pb-8 pr-32 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pb-8 pr-16 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
                 :disabled="inputDisabled || !currentSession"
                 :placeholder="inputPlaceholder"
                 @keydown.enter.exact.prevent="onComposerEnter"
@@ -596,11 +587,12 @@
               </span>
               <button
                 type="button"
-                class="absolute bottom-3 right-3 rounded-xl bg-cyan-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                class="absolute bottom-3 right-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                aria-label="发送消息"
                 :disabled="!canSubmitMessage"
                 @click="submitMessage"
               >
-                发送消息
+                <ArrowUpIcon class="h-4 w-4" />
               </button>
             </div>
             <p
@@ -673,7 +665,7 @@
 </template>
 
 <script setup lang="ts">
-import { Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -698,8 +690,6 @@ const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
 const {
-  activeRun,
-  activeSubagentStatuses,
   currentSession,
   error,
   loading,
@@ -726,7 +716,6 @@ const resumeAction = computed<Record<string, any> | null>(() => currentSession.v
 const candidateDocuments = computed(() => currentSession.value?.candidateDocuments || [])
 const selectedDocuments = computed(() => currentSession.value?.selectedDocuments || [])
 const sourceSummary = computed<Record<string, any> | null>(() => currentSession.value?.sourceSummary || null)
-const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.value || {}))
 
 const normalizedPlan = computed<Record<string, any> | null>(() => {
   const currentPlan = currentSession.value?.currentPlan
@@ -807,24 +796,6 @@ const hasDetailPanels = computed(() => (
 ))
 
 const activePhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || 'collecting_requirements'))
-const activeRunPhase = computed(() => String(activeRun.value?.phase || '').trim())
-const pendingAssistantPhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || activeRunPhase.value || 'drafting_plan'))
-const pendingAssistantHasContent = computed(() => !!String(pendingAssistantMessage.value?.content || '').trim())
-const activeSubagentSummary = computed(() => {
-  if (!activeSubagentList.value.length) return ''
-  if (activeSubagentList.value.length === 1) return activeSubagentList.value[0].label
-  return `${activeSubagentList.value.length} 个子 agent 处理中`
-})
-const pendingAssistantStatusItems = computed(() => {
-  const items: string[] = []
-  if (pendingAssistantPhaseLabel.value) items.push(pendingAssistantPhaseLabel.value)
-  if (activeSubagentSummary.value) {
-    items.push(activeSubagentSummary.value)
-  } else if (!pendingAssistantHasContent.value) {
-    items.push('思考中')
-  }
-  return items
-})
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
 const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())

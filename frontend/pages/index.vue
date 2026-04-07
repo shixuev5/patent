@@ -22,9 +22,6 @@
           <div class="mt-5 flex flex-wrap gap-3">
             <NuxtLink to="/tasks" class="cta-btn">立即创建 AI 任务</NuxtLink>
             <NuxtLink to="/changelog" class="ghost-btn">查看版本更新</NuxtLink>
-            <span class="inline-flex items-center px-0 py-1.5 text-xs text-slate-500">
-              已分析 {{ analyzedPatentCountText }} 个任务
-            </span>
           </div>
         </div>
 
@@ -118,18 +115,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { cachedGetJson } from '~/utils/apiClient'
-
-const config = useRuntimeConfig()
-
-const analyzedPatentCount = ref<number | null>(null)
-
-const analyzedPatentCountText = computed(() => {
-  if (analyzedPatentCount.value === null) return '--'
-  return new Intl.NumberFormat('zh-CN').format(analyzedPatentCount.value)
-})
-
 const phaseCards = [
   {
     stage: '阶段1',
@@ -164,25 +149,6 @@ const phaseCards = [
     soft: false,
   },
 ]
-
-const fetchHealthStats = async () => {
-  try {
-    const data = await cachedGetJson<any>({
-      baseUrl: config.public.apiBaseUrl,
-      path: '/api/health',
-      queryKey: ['public', 'health'],
-      staleTime: 60 * 1000,
-    })
-    analyzedPatentCount.value = Number(data?.statistics?.completed_patents ?? data?.statistics?.by_status?.completed ?? 0)
-  } catch (error) {
-    if (analyzedPatentCount.value === null) analyzedPatentCount.value = 0
-    console.error('Failed to fetch health stats:', error)
-  }
-}
-
-onMounted(() => {
-  fetchHealthStats()
-})
 </script>
 
 <style scoped>

@@ -19,7 +19,7 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
         operation: str = "load",
         payload_json: str = "",
         plan_version: int = 0,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """执行特征对比领域动作：读取对比上下文，或提交对比结果。"""
         version = int(plan_version or context.active_plan_version() or 0)

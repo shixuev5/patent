@@ -18,7 +18,7 @@ def build_query_executor_tools(context: Any) -> List[Any]:
         operation: str = "load",
         payload_json: str = "",
         plan_version: int = 0,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """执行检索轮次领域动作：读取轮次上下文，或提交本轮摘要。"""
         version = int(plan_version or context.active_plan_version() or 0)

@@ -151,7 +151,7 @@ def build_search_tools(context: Any) -> List[Any]:
         limit: int = 20,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """
         调用智慧芽相似/追踪检索，并把命中文献写入候选池。
@@ -183,7 +183,7 @@ def build_search_tools(context: Any) -> List[Any]:
         limit: int = 50,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """
         调用智慧芽语义检索，并把命中文献写入候选池。
@@ -204,7 +204,7 @@ def build_search_tools(context: Any) -> List[Any]:
         batch_id: str,
         query_text: str,
         limit: int = 50,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """
         调用智慧芽布尔检索，并把命中文献写入候选池。

@@ -31,7 +31,7 @@ def build_claim_search_strategist_tools(context: Any) -> List[Any]:
         """把最新 gap 上下文转换成下一轮 strategist 可直接消费的 replan seed。"""
         return json.dumps(context.build_gap_strategy_seed_payload(plan_version), ensure_ascii=False)
 
-    def save_claim_search_strategy(payload_json: str, runtime: ToolRuntime | None = None) -> str:
+    def save_claim_search_strategy(payload_json: str, runtime: ToolRuntime = None) -> str:
         """保存 claim-aware 检索策略。"""
         payload = extract_json_object(payload_json)
         seed = context.build_gap_strategy_seed_payload()

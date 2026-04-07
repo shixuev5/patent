@@ -17,7 +17,7 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
         payload_json: str = "",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """执行粗筛领域动作：读取待筛批次，或提交粗筛结果。"""
         version = int(plan_version or context.active_plan_version() or 0)

@@ -27,7 +27,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
         payload_json: str = "",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
-        runtime: ToolRuntime | None = None,
+        runtime: ToolRuntime = None,
     ) -> str:
         """执行精读领域动作：准备精读批次，或提交精读结果。"""
         version = int(plan_version or context.active_plan_version() or 0)

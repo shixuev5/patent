@@ -13,7 +13,7 @@ from agents.ai_search.src.subagents.search_elements.normalize import normalize_s
 
 
 def build_search_elements_tools(context: Any) -> List[Any]:
-    def save_search_elements(payload_json: str, runtime: ToolRuntime | None = None) -> str:
+    def save_search_elements(payload_json: str, runtime: ToolRuntime = None) -> str:
         """保存结构化检索要素。"""
         payload = normalize_search_elements_payload(extract_json_object(payload_json))
         context.storage.create_ai_search_message(
