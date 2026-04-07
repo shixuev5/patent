@@ -15,7 +15,7 @@
         <nav class="hidden items-center justify-center gap-1 md:flex">
           <NuxtLink to="/#assistant" :class="navClass(route.path === '/')">首页</NuxtLink>
           <NuxtLink to="/tasks" :class="navClass(route.path.startsWith('/tasks'))">AI 任务</NuxtLink>
-          <NuxtLink to="/search" :class="navClass(route.path.startsWith('/search'))">AI 检索</NuxtLink>
+          <NuxtLink v-if="showAiSearchEntry" to="/search" :class="navClass(route.path.startsWith('/search'))">AI 检索</NuxtLink>
           <NuxtLink to="/account" :class="navClass(route.path.startsWith('/account'))">个人空间</NuxtLink>
           <NuxtLink v-if="showAdminEntry" to="/admin/usage" :class="navClass(route.path.startsWith('/admin/usage'))">管理统计</NuxtLink>
           <NuxtLink to="/changelog" :class="navClass(route.path.startsWith('/changelog'))">更新日志</NuxtLink>
@@ -25,7 +25,7 @@
           <NuxtLink to="/tasks" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
             AI任务
           </NuxtLink>
-          <NuxtLink to="/search" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
+          <NuxtLink v-if="showAiSearchEntry" to="/search" class="mobile-task-btn shrink-0 whitespace-nowrap rounded-full bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-700 md:hidden">
             AI检索
           </NuxtLink>
           <div class="relative md:hidden">
@@ -248,6 +248,7 @@ const displayUserName = computed(() => {
 })
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const showAdminEntry = computed(() => adminUsageStore.isAdmin)
+const showAiSearchEntry = computed(() => hasAuthingEnabled.value && authStore.isLoggedIn && adminUsageStore.isAdmin)
 
 const hasAuthCallbackParams = () => {
   if (!process.client) return false

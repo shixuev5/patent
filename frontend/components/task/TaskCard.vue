@@ -101,11 +101,15 @@ import {
   XCircleIcon,
 } from '@heroicons/vue/24/outline'
 import { useRouter } from 'vue-router'
+import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
+import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type { Task } from '~/types/task'
 
 const props = defineProps<{ task: Task }>()
+const authStore = useAuthStore()
+const adminUsageStore = useAdminUsageStore()
 const taskStore = useTaskStore()
 const aiSearchStore = useAiSearchStore()
 const router = useRouter()
@@ -143,7 +147,13 @@ const canDelete = computed(() => {
 })
 
 const canCreateSearchDraft = computed(() => {
-  return displayStatus.value === 'completed' && props.task.taskType === 'patent_analysis' && !!props.task.backendId
+  return (
+    authStore.isLoggedIn
+    && adminUsageStore.isAdmin
+    && displayStatus.value === 'completed'
+    && props.task.taskType === 'patent_analysis'
+    && !!props.task.backendId
+  )
 })
 
 const formatTime = (timestamp: number): string => {

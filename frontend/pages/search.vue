@@ -673,7 +673,9 @@ import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import AiSearchSessionListItem from '~/components/ai-search/AiSearchSessionListItem.vue'
+import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
+import { useAuthStore } from '~/stores/auth'
 import type { AiSearchSessionSummary } from '~/types/aiSearch'
 
 type PanelKey = 'plan' | 'elements' | 'candidates' | 'selected' | 'feature'
@@ -685,6 +687,9 @@ type SessionGroup = {
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ai-search-sidebar-collapsed'
 
+const config = useRuntimeConfig()
+const authStore = useAuthStore()
+const adminUsageStore = useAdminUsageStore()
 const aiSearchStore = useAiSearchStore()
 const { showMessage } = useGlobalMessage()
 const route = useRoute()
@@ -836,6 +841,8 @@ const sidebarClass = computed(() => (
 const showCollapsedSidebarRail = computed(() => sidebarCollapsed.value)
 const showMobileSessionDrawer = computed(() => mobileDrawerOpen.value)
 const sessionActionBusy = computed(() => loading.value || streaming.value)
+const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
+const canAccessAiSearch = computed(() => hasAuthingEnabled.value && authStore.isLoggedIn && adminUsageStore.isAdmin)
 const canSubmitHeaderRename = computed(() => {
   const nextTitle = headerTitleDraft.value.trim()
   const currentTitle = String(currentSession.value?.session.title || '').trim()
@@ -1278,6 +1285,15 @@ watch(
 )
 
 onMounted(async () => {
+  if (hasAuthingEnabled.value) {
+    await authStore.ensureInitialized()
+    await adminUsageStore.fetchAccess(true)
+  }
+  if (!canAccessAiSearch.value) {
+    showMessage('error', 'AI 检索仅对已登录管理员开放。')
+    await router.replace('/tasks')
+    return
+  }
   if (import.meta.client) {
     const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
     sidebarCollapsed.value = storedCollapsed
