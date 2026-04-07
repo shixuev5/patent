@@ -31,6 +31,16 @@ ALL_AI_SEARCH_SUBAGENTS = {
     "feature-comparer",
 }
 
+SUBAGENT_DISPLAY_LABELS = {
+    "search-elements": "检索要素整理",
+    "claim-decomposer": "权利要求拆解",
+    "claim-search-strategist": "检索策略规划",
+    "query-executor": "检索执行",
+    "coarse-screener": "候选粗筛",
+    "close-reader": "重点精读",
+    "feature-comparer": "特征对比",
+}
+
 READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
 WRITE_FILESYSTEM_TOOLS = {"write_file", "edit_file"}
 EXECUTION_TOOLS = {"execute"}
@@ -146,6 +156,63 @@ class AiSearchGuardMiddleware(AgentMiddleware):
 
 def build_guard_middleware(role: str, storage: Any = None, task_id: str = "") -> AiSearchGuardMiddleware:
     return AiSearchGuardMiddleware(role, storage=storage, task_id=task_id)
+
+
+def format_subagent_label(name: str) -> str:
+    return SUBAGENT_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "子 agent")
+
+
+def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+    if hasattr(writer, "write") and callable(writer.write):
+        writer.write(payload)
+        return
+    if callable(writer):
+        writer(payload)
+
+
+class AiSearchStreamingMiddleware(AgentMiddleware):
+    def __init__(self, role: str) -> None:
+        self.role = str(role or "").strip()
+
+    def before_agent(self, state: Any, runtime: Any) -> None:
+        if not self.role or self.role == "main-agent":
+            return None
+        label = format_subagent_label(self.role)
+        write_stream_event(
+            getattr(runtime, "stream_writer", None),
+            {
+                "type": "subagent.started",
+                "payload": {
+                    "name": self.role,
+                    "label": label,
+                    "statusText": f"{label}执行中。",
+                },
+            },
+        )
+        return None
+
+    def after_agent(self, state: Any, runtime: Any) -> None:
+        if not self.role or self.role == "main-agent":
+            return None
+        label = format_subagent_label(self.role)
+        write_stream_event(
+            getattr(runtime, "stream_writer", None),
+            {
+                "type": "subagent.completed",
+                "payload": {
+                    "name": self.role,
+                    "label": label,
+                    "statusText": f"{label}已完成。",
+                },
+            },
+        )
+        return None
+
+
+def build_streaming_middleware(role: str) -> AiSearchStreamingMiddleware:
+    return AiSearchStreamingMiddleware(role)
 
 
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:

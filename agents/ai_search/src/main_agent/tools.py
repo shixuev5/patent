@@ -6,6 +6,7 @@ import json
 import uuid
 from typing import Any, Dict, List
 
+from langchain.tools import ToolRuntime
 from langgraph.types import interrupt
 
 from agents.ai_search.src.execution_state import enrich_execution_round_summary, normalize_execution_plan
@@ -44,7 +45,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             ensure_ascii=False,
         )
 
-    def write_todos(payload_json: str) -> str:
+    def write_todos(payload_json: str, runtime: ToolRuntime | None = None) -> str:
         """写入当前任务清单。"""
         task = context.storage.get_task(context.task_id)
         payload = extract_json_object(payload_json)
@@ -61,6 +62,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             todos.append(context._normalized_todo(item, existing=existing_by_key.get(key)))
         context.update_task_phase(
             PHASE_DRAFTING_PLAN,
+            runtime=runtime,
             todos=todos,
             current_task=str(payload.get("current_task") or "").strip() or None,
         )
@@ -106,25 +108,25 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         }
         return json.dumps(payload, ensure_ascii=False)
 
-    def start_claim_decomposition() -> str:
+    def start_claim_decomposition(runtime: ToolRuntime | None = None) -> str:
         """显式进入 claim decomposition 阶段。"""
-        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, current_task="claim_decomposition")
+        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, runtime=runtime, current_task="claim_decomposition")
         context.update_todos("claim_decomposition", "in_progress", current_task="claim_decomposition")
         return "phase switched to claim_decomposition"
 
-    def start_search_strategy() -> str:
+    def start_search_strategy(runtime: ToolRuntime | None = None) -> str:
         """显式进入 search strategy 阶段。"""
-        context.update_task_phase(PHASE_SEARCH_STRATEGY, current_task="search_strategy")
+        context.update_task_phase(PHASE_SEARCH_STRATEGY, runtime=runtime, current_task="search_strategy")
         context.update_todos("search_strategy", "in_progress", current_task="search_strategy")
         return "phase switched to search_strategy"
 
-    def start_plan_drafting() -> str:
+    def start_plan_drafting(runtime: ToolRuntime | None = None) -> str:
         """显式进入 draft plan 阶段。"""
-        context.update_task_phase(PHASE_DRAFTING_PLAN, current_task="draft_plan")
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, current_task="draft_plan")
         context.update_todos("draft_plan", "in_progress", current_task="draft_plan")
         return "phase switched to drafting_plan"
 
-    def save_search_plan(payload_json: str) -> str:
+    def save_search_plan(payload_json: str, runtime: ToolRuntime | None = None) -> str:
         """持久化检索计划草案。"""
         payload = extract_json_object(payload_json)
         search_elements_snapshot = normalize_search_elements_payload(payload.get("search_elements_snapshot") or {})
@@ -153,12 +155,18 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         context.update_task_phase(
             PHASE_DRAFTING_PLAN,
+            runtime=runtime,
             active_plan_version=plan_version,
             pending_confirmation_plan_version=None,
         )
         return json.dumps({"plan_version": plan_version}, ensure_ascii=False)
 
-    def ask_user_question(prompt: str, reason: str, expected_answer_shape: str) -> str:
+    def ask_user_question(
+        prompt: str,
+        reason: str,
+        expected_answer_shape: str,
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """创建追问并挂起。"""
         task = context.storage.get_task(context.task_id)
         meta = get_ai_search_meta(task)
@@ -195,12 +203,17 @@ def build_main_agent_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
-            context.update_task_phase(PHASE_AWAITING_USER_ANSWER, pending_question_id=question_id)
+            context.update_task_phase(PHASE_AWAITING_USER_ANSWER, runtime=runtime, pending_question_id=question_id)
         answer = interrupt(payload)
-        context.update_task_phase(PHASE_DRAFTING_PLAN, pending_question_id=None)
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, pending_question_id=None)
         return str(answer or "").strip()
 
-    def request_plan_confirmation(plan_version: int, plan_summary: str, confirmation_label: str = "确认检索计划") -> str:
+    def request_plan_confirmation(
+        plan_version: int,
+        plan_summary: str,
+        confirmation_label: str = "确认检索计划",
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """请求用户确认计划。"""
         task = context.storage.get_task(context.task_id)
         meta = get_ai_search_meta(task)
@@ -226,6 +239,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             )
             context.update_task_phase(
                 PHASE_AWAITING_PLAN_CONFIRMATION,
+                runtime=runtime,
                 pending_confirmation_plan_version=int(plan_version),
             )
         confirmation = interrupt(payload)
@@ -239,6 +253,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             summary = build_plan_summary(context.storage.get_ai_search_plan(context.task_id, int(plan_version)))
             context.update_task_phase(
                 PHASE_DRAFTING_PLAN,
+                runtime=runtime,
                 pending_confirmation_plan_version=None,
                 current_task="execute_search",
                 todos=[
@@ -257,15 +272,15 @@ def build_main_agent_tools(context: Any) -> List[Any]:
                 ],
             )
         else:
-            context.update_task_phase(PHASE_DRAFTING_PLAN, pending_confirmation_plan_version=None)
+            context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, pending_confirmation_plan_version=None)
         return "confirmed" if confirmed else "not_confirmed"
 
-    def begin_execution(plan_version: int = 0) -> str:
+    def begin_execution(plan_version: int = 0, runtime: ToolRuntime | None = None) -> str:
         """标记执行阶段开始。"""
         version = int(plan_version or context.active_plan_version() or 0)
         if version <= 0:
             return "missing_plan"
-        context.update_task_phase(PHASE_EXECUTE_SEARCH, active_plan_version=version, current_task="execute_search")
+        context.update_task_phase(PHASE_EXECUTE_SEARCH, runtime=runtime, active_plan_version=version, current_task="execute_search")
         context.update_todos(
             "execute_search",
             "in_progress",
@@ -275,13 +290,13 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         return json.dumps({"plan_version": version}, ensure_ascii=False)
 
-    def start_coarse_screen(plan_version: int = 0) -> str:
+    def start_coarse_screen(plan_version: int = 0, runtime: ToolRuntime | None = None) -> str:
         """显式进入 coarse screen 阶段。"""
         version = int(plan_version or context.active_plan_version() or 0)
         candidate_count = len(context.storage.list_ai_search_documents(context.task_id, version))
         if candidate_count <= 0:
             return "no_candidates_for_coarse_screen"
-        context.update_task_phase(PHASE_COARSE_SCREEN, active_plan_version=version, current_task="coarse_screen")
+        context.update_task_phase(PHASE_COARSE_SCREEN, runtime=runtime, active_plan_version=version, current_task="coarse_screen")
         context.update_todos(
             "coarse_screen",
             "in_progress",
@@ -291,13 +306,13 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         return json.dumps({"plan_version": version, "candidate_count": candidate_count}, ensure_ascii=False)
 
-    def start_close_read(plan_version: int = 0) -> str:
+    def start_close_read(plan_version: int = 0, runtime: ToolRuntime | None = None) -> str:
         """显式进入 close read 阶段。"""
         version = int(plan_version or context.active_plan_version() or 0)
         shortlisted_count = len(context.storage.list_ai_search_documents(context.task_id, version, stages=["shortlisted"]))
         if shortlisted_count <= 0:
             return "no_shortlisted_documents"
-        context.update_task_phase(PHASE_CLOSE_READ, active_plan_version=version, current_task="close_read")
+        context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, current_task="close_read")
         context.update_todos(
             "close_read",
             "in_progress",
@@ -307,7 +322,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         return json.dumps({"plan_version": version, "shortlisted_count": shortlisted_count}, ensure_ascii=False)
 
-    def start_feature_table_generation(plan_version: int = 0) -> str:
+    def start_feature_table_generation(plan_version: int = 0, runtime: ToolRuntime | None = None) -> str:
         """显式进入 feature table 阶段。"""
         version = int(plan_version or context.active_plan_version() or 0)
         selected_count = len(context.storage.list_ai_search_documents(context.task_id, version, stages=["selected"]))
@@ -315,6 +330,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             return "no_selected_documents"
         context.update_task_phase(
             PHASE_GENERATE_FEATURE_TABLE,
+            runtime=runtime,
             active_plan_version=version,
             current_task="generate_feature_table",
         )
@@ -363,7 +379,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         docs = context.storage.list_ai_search_documents(context.task_id, version, stages=stages)
         return json.dumps({"count": len(docs), "items": docs}, ensure_ascii=False)
 
-    def complete_execution(summary: str = "", plan_version: int = 0) -> str:
+    def complete_execution(summary: str = "", plan_version: int = 0, runtime: ToolRuntime | None = None) -> str:
         """结束执行阶段并更新汇总状态。"""
         version = int(plan_version or context.active_plan_version() or 0)
         current_phase = context.current_phase()
@@ -395,6 +411,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             )
         context.update_task_phase(
             PHASE_COMPLETED,
+            runtime=runtime,
             active_plan_version=version or None,
             selected_document_count=selected_count,
             current_task=None,

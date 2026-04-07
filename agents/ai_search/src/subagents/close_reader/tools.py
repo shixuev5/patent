@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT, DEFAULT_SHORTLIST_LIMIT
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt
@@ -25,6 +27,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
         payload_json: str = "",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """执行精读领域动作：准备精读批次，或提交精读结果。"""
         version = int(plan_version or context.active_plan_version() or 0)
@@ -228,6 +231,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
+            context.notify_snapshot_changed(runtime, reason="selection")
             return json.dumps({"selected_count": selected_count}, ensure_ascii=False)
         except Exception as exc:
             return context.record_todo_failure("close_read", str(exc), current_task="close_read", resume_from="run_close_read_batch")

@@ -53,3 +53,32 @@ export interface AiSearchStreamEvent {
   phase: string
   payload: any
 }
+
+export interface AiSearchPendingAssistantMessage {
+  messageId: string
+  content: string
+  contentType: string
+  createdAt: string
+  hasDelta: boolean
+}
+
+export interface AiSearchActiveRun {
+  runKey: string
+  sessionId: string
+  startedAt: string
+  phase: string
+}
+
+export interface AiSearchPhaseMarker {
+  id: string
+  runKey: string
+  phase: string
+  createdAt: string
+}
+
+export interface AiSearchSubagentStatus {
+  name: string
+  label: string
+  statusText: string
+  startedAt: string
+}

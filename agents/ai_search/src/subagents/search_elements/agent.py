@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from agents.ai_search.src.context import AiSearchAgentContext
-from agents.ai_search.src.runtime import build_guard_middleware, large_model
+from agents.ai_search.src.runtime import build_guard_middleware, build_streaming_middleware, large_model
 from agents.ai_search.src.subagents.search_elements.prompt import SEARCH_ELEMENTS_SYSTEM_PROMPT
 
 
@@ -15,5 +15,5 @@ def build_search_elements_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": SEARCH_ELEMENTS_SYSTEM_PROMPT,
         "model": large_model(),
         "tools": context.build_search_elements_tools(),
-        "middleware": [build_guard_middleware("search-elements", storage, task_id)],
+        "middleware": [build_guard_middleware("search-elements", storage, task_id), build_streaming_middleware("search-elements")],
     }

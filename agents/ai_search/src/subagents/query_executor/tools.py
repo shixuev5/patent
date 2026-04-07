@@ -6,13 +6,20 @@ import json
 import uuid
 from typing import Any, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.execution_state import enrich_execution_round_summary
 from agents.ai_search.src.execution_state import decide_search_transition as decide_search_transition_from_summary
 from agents.ai_search.src.runtime import extract_json_object
 
 
 def build_query_executor_tools(context: Any) -> List[Any]:
-    def run_search_round(operation: str = "load", payload_json: str = "", plan_version: int = 0) -> str:
+    def run_search_round(
+        operation: str = "load",
+        payload_json: str = "",
+        plan_version: int = 0,
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """执行检索轮次领域动作：读取轮次上下文，或提交本轮摘要。"""
         version = int(plan_version or context.active_plan_version() or 0)
         op = str(operation or "load").strip().lower()
@@ -75,6 +82,7 @@ def build_query_executor_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
+            context.notify_snapshot_changed(runtime, reason="execution_summary")
             stop_signal = str(payload.get("stop_signal") or "").strip().lower()
             if stop_signal in {"ready_for_screening", "screening_ready", "stop"} or candidate_pool_size >= 8:
                 context.update_todos(

@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.state import PHASE_SEARCH_STRATEGY
 
@@ -29,7 +31,7 @@ def build_claim_search_strategist_tools(context: Any) -> List[Any]:
         """把最新 gap 上下文转换成下一轮 strategist 可直接消费的 replan seed。"""
         return json.dumps(context.build_gap_strategy_seed_payload(plan_version), ensure_ascii=False)
 
-    def save_claim_search_strategy(payload_json: str) -> str:
+    def save_claim_search_strategy(payload_json: str, runtime: ToolRuntime | None = None) -> str:
         """保存 claim-aware 检索策略。"""
         payload = extract_json_object(payload_json)
         seed = context.build_gap_strategy_seed_payload()
@@ -58,7 +60,7 @@ def build_claim_search_strategist_tools(context: Any) -> List[Any]:
                 "metadata": payload,
             }
         )
-        context.update_task_phase(PHASE_SEARCH_STRATEGY, current_task="search_strategy")
+        context.update_task_phase(PHASE_SEARCH_STRATEGY, runtime=runtime, current_task="search_strategy")
         return "claim search strategy saved"
 
     return [get_claim_context, get_gap_context, build_gap_strategy_seed, save_claim_search_strategy]

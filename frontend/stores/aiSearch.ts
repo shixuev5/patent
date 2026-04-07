@@ -2,11 +2,17 @@ import { defineStore } from 'pinia'
 import { requestJson, requestRaw } from '~/utils/apiClient'
 import { useTaskStore } from '~/stores/task'
 import type {
+  AiSearchActiveRun,
   AiSearchCreateSessionResponse,
+  AiSearchPendingAssistantMessage,
+  AiSearchPhaseMarker,
   AiSearchSessionListResponse,
   AiSearchSnapshot,
   AiSearchStreamEvent,
+  AiSearchSubagentStatus,
 } from '~/types/aiSearch'
+
+const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table']
 
 const phaseToTaskStatus = (phase: string): string => {
   if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation') return 'paused'
@@ -16,8 +22,13 @@ const phaseToTaskStatus = (phase: string): string => {
   return 'processing'
 }
 
+const isExecutionPhase = (phase: string): boolean => EXECUTION_PHASES.includes(String(phase || '').trim())
+
 const formatSubagentName = (name: string): string => {
   if (name === 'search-elements') return '检索要素整理'
+  if (name === 'claim-decomposer') return '权利要求拆解'
+  if (name === 'claim-search-strategist') return '检索策略规划'
+  if (name === 'query-executor') return '检索执行'
   if (name === 'coarse-screener') return '候选粗筛'
   if (name === 'close-reader') return '重点精读'
   if (name === 'feature-comparer') return '特征对比'
@@ -51,12 +62,25 @@ const toMillis = (value?: string | null): number => {
   return Number.isFinite(ts) ? ts : 0
 }
 
+const nowIso = (): string => new Date().toISOString()
+
+const pendingAssistantFromId = (messageId: string, createdAt?: string): AiSearchPendingAssistantMessage => ({
+  messageId,
+  content: '',
+  contentType: 'markdown',
+  createdAt: createdAt || nowIso(),
+  hasDelta: false,
+})
+
 export const useAiSearchStore = defineStore('aiSearch', {
   state: () => ({
     sessions: [] as Array<Record<string, any>>,
     activeSessionId: '' as string,
     currentSession: null as AiSearchSnapshot | null,
-    activityLog: [] as Array<Record<string, any>>,
+    activeRun: null as AiSearchActiveRun | null,
+    pendingAssistantMessage: null as AiSearchPendingAssistantMessage | null,
+    phaseMarkers: [] as AiSearchPhaseMarker[],
+    activeSubagentStatuses: {} as Record<string, AiSearchSubagentStatus>,
     loading: false,
     streaming: false,
     error: '' as string,
@@ -69,7 +93,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     inputDisabled: (state) => {
       const phase = state.currentSession?.phase || ''
-      return state.streaming || phase === 'searching' || !!state.currentSession?.pendingQuestion || !!state.currentSession?.resumeAction?.available
+      return state.streaming || isExecutionPhase(phase) || !!state.currentSession?.pendingQuestion || !!state.currentSession?.resumeAction?.available
     },
   },
 
@@ -81,6 +105,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
         throw new Error('认证失效，请刷新页面后重试。')
       }
       return taskStore.authToken
+    },
+
+    _resetTransientRunState() {
+      this.activeRun = null
+      this.pendingAssistantMessage = null
+      this.activeSubagentStatuses = {}
     },
 
     _upsertSessionSummary(summary: Record<string, any>) {
@@ -117,125 +147,262 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     _applySnapshot(snapshot: AiSearchSnapshot) {
       const previousSessionId = this.currentSession?.session.sessionId || ''
+      const switchingSession = previousSessionId && previousSessionId !== snapshot.session.sessionId
       this.currentSession = {
         ...snapshot,
         messages: normalizeMessages(snapshot.messages),
       }
       this.activeSessionId = snapshot.session.sessionId
-      if (previousSessionId && previousSessionId !== snapshot.session.sessionId) {
-        this.activityLog = []
+      if (switchingSession) {
+        this.phaseMarkers = []
+        this._resetTransientRunState()
       }
       this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
     },
 
-    _pushAssistantMessage(content: string) {
-      if (!this.currentSession || !content.trim()) return
-      this.currentSession.messages.push({
+    _pushMessage(message: Record<string, any>) {
+      if (!this.currentSession) return
+      const messageId = String(message.message_id || '').trim()
+      if (messageId) {
+        const index = this.currentSession.messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
+        if (index >= 0) {
+          this.currentSession.messages[index] = { ...this.currentSession.messages[index], ...message }
+          return
+        }
+      }
+      this.currentSession.messages.push(message)
+    },
+
+    _pushAssistantMessage(content: string, messageId?: string) {
+      const text = String(content || '')
+      if (!this.currentSession || !text.trim()) return
+      this._pushMessage({
+        message_id: messageId || `assistant-${Date.now()}`,
         role: 'assistant',
         kind: 'chat',
-        content,
-        created_at: new Date().toISOString(),
+        content: text,
+        created_at: nowIso(),
       })
     },
 
-    _recordActivity(type: string, text: string, phase: string) {
+    _pushUserMessage(content: string, kind: 'chat' | 'answer' = 'chat', questionId?: string) {
+      const text = String(content || '')
       if (!this.currentSession || !text.trim()) return
-      this.activityLog.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type,
-        text,
-        phase,
-        createdAt: new Date().toISOString(),
+      this._pushMessage({
+        message_id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role: 'user',
+        kind,
+        question_id: questionId,
+        content: text,
+        created_at: nowIso(),
       })
-      if (this.activityLog.length > 30) {
-        this.activityLog = this.activityLog.slice(-30)
-      }
     },
 
     _syncSessionPhase(phase: string) {
       if (!this.currentSession) return
-      this.currentSession.phase = phase
-      this.currentSession.session.phase = phase
-      this.currentSession.session.status = phaseToTaskStatus(phase)
+      const normalizedPhase = String(phase || '').trim()
+      if (!normalizedPhase) return
+      this.currentSession.phase = normalizedPhase
+      this.currentSession.session.phase = normalizedPhase
+      this.currentSession.session.status = phaseToTaskStatus(normalizedPhase)
+      if (normalizedPhase !== 'awaiting_user_answer') {
+        this.currentSession.pendingQuestion = null
+      }
+      if (normalizedPhase !== 'awaiting_plan_confirmation') {
+        this.currentSession.pendingConfirmation = null
+      }
+      if (!isExecutionPhase(normalizedPhase)) {
+        this.currentSession.resumeAction = null
+      }
+      if (this.activeRun) {
+        this.activeRun = { ...this.activeRun, phase: normalizedPhase }
+      }
       this._upsertSessionSummary({
         ...this.currentSession.session,
-        phase,
+        phase: normalizedPhase,
         status: this.currentSession.session.status,
       })
     },
 
+    _ensurePhaseMarker(phase: string) {
+      const normalizedPhase = String(phase || '').trim()
+      const runKey = String(this.activeRun?.runKey || '').trim()
+      if (!normalizedPhase || !runKey) return
+      if (this.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
+      this.phaseMarkers.push({
+        id: `phase-${runKey}-${normalizedPhase}`,
+        runKey,
+        phase: normalizedPhase,
+        createdAt: nowIso(),
+      })
+    },
+
+    _startPendingAssistant(phaseHint?: string, forceNewRun: boolean = false) {
+      if (!this.currentSession) return
+      const createdAt = forceNewRun ? nowIso() : (this.pendingAssistantMessage?.createdAt || nowIso())
+      const messageId = forceNewRun ? `pending-${Date.now()}` : (this.pendingAssistantMessage?.messageId || `pending-${Date.now()}`)
+      const nextPhase = String(phaseHint || this.currentSession.phase || '').trim()
+      if (forceNewRun || !this.activeRun) {
+        this.activeRun = {
+          runKey: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          sessionId: this.currentSession.session.sessionId,
+          startedAt: createdAt,
+          phase: nextPhase,
+        }
+        this.activeSubagentStatuses = {}
+        this.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
+        return
+      }
+      this.activeRun = {
+        ...this.activeRun,
+        phase: nextPhase || this.activeRun.phase,
+      }
+      if (!this.pendingAssistantMessage) {
+        this.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
+      }
+    },
+
+    _setPendingAssistantMessage(messageId?: string, patch?: Partial<AiSearchPendingAssistantMessage>) {
+      this._startPendingAssistant()
+      const current = this.pendingAssistantMessage || pendingAssistantFromId(messageId || `pending-${Date.now()}`)
+      this.pendingAssistantMessage = {
+        ...current,
+        ...(messageId ? { messageId } : {}),
+        ...patch,
+      }
+    },
+
+    _completePendingAssistantMessage(messageId: string, content: string) {
+      this._pushAssistantMessage(content, messageId)
+      this.pendingAssistantMessage = null
+    },
+
     _handleStreamEvent(event: AiSearchStreamEvent) {
       if (!this.currentSession || event.sessionId !== this.currentSession.session.sessionId) return
-      this._syncSessionPhase(event.phase)
-      if (event.type === 'message.completed') {
-        const content = String(event.payload?.content || '').trim()
-        if (content) this._pushAssistantMessage(content)
+
+      const payload = event.payload || {}
+      const phase = String(event.phase || payload?.phase || this.currentSession.phase || '').trim()
+      if (phase) this._syncSessionPhase(phase)
+
+      if (event.type === 'run.started') {
+        this._startPendingAssistant()
         return
       }
+
+      if (event.type === 'phase.changed') {
+        const nextPhase = String(payload?.phase || phase || '').trim()
+        if (nextPhase) {
+          this._syncSessionPhase(nextPhase)
+          this._ensurePhaseMarker(nextPhase)
+        }
+        return
+      }
+
+      if (event.type === 'assistant.message.started') {
+        this._setPendingAssistantMessage(String(payload?.messageId || '').trim() || undefined, {
+          contentType: String(payload?.contentType || 'markdown'),
+        })
+        return
+      }
+
+      if (event.type === 'assistant.message.delta') {
+        const messageId = String(payload?.messageId || this.pendingAssistantMessage?.messageId || '').trim() || `pending-${Date.now()}`
+        const delta = String(payload?.delta || '')
+        this._setPendingAssistantMessage(messageId, {
+          content: `${this.pendingAssistantMessage?.content || ''}${delta}`,
+          contentType: String(payload?.contentType || this.pendingAssistantMessage?.contentType || 'markdown'),
+          hasDelta: !!(`${this.pendingAssistantMessage?.content || ''}${delta}`).trim(),
+        })
+        return
+      }
+
+      if (event.type === 'assistant.message.completed') {
+        const messageId = String(payload?.messageId || this.pendingAssistantMessage?.messageId || '').trim() || `assistant-${Date.now()}`
+        const content = String(payload?.content || this.pendingAssistantMessage?.content || '')
+        if (content.trim()) {
+          this._completePendingAssistantMessage(messageId, content)
+        } else {
+          this.pendingAssistantMessage = null
+        }
+        return
+      }
+
       if (event.type === 'question.required') {
-        this.currentSession.pendingQuestion = event.payload || null
-        this._recordActivity(event.type, '主 agent 需要用户补充检索信息。', event.phase)
+        this.currentSession.pendingQuestion = payload || null
         return
       }
-      if (event.type === 'question.resolved') {
-        this.currentSession.pendingQuestion = null
-        this._recordActivity(event.type, '已恢复追问流程。', event.phase)
-        return
-      }
+
       if (event.type === 'search_elements.updated') {
-        this.currentSession.searchElements = event.payload || null
-        this._recordActivity(event.type, '检索要素已更新。', event.phase)
+        this.currentSession.searchElements = payload || null
         return
       }
+
       if (event.type === 'plan.updated') {
-        this.currentSession.currentPlan = event.payload || null
-        const planVersion = Number(event.payload?.plan_version || event.payload?.planVersion || 0)
+        this.currentSession.currentPlan = payload || null
+        const planVersion = Number(payload?.plan_version || payload?.planVersion || 0)
         if (planVersion > 0) {
           this.currentSession.session.activePlanVersion = planVersion
         }
-        this._recordActivity(event.type, `检索计划草案已更新${planVersion > 0 ? `，当前为 V${planVersion}。` : '。'}`, event.phase)
         return
       }
+
       if (event.type === 'plan.awaiting_confirmation') {
-        this.currentSession.pendingConfirmation = event.payload || null
-        this._recordActivity(event.type, '检索计划已生成，等待用户确认。', event.phase)
+        this.currentSession.pendingConfirmation = payload || null
         return
       }
-      if (event.type === 'plan.confirmed') {
-        this.currentSession.pendingConfirmation = null
-        this._recordActivity(event.type, '已确认检索计划，开始执行检索。', event.phase)
-        return
-      }
+
       if (event.type === 'documents.updated') {
-        this.currentSession.candidateDocuments = Array.isArray(event.payload?.items) ? event.payload.items : []
-        this._recordActivity(event.type, `候选文献池已更新，共 ${this.currentSession.candidateDocuments.length} 条。`, event.phase)
+        this.currentSession.candidateDocuments = Array.isArray(payload?.items) ? payload.items : []
         return
       }
+
       if (event.type === 'selection.updated') {
-        this.currentSession.selectedDocuments = Array.isArray(event.payload?.items) ? event.payload.items : []
+        this.currentSession.selectedDocuments = Array.isArray(payload?.items) ? payload.items : []
         this.currentSession.session.selectedDocumentCount = this.currentSession.selectedDocuments.length
-        this._recordActivity(event.type, `当前对比文件集合已更新，共 ${this.currentSession.selectedDocuments.length} 篇。`, event.phase)
         return
       }
+
       if (event.type === 'feature_table.updated') {
-        this.currentSession.featureTable = event.payload || null
-        this._recordActivity(event.type, '特征对比表已刷新。', event.phase)
+        this.currentSession.featureTable = payload || null
         return
       }
+
       if (event.type === 'subagent.started') {
-        this._recordActivity(event.type, `${formatSubagentName(String(event.payload?.name || ''))}开始执行。`, event.phase)
+        const name = String(payload?.name || '').trim()
+        if (name) {
+          this.activeSubagentStatuses = {
+            ...this.activeSubagentStatuses,
+            [name]: {
+              name,
+              label: String(payload?.label || formatSubagentName(name)),
+              statusText: String(payload?.statusText || `${formatSubagentName(name)}执行中。`),
+              startedAt: nowIso(),
+            },
+          }
+        }
         return
       }
+
       if (event.type === 'subagent.completed') {
-        this._recordActivity(event.type, `${formatSubagentName(String(event.payload?.name || ''))}已完成。`, event.phase)
+        const name = String(payload?.name || '').trim()
+        if (name && this.activeSubagentStatuses[name]) {
+          const nextStatuses = { ...this.activeSubagentStatuses }
+          delete nextStatuses[name]
+          this.activeSubagentStatuses = nextStatuses
+        }
         return
       }
+
       if (event.type === 'run.completed') {
-        this._recordActivity(event.type, '当前轮次已完成。', event.phase)
+        this.activeRun = null
+        this.pendingAssistantMessage = null
+        this.activeSubagentStatuses = {}
         return
       }
+
       if (event.type === 'run.error') {
-        this._recordActivity(event.type, String(event.payload?.message || '当前流式轮次执行失败。'), event.phase)
+        this.error = String(payload?.message || '当前流式轮次执行失败。')
+        this._resetTransientRunState()
       }
     },
 
@@ -320,9 +487,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
           method: 'GET',
           token,
         })
-        if (this.activeSessionId && this.activeSessionId !== sessionId) {
-          this.activityLog = []
-        }
         this._applySnapshot(data)
       } catch (error: any) {
         this.error = error?.message || '加载会话失败'
@@ -367,7 +531,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
             const event = JSON.parse(dataLine) as AiSearchStreamEvent
             this._handleStreamEvent(event)
           } catch (_error) {
-            // ignore malformed chunks
+            // ignore malformed chunks and keepalive comments
           }
         }
       }
@@ -395,16 +559,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     async sendMessage(content: string) {
       const text = String(content || '').trim()
-      if (!text || !this.activeSessionId) return
-      if (!this.currentSession) return
+      if (!text || !this.activeSessionId || !this.currentSession) return
       this.error = ''
       this.streaming = true
-      this.currentSession.messages.push({
-        role: 'user',
-        kind: 'chat',
-        content: text,
-        created_at: new Date().toISOString(),
-      })
+      this._pushUserMessage(text, 'chat')
+      this.currentSession.pendingConfirmation = null
+      this._startPendingAssistant('drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/messages/stream`,
@@ -412,6 +572,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '发送消息失败'
+        this._resetTransientRunState()
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
@@ -420,9 +581,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     async answerQuestion(questionId: string, answer: string) {
       const text = String(answer || '').trim()
-      if (!text || !this.activeSessionId) return
+      if (!text || !this.activeSessionId || !this.currentSession) return
       this.error = ''
       this.streaming = true
+      this._pushUserMessage(text, 'answer', questionId)
+      this.currentSession.pendingQuestion = null
+      this._startPendingAssistant('drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/answers/stream`,
@@ -430,6 +594,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '提交回答失败'
+        this._resetTransientRunState()
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
@@ -437,9 +602,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async confirmPlan(planVersion: number) {
-      if (!this.activeSessionId) return
+      if (!this.activeSessionId || !this.currentSession) return
       this.error = ''
       this.streaming = true
+      this.currentSession.pendingConfirmation = null
+      this._startPendingAssistant('execute_search', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/plan/confirm/stream`,
@@ -447,6 +614,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '确认计划失败'
+        this._resetTransientRunState()
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
@@ -483,9 +651,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async generateFeatureTable(planVersion: number) {
-      if (!this.activeSessionId) return
+      if (!this.activeSessionId || !this.currentSession) return
       this.error = ''
       this.streaming = true
+      this._startPendingAssistant('generate_feature_table', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/feature-table/stream`,
@@ -493,6 +662,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '生成特征对比表失败'
+        this._resetTransientRunState()
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
@@ -500,9 +670,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async resumeExecution() {
-      if (!this.activeSessionId) return
+      if (!this.activeSessionId || !this.currentSession) return
       this.error = ''
       this.streaming = true
+      this._startPendingAssistant(this.currentSession.phase, true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/resume/stream`,
@@ -510,6 +681,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this.error = error?.message || '恢复执行失败'
+        this._resetTransientRunState()
       } finally {
         this.streaming = false
         await this.loadSession(this.activeSessionId)
@@ -564,7 +736,8 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
         this.currentSession = null
         this.activeSessionId = ''
-        this.activityLog = []
+        this.phaseMarkers = []
+        this._resetTransientRunState()
 
         await this.fetchSessions()
         const nextSessionId = this._sortedSessionIds()[0]

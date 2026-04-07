@@ -205,15 +205,12 @@
 
           <div v-else class="space-y-4">
             <template v-for="entry in conversationEntries" :key="entry.id">
-            <article v-if="entry.entryType === 'system'" class="flex justify-center">
-              <div class="w-full rounded-2xl border border-slate-200/80 bg-slate-50/60 px-3 py-2.5">
-                <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-medium text-slate-500">{{ entry.content }}</p>
-                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold" :class="phaseBadgeClass(entry.phase)">
-                    {{ phaseLabel(entry.phase) }}
-                  </span>
-                </div>
-              </div>
+            <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
+              <span class="h-px flex-1 bg-slate-200/80" />
+              <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
+                ------ {{ phaseLabel(entry.phase) }} ------
+              </p>
+              <span class="h-px flex-1 bg-slate-200/80" />
             </article>
 
             <article
@@ -227,7 +224,34 @@
                   ? 'bg-cyan-700 text-white shadow-cyan-100'
                   : 'border border-slate-200 bg-slate-50 text-slate-700'"
               >
-                <p class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
+                <template v-if="entry.entryType === 'pending-assistant'">
+                  <div v-if="entry.content" class="text-slate-700">
+                    <AiSearchMarkdown :content="entry.content" />
+                  </div>
+                  <div v-else class="space-y-3">
+                    <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
+                      <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                      <span>思考中</span>
+                    </div>
+                    <div class="space-y-2">
+                      <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
+                      <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                    </div>
+                  </div>
+                  <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-200/80 pt-3">
+                    <span
+                      v-for="item in pendingAssistantStatusItems"
+                      :key="`pending-status-${item}`"
+                      class="rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-500"
+                    >
+                      {{ item }}
+                    </span>
+                  </div>
+                </template>
+                <template v-else-if="entry.role === 'assistant'">
+                  <AiSearchMarkdown :content="entry.content" />
+                </template>
+                <p v-else class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
               </div>
             </article>
             </template>
@@ -498,7 +522,9 @@
                 </div>
                 <div v-if="featureTableSummary" class="rounded-2xl border border-slate-200 bg-slate-50/90 px-3 py-3">
                   <p class="text-xs font-semibold text-slate-500">总结</p>
-                  <p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{{ featureTableSummary }}</p>
+                  <div class="mt-1 text-slate-700">
+                    <AiSearchMarkdown :content="featureTableSummary" />
+                  </div>
                 </div>
               </div>
             </div>
@@ -577,7 +603,10 @@
                 发送消息
               </button>
             </div>
-            <p v-if="currentSession?.phase === 'searching'" class="mt-2 text-xs text-slate-500">
+            <p
+              v-if="['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(currentSession?.phase || '')"
+              class="mt-2 text-xs text-slate-500"
+            >
               当前轮检索执行中，完成后可继续调整计划。
             </p>
           </section>
@@ -648,6 +677,7 @@ import { Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIco
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import AiSearchSessionListItem from '~/components/ai-search/AiSearchSessionListItem.vue'
@@ -667,7 +697,17 @@ const aiSearchStore = useAiSearchStore()
 const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
-const { activityLog, currentSession, error, loading, sessions, streaming } = storeToRefs(aiSearchStore)
+const {
+  activeRun,
+  activeSubagentStatuses,
+  currentSession,
+  error,
+  loading,
+  pendingAssistantMessage,
+  phaseMarkers,
+  sessions,
+  streaming,
+} = storeToRefs(aiSearchStore)
 
 const composer = ref('')
 const answerDraft = ref('')
@@ -686,6 +726,7 @@ const resumeAction = computed<Record<string, any> | null>(() => currentSession.v
 const candidateDocuments = computed(() => currentSession.value?.candidateDocuments || [])
 const selectedDocuments = computed(() => currentSession.value?.selectedDocuments || [])
 const sourceSummary = computed<Record<string, any> | null>(() => currentSession.value?.sourceSummary || null)
+const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.value || {}))
 
 const normalizedPlan = computed<Record<string, any> | null>(() => {
   const currentPlan = currentSession.value?.currentPlan
@@ -750,6 +791,7 @@ const featureTableColumns = computed<string[]>(() => {
   return columns
 })
 const featureTableSummary = computed(() => String(currentSession.value?.featureTable?.summary_markdown || '').trim())
+const featureTableId = computed(() => String(currentSession.value?.featureTable?.feature_table_id || '').trim())
 const hasDetailPanels = computed(() => (
   hasDisplayedPlan.value
   || !!searchElementsObjective.value
@@ -765,6 +807,24 @@ const hasDetailPanels = computed(() => (
 ))
 
 const activePhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || 'collecting_requirements'))
+const activeRunPhase = computed(() => String(activeRun.value?.phase || '').trim())
+const pendingAssistantPhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || activeRunPhase.value || 'drafting_plan'))
+const pendingAssistantHasContent = computed(() => !!String(pendingAssistantMessage.value?.content || '').trim())
+const activeSubagentSummary = computed(() => {
+  if (!activeSubagentList.value.length) return ''
+  if (activeSubagentList.value.length === 1) return activeSubagentList.value[0].label
+  return `${activeSubagentList.value.length} 个子 agent 处理中`
+})
+const pendingAssistantStatusItems = computed(() => {
+  const items: string[] = []
+  if (pendingAssistantPhaseLabel.value) items.push(pendingAssistantPhaseLabel.value)
+  if (activeSubagentSummary.value) {
+    items.push(activeSubagentSummary.value)
+  } else if (!pendingAssistantHasContent.value) {
+    items.push('思考中')
+  }
+  return items
+})
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
 const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
@@ -814,7 +874,9 @@ const canSubmitHeaderRename = computed(() => {
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
   if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
-  if (currentSession.value.phase === 'searching') return '检索执行中，请稍后再补充消息。'
+  if (['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(currentSession.value.phase)) {
+    return '检索执行中，请稍后再补充消息。'
+  }
   return '请输入检索目标或补充要求。'
 })
 
@@ -891,9 +953,9 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
 }
 
 const conversationEntries = computed<Array<Record<string, any>>>(() => {
-  const merged: Array<Record<string, any>> = []
+  const entries: Array<Record<string, any>> = []
   messages.value.forEach((message, index) => {
-    merged.push({
+    entries.push({
       id: message.message_id || `message-${index}`,
       entryType: 'message',
       sortKey: toMillis(message.created_at),
@@ -901,18 +963,27 @@ const conversationEntries = computed<Array<Record<string, any>>>(() => {
       ...message,
     })
   })
-  activityLog.value.forEach((item, index) => {
-    merged.push({
-      id: `system-${item.id || index}`,
-      entryType: 'system',
-      content: item.text,
-      phase: item.phase,
-      createdAt: item.createdAt,
-      sortKey: toMillis(item.createdAt),
-      order: messages.value.length + index,
+  phaseMarkers.value.forEach((marker, index) => {
+    entries.push({
+      id: marker.id,
+      entryType: 'phase',
+      phase: marker.phase,
+      sortKey: toMillis(marker.createdAt),
+      order: 1000 + index,
     })
   })
-  return merged.sort((left, right) => {
+  if (pendingAssistantMessage.value) {
+    entries.push({
+      id: `pending-${pendingAssistantMessage.value.messageId}`,
+      entryType: 'pending-assistant',
+      role: 'assistant',
+      content: pendingAssistantMessage.value.content,
+      createdAt: pendingAssistantMessage.value.createdAt,
+      sortKey: toMillis(pendingAssistantMessage.value.createdAt),
+      order: 2000,
+    })
+  }
+  return entries.sort((left, right) => {
     if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
     return left.order - right.order
   })
@@ -921,18 +992,17 @@ const conversationEntries = computed<Array<Record<string, any>>>(() => {
 const suggestedPanel = computed<PanelKey>(() => {
   if (pendingConfirmation.value) return 'plan'
   const phase = currentSession.value?.phase || ''
-  if (phase === 'collecting_requirements' || phase === 'awaiting_user_answer' || phase === 'drafting_plan') {
+  if (
+    phase === 'collecting_requirements'
+    || phase === 'awaiting_user_answer'
+    || phase === 'drafting_plan'
+    || phase === 'claim_decomposition'
+    || phase === 'search_strategy'
+  ) {
     return searchElementsRows.value.length ? 'elements' : 'plan'
   }
-  if (phase === 'results_ready' || phase === 'completed') {
-    for (const item of [...activityLog.value].reverse()) {
-      if (item.type === 'feature_table.updated') return 'feature'
-      if (item.type === 'selection.updated') return 'selected'
-      if (item.type === 'documents.updated') return 'candidates'
-      if (item.type === 'search_elements.updated') return 'elements'
-      if (item.type === 'plan.updated' || item.type === 'plan.awaiting_confirmation') return 'plan'
-    }
-    if (featureTableRows.value.length) return 'feature'
+  if (phase === 'generate_feature_table' || phase === 'completed') {
+    if (featureTableId.value || featureTableSummary.value || featureTableRows.value.length) return 'feature'
     if (selectedDocuments.value.length) return 'selected'
     if (candidateDocuments.value.length) return 'candidates'
   }
@@ -964,9 +1034,13 @@ const phaseLabel = (phase: string): string => {
     collecting_requirements: '整理需求',
     awaiting_user_answer: '等待回答',
     drafting_plan: '起草计划',
+    claim_decomposition: '拆解权利要求',
+    search_strategy: '检索策略规划',
     awaiting_plan_confirmation: '待确认',
-    searching: '检索执行中',
-    results_ready: '结果已就绪',
+    execute_search: '执行检索',
+    coarse_screen: '粗筛候选文献',
+    close_read: '精读并提取证据',
+    generate_feature_table: '生成特征对比表',
     completed: '已完成',
     failed: '失败',
     cancelled: '已终止',
@@ -978,10 +1052,10 @@ const phaseBadgeClass = (phase: string): string => {
   if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation') {
     return 'border border-amber-200 bg-amber-50 text-amber-700'
   }
-  if (phase === 'searching') {
+  if (['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(phase)) {
     return 'border border-cyan-200 bg-cyan-50 text-cyan-700'
   }
-  if (phase === 'completed' || phase === 'results_ready') {
+  if (phase === 'completed') {
     return 'border border-emerald-200 bg-emerald-50 text-emerald-700'
   }
   if (phase === 'failed' || phase === 'cancelled') {
@@ -1193,9 +1267,9 @@ watch(
 )
 
 watch(
-  () => activityLog.value.length,
-  (value, previousValue) => {
-    if (value > previousValue && (currentSession.value?.phase === 'results_ready' || currentSession.value?.phase === 'completed')) {
+  () => [featureTableId.value, featureTableRows.value.length, featureTableSummary.value ? '1' : '0', selectedDocuments.value.length, candidateDocuments.value.length, currentSession.value?.phase || ''].join(':'),
+  () => {
+    if (currentSession.value?.phase === 'generate_feature_table' || currentSession.value?.phase === 'completed') {
       openPanel.value = suggestedPanel.value
     }
   },

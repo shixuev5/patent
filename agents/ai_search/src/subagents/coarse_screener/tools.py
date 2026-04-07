@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.stage_limits import DEFAULT_SHORTLIST_LIMIT
 from backend.time_utils import utc_now_z
 
@@ -15,6 +17,7 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
         payload_json: str = "",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """执行粗筛领域动作：读取待筛批次，或提交粗筛结果。"""
         version = int(plan_version or context.active_plan_version() or 0)
@@ -79,6 +82,7 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
                         coarse_screened_at=utc_now_z(),
                     )
                     applied["discarded"] += 1
+            context.notify_snapshot_changed(runtime, reason="documents")
             context.update_todos(
                 "coarse_screen",
                 "completed",

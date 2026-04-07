@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import time
 import types
 from pathlib import Path
 from typing import Any
@@ -64,8 +63,8 @@ from agents.ai_search.src.state import (
     PHASE_AWAITING_USER_ANSWER,
     PHASE_CLOSE_READ,
     PHASE_DRAFTING_PLAN,
+    PHASE_EXECUTE_SEARCH,
     PHASE_GENERATE_FEATURE_TABLE,
-    PHASE_SEARCHING,
     SEARCH_MODE_CLAIM_AWARE,
     SEARCH_MODE_TOPIC,
     get_ai_search_mode,
@@ -90,6 +89,15 @@ async def _collect_stream(stream):
     async for item in stream:
         items.append(item)
     return items
+
+
+def _parse_data_events(items: list[str]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for item in items:
+        if not item.startswith("data: "):
+            continue
+        events.append(json.loads(item[6:]))
+    return events
 
 
 def _set_phase(storage: SQLiteTaskStorage, task_id: str, phase: str, **meta_updates):
@@ -155,10 +163,10 @@ def test_delete_session_soft_deletes_ai_search_task(monkeypatch, tmp_path):
     assert service.list_sessions("guest_ai_search").total == 0
 
 
-def test_delete_session_rejects_searching_phase(monkeypatch, tmp_path):
+def test_delete_session_rejects_execute_search_phase(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(storage, created.sessionId, PHASE_SEARCHING)
+    _set_phase(storage, created.sessionId, PHASE_EXECUTE_SEARCH)
 
     with pytest.raises(HTTPException) as exc_info:
         service.delete_session(created.sessionId, "guest_ai_search")
@@ -170,7 +178,7 @@ def test_delete_session_rejects_searching_phase(monkeypatch, tmp_path):
 def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(storage, created.sessionId, PHASE_SEARCHING)
+    _set_phase(storage, created.sessionId, PHASE_EXECUTE_SEARCH)
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "继续调整计划")))
@@ -208,7 +216,7 @@ def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_SEARCHING,
+        PHASE_EXECUTE_SEARCH,
         current_task="execute_search",
         todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round"}],
     )
@@ -225,7 +233,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_SEARCHING,
+        PHASE_EXECUTE_SEARCH,
         current_task="execute_search",
         todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round", "last_error": "timeout"}],
     )
@@ -248,10 +256,10 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     events = asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.phase == PHASE_SEARCHING
+    assert snapshot.phase == PHASE_EXECUTE_SEARCH
     assert snapshot.resumeAction is not None
     assert snapshot.resumeAction["lastError"] == "timeout"
-    assert any("message.completed" in item for item in events)
+    assert any("assistant.message.completed" in item for item in events)
 
 
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
@@ -260,7 +268,7 @@ def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_pa
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_SEARCHING,
+        PHASE_EXECUTE_SEARCH,
         current_task="execute_search",
         todos=[{"key": "execute_search", "title": "执行检索召回", "status": "in_progress", "resume_from": "run_search_round"}],
     )
@@ -355,6 +363,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
 
     assert any("run.error" in item for item in events)
     assert any(ai_search_service_module.PLAN_CONFIRMATION_REQUIRED_CODE in item for item in events)
+    assert not any("run.completed" in item for item in events)
 
 
 def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(monkeypatch, tmp_path):
@@ -613,30 +622,78 @@ def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkey
     assert config["configurable"]["checkpoint_id"] == "0001"
 
 
-def test_stream_message_emits_heartbeat_during_long_running_main_agent(monkeypatch, tmp_path):
+def test_stream_message_emits_run_started_keepalive_and_assistant_completion(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(
-        service,
-        "_run_main_agent",
-        lambda task_id, thread_id, payload, **kwargs: (
-            time.sleep(0.03),
-            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "已生成计划。"}]}},
-        )[1],
-    )
-    monkeypatch.setattr(
-        ai_search_service_module,
-        "extract_latest_ai_message",
-        lambda values: values["messages"][-1]["content"],
-    )
+
+    class _FakeChunk:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "已生成计划。"}]}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload == {"messages": [{"role": "user", "content": "请开始规划"}]}
+            assert config["configurable"]["thread_id"].startswith("ai-search-")
+            assert kwargs["stream_mode"] == ["messages", "custom"]
+            await asyncio.sleep(0.03)
+            yield ((), "messages", (_FakeChunk("已生成计划。"), {}))
+
+        def get_state(self, config):
+            assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+    parsed = _parse_data_events(events)
 
-    assert any("run.heartbeat" in item for item in events)
-    assert any("message.completed" in item for item in events)
+    assert events[0].startswith("data: ")
+    assert parsed[0]["type"] == "run.started"
+    assert any(item.startswith(": keepalive") for item in events)
+    assert any(event["type"] == "assistant.message.delta" for event in parsed)
+    assert any(event["type"] == "assistant.message.completed" for event in parsed)
     assert events[-1].startswith("data: ")
     assert "run.completed" in events[-1]
+
+
+def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    class _FakeState:
+        values = {"messages": []}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
+            yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
+            yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
+            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "search-elements"}})
+            yield ((), "custom", {"type": "subagent.completed", "payload": {"name": "search-elements"}})
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "开始处理")))
+    parsed = _parse_data_events(events)
+
+    assert [event["type"] for event in parsed].count("phase.changed") == 1
+    assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索要素整理" for event in parsed)
+    assert any(event["type"] == "subagent.completed" and event["payload"]["label"] == "检索要素整理" for event in parsed)
 
 
 def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):

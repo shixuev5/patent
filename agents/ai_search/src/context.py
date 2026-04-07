@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from agents.ai_search.src.execution_state import normalize_execution_plan
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
+from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.state import (
     get_ai_search_meta,
     get_ai_search_mode,
@@ -44,7 +45,19 @@ class AiSearchAgentContext:
         self.storage = storage
         self.task_id = task_id
 
-    def update_task_phase(self, phase: str, **ai_search_updates: Any) -> None:
+    def emit_stream_event(self, runtime: Any | None, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
+        write_stream_event(
+            getattr(runtime, "stream_writer", None) if runtime is not None else None,
+            {
+                "type": str(event_type or "").strip(),
+                "payload": payload or {},
+            },
+        )
+
+    def notify_snapshot_changed(self, runtime: Any | None, *, reason: str = "") -> None:
+        self.emit_stream_event(runtime, "snapshot.changed", {"reason": str(reason or "").strip()})
+
+    def update_task_phase(self, phase: str, *, runtime: Any | None = None, **ai_search_updates: Any) -> None:
         task = self.storage.get_task(self.task_id)
         metadata = merge_ai_search_meta(task, current_phase=phase, **ai_search_updates)
         self.storage.update_task(
@@ -54,6 +67,8 @@ class AiSearchAgentContext:
             progress=phase_progress(phase),
             current_step=phase_step(phase),
         )
+        self.emit_stream_event(runtime, "phase.changed", {"phase": phase})
+        self.notify_snapshot_changed(runtime, reason="phase")
 
     def _normalized_todo(self, item: Dict[str, Any], existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         base = existing if isinstance(existing, dict) else {}

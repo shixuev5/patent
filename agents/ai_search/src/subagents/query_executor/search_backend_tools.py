@@ -6,6 +6,8 @@ import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.query_constraints import build_search_constraints, build_query_text, build_semantic_text
 from agents.common.search_clients.factory import SearchClientFactory
 from backend.storage.ai_search_support import stable_ai_search_document_id
@@ -43,7 +45,10 @@ def _detail_fingerprint(detail: Dict[str, Any]) -> Optional[str]:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def build_search_tools(storage: Any, task_id: str) -> List[Any]:
+def build_search_tools(context: Any) -> List[Any]:
+    storage = context.storage
+    task_id = context.task_id
+
     def _existing_documents(plan_version: int) -> Dict[str, Dict[str, Any]]:
         documents = storage.list_ai_search_documents(task_id, int(plan_version))
         mapping: Dict[str, Dict[str, Any]] = {}
@@ -146,6 +151,7 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
         limit: int = 20,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """
         调用智慧芽相似/追踪检索，并把命中文献写入候选池。
@@ -166,7 +172,9 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
                 }
             )
         result = client.get_similar_patents(str(seed_pn or "").strip().upper(), limit=int(limit or 20))
-        return _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="trace", executed_tool="search_trace")
+        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="trace", executed_tool="search_trace")
+        context.notify_snapshot_changed(runtime, reason="documents")
+        return output
 
     def search_semantic(
         plan_version: int,
@@ -175,6 +183,7 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
         limit: int = 50,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """
         调用智慧芽语义检索，并把命中文献写入候选池。
@@ -186,13 +195,16 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
             to_date=str(cutoff_date or "").strip(),
             limit=int(limit or 50),
         )
-        return _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="semantic", executed_tool="search_semantic")
+        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="semantic", executed_tool="search_semantic")
+        context.notify_snapshot_changed(runtime, reason="documents")
+        return output
 
     def search_boolean(
         plan_version: int,
         batch_id: str,
         query_text: str,
         limit: int = 50,
+        runtime: ToolRuntime | None = None,
     ) -> str:
         """
         调用智慧芽布尔检索，并把命中文献写入候选池。
@@ -201,7 +213,9 @@ def build_search_tools(storage: Any, task_id: str) -> List[Any]:
         result = client.search(str(query_text or "").strip(), limit=int(limit or 50))
         if not isinstance(result, dict):
             result = {"total": 0, "results": []}
-        return _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="boolean", executed_tool="search_boolean")
+        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="boolean", executed_tool="search_boolean")
+        context.notify_snapshot_changed(runtime, reason="documents")
+        return output
 
     def count_boolean(query_text: str) -> str:
         """

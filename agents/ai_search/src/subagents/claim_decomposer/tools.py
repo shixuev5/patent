@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any, Dict, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.claim_support import (
     build_claim_packets as build_claim_packets_rows,
     expand_claim_dependency as expand_claim_dependency_rows,
@@ -17,7 +19,11 @@ from agents.ai_search.src.state import PHASE_CLAIM_DECOMPOSITION
 
 
 def build_claim_decomposer_tools(context: Any) -> List[Any]:
-    def load_structured_claims(markdown_text: str = "", source: str = "auto") -> str:
+    def load_structured_claims(
+        markdown_text: str = "",
+        source: str = "auto",
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """加载源专利的结构化权利要求。"""
         source_text = str(source or "").strip().lower()
         claims: List[Dict[str, Any]] = []
@@ -29,10 +35,14 @@ def build_claim_decomposer_tools(context: Any) -> List[Any]:
             if patent_data:
                 claims = load_structured_claims_from_patent_data(patent_data)
                 source_text = "source_patent_json"
-        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, current_task="claim_decomposition")
+        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, runtime=runtime, current_task="claim_decomposition")
         return json.dumps({"source": source_text or "unknown", "claims": claims}, ensure_ascii=False)
 
-    def expand_claim_dependency(claims_json: str, claim_ids_json: str = "") -> str:
+    def expand_claim_dependency(
+        claims_json: str,
+        claim_ids_json: str = "",
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """展开从属权利要求依赖链。"""
         try:
             claims_payload = json.loads(claims_json) if claims_json else []
@@ -48,10 +58,15 @@ def build_claim_decomposer_tools(context: Any) -> List[Any]:
             claims_payload,
             claim_ids_payload if isinstance(claim_ids_payload, list) else [],
         )
-        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, current_task="claim_decomposition")
+        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, runtime=runtime, current_task="claim_decomposition")
         return json.dumps({"expanded_claims": expanded}, ensure_ascii=False)
 
-    def build_claim_packets(expanded_claims_json: str, search_elements_json: str = "", claim_ids_json: str = "") -> str:
+    def build_claim_packets(
+        expanded_claims_json: str,
+        search_elements_json: str = "",
+        claim_ids_json: str = "",
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """把 expanded claims 与 search elements 组装成 claim packets。"""
         try:
             expanded_payload = json.loads(expanded_claims_json) if expanded_claims_json else []
@@ -76,10 +91,10 @@ def build_claim_decomposer_tools(context: Any) -> List[Any]:
         }
         if requested:
             packets = [item for item in packets if str(item.get("claim_id") or "").strip() in requested]
-        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, current_task="claim_decomposition")
+        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, runtime=runtime, current_task="claim_decomposition")
         return json.dumps({"claim_packets": packets}, ensure_ascii=False)
 
-    def save_claim_decomposition(payload_json: str) -> str:
+    def save_claim_decomposition(payload_json: str, runtime: ToolRuntime | None = None) -> str:
         """保存 claim decomposition 结果。"""
         payload = extract_json_object(payload_json)
         context.storage.create_ai_search_message(
@@ -93,7 +108,7 @@ def build_claim_decomposer_tools(context: Any) -> List[Any]:
                 "metadata": payload,
             }
         )
-        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, current_task="claim_decomposition")
+        context.update_task_phase(PHASE_CLAIM_DECOMPOSITION, runtime=runtime, current_task="claim_decomposition")
         return "claim decomposition saved"
 
     return [

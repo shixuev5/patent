@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import FastAPI
@@ -33,16 +34,23 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
 
     class _FakeState:
         values = {"messages": [{"role": "assistant", "content": "好的，我先整理检索计划。"}]}
+        interrupts = ()
+
+    class _FakeChunk:
+        def __init__(self, content: str):
+            self.content = content
 
     class _FakeAgent:
         def __init__(self):
             self.checkpointer = object()
 
-        def stream(self, payload, config):
+        async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "请帮我检索相关方案"}]}
             assert config["configurable"]["thread_id"].startswith("ai-search-")
             assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
-            yield {"messages": []}
+            assert kwargs["stream_mode"] == ["messages", "custom"]
+            await asyncio.sleep(0)
+            yield ((), "messages", (_FakeChunk("好的，我先整理检索计划。"), {}))
 
         def get_state(self, config):
             assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
@@ -69,7 +77,7 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     body = response.text
-    assert "message.completed" in body
+    assert "assistant.message.completed" in body
     assert "run.completed" in body
 
     events = []
@@ -78,8 +86,14 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
             continue
         events.append(json.loads(block[6:]))
 
-    assert events[0]["type"] == "message.completed"
-    assert events[0]["payload"]["content"] == "好的，我先整理检索计划。"
+    assert events[0]["type"] == "run.started"
+    assert any(event["type"] == "assistant.message.started" for event in events)
+    assert any(event["type"] == "assistant.message.delta" for event in events)
+    assert any(
+        event["type"] == "assistant.message.completed"
+        and event["payload"]["content"] == "好的，我先整理检索计划。"
+        for event in events
+    )
     assert events[-1]["type"] == "run.completed"
 
 
@@ -88,7 +102,7 @@ def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):
 
     async def _fake_resume(session_id: str, owner_id: str):
         assert owner_id == "guest_ai_search"
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'searching', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'execute_search', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service, "stream_resume", _fake_resume)
 

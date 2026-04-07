@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any, List
 
+from langchain.tools import ToolRuntime
+
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.stage_limits import DEFAULT_SELECTED_LIMIT
 from agents.ai_search.src.state import PHASE_GENERATE_FEATURE_TABLE
@@ -13,7 +15,12 @@ from agents.ai_search.src.subagents.feature_comparer.prompt import build_feature
 
 
 def build_feature_comparer_tools(context: Any) -> List[Any]:
-    def run_feature_compare(operation: str = "load", payload_json: str = "", plan_version: int = 0) -> str:
+    def run_feature_compare(
+        operation: str = "load",
+        payload_json: str = "",
+        plan_version: int = 0,
+        runtime: ToolRuntime | None = None,
+    ) -> str:
         """执行特征对比领域动作：读取对比上下文，或提交对比结果。"""
         version = int(plan_version or context.active_plan_version() or 0)
         op = str(operation or "load").strip().lower()
@@ -81,6 +88,7 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                 )
             context.update_task_phase(
                 PHASE_GENERATE_FEATURE_TABLE,
+                runtime=runtime,
                 active_plan_version=version,
                 current_feature_table_id=feature_table_id,
                 current_task="generate_feature_table",
