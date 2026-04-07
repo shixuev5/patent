@@ -50,6 +50,7 @@ sys.modules.setdefault("agents.common.retrieval", stub_retrieval_pkg)
 sys.modules.setdefault("agents.common.retrieval.local_evidence_retriever", stub_local_retriever)
 
 from backend.ai_search import service as ai_search_service_module
+from backend.ai_search.analysis_seed import seed_search_elements_from_analysis
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
     RESUME_NOT_AVAILABLE_CODE,
@@ -186,7 +187,7 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
 
 
-def test_stream_message_upgrades_to_claim_aware_search_for_claim_like_input(monkeypatch, tmp_path):
+def test_stream_message_keeps_topic_search_without_structured_claim_source(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     monkeypatch.setattr(
@@ -207,7 +208,7 @@ def test_stream_message_upgrades_to_claim_aware_search_for_claim_like_input(monk
 
     task = storage.get_task(created.sessionId)
 
-    assert get_ai_search_mode(task) == SEARCH_MODE_CLAIM_AWARE
+    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC
 
 
 def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path):
@@ -918,7 +919,7 @@ def _create_completed_analysis_task(
 
 
 def test_seed_search_elements_from_analysis_preserves_context_fields():
-    payload = ai_search_service_module._seed_search_elements_from_analysis(
+    payload = seed_search_elements_from_analysis(
         _build_analysis_payload(),
         _build_patent_payload(),
     )
@@ -934,7 +935,7 @@ def test_seed_search_elements_from_analysis_preserves_context_fields():
 
 
 def test_seed_search_elements_from_analysis_keeps_optional_fields_missing():
-    payload = ai_search_service_module._seed_search_elements_from_analysis(
+    payload = seed_search_elements_from_analysis(
         _build_analysis_payload(include_semantic=False),
         _build_patent_payload(with_applicants=False, with_dates=False),
     )

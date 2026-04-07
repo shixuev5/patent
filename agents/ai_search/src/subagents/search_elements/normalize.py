@@ -1,4 +1,4 @@
-"""Normalization helpers for structured search elements."""
+"""结构化检索要素的规范化辅助函数。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 DATE_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 COMPACT_DATE_TEXT_RE = re.compile(r"^\d{8}$")
+DATE_PART_RE = re.compile(r"\d+")
 
 
 def _normalize_string_list(values: Any) -> List[str]:
@@ -31,6 +32,16 @@ def normalize_date_text(value: Any) -> str | None:
         return text
     if COMPACT_DATE_TEXT_RE.fullmatch(text):
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    parts = DATE_PART_RE.findall(text)
+    if len(parts) < 3:
+        return None
+    year, month, day = parts[:3]
+    if len(year) != 4:
+        return None
+    try:
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    except ValueError:
+        return None
     return None
 
 
