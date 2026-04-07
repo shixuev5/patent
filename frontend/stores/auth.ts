@@ -22,43 +22,7 @@ interface GuardResolution {
   guard: GuardClient | null
 }
 
-const UTF8_DECODER = process.client ? new TextDecoder('utf-8', { fatal: false }) : null
 let authInitializationInFlight: Promise<void> | null = null
-
-const decodeBase64Utf8 = (base64Text: string): string => {
-  const binary = atob(base64Text)
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
-  return UTF8_DECODER ? UTF8_DECODER.decode(bytes) : binary
-}
-
-const containsNonLatin1Chars = (value: string): boolean => Array.from(value).some((char) => char.charCodeAt(0) > 0xff)
-
-const containsLatin1Supplement = (value: string): boolean => /[\u0080-\u00ff]/.test(value)
-
-const normalizeUserText = (value: unknown): string | undefined => {
-  if (typeof value !== 'string') return undefined
-  const text = value.trim()
-  if (!text) return undefined
-  if (!process.client || !UTF8_DECODER) return text
-  if (containsNonLatin1Chars(text) || !containsLatin1Supplement(text)) return text
-  try {
-    const bytes = Uint8Array.from(text, (char) => char.charCodeAt(0))
-    const repaired = UTF8_DECODER.decode(bytes).trim()
-    if (!repaired || repaired === text || repaired.includes('\ufffd')) return text
-    return repaired
-  } catch (_error) {
-    return text
-  }
-}
-
-const selectPreferredUserText = (primary: unknown, fallback: unknown): string | undefined => {
-  const preferred = normalizeUserText(primary)
-  const backup = normalizeUserText(fallback)
-  if (!preferred) return backup
-  if (!backup) return preferred
-  if (preferred.includes('\ufffd') && !backup.includes('\ufffd')) return backup
-  return preferred
-}
 
 const parseJwtPayload = (token: string): Record<string, unknown> | null => {
   try {
@@ -67,7 +31,7 @@ const parseJwtPayload = (token: string): Record<string, unknown> | null => {
     const payload = parts[1]
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
-    const decoded = decodeBase64Utf8(padded)
+    const decoded = atob(padded)
     return JSON.parse(decoded) as Record<string, unknown>
   } catch (_error) {
     return null
@@ -100,11 +64,11 @@ const toAuthingUser = (userInfo: unknown): AuthingUser => {
   const payload = storedToken ? parseJwtPayload(storedToken) : null
   return {
     sub: String(info.sub || info.id || payload?.sub || '').trim(),
-    name: selectPreferredUserText(info.name, payload?.name),
-    nickname: selectPreferredUserText(info.nickname, payload?.nickname),
-    email: selectPreferredUserText(info.email, payload?.email),
-    phone: selectPreferredUserText(info.phone, payload?.phone_number),
-    picture: selectPreferredUserText(info.picture || info.photo, payload?.picture),
+    name: typeof info.name === 'string' ? info.name : (typeof payload?.name === 'string' ? payload.name : undefined),
+    nickname: typeof info.nickname === 'string' ? info.nickname : (typeof payload?.nickname === 'string' ? payload.nickname : undefined),
+    email: typeof info.email === 'string' ? info.email : (typeof payload?.email === 'string' ? payload.email : undefined),
+    phone: typeof info.phone === 'string' ? info.phone : (typeof payload?.phone_number === 'string' ? payload.phone_number : undefined),
+    picture: typeof (info.picture || info.photo) === 'string' ? (info.picture || info.photo) : (typeof payload?.picture === 'string' ? payload.picture : undefined),
     email_verified: info.email_verified ?? info.emailVerified,
     phone_verified: info.phone_verified ?? info.phoneVerified,
     updated_at: info.updated_at ?? info.updatedAt ?? payload?.updated_at,
@@ -122,11 +86,11 @@ const getFallbackUserFromStoredIdToken = (): AuthingUser | null => {
   if (!sub) return null
   return {
     sub,
-    name: normalizeUserText(payload?.name),
-    nickname: normalizeUserText(payload?.nickname),
-    email: normalizeUserText(payload?.email),
-    phone: normalizeUserText(payload?.phone_number),
-    picture: normalizeUserText(payload?.picture),
+    name: typeof payload?.name === 'string' ? payload.name : undefined,
+    nickname: typeof payload?.nickname === 'string' ? payload.nickname : undefined,
+    email: typeof payload?.email === 'string' ? payload.email : undefined,
+    phone: typeof payload?.phone_number === 'string' ? payload.phone_number : undefined,
+    picture: typeof payload?.picture === 'string' ? payload.picture : undefined,
     email_verified: typeof payload?.email_verified === 'boolean' ? payload.email_verified : undefined,
     updated_at: typeof payload?.updated_at === 'string' ? payload.updated_at : undefined,
     token,

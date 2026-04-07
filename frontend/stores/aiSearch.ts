@@ -14,6 +14,15 @@ import type {
 
 const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table']
 
+interface AiSearchSessionRuntime {
+  activeRun: AiSearchActiveRun | null
+  pendingAssistantMessage: AiSearchPendingAssistantMessage | null
+  phaseMarkers: AiSearchPhaseMarker[]
+  activeSubagentStatuses: Record<string, AiSearchSubagentStatus>
+  streaming: boolean
+  error: string
+}
+
 const phaseToTaskStatus = (phase: string): string => {
   if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation') return 'paused'
   if (phase === 'completed') return 'completed'
@@ -53,9 +62,9 @@ const parseErrorMessage = async (response: Response): Promise<string> => {
   }
 }
 
-const normalizeMessages = (messages: Array<Record<string, any>> | undefined) => {
-  return Array.isArray(messages) ? messages : []
-}
+const normalizeMessages = (messages: Array<Record<string, any>> | undefined) => (
+  Array.isArray(messages) ? messages : []
+)
 
 const toMillis = (value?: string | null): number => {
   const ts = Date.parse(String(value || ''))
@@ -72,28 +81,65 @@ const pendingAssistantFromId = (messageId: string, createdAt?: string): AiSearch
   hasDelta: false,
 })
 
+const createEmptyRuntime = (): AiSearchSessionRuntime => ({
+  activeRun: null,
+  pendingAssistantMessage: null,
+  phaseMarkers: [],
+  activeSubagentStatuses: {},
+  streaming: false,
+  error: '',
+})
+
 export const useAiSearchStore = defineStore('aiSearch', {
   state: () => ({
     sessions: [] as Array<Record<string, any>>,
-    activeSessionId: '' as string,
-    currentSession: null as AiSearchSnapshot | null,
-    activeRun: null as AiSearchActiveRun | null,
-    pendingAssistantMessage: null as AiSearchPendingAssistantMessage | null,
-    phaseMarkers: [] as AiSearchPhaseMarker[],
-    activeSubagentStatuses: {} as Record<string, AiSearchSubagentStatus>,
+    currentSessionId: '' as string,
+    sessionSnapshotsById: {} as Record<string, AiSearchSnapshot>,
+    sessionRuntimeById: {} as Record<string, AiSearchSessionRuntime>,
+    sessionMutationBusyById: {} as Record<string, boolean>,
     loading: false,
-    streaming: false,
-    error: '' as string,
   }),
 
   getters: {
-    activeSummary: (state) => state.sessions.find((item) => item.sessionId === state.activeSessionId) || null,
+    currentSession: (state): AiSearchSnapshot | null => {
+      const sessionId = String(state.currentSessionId || '').trim()
+      return sessionId ? (state.sessionSnapshotsById[sessionId] || null) : null
+    },
 
-    phase: (state) => state.currentSession?.phase || '',
+    activeSummary: (state) => state.sessions.find((item) => item.sessionId === state.currentSessionId) || null,
 
-    inputDisabled: (state) => {
-      const phase = state.currentSession?.phase || ''
-      return state.streaming || isExecutionPhase(phase) || !!state.currentSession?.pendingQuestion || !!state.currentSession?.resumeAction?.available
+    phase(): string {
+      return this.currentSession?.phase || ''
+    },
+
+    pendingAssistantMessage(): AiSearchPendingAssistantMessage | null {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return sessionId ? (this.sessionRuntimeById[sessionId]?.pendingAssistantMessage || null) : null
+    },
+
+    phaseMarkers(): AiSearchPhaseMarker[] {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return sessionId ? (this.sessionRuntimeById[sessionId]?.phaseMarkers || []) : []
+    },
+
+    activeSubagentStatuses(): Record<string, AiSearchSubagentStatus> {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return sessionId ? (this.sessionRuntimeById[sessionId]?.activeSubagentStatuses || {}) : {}
+    },
+
+    streaming(): boolean {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return !!(sessionId && this.sessionRuntimeById[sessionId]?.streaming)
+    },
+
+    error(): string {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return sessionId ? String(this.sessionRuntimeById[sessionId]?.error || '') : ''
+    },
+
+    inputDisabled(): boolean {
+      const phase = this.currentSession?.phase || ''
+      return this.streaming || isExecutionPhase(phase) || !!this.currentSession?.pendingQuestion || !!this.currentSession?.resumeAction?.available
     },
   },
 
@@ -107,10 +153,46 @@ export const useAiSearchStore = defineStore('aiSearch', {
       return taskStore.authToken
     },
 
-    _resetTransientRunState() {
-      this.activeRun = null
-      this.pendingAssistantMessage = null
-      this.activeSubagentStatuses = {}
+    _ensureRuntime(sessionId: string): AiSearchSessionRuntime {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return createEmptyRuntime()
+      if (!this.sessionRuntimeById[targetSessionId]) {
+        this.sessionRuntimeById[targetSessionId] = createEmptyRuntime()
+      }
+      return this.sessionRuntimeById[targetSessionId]
+    },
+
+    _setRuntime(sessionId: string, patch: Partial<AiSearchSessionRuntime>) {
+      const runtime = this._ensureRuntime(sessionId)
+      this.sessionRuntimeById[sessionId] = {
+        ...runtime,
+        ...patch,
+      }
+    },
+
+    _resetTransientRunState(sessionId: string) {
+      this._setRuntime(sessionId, {
+        activeRun: null,
+        pendingAssistantMessage: null,
+        activeSubagentStatuses: {},
+      })
+    },
+
+    _setRuntimeError(sessionId: string, message: string) {
+      this._setRuntime(sessionId, { error: String(message || '') })
+    },
+
+    _setSessionMutationBusy(sessionId: string, busy: boolean) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      this.sessionMutationBusyById = {
+        ...this.sessionMutationBusyById,
+        [targetSessionId]: busy,
+      }
+    },
+
+    isSessionMutating(sessionId: string): boolean {
+      return !!this.sessionMutationBusyById[String(sessionId || '').trim()]
     },
 
     _upsertSessionSummary(summary: Record<string, any>) {
@@ -121,14 +203,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
         this.sessions[index] = { ...this.sessions[index], ...summary }
       } else {
         this.sessions.unshift(summary)
-      }
-    },
-
-    _syncCurrentSessionSummary(summary: Record<string, any>) {
-      if (!this.currentSession || this.currentSession.session.sessionId !== summary.sessionId) return
-      this.currentSession.session = {
-        ...this.currentSession.session,
-        ...summary,
       }
     },
 
@@ -145,38 +219,49 @@ export const useAiSearchStore = defineStore('aiSearch', {
         .filter(Boolean)
     },
 
-    _applySnapshot(snapshot: AiSearchSnapshot) {
-      const previousSessionId = this.currentSession?.session.sessionId || ''
-      const switchingSession = previousSessionId && previousSessionId !== snapshot.session.sessionId
-      this.currentSession = {
-        ...snapshot,
-        messages: normalizeMessages(snapshot.messages),
-      }
-      this.activeSessionId = snapshot.session.sessionId
-      if (switchingSession) {
-        this.phaseMarkers = []
-        this._resetTransientRunState()
-      }
-      this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
+    _setCurrentSessionId(sessionId: string) {
+      this.currentSessionId = String(sessionId || '').trim()
     },
 
-    _pushMessage(message: Record<string, any>) {
-      if (!this.currentSession) return
+    _applySnapshot(snapshot: AiSearchSnapshot, options: { activate?: boolean } = {}) {
+      const sessionId = String(snapshot.session?.sessionId || '').trim()
+      if (!sessionId) return
+      this.sessionSnapshotsById = {
+        ...this.sessionSnapshotsById,
+        [sessionId]: {
+          ...snapshot,
+          messages: normalizeMessages(snapshot.messages),
+        },
+      }
+      this._ensureRuntime(sessionId)
+      this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
+      if (options.activate !== false) {
+        this._setCurrentSessionId(sessionId)
+      }
+    },
+
+    _getSnapshot(sessionId: string): AiSearchSnapshot | null {
+      return this.sessionSnapshotsById[String(sessionId || '').trim()] || null
+    },
+
+    _pushMessage(sessionId: string, message: Record<string, any>) {
+      const snapshot = this._getSnapshot(sessionId)
+      if (!snapshot) return
       const messageId = String(message.message_id || '').trim()
       if (messageId) {
-        const index = this.currentSession.messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
+        const index = snapshot.messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
         if (index >= 0) {
-          this.currentSession.messages[index] = { ...this.currentSession.messages[index], ...message }
+          snapshot.messages[index] = { ...snapshot.messages[index], ...message }
           return
         }
       }
-      this.currentSession.messages.push(message)
+      snapshot.messages.push(message)
     },
 
-    _pushAssistantMessage(content: string, messageId?: string) {
+    _pushAssistantMessage(sessionId: string, content: string, messageId?: string) {
       const text = String(content || '')
-      if (!this.currentSession || !text.trim()) return
-      this._pushMessage({
+      if (!text.trim()) return
+      this._pushMessage(sessionId, {
         message_id: messageId || `assistant-${Date.now()}`,
         role: 'assistant',
         kind: 'chat',
@@ -185,10 +270,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
       })
     },
 
-    _pushUserMessage(content: string, kind: 'chat' | 'answer' = 'chat', questionId?: string) {
+    _pushUserMessage(sessionId: string, content: string, kind: 'chat' | 'answer' = 'chat', questionId?: string) {
       const text = String(content || '')
-      if (!this.currentSession || !text.trim()) return
-      this._pushMessage({
+      if (!text.trim()) return
+      this._pushMessage(sessionId, {
         message_id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: 'user',
         kind,
@@ -198,180 +283,200 @@ export const useAiSearchStore = defineStore('aiSearch', {
       })
     },
 
-    _syncSessionPhase(phase: string) {
-      if (!this.currentSession) return
+    _syncSessionPhase(sessionId: string, phase: string) {
+      const snapshot = this._getSnapshot(sessionId)
+      if (!snapshot) return
+      const runtime = this._ensureRuntime(sessionId)
       const normalizedPhase = String(phase || '').trim()
       if (!normalizedPhase) return
-      this.currentSession.phase = normalizedPhase
-      this.currentSession.session.phase = normalizedPhase
-      this.currentSession.session.status = phaseToTaskStatus(normalizedPhase)
+      snapshot.phase = normalizedPhase
+      snapshot.session.phase = normalizedPhase
+      snapshot.session.status = phaseToTaskStatus(normalizedPhase)
       if (normalizedPhase !== 'awaiting_user_answer') {
-        this.currentSession.pendingQuestion = null
+        snapshot.pendingQuestion = null
       }
       if (normalizedPhase !== 'awaiting_plan_confirmation') {
-        this.currentSession.pendingConfirmation = null
+        snapshot.pendingConfirmation = null
       }
       if (!isExecutionPhase(normalizedPhase)) {
-        this.currentSession.resumeAction = null
+        snapshot.resumeAction = null
       }
-      if (this.activeRun) {
-        this.activeRun = { ...this.activeRun, phase: normalizedPhase }
+      if (runtime.activeRun) {
+        runtime.activeRun = { ...runtime.activeRun, phase: normalizedPhase }
       }
       this._upsertSessionSummary({
-        ...this.currentSession.session,
+        ...snapshot.session,
         phase: normalizedPhase,
-        status: this.currentSession.session.status,
+        status: snapshot.session.status,
       })
     },
 
-    _ensurePhaseMarker(phase: string) {
+    _ensurePhaseMarker(sessionId: string, phase: string) {
       const normalizedPhase = String(phase || '').trim()
-      const runKey = String(this.activeRun?.runKey || '').trim()
+      const runtime = this._ensureRuntime(sessionId)
+      const runKey = String(runtime.activeRun?.runKey || '').trim()
       if (!normalizedPhase || !runKey) return
-      if (this.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
-      this.phaseMarkers.push({
-        id: `phase-${runKey}-${normalizedPhase}`,
-        runKey,
-        phase: normalizedPhase,
-        createdAt: nowIso(),
-      })
+      if (runtime.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
+      runtime.phaseMarkers = [
+        ...runtime.phaseMarkers,
+        {
+          id: `phase-${runKey}-${normalizedPhase}`,
+          runKey,
+          phase: normalizedPhase,
+          createdAt: nowIso(),
+        },
+      ]
     },
 
-    _startPendingAssistant(phaseHint?: string, forceNewRun: boolean = false) {
-      if (!this.currentSession) return
-      const createdAt = forceNewRun ? nowIso() : (this.pendingAssistantMessage?.createdAt || nowIso())
-      const messageId = forceNewRun ? `pending-${Date.now()}` : (this.pendingAssistantMessage?.messageId || `pending-${Date.now()}`)
-      const nextPhase = String(phaseHint || this.currentSession.phase || '').trim()
-      if (forceNewRun || !this.activeRun) {
-        this.activeRun = {
+    _startPendingAssistant(sessionId: string, phaseHint?: string, forceNewRun: boolean = false) {
+      const snapshot = this._getSnapshot(sessionId)
+      const runtime = this._ensureRuntime(sessionId)
+      const createdAt = forceNewRun ? nowIso() : (runtime.pendingAssistantMessage?.createdAt || nowIso())
+      const messageId = forceNewRun ? `pending-${Date.now()}` : (runtime.pendingAssistantMessage?.messageId || `pending-${Date.now()}`)
+      const nextPhase = String(phaseHint || snapshot?.phase || '').trim()
+      if (forceNewRun || !runtime.activeRun) {
+        runtime.activeRun = {
           runKey: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          sessionId: this.currentSession.session.sessionId,
+          sessionId,
           startedAt: createdAt,
           phase: nextPhase,
         }
-        this.activeSubagentStatuses = {}
-        this.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
+        runtime.activeSubagentStatuses = {}
+        runtime.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
         return
       }
-      this.activeRun = {
-        ...this.activeRun,
-        phase: nextPhase || this.activeRun.phase,
+      runtime.activeRun = {
+        ...runtime.activeRun,
+        phase: nextPhase || runtime.activeRun.phase,
       }
-      if (!this.pendingAssistantMessage) {
-        this.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
+      if (!runtime.pendingAssistantMessage) {
+        runtime.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
       }
     },
 
-    _setPendingAssistantMessage(messageId?: string, patch?: Partial<AiSearchPendingAssistantMessage>) {
-      this._startPendingAssistant()
-      const current = this.pendingAssistantMessage || pendingAssistantFromId(messageId || `pending-${Date.now()}`)
-      this.pendingAssistantMessage = {
+    _setPendingAssistantMessage(sessionId: string, messageId?: string, patch?: Partial<AiSearchPendingAssistantMessage>) {
+      this._startPendingAssistant(sessionId)
+      const runtime = this._ensureRuntime(sessionId)
+      const current = runtime.pendingAssistantMessage || pendingAssistantFromId(messageId || `pending-${Date.now()}`)
+      runtime.pendingAssistantMessage = {
         ...current,
         ...(messageId ? { messageId } : {}),
         ...patch,
       }
     },
 
-    _completePendingAssistantMessage(messageId: string, content: string) {
-      this._pushAssistantMessage(content, messageId)
-      this.pendingAssistantMessage = null
+    _completePendingAssistantMessage(sessionId: string, messageId: string, content: string) {
+      this._pushAssistantMessage(sessionId, content, messageId)
+      this._ensureRuntime(sessionId).pendingAssistantMessage = null
+    },
+
+    _setStreaming(sessionId: string, streaming: boolean) {
+      this._setRuntime(sessionId, { streaming })
     },
 
     _handleStreamEvent(event: AiSearchStreamEvent) {
-      if (!this.currentSession || event.sessionId !== this.currentSession.session.sessionId) return
-
+      const sessionId = String(event.sessionId || '').trim()
+      if (!sessionId) return
+      const snapshot = this._getSnapshot(sessionId)
+      const runtime = this._ensureRuntime(sessionId)
       const payload = event.payload || {}
-      const phase = String(event.phase || payload?.phase || this.currentSession.phase || '').trim()
-      if (phase) this._syncSessionPhase(phase)
+      const phase = String(event.phase || payload?.phase || snapshot?.phase || '').trim()
+
+      if (phase && snapshot) this._syncSessionPhase(sessionId, phase)
 
       if (event.type === 'run.started') {
-        this._startPendingAssistant()
+        this._setRuntimeError(sessionId, '')
+        this._startPendingAssistant(sessionId)
         return
       }
 
       if (event.type === 'phase.changed') {
         const nextPhase = String(payload?.phase || phase || '').trim()
-        if (nextPhase) {
-          this._syncSessionPhase(nextPhase)
-          this._ensurePhaseMarker(nextPhase)
+        if (nextPhase && snapshot) {
+          this._syncSessionPhase(sessionId, nextPhase)
+          this._ensurePhaseMarker(sessionId, nextPhase)
         }
         return
       }
 
       if (event.type === 'assistant.message.started') {
-        this._setPendingAssistantMessage(String(payload?.messageId || '').trim() || undefined, {
+        this._setPendingAssistantMessage(sessionId, String(payload?.messageId || '').trim() || undefined, {
           contentType: String(payload?.contentType || 'markdown'),
         })
         return
       }
 
       if (event.type === 'assistant.message.delta') {
-        const messageId = String(payload?.messageId || this.pendingAssistantMessage?.messageId || '').trim() || `pending-${Date.now()}`
+        const messageId = String(payload?.messageId || runtime.pendingAssistantMessage?.messageId || '').trim() || `pending-${Date.now()}`
         const delta = String(payload?.delta || '')
-        this._setPendingAssistantMessage(messageId, {
-          content: `${this.pendingAssistantMessage?.content || ''}${delta}`,
-          contentType: String(payload?.contentType || this.pendingAssistantMessage?.contentType || 'markdown'),
-          hasDelta: !!(`${this.pendingAssistantMessage?.content || ''}${delta}`).trim(),
+        this._setPendingAssistantMessage(sessionId, messageId, {
+          content: `${runtime.pendingAssistantMessage?.content || ''}${delta}`,
+          contentType: String(payload?.contentType || runtime.pendingAssistantMessage?.contentType || 'markdown'),
+          hasDelta: !!(`${runtime.pendingAssistantMessage?.content || ''}${delta}`).trim(),
         })
         return
       }
 
       if (event.type === 'assistant.message.completed') {
-        const messageId = String(payload?.messageId || this.pendingAssistantMessage?.messageId || '').trim() || `assistant-${Date.now()}`
-        const content = String(payload?.content || this.pendingAssistantMessage?.content || '')
+        const messageId = String(payload?.messageId || runtime.pendingAssistantMessage?.messageId || '').trim() || `assistant-${Date.now()}`
+        const content = String(payload?.content || runtime.pendingAssistantMessage?.content || '')
         if (content.trim()) {
-          this._completePendingAssistantMessage(messageId, content)
+          this._completePendingAssistantMessage(sessionId, messageId, content)
         } else {
-          this.pendingAssistantMessage = null
+          runtime.pendingAssistantMessage = null
         }
         return
       }
 
+      if (!snapshot) return
+
       if (event.type === 'question.required') {
-        this.currentSession.pendingQuestion = payload || null
+        snapshot.pendingQuestion = payload || null
         return
       }
 
       if (event.type === 'search_elements.updated') {
-        this.currentSession.searchElements = payload || null
+        snapshot.searchElements = payload || null
         return
       }
 
       if (event.type === 'plan.updated') {
-        this.currentSession.currentPlan = payload || null
+        snapshot.currentPlan = payload || null
         const planVersion = Number(payload?.plan_version || payload?.planVersion || 0)
         if (planVersion > 0) {
-          this.currentSession.session.activePlanVersion = planVersion
+          snapshot.session.activePlanVersion = planVersion
+          this._upsertSessionSummary({ ...snapshot.session })
         }
         return
       }
 
       if (event.type === 'plan.awaiting_confirmation') {
-        this.currentSession.pendingConfirmation = payload || null
+        snapshot.pendingConfirmation = payload || null
         return
       }
 
       if (event.type === 'documents.updated') {
-        this.currentSession.candidateDocuments = Array.isArray(payload?.items) ? payload.items : []
+        snapshot.candidateDocuments = Array.isArray(payload?.items) ? payload.items : []
         return
       }
 
       if (event.type === 'selection.updated') {
-        this.currentSession.selectedDocuments = Array.isArray(payload?.items) ? payload.items : []
-        this.currentSession.session.selectedDocumentCount = this.currentSession.selectedDocuments.length
+        snapshot.selectedDocuments = Array.isArray(payload?.items) ? payload.items : []
+        snapshot.session.selectedDocumentCount = snapshot.selectedDocuments.length
+        this._upsertSessionSummary({ ...snapshot.session })
         return
       }
 
       if (event.type === 'feature_table.updated') {
-        this.currentSession.featureTable = payload || null
+        snapshot.featureTable = payload || null
         return
       }
 
       if (event.type === 'subagent.started') {
         const name = String(payload?.name || '').trim()
         if (name) {
-          this.activeSubagentStatuses = {
-            ...this.activeSubagentStatuses,
+          runtime.activeSubagentStatuses = {
+            ...runtime.activeSubagentStatuses,
             [name]: {
               name,
               label: String(payload?.label || formatSubagentName(name)),
@@ -385,30 +490,31 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'subagent.completed') {
         const name = String(payload?.name || '').trim()
-        if (name && this.activeSubagentStatuses[name]) {
-          const nextStatuses = { ...this.activeSubagentStatuses }
+        if (name && runtime.activeSubagentStatuses[name]) {
+          const nextStatuses = { ...runtime.activeSubagentStatuses }
           delete nextStatuses[name]
-          this.activeSubagentStatuses = nextStatuses
+          runtime.activeSubagentStatuses = nextStatuses
         }
         return
       }
 
       if (event.type === 'run.completed') {
-        this.activeRun = null
-        this.pendingAssistantMessage = null
-        this.activeSubagentStatuses = {}
+        runtime.activeRun = null
+        runtime.pendingAssistantMessage = null
+        runtime.activeSubagentStatuses = {}
+        runtime.streaming = false
         return
       }
 
       if (event.type === 'run.error') {
-        this.error = String(payload?.message || '当前流式轮次执行失败。')
-        this._resetTransientRunState()
+        runtime.error = String(payload?.message || '当前流式轮次执行失败。')
+        runtime.streaming = false
+        this._resetTransientRunState(sessionId)
       }
     },
 
     async fetchSessions() {
       this.loading = true
-      this.error = ''
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
@@ -420,7 +526,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         })
         this.sessions = Array.isArray(data.items) ? data.items : []
       } catch (error: any) {
-        this.error = error?.message || '获取会话失败'
+        this._setRuntimeError(this.currentSessionId, error?.message || '获取会话失败')
       } finally {
         this.loading = false
       }
@@ -428,7 +534,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     async createSession() {
       this.loading = true
-      this.error = ''
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
@@ -439,9 +544,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           token,
         })
         await this.fetchSessions()
-        await this.loadSession(data.sessionId)
+        await this.loadSession(data.sessionId, { activate: true })
       } catch (error: any) {
-        this.error = error?.message || '创建会话失败'
+        this._setRuntimeError(this.currentSessionId, error?.message || '创建会话失败')
       } finally {
         this.loading = false
       }
@@ -451,7 +556,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const taskId = String(analysisTaskId || '').trim()
       if (!taskId) throw new Error('缺少 AI 分析任务ID。')
       this.loading = true
-      this.error = ''
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
@@ -468,28 +572,31 @@ export const useAiSearchStore = defineStore('aiSearch', {
         await this.fetchSessions()
         return String(data.sessionId || '').trim()
       } catch (error: any) {
-        this.error = error?.message || '创建 AI 检索草稿失败'
-        throw error instanceof Error ? error : new Error(this.error)
+        const message = error?.message || '创建 AI 检索草稿失败'
+        this._setRuntimeError(this.currentSessionId, message)
+        throw error instanceof Error ? error : new Error(message)
       } finally {
         this.loading = false
       }
     },
 
-    async loadSession(sessionId: string) {
+    async loadSession(sessionId: string, options: { activate?: boolean } = {}) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
       this.loading = true
-      this.error = ''
+      this._ensureRuntime(targetSessionId).error = ''
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
         const data = await requestJson<AiSearchSnapshot>({
           baseUrl: config.public.apiBaseUrl,
-          path: `/api/ai-search/sessions/${encodeURIComponent(sessionId)}`,
+          path: `/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}`,
           method: 'GET',
           token,
         })
-        this._applySnapshot(data)
+        this._applySnapshot(data, options)
       } catch (error: any) {
-        this.error = error?.message || '加载会话失败'
+        this._setRuntimeError(targetSessionId, error?.message || '加载会话失败')
       } finally {
         this.loading = false
       }
@@ -497,14 +604,13 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     async init(preferredSessionId: string = '') {
       await this.fetchSessions()
-      const targetId = String(preferredSessionId || this.activeSessionId || this._sortedSessionIds()[0] || '').trim()
+      const targetId = String(preferredSessionId || this.currentSessionId || this._sortedSessionIds()[0] || '').trim()
       if (targetId) {
-        await this.loadSession(targetId)
+        await this.loadSession(targetId, { activate: true })
         return
       }
       if (!this.sessions.length) {
         await this.createSession()
-        return
       }
     },
 
@@ -558,79 +664,86 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async sendMessage(content: string) {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
       const text = String(content || '').trim()
-      if (!text || !this.activeSessionId || !this.currentSession) return
-      this.error = ''
-      this.streaming = true
-      this._pushUserMessage(text, 'chat')
-      this.currentSession.pendingConfirmation = null
-      this._startPendingAssistant('drafting_plan', true)
+      if (!text || !sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._pushUserMessage(sessionId, text, 'chat')
+      snapshot.pendingConfirmation = null
+      this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/messages/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/messages/stream`,
           { content: text },
         )
       } catch (error: any) {
-        this.error = error?.message || '发送消息失败'
-        this._resetTransientRunState()
+        this._setRuntimeError(sessionId, error?.message || '发送消息失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.streaming = false
-        await this.loadSession(this.activeSessionId)
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 
     async answerQuestion(questionId: string, answer: string) {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
       const text = String(answer || '').trim()
-      if (!text || !this.activeSessionId || !this.currentSession) return
-      this.error = ''
-      this.streaming = true
-      this._pushUserMessage(text, 'answer', questionId)
-      this.currentSession.pendingQuestion = null
-      this._startPendingAssistant('drafting_plan', true)
+      if (!text || !sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._pushUserMessage(sessionId, text, 'answer', questionId)
+      snapshot.pendingQuestion = null
+      this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/answers/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/answers/stream`,
           { questionId, answer: text },
         )
       } catch (error: any) {
-        this.error = error?.message || '提交回答失败'
-        this._resetTransientRunState()
+        this._setRuntimeError(sessionId, error?.message || '提交回答失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.streaming = false
-        await this.loadSession(this.activeSessionId)
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 
     async confirmPlan(planVersion: number) {
-      if (!this.activeSessionId || !this.currentSession) return
-      this.error = ''
-      this.streaming = true
-      this.currentSession.pendingConfirmation = null
-      this._startPendingAssistant('execute_search', true)
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      snapshot.pendingConfirmation = null
+      this._startPendingAssistant(sessionId, 'execute_search', true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/plan/confirm/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/plan/confirm/stream`,
           { planVersion },
         )
       } catch (error: any) {
-        this.error = error?.message || '确认计划失败'
-        this._resetTransientRunState()
+        this._setRuntimeError(sessionId, error?.message || '确认计划失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.streaming = false
-        await this.loadSession(this.activeSessionId)
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 
     async patchSelectedDocuments(planVersion: number, addDocumentIds?: string[], removeDocumentIds?: string[]) {
-      if (!this.activeSessionId) return
+      const sessionId = String(this.currentSessionId || '').trim()
+      if (!sessionId) return
       this.loading = true
-      this.error = ''
+      this._setRuntimeError(sessionId, '')
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
         const data = await requestJson<AiSearchSnapshot>({
           baseUrl: config.public.apiBaseUrl,
-          path: `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/selected-documents`,
+          path: `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/selected-documents`,
           method: 'PATCH',
           token,
           headers: {
@@ -642,57 +755,61 @@ export const useAiSearchStore = defineStore('aiSearch', {
             removeDocumentIds,
           }),
         })
-        this._applySnapshot(data)
+        this._applySnapshot(data, { activate: sessionId === this.currentSessionId })
       } catch (error: any) {
-        this.error = error?.message || '更新对比文件失败'
+        this._setRuntimeError(sessionId, error?.message || '更新对比文件失败')
       } finally {
         this.loading = false
       }
     },
 
     async generateFeatureTable(planVersion: number) {
-      if (!this.activeSessionId || !this.currentSession) return
-      this.error = ''
-      this.streaming = true
-      this._startPendingAssistant('generate_feature_table', true)
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._startPendingAssistant(sessionId, 'generate_feature_table', true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/feature-table/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/feature-table/stream`,
           { planVersion },
         )
       } catch (error: any) {
-        this.error = error?.message || '生成特征对比表失败'
-        this._resetTransientRunState()
+        this._setRuntimeError(sessionId, error?.message || '生成特征对比表失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.streaming = false
-        await this.loadSession(this.activeSessionId)
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 
     async resumeExecution() {
-      if (!this.activeSessionId || !this.currentSession) return
-      this.error = ''
-      this.streaming = true
-      this._startPendingAssistant(this.currentSession.phase, true)
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._startPendingAssistant(sessionId, snapshot.phase, true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(this.activeSessionId)}/resume/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/resume/stream`,
           {},
         )
       } catch (error: any) {
-        this.error = error?.message || '恢复执行失败'
-        this._resetTransientRunState()
+        this._setRuntimeError(sessionId, error?.message || '恢复执行失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.streaming = false
-        await this.loadSession(this.activeSessionId)
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 
     async updateSession(sessionId: string, payload: { title?: string, pinned?: boolean }) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
-      this.loading = true
-      this.error = ''
+      this._setSessionMutationBusy(targetSessionId, true)
+      this._setRuntimeError(targetSessionId, '')
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
@@ -707,21 +824,28 @@ export const useAiSearchStore = defineStore('aiSearch', {
           body: JSON.stringify(payload),
         })
         this._upsertSessionSummary(data)
-        this._syncCurrentSessionSummary(data)
+        const snapshot = this._getSnapshot(targetSessionId)
+        if (snapshot) {
+          snapshot.session = {
+            ...snapshot.session,
+            ...data,
+          }
+        }
       } catch (error: any) {
-        this.error = error?.message || '更新会话失败'
-        throw error instanceof Error ? error : new Error(this.error)
+        const message = error?.message || '更新会话失败'
+        this._setRuntimeError(targetSessionId, message)
+        throw error instanceof Error ? error : new Error(message)
       } finally {
-        this.loading = false
+        this._setSessionMutationBusy(targetSessionId, false)
       }
     },
 
     async deleteSession(sessionId: string) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
-      const wasActive = this.activeSessionId === targetSessionId
-      this.loading = true
-      this.error = ''
+      const wasActive = this.currentSessionId === targetSessionId
+      this._setSessionMutationBusy(targetSessionId, true)
+      this._setRuntimeError(targetSessionId, '')
       try {
         const token = await this._ensureToken()
         const config = useRuntimeConfig()
@@ -732,25 +856,26 @@ export const useAiSearchStore = defineStore('aiSearch', {
           token,
         })
         this.sessions = this.sessions.filter((item) => item.sessionId !== targetSessionId)
+        delete this.sessionSnapshotsById[targetSessionId]
+        delete this.sessionRuntimeById[targetSessionId]
+        delete this.sessionMutationBusyById[targetSessionId]
         if (!wasActive) return
-
-        this.currentSession = null
-        this.activeSessionId = ''
-        this.phaseMarkers = []
-        this._resetTransientRunState()
-
+        this._setCurrentSessionId('')
         await this.fetchSessions()
         const nextSessionId = this._sortedSessionIds()[0]
         if (nextSessionId) {
-          await this.loadSession(nextSessionId)
+          await this.loadSession(nextSessionId, { activate: true })
           return
         }
         await this.createSession()
       } catch (error: any) {
-        this.error = error?.message || '删除会话失败'
-        throw error instanceof Error ? error : new Error(this.error)
+        const message = error?.message || '删除会话失败'
+        this._setRuntimeError(targetSessionId, message)
+        throw error instanceof Error ? error : new Error(message)
       } finally {
-        this.loading = false
+        if (this.sessionMutationBusyById[targetSessionId] !== undefined) {
+          this._setSessionMutationBusy(targetSessionId, false)
+        }
       }
     },
   },

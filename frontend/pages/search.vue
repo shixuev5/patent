@@ -68,7 +68,7 @@
               :key="session.sessionId"
               :session="session"
               :active="session.sessionId === currentSession?.session.sessionId"
-              :busy="sessionActionBusy"
+              :busy="isSessionMutating(session.sessionId)"
               @select="selectSession"
               @rename="renameSession"
               @toggle-pin="toggleSessionPin"
@@ -128,7 +128,7 @@
                     <button
                       type="button"
                       class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-200 bg-cyan-50 text-cyan-700 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      :disabled="sessionActionBusy || !canSubmitHeaderRename"
+                      :disabled="currentSessionMutating || !canSubmitHeaderRename"
                       aria-label="保存会话标题"
                       title="保存"
                       @click="submitHeaderRename"
@@ -151,7 +151,7 @@
                       v-if="currentSession"
                       type="button"
                       class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-700 lg:inline-flex"
-                      :disabled="sessionActionBusy"
+                      :disabled="currentSessionMutating"
                       aria-label="重命名当前会话"
                       title="重命名当前会话"
                       @click="startHeaderRename"
@@ -650,7 +650,7 @@
                 :key="session.sessionId"
                 :session="session"
                 :active="session.sessionId === currentSession?.session.sessionId"
-                :busy="sessionActionBusy"
+                :busy="isSessionMutating(session.sessionId)"
                 @select="selectSession"
                 @rename="renameSession"
                 @toggle-pin="toggleSessionPin"
@@ -840,9 +840,12 @@ const sidebarClass = computed(() => (
 ))
 const showCollapsedSidebarRail = computed(() => sidebarCollapsed.value)
 const showMobileSessionDrawer = computed(() => mobileDrawerOpen.value)
-const sessionActionBusy = computed(() => loading.value || streaming.value)
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const canAccessAiSearch = computed(() => hasAuthingEnabled.value && authStore.isLoggedIn && adminUsageStore.isAdmin)
+const currentSessionMutating = computed(() => {
+  const sessionId = String(currentSession.value?.session.sessionId || '').trim()
+  return !!sessionId && aiSearchStore.isSessionMutating(sessionId)
+})
 const canSubmitHeaderRename = computed(() => {
   const nextTitle = headerTitleDraft.value.trim()
   const currentTitle = String(currentSession.value?.session.title || '').trim()
@@ -1090,6 +1093,8 @@ const createSession = async () => {
   await aiSearchStore.createSession()
 }
 
+const isSessionMutating = (sessionId: string): boolean => aiSearchStore.isSessionMutating(sessionId)
+
 const selectSession = async (sessionId: string) => {
   if (!sessionId || sessionId === currentSession.value?.session.sessionId) return
   await aiSearchStore.loadSession(sessionId)
@@ -1101,7 +1106,7 @@ const syncHeaderRenameDraft = () => {
 }
 
 const startHeaderRename = async () => {
-  if (!currentSession.value || sessionActionBusy.value) return
+  if (!currentSession.value || currentSessionMutating.value) return
   headerEditing.value = true
   syncHeaderRenameDraft()
   await nextTick()
@@ -1163,7 +1168,7 @@ const submitMessage = async () => {
   if (!content) return
   if (pendingQuestion.value) return
   if (resumeAction.value?.available) return
-  if (streaming.value || !currentSession.value) return
+  if (!currentSession.value) return
   composer.value = ''
   await aiSearchStore.sendMessage(content)
 }
