@@ -322,7 +322,7 @@ class WorkflowState(BaseModel):
     added_matter_risk: bool = Field(False, description="是否存在修改超范围风险")
     reuse_oa_tasks: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list, description="可复用历史审查意见的任务列表")
     topup_tasks: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list, description="需补充检索比对的任务列表")
-    early_rejection_reason: str = Field("", description="可提前驳回的原因（如修改超范围）")
+    added_matter_risk_summary: str = Field("", description="修改超范围风险摘要，供审查员参考")
     drafted_rejection_reasons: Dict[str, str] = Field(
         default_factory=dict,
         description="统一润色后的正式驳回正文，按 dispute_id 索引",

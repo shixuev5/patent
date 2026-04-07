@@ -57,8 +57,7 @@ flowchart TD
     C --> D[amendment_tracking]
     D --> E[support_basis_check]
     E --> F[amendment_strategy]
-    F -->|存在early_rejection_reason或added_matter_risk| L[report_generation]
-    F -->|否则| G[dispute_extraction]
+    F --> G[dispute_extraction]
     G -->|document_based/mixed_basis| H[evidence_verification]
     G -->|common_knowledge_based/mixed_basis| I[common_knowledge_verification]
     G -->|topup_tasks非空| J[topup_search_verification]
@@ -100,7 +99,7 @@ flowchart TD
 
 5. `support_basis_check`
    - 仅针对 `amendment_kind=spec_feature_addition` 的实质修改核查是否有原说明书记载。
-   - 输出 `support_findings`、`added_matter_risk`、`early_rejection_reason`。
+   - 输出 `support_findings`、`added_matter_risk`、`added_matter_risk_summary`。
 
 6. `amendment_strategy`
    - 将新增特征分为：
@@ -141,11 +140,8 @@ flowchart TD
    - 成功 -> 固定进入 `patent_retrieval`
 
 2. `amendment_strategy` 后路由
-   - 条件：
-     - `early_rejection_reason` 非空，或
-     - `added_matter_risk == True`
-   - 满足 -> 直接 `report_generation`（提前结束争议验证）
-   - 否则 -> `dispute_extraction`
+   - 固定进入后续争议抽取与验证链路。
+   - `added_matter_risk` / `added_matter_risk_summary` 仅作为风险提示保留在状态与最终报告中，不再阻断后续验证。
 
 3. `dispute_extraction` 后路由（可并行）
    - 会扫描 `disputes[*].examiner_opinion.type` 与 `topup_tasks`

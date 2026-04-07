@@ -73,7 +73,7 @@ class ReportGenerationNode:
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
         review_units = to_jsonable(item_get(state, "review_units", []))
-        early_rejection_reason = str(item_get(state, "early_rejection_reason", "")).strip()
+        added_matter_risk_summary = str(item_get(state, "added_matter_risk_summary", "")).strip()
         application_number = self._extract_application_number(state)
         current_notice_round = self._extract_current_notice_round(state)
         next_notice_round = current_notice_round + 1
@@ -93,7 +93,7 @@ class ReportGenerationNode:
         report = {
             "title": self._build_report_title(application_number, current_notice_round),
             "task_id": item_get(state, "task_id", ""),
-            "status": "early_rejected" if early_rejection_reason else "completed",
+            "status": "completed",
             "notice_context": {
                 "application_number": application_number,
                 "current_notice_round": current_notice_round,
@@ -104,14 +104,14 @@ class ReportGenerationNode:
                 response_reply_items=response_reply_items,
                 application_number=application_number,
                 current_notice_round=current_notice_round,
-                early_rejection_reason=early_rejection_reason,
+                added_matter_risk_summary=added_matter_risk_summary,
                 has_claim_amendment=bool(item_get(state, "has_claim_amendment", False)),
                 added_matter_risk=bool(item_get(state, "added_matter_risk", False)),
             ),
             "amendment_section": {
                 "has_claim_amendment": bool(item_get(state, "has_claim_amendment", False)),
                 "added_matter_risk": bool(item_get(state, "added_matter_risk", False)),
-                "early_rejection_reason": early_rejection_reason,
+                "added_matter_risk_summary": added_matter_risk_summary,
                 "substantive_amendments": to_jsonable(item_get(state, "substantive_amendments", [])),
                 "structural_adjustments": to_jsonable(item_get(state, "structural_adjustments", [])),
                 "support_findings": to_jsonable(item_get(state, "support_findings", [])),
@@ -153,7 +153,7 @@ class ReportGenerationNode:
         response_reply_items: List[Dict[str, Any]],
         application_number: str,
         current_notice_round: int,
-        early_rejection_reason: str,
+        added_matter_risk_summary: str,
         has_claim_amendment: bool,
         added_matter_risk: bool,
     ) -> Dict[str, Any]:
@@ -198,12 +198,12 @@ class ReportGenerationNode:
             "overall_conclusion": self._build_overall_conclusion(
                 verdict_distribution=verdict_distribution,
                 assessed_disputes=assessed,
-                early_rejection_reason=early_rejection_reason,
+                added_matter_risk_summary=added_matter_risk_summary,
             ),
             "amendment_strategy": self._build_amendment_strategy(
                 has_claim_amendment=has_claim_amendment,
                 added_matter_risk=added_matter_risk,
-                early_rejection_reason=early_rejection_reason,
+                added_matter_risk_summary=added_matter_risk_summary,
             ),
             "total_disputes": total,
             "assessed_disputes": assessed,
@@ -353,10 +353,10 @@ class ReportGenerationNode:
         self,
         verdict_distribution: Dict[str, int],
         assessed_disputes: int,
-        early_rejection_reason: str,
+        added_matter_risk_summary: str,
     ) -> str:
-        if early_rejection_reason:
-            return "存在可提前驳回事由"
+        if added_matter_risk_summary:
+            return "存在修改超范围风险提示"
         if assessed_disputes <= 0:
             return "暂无可用核查结论"
 
@@ -375,10 +375,10 @@ class ReportGenerationNode:
         self,
         has_claim_amendment: bool,
         added_matter_risk: bool,
-        early_rejection_reason: str,
+        added_matter_risk_summary: str,
     ) -> str:
-        if early_rejection_reason:
-            return "可提前驳回"
+        if added_matter_risk_summary:
+            return "存在修改超范围风险提示"
         if not has_claim_amendment:
             return "无权利要求修改"
         if added_matter_risk:

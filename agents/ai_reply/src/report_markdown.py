@@ -144,8 +144,8 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     )
     lines.append(
         _risk_card(
-            "可提前驳回原因",
-            _cell(_item_get(amendment_section, "early_rejection_reason", "") or "无"),
+            "超范围风险提示",
+            _cell(_item_get(amendment_section, "added_matter_risk_summary", "") or "无"),
             wide=True,
         )
     )

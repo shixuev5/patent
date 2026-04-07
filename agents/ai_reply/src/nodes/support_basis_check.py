@@ -43,7 +43,7 @@ class SupportBasisCheckNode:
                 for item in result.get("support_findings", [])
             ]
             updates["added_matter_risk"] = result["added_matter_risk"]
-            updates["early_rejection_reason"] = str(result["early_rejection_reason"]).strip()
+            updates["added_matter_risk_summary"] = str(result["added_matter_risk_summary"]).strip()
             updates["status"] = "completed"
             updates["progress"] = 64.0
             logger.info(f"支持依据核查完成，超范围风险: {updates['added_matter_risk']}")
@@ -77,7 +77,7 @@ class SupportBasisCheckNode:
             return {
                 "support_findings": [],
                 "added_matter_risk": False,
-                "early_rejection_reason": "",
+                "added_matter_risk_summary": "",
             }
 
         prepared = self._to_dict(prepared_materials)
@@ -100,7 +100,7 @@ class SupportBasisCheckNode:
             return {
                 "support_findings": findings,
                 "added_matter_risk": True,
-                "early_rejection_reason": "原说明书缺少可用的支持性文本上下文，无法证明新增特征存在原始记载，存在修改超范围风险。",
+                "added_matter_risk_summary": "原说明书缺少可用的支持性文本上下文，无法证明新增特征存在原始记载，存在修改超范围风险。",
             }
 
         messages = [
@@ -164,7 +164,7 @@ class SupportBasisCheckNode:
     }
   ],
   "added_matter_risk": true或false, 
-  "early_rejection_reason": "如果 added_matter_risk 为 true，请一句话概括为何存在超范围风险（例如：'特征X属于将实施例中的关联特征强行剥离，缺乏修改支持'）；如果为 false，填空字符串"
+  "added_matter_risk_summary": "如果 added_matter_risk 为 true，请一句话概括为何存在超范围风险（例如：'特征X属于将实施例中的关联特征强行剥离，缺乏修改支持'）；如果为 false，填空字符串"
 }
 
 【字段约束】
@@ -250,14 +250,14 @@ class SupportBasisCheckNode:
             raise ValueError("support_basis_check 输出非法 added_matter_risk，必须为布尔值")
         added_matter_risk = added_matter_risk_raw
 
-        if "early_rejection_reason" not in result:
-            raise ValueError("support_basis_check 输出缺少 early_rejection_reason")
-        early_rejection_reason = str(result.get("early_rejection_reason", "")).strip()
+        if "added_matter_risk_summary" not in result:
+            raise ValueError("support_basis_check 输出缺少 added_matter_risk_summary")
+        added_matter_risk_summary = str(result.get("added_matter_risk_summary", "")).strip()
 
         return {
             "support_findings": findings,
             "added_matter_risk": added_matter_risk,
-            "early_rejection_reason": early_rejection_reason,
+            "added_matter_risk_summary": added_matter_risk_summary,
         }
 
     def _state_get(self, state: Any, key: str, default=None):

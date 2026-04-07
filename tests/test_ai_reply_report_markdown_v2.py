@@ -32,7 +32,7 @@ def _sample_report() -> dict:
         "amendment_section": {
             "has_claim_amendment": True,
             "added_matter_risk": False,
-            "early_rejection_reason": "",
+            "added_matter_risk_summary": "",
             "substantive_change_groups": [
                 {
                     "claim_id": "1",

@@ -94,9 +94,6 @@ def create_workflow(config: WorkflowConfig = None):
         if state.status in {"failed", "cancelled"}:
             return "handle_error"
 
-        if _item_get(state, "early_rejection_reason", "") or _item_get(state, "added_matter_risk", False):
-            return "report_generation"
-
         has_document_based_dispute = False
         has_common_knowledge_dispute = False
         has_topup_tasks = bool(_item_get(state, "topup_tasks", []))

@@ -49,7 +49,7 @@ def test_report_generation_summary_excludes_amendment_reviews() -> None:
         response_reply_items=response_reply_items,
         application_number="",
         current_notice_round=1,
-        early_rejection_reason="",
+        added_matter_risk_summary="",
         has_claim_amendment=False,
         added_matter_risk=False,
     )
