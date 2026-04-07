@@ -18,6 +18,8 @@ interface StandaloneGuardOptions {
   defaultScene?: string
 }
 
+type PasswordResetScene = 'forgetPassword' | 'firstLoginPassword'
+
 interface GuardResolution {
   guard: GuardClient | null
 }
@@ -73,7 +75,6 @@ const toAuthingUser = (userInfo: unknown): AuthingUser => {
     phone_verified: info.phone_verified ?? info.phoneVerified,
     updated_at: info.updated_at ?? info.updatedAt ?? payload?.updated_at,
     token: info.token || storedToken || undefined,
-    hasPassword: !!info.password
   } as unknown as AuthingUser
 }
 
@@ -187,6 +188,33 @@ export const useAuthStore = defineStore('auth', {
   },
 
   actions: {
+    async _openPasswordResetScene(scene: PasswordResetScene) {
+      if (!process.client) return
+      const config = useRuntimeConfig()
+      if (!String(config.public.authingAppId || '').trim()) return
+
+      try {
+        const guard = createStandaloneGuard({
+          mode: 'modal',
+          defaultScene: scene,
+        })
+        if (!guard || typeof guard.render !== 'function') {
+          throw new Error('Authing Guard 未初始化，无法打开密码重置页面。')
+        }
+        await guard.render()
+      } catch (error) {
+        console.error('Authing openPasswordReset failed:', error)
+        try {
+          const { guard: fallbackGuard } = await resolveGuardClient()
+          if (fallbackGuard && typeof fallbackGuard.startWithRedirect === 'function') {
+            await fallbackGuard.startWithRedirect()
+          }
+        } catch (fallbackError) {
+          console.error('Authing openPasswordReset fallback failed:', fallbackError)
+        }
+      }
+    },
+
     _clearBackendSessionCache() {
       if (!process.client) return
       localStorage.removeItem(TASK_AUTH_TOKEN_KEY)
@@ -316,35 +344,13 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async openPasswordReset() {
-      if (!process.client) return
-      const config = useRuntimeConfig()
-      if (!String(config.public.authingAppId || '').trim()) return
+      // 账户页入口固定走普通重置密码场景，不占用首登强制改密的交互流。
+      await this._openPasswordResetScene('forgetPassword')
+    },
 
-      try {
-        // 判断当前用户是否已经有密码
-        const hasPassword = (this.user as any)?.hasPassword ?? false
-
-        const targetScene = hasPassword ? 'forgetPassword' : 'firstLoginPassword'
-
-        const guard = createStandaloneGuard({
-          mode: 'modal',
-          defaultScene: targetScene
-        })
-        if (!guard || typeof guard.render !== 'function') {
-          throw new Error('Authing Guard 未初始化，无法打开密码重置页面。')
-        }
-        await guard.render()
-      } catch (error) {
-        console.error('Authing openPasswordReset failed:', error)
-        try {
-          const { guard: fallbackGuard } = await resolveGuardClient()
-          if (fallbackGuard && typeof fallbackGuard.startWithRedirect === 'function') {
-            await fallbackGuard.startWithRedirect()
-          }
-        } catch (fallbackError) {
-          console.error('Authing openPasswordReset fallback failed:', fallbackError)
-        }
-      }
+    async openFirstLoginPasswordReset() {
+      // 仅在 Authing 明确要求首登强制改密、且当前交互流仍有效时调用。
+      await this._openPasswordResetScene('firstLoginPassword')
     },
   },
 })

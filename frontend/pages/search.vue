@@ -1097,7 +1097,8 @@ const isSessionMutating = (sessionId: string): boolean => aiSearchStore.isSessio
 
 const selectSession = async (sessionId: string) => {
   if (!sessionId || sessionId === currentSession.value?.session.sessionId) return
-  await aiSearchStore.loadSession(sessionId)
+  aiSearchStore.activateSession(sessionId)
+  await aiSearchStore.loadSession(sessionId, { activate: false })
   if (!isDesktopViewport()) mobileDrawerOpen.value = false
 }
 

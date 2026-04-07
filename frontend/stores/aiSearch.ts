@@ -90,6 +90,32 @@ const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   error: '',
 })
 
+const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapshot => ({
+  session: {
+    sessionId: String(summary.sessionId || '').trim(),
+    taskId: String(summary.taskId || summary.sessionId || '').trim(),
+    title: String(summary.title || 'AI 检索工作台'),
+    status: String(summary.status || 'processing'),
+    phase: String(summary.phase || 'collecting_requirements'),
+    pinned: !!summary.pinned,
+    activePlanVersion: summary.activePlanVersion ?? null,
+    selectedDocumentCount: Number(summary.selectedDocumentCount || 0),
+    createdAt: summary.createdAt || null,
+    updatedAt: summary.updatedAt || null,
+  },
+  phase: String(summary.phase || 'collecting_requirements'),
+  messages: [],
+  sourceSummary: null,
+  searchElements: null,
+  currentPlan: null,
+  candidateDocuments: [],
+  selectedDocuments: [],
+  featureTable: null,
+  pendingQuestion: null,
+  pendingConfirmation: null,
+  resumeAction: null,
+})
+
 export const useAiSearchStore = defineStore('aiSearch', {
   state: () => ({
     sessions: [] as Array<Record<string, any>>,
@@ -221,6 +247,19 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     _setCurrentSessionId(sessionId: string) {
       this.currentSessionId = String(sessionId || '').trim()
+    },
+
+    activateSession(sessionId: string) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      if (!this.sessionSnapshotsById[targetSessionId]) {
+        const summary = this.sessions.find((item) => String(item.sessionId || '').trim() === targetSessionId)
+        if (summary) {
+          this._applySnapshot(createPlaceholderSnapshot(summary), { activate: false })
+        }
+      }
+      this._ensureRuntime(targetSessionId)
+      this._setCurrentSessionId(targetSessionId)
     },
 
     _applySnapshot(snapshot: AiSearchSnapshot, options: { activate?: boolean } = {}) {
@@ -583,6 +622,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async loadSession(sessionId: string, options: { activate?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
+      if (options.activate) {
+        this.activateSession(targetSessionId)
+      }
       this.loading = true
       this._ensureRuntime(targetSessionId).error = ''
       try {

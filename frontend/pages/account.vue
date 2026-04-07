@@ -85,7 +85,7 @@
                   <rect x="5" y="11" width="14" height="9" rx="2" />
                   <path d="M8 11V8a4 4 0 1 1 8 0v3" stroke-linecap="round" />
                 </svg>
-                <span>设置/修改密码</span>
+                <span>重置密码</span>
               </button>
             </div>
             <p v-if="profileSaveErrorMessage" class="profile-inline-error">{{ profileSaveErrorMessage }}</p>
