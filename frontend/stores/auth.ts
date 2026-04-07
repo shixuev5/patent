@@ -23,6 +23,7 @@ interface GuardResolution {
 }
 
 const UTF8_DECODER = process.client ? new TextDecoder('utf-8', { fatal: false }) : null
+let authInitializationInFlight: Promise<void> | null = null
 
 const decodeBase64Utf8 = (base64Text: string): string => {
   const binary = atob(base64Text)
@@ -30,35 +31,33 @@ const decodeBase64Utf8 = (base64Text: string): string => {
   return UTF8_DECODER ? UTF8_DECODER.decode(bytes) : binary
 }
 
+const containsNonLatin1Chars = (value: string): boolean => Array.from(value).some((char) => char.charCodeAt(0) > 0xff)
+
+const containsLatin1Supplement = (value: string): boolean => /[\u0080-\u00ff]/.test(value)
+
 const normalizeUserText = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
   if (!text) return undefined
   if (!process.client || !UTF8_DECODER) return text
+  if (containsNonLatin1Chars(text) || !containsLatin1Supplement(text)) return text
   try {
     const bytes = Uint8Array.from(text, (char) => char.charCodeAt(0))
     const repaired = UTF8_DECODER.decode(bytes).trim()
-    return repaired || text
+    if (!repaired || repaired === text || repaired.includes('\ufffd')) return text
+    return repaired
   } catch (_error) {
     return text
   }
 }
 
-const toAuthingUser = (userInfo: unknown): AuthingUser => {
-  const info = userInfo as any
-  return {
-    sub: info.sub || info.id,
-    name: normalizeUserText(info.name),
-    nickname: normalizeUserText(info.nickname),
-    email: normalizeUserText(info.email),
-    phone: normalizeUserText(info.phone),
-    picture: normalizeUserText(info.picture || info.photo),
-    email_verified: info.email_verified ?? info.emailVerified,
-    phone_verified: info.phone_verified ?? info.phoneVerified,
-    updated_at: info.updated_at ?? info.updatedAt,
-    token: info.token,
-    hasPassword: !!info.password
-  } as unknown as AuthingUser
+const selectPreferredUserText = (primary: unknown, fallback: unknown): string | undefined => {
+  const preferred = normalizeUserText(primary)
+  const backup = normalizeUserText(fallback)
+  if (!preferred) return backup
+  if (!backup) return preferred
+  if (preferred.includes('\ufffd') && !backup.includes('\ufffd')) return backup
+  return preferred
 }
 
 const parseJwtPayload = (token: string): Record<string, unknown> | null => {
@@ -80,6 +79,40 @@ const getStoredIdToken = (): string => {
   return String(localStorage.getItem(AUTHING_ID_TOKEN_KEY) || '').trim()
 }
 
+const parseGuardLoginStatus = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') return value
+  if (!value || typeof value !== 'object') return null
+
+  const record = value as Record<string, unknown>
+  if (typeof record.status === 'boolean') return record.status
+
+  const data = record.data
+  if (data && typeof data === 'object' && typeof (data as Record<string, unknown>).status === 'boolean') {
+    return (data as Record<string, unknown>).status as boolean
+  }
+
+  return null
+}
+
+const toAuthingUser = (userInfo: unknown): AuthingUser => {
+  const info = userInfo as any
+  const storedToken = getStoredIdToken()
+  const payload = storedToken ? parseJwtPayload(storedToken) : null
+  return {
+    sub: String(info.sub || info.id || payload?.sub || '').trim(),
+    name: selectPreferredUserText(info.name, payload?.name),
+    nickname: selectPreferredUserText(info.nickname, payload?.nickname),
+    email: selectPreferredUserText(info.email, payload?.email),
+    phone: selectPreferredUserText(info.phone, payload?.phone_number),
+    picture: selectPreferredUserText(info.picture || info.photo, payload?.picture),
+    email_verified: info.email_verified ?? info.emailVerified,
+    phone_verified: info.phone_verified ?? info.phoneVerified,
+    updated_at: info.updated_at ?? info.updatedAt ?? payload?.updated_at,
+    token: info.token || storedToken || undefined,
+    hasPassword: !!info.password
+  } as unknown as AuthingUser
+}
+
 const getFallbackUserFromStoredIdToken = (): AuthingUser | null => {
   if (!process.client) return null
   const token = getStoredIdToken()
@@ -98,6 +131,32 @@ const getFallbackUserFromStoredIdToken = (): AuthingUser | null => {
     updated_at: typeof payload?.updated_at === 'string' ? payload.updated_at : undefined,
     token,
   }
+}
+
+const resolveGuardSessionUser = async (guard: GuardClient | null): Promise<AuthingUser | null> => {
+  const fallbackUser = getFallbackUserFromStoredIdToken()
+  if (!guard) return fallbackUser
+
+  let loginStatus: boolean | null = null
+  if (typeof guard.checkLoginStatus === 'function') {
+    try {
+      loginStatus = parseGuardLoginStatus(await guard.checkLoginStatus())
+    } catch (_error) {
+      loginStatus = null
+    }
+  }
+
+  if (typeof guard.trackSession === 'function') {
+    try {
+      const userInfo = await guard.trackSession()
+      if (userInfo) return toAuthingUser(userInfo)
+    } catch (_error) {
+      // Fallback to the local idToken payload when Guard session fetching is transiently unavailable.
+    }
+  }
+
+  if (loginStatus === false) return fallbackUser
+  return fallbackUser
 }
 
 const getGuardConstructor = (): GuardConstructor | null => {
@@ -194,20 +253,9 @@ export const useAuthStore = defineStore('auth', {
       }
       try {
         const { guard } = await resolveGuardClient()
-        if (!guard || typeof guard.trackSession !== 'function') {
-          this.user = null
-          this.isLoggedIn = false
-          return
-        }
-        const userInfo = await guard.trackSession()
-        if (!userInfo) {
-          const fallbackUser = getFallbackUserFromStoredIdToken()
-          this.user = fallbackUser
-          this.isLoggedIn = !!fallbackUser
-          return
-        }
-        this.user = toAuthingUser(userInfo)
-        this.isLoggedIn = true
+        const user = await resolveGuardSessionUser(guard)
+        this.user = user
+        this.isLoggedIn = !!user
       } catch (error) {
         const fallbackUser = getFallbackUserFromStoredIdToken()
         this.user = fallbackUser
@@ -220,7 +268,14 @@ export const useAuthStore = defineStore('auth', {
 
     async ensureInitialized() {
       if (this.initialized) return
-      await this.checkAuth()
+      if (authInitializationInFlight) {
+        await authInitializationInFlight
+        return
+      }
+      authInitializationInFlight = this.checkAuth().finally(() => {
+        authInitializationInFlight = null
+      })
+      await authInitializationInFlight
     },
 
     async login() {
@@ -278,17 +333,9 @@ export const useAuthStore = defineStore('auth', {
           throw new Error('Authing Guard 未初始化，无法处理回调。')
         }
         await guard.handleRedirectCallback()
-        if (typeof guard.trackSession === 'function') {
-          const userInfo = await guard.trackSession()
-          if (userInfo) {
-            this.user = toAuthingUser(userInfo)
-            this.isLoggedIn = true
-          } else {
-            const fallbackUser = getFallbackUserFromStoredIdToken()
-            this.user = fallbackUser
-            this.isLoggedIn = !!fallbackUser
-          }
-        }
+        const user = await resolveGuardSessionUser(guard)
+        this.user = user
+        this.isLoggedIn = !!user
       } catch (error) {
         const fallbackUser = getFallbackUserFromStoredIdToken()
         this.user = fallbackUser
@@ -298,6 +345,7 @@ export const useAuthStore = defineStore('auth', {
       } finally {
         this.loading = false
       }
+      this.initialized = true
       await this.checkAuth()
       this._clearBackendSessionCache()
       return this.isLoggedIn

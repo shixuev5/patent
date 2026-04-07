@@ -44,6 +44,10 @@ def _reset_account_cooldowns():
     ZhihuiyaClient._account_cooldowns.clear()
 
 
+def _reset_search_client_factory():
+    SearchClientFactory._instances.clear()
+
+
 def test_load_zhihuiya_accounts_supports_indexed_env_and_ignores_incomplete():
     accounts = load_zhihuiya_accounts(
         {
@@ -64,16 +68,79 @@ def test_load_zhihuiya_accounts_supports_indexed_env_and_ignores_incomplete():
     ]
 
 
-def test_search_client_factory_returns_new_zhihuiya_instances(monkeypatch):
+def test_search_client_factory_reuses_zhihuiya_instances(monkeypatch):
     _set_accounts_env(monkeypatch, [("user-a@example.com", "secret-a")])
     _reset_account_cooldowns()
+    _reset_search_client_factory()
 
     client_a = SearchClientFactory.get_client("zhihuiya")
     client_b = SearchClientFactory.get_client("zhihuiya")
 
     assert isinstance(client_a, ZhihuiyaClient)
     assert isinstance(client_b, ZhihuiyaClient)
+    assert client_a is client_b
+
+
+def test_search_client_factory_rebuilds_zhihuiya_instance_when_accounts_change(monkeypatch):
+    _set_accounts_env(monkeypatch, [("user-a@example.com", "secret-a")])
+    _reset_account_cooldowns()
+    _reset_search_client_factory()
+
+    client_a = SearchClientFactory.get_client("zhihuiya")
+
+    _set_accounts_env(monkeypatch, [("user-b@example.com", "secret-b")])
+
+    client_b = SearchClientFactory.get_client("zhihuiya")
+
+    assert isinstance(client_a, ZhihuiyaClient)
+    assert isinstance(client_b, ZhihuiyaClient)
     assert client_a is not client_b
+    assert client_b.accounts == [
+        {"username": "user-b@example.com", "password": "secret-b"}
+    ]
+
+
+def test_mark_account_cooldown_logs_reason_and_remaining(monkeypatch):
+    _reset_account_cooldowns()
+    warnings = []
+
+    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
+
+    ZhihuiyaClient._mark_account_cooldown("user-a@example.com", "登录失败: password incorrect")
+
+    assert len(warnings) == 1
+    assert "账号进入冷却：user-a@example.com" in warnings[0]
+    assert "剩余：" in warnings[0]
+    assert "原因：登录失败: password incorrect" in warnings[0]
+
+
+def test_pick_login_candidates_logs_cooldown_pool_when_all_accounts_cooling(monkeypatch):
+    _set_accounts_env(
+        monkeypatch,
+        [
+            ("user-a@example.com", "secret-a"),
+            ("user-b@example.com", "secret-b"),
+        ],
+    )
+    _reset_account_cooldowns()
+    client = ZhihuiyaClient()
+    warnings = []
+
+    monkeypatch.setattr("agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
+    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
+
+    ZhihuiyaClient._mark_account_cooldown("user-a@example.com", "登录失败: password incorrect")
+    ZhihuiyaClient._mark_account_cooldown("user-b@example.com", "鉴权失败")
+
+    candidates = client._pick_login_candidates()
+
+    assert [account["username"] for account in candidates] == [
+        "user-a@example.com",
+        "user-b@example.com",
+    ]
+    assert any("当前冷却池：" in message for message in warnings)
+    assert any("user-a@example.com(" in message for message in warnings)
+    assert any("user-b@example.com(" in message for message in warnings)
 
 
 def test_login_switches_to_next_account_after_failure(monkeypatch):
@@ -184,6 +251,9 @@ def test_post_request_reauth_switches_account_after_auth_failure(monkeypatch):
     client.headers["Authorization"] = "Bearer expired-token"
     request_auth_headers = []
     relogin_calls = []
+    warnings = []
+
+    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
 
     def _fake_login():
         relogin_calls.append("relogin")
@@ -225,3 +295,4 @@ def test_post_request_reauth_switches_account_after_auth_failure(monkeypatch):
         "password": "secret-b",
     }
     assert ZhihuiyaClient._account_cooldowns["user-a@example.com"] > time.monotonic()
+    assert any("检测到鉴权失败，正在切换账号重试。 账号：user-a@example.com" in message for message in warnings)

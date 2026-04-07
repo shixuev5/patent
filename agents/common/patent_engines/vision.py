@@ -13,6 +13,11 @@ from typing import Any, List, Dict, Set, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from PIL import Image, ImageDraw, ImageFont
+
+from agents.common.utils.langchain_compat import install_langchain_compat
+
+install_langchain_compat()
+
 from paddleocr import PaddleOCR
 from config import settings
 from loguru import logger

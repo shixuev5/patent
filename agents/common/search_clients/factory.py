@@ -13,8 +13,19 @@ class SearchClientFactory:
 
         if provider == "zhihuiya" or provider == "patsnap":
             from agents.common.search_clients.zhihuiya import ZhihuiyaClient
+            from config import settings
 
-            return ZhihuiyaClient()
+            cache_key = "zhihuiya"
+            configured_accounts = [dict(item) for item in settings.ZHIHUIYA_ACCOUNTS]
+            with SearchClientFactory._lock:
+                client = SearchClientFactory._instances.get(cache_key)
+                if (
+                    not isinstance(client, ZhihuiyaClient)
+                    or getattr(client, "accounts", None) != configured_accounts
+                ):
+                    client = ZhihuiyaClient()
+                    SearchClientFactory._instances[cache_key] = client
+                return client
 
         # 双重检查锁定 (Double-Checked Locking) 确保线程安全且高效
         if provider not in SearchClientFactory._instances:

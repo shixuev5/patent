@@ -113,7 +113,37 @@ class ZhihuiyaClient(BaseSearchClient):
         with cls._account_cooldown_lock:
             cls._cleanup_expired_cooldowns()
             cls._account_cooldowns[username] = cooldown_until
-        logger.warning(f"[智慧芽] 账号进入冷却：{username}，原因：{reason}")
+        remaining_text = cls._format_cooldown_remaining(cooldown_until - time.monotonic())
+        logger.warning(
+            f"[智慧芽] 账号进入冷却：{username}，剩余：{remaining_text}，原因：{reason}"
+        )
+
+    @classmethod
+    def _format_cooldown_remaining(cls, remaining_seconds: float) -> str:
+        seconds = max(0, int(round(remaining_seconds)))
+        minutes, seconds = divmod(seconds, 60)
+        if minutes <= 0:
+            return f"{seconds}s"
+        if seconds == 0:
+            return f"{minutes}m"
+        return f"{minutes}m{seconds}s"
+
+    @classmethod
+    def _describe_cooldowns(cls, now: Optional[float] = None) -> str:
+        now_ts = now if now is not None else time.monotonic()
+        with cls._account_cooldown_lock:
+            cls._cleanup_expired_cooldowns(now_ts)
+            snapshots = [
+                (
+                    username,
+                    cls._format_cooldown_remaining(cooldown_until - now_ts),
+                )
+                for username, cooldown_until in sorted(cls._account_cooldowns.items())
+                if cooldown_until > now_ts
+            ]
+        if not snapshots:
+            return "无"
+        return ", ".join(f"{username}({remaining})" for username, remaining in snapshots)
 
     def _clear_auth_state(self):
         self.token = None
@@ -136,7 +166,10 @@ class ZhihuiyaClient(BaseSearchClient):
         candidates = available_accounts or [dict(account) for account in self.accounts]
         random.shuffle(candidates)
         if not available_accounts:
-            logger.warning("[智慧芽] 所有账号都在冷却中，本次将忽略冷却状态重试全部账号。")
+            logger.warning(
+                "[智慧芽] 所有账号都在冷却中，本次将忽略冷却状态重试全部账号。"
+                f" 当前冷却池：{self._describe_cooldowns(now_ts)}"
+            )
         return candidates
 
     def _fetch_login_public_key(self) -> str:
@@ -244,7 +277,13 @@ class ZhihuiyaClient(BaseSearchClient):
             )
             last_response = response
             if self._is_auth_failure_response(response):
-                logger.warning("[智慧芽] 检测到鉴权失败，正在切换账号重试。")
+                username = ""
+                if self.current_account:
+                    username = str(self.current_account.get("username") or "").strip()
+                logger.warning(
+                    "[智慧芽] 检测到鉴权失败，正在切换账号重试。"
+                    f" 账号：{username or 'unknown'}"
+                )
                 self._handle_auth_failure("鉴权失败")
                 continue
             return response

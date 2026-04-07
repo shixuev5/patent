@@ -1231,9 +1231,6 @@ watch(() => authStore.isLoggedIn, async () => {
 })
 
 onMounted(async () => {
-  if (hasAuthingEnabled.value) {
-    await authStore.ensureInitialized()
-  }
   usageCountdownTimer = setInterval(() => {
     usageNowTs.value = Date.now()
   }, 30_000)

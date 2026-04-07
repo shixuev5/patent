@@ -7,6 +7,8 @@ import os
 import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import make_query_spec
+from agents.common.search_clients.factory import SearchClientFactory
+from agents.common.search_clients.zhihuiya import ZhihuiyaClient
 from agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
@@ -29,6 +31,8 @@ class _FakeResponse:
 
 
 def _clear_external_env(monkeypatch):
+    SearchClientFactory._instances.clear()
+    ZhihuiyaClient._account_cooldowns.clear()
     for env_name in list(os.environ):
         if env_name.startswith("ZHIHUIYA_ACCOUNTS__"):
             monkeypatch.delenv(env_name, raising=False)
