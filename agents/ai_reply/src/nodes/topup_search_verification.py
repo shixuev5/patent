@@ -182,16 +182,17 @@ class TopupSearchVerificationNode:
         task_id = str(task.get("task_id", "")).strip() or "New_FX"
         claim_ids = self._normalize_claim_ids(task.get("claim_ids", [])) or ["1"]
         feature_text = str(task.get("feature_text", "")).strip()
+        search_feature_text = str(task.get("search_feature_text", "")).strip() or feature_text
         dispute_id = f"TOPUP_{task_id}"
         claim_text = self._get_claim_text(claim_ids, claims)
 
         local_evidence, local_retrieval_trace = self._search_local_evidence(
-            feature_text=feature_text,
+            search_feature_text=search_feature_text,
             claim_text=claim_text,
             comparison_docs=comparison_docs,
             local_retriever=local_retriever,
         )
-        external_queries = self._build_engine_queries(task, claim_text, feature_text, priority_date)
+        external_queries = self._build_engine_queries(task, claim_text, search_feature_text, priority_date)
         external_candidates, retrieval_engines, retrieval_meta = self.external_evidence_aggregator.search_evidence(
             queries=external_queries,
             priority_date=priority_date,
@@ -219,7 +220,7 @@ class TopupSearchVerificationNode:
             followup_queries = self._build_followup_engine_queries(
                 task=task,
                 claim_text=claim_text,
-                feature_text=feature_text,
+                feature_text=search_feature_text,
                 priority_date=priority_date,
                 primary_queries=external_queries,
                 first_assessment=parsed.get("assessment", {}),
@@ -244,7 +245,7 @@ class TopupSearchVerificationNode:
                 for query in engine_queries
             ):
                 followup_local_evidence, followup_local_trace = self._search_local_evidence(
-                    feature_text=feature_text,
+                    search_feature_text=search_feature_text,
                     claim_text=claim_text,
                     comparison_docs=comparison_docs,
                     local_retriever=local_retriever,
@@ -706,7 +707,7 @@ feature_text: {feature_text}
 
     def _search_local_evidence(
         self,
-        feature_text: str,
+        search_feature_text: str,
         claim_text: str,
         comparison_docs: Dict[str, Dict[str, Any]],
         local_retriever: LocalEvidenceRetriever | None,
@@ -715,8 +716,8 @@ feature_text: {feature_text}
         doc_filters = [doc_id for doc_id in comparison_docs.keys()]
         queries = normalize_query_list(
             [
-                feature_text,
-                f"{feature_text} {claim_text[:120]}",
+                search_feature_text,
+                f"{search_feature_text} {claim_text[:120]}",
                 *(extra_queries or []),
             ],
             limit=4,

@@ -262,6 +262,7 @@ class AmendmentTrackingNode:
             amendment = self._to_dict(item)
             amendment_id = str(amendment.get("amendment_id", "")).strip()
             feature_text = str(amendment.get("feature_text", "")).strip()
+            search_feature_text = str(amendment.get("search_feature_text", "")).strip() or feature_text
             feature_before_text = str(amendment.get("feature_before_text", "")).strip()
             feature_after_text = str(amendment.get("feature_after_text", "")).strip() or feature_text
             amendment_kind = str(amendment.get("amendment_kind", "")).strip()
@@ -303,6 +304,7 @@ class AmendmentTrackingNode:
                     "content_origin": content_origin,
                     "source_claim_ids": source_claim_ids,
                     "feature_text": feature_text,
+                    "search_feature_text": search_feature_text,
                     "feature_before_text": feature_before_text,
                     "feature_after_text": feature_after_text,
                 }

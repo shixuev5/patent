@@ -151,3 +151,55 @@ def test_topup_search_verification_runs_followup_search_on_low_confidence(monkey
     assert assessment["assessment"]["verdict"] == "EXAMINER_CORRECT"
     assert assessment["trace"]["followup_retrieval"] != {}
     assert dispute["examiner_opinion"]["reasoning"] == "二次检索证据足够"
+
+
+def test_topup_search_verification_prefers_search_feature_text_for_retrieval(monkeypatch) -> None:
+    node = TopupSearchVerificationNode()
+    local_queries = []
+    engine_query_inputs = []
+
+    monkeypatch.setattr(
+        node,
+        "_search_local_evidence",
+        lambda **kwargs: (
+            local_queries.append(kwargs["search_feature_text"]) or [],
+            {"queries": [], "selected_cards": []},
+        ),
+    )
+    monkeypatch.setattr(
+        node,
+        "_build_engine_queries",
+        lambda task, claim_text, feature_text, priority_date: (
+            engine_query_inputs.append(feature_text) or {"openalex": [], "zhihuiya": [], "tavily": []}
+        ),
+    )
+    monkeypatch.setattr(node.external_evidence_aggregator, "search_evidence", lambda **kwargs: ([], [], {}))
+    monkeypatch.setattr(node, "_build_evidence_cards", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        node,
+        "_evaluate_with_evidence_cards",
+        lambda **kwargs: {
+            "examiner_opinion": {"type": "common_knowledge_based", "supporting_docs": [], "reasoning": "证据不足"},
+            "applicant_opinion": {"type": "logic_dispute", "reasoning": "申请人主张缺少启示", "core_conflict": "是否存在启示"},
+            "assessment": {"verdict": "INCONCLUSIVE", "reasoning": "证据不足", "confidence": 0.2, "examiner_rejection_rationale": ""},
+            "evidence": [],
+            "used_doc_ids": [],
+        },
+    )
+    monkeypatch.setattr(node, "_should_run_followup", lambda parsed, evidence_cards: False)
+
+    node._evaluate_task(
+        task={
+            "task_id": "A1",
+            "claim_ids": ["1"],
+            "feature_text": "基于轮胎信息控制车辆加速度",
+            "search_feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
+        },
+        claims=[{"claim_id": "1", "claim_text": "权利要求1: 一种车辆控制装置。"}],
+        comparison_docs={"D1": {"title": "D1", "location": "D1", "content": "..."}},
+        priority_date="2020-01-01",
+        local_retriever=None,
+    )
+
+    assert local_queries == ["基于轮胎的RRC值控制车辆的目标加速度"]
+    assert engine_query_inputs == ["基于轮胎的RRC值控制车辆的目标加速度"]

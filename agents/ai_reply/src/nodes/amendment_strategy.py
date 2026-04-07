@@ -84,6 +84,7 @@ class AmendmentStrategyNode:
         for amendment in amendments:
             amendment_id = str(amendment.get("amendment_id", "")).strip()
             feature_text = str(amendment.get("feature_text", "")).strip()
+            search_feature_text = str(amendment.get("search_feature_text", "")).strip() or feature_text
             amendment_kind = str(amendment.get("amendment_kind", "")).strip()
             target_claim_ids = [str(item).strip() for item in amendment.get("target_claim_ids", []) if str(item).strip()]
             source_claim_ids = [str(item).strip() for item in amendment.get("source_claim_ids", []) if str(item).strip()]
@@ -97,6 +98,7 @@ class AmendmentStrategyNode:
                 "task_id": amendment_id,
                 "claim_ids": claim_candidates,
                 "feature_text": feature_text,
+                "search_feature_text": search_feature_text,
                 "amendment_kind": amendment_kind,
                 "source_claim_ids": source_claim_ids,
                 "target_claim_ids": target_claim_ids,

@@ -179,7 +179,9 @@ def test_normalize_tracking_result_accepts_new_substantive_amendment_schema() ->
 
     assert normalized["substantive_amendments"][0]["source_claim_ids"] == []
     assert normalized["substantive_amendments"][0]["feature_before_text"] == "弹簧与壳体连接"
+    assert normalized["substantive_amendments"][0]["search_feature_text"] == "第一弹簧与壳体连接"
     assert normalized["substantive_amendments"][1]["feature_after_text"] == "第二弹簧与滑块连接"
+    assert normalized["substantive_amendments"][1]["search_feature_text"] == "第二弹簧与滑块连接"
 
 
 def test_track_amendment_uses_original_claims_for_first_notice() -> None:
@@ -376,6 +378,7 @@ def test_track_amendment_accepts_claim_feature_merge_for_markush_selection() -> 
             "content_origin": "old_claim",
             "source_claim_ids": ["3"],
             "feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
+            "search_feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
             "feature_before_text": "与所述轮胎有关的信息包括以下项中的至少一个：滚动阻力系数值、均匀性、外径",
             "feature_after_text": "基于轮胎的RRC值控制车辆的目标加速度",
         }

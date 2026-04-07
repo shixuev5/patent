@@ -32,3 +32,44 @@ def test_build_specification_context_is_non_empty_without_detailed_description()
     )
 
     assert context == "【发明内容】\n发明内容文本"
+
+
+def test_build_user_prompt_prefers_feature_after_text_as_support_anchor() -> None:
+    node = SupportBasisCheckNode()
+
+    prompt = node._build_user_prompt(
+        [
+            {
+                "amendment_id": "A1",
+                "feature_text": "基于轮胎的RRC值控制车辆的目标加速度",
+                "feature_before_text": "",
+                "feature_after_text": "轮胎的RRC值小于预定阈值时控制车辆的加速度",
+                "amendment_kind": "spec_feature_addition",
+            }
+        ],
+        "【具体实施方式】\n实施方式文本",
+    )
+
+    assert "feature_anchor_text" in prompt
+    assert "feature_anchor_text` 为修改后原句片段" in prompt
+    assert "轮胎的RRC值小于预定阈值时控制车辆的加速度" in prompt
+    assert "基于轮胎的RRC值控制车辆的目标加速度" in prompt
+
+
+def test_build_user_prompt_falls_back_to_feature_text_when_feature_after_text_missing() -> None:
+    node = SupportBasisCheckNode()
+
+    prompt = node._build_user_prompt(
+        [
+            {
+                "amendment_id": "A2",
+                "feature_text": "车辆加速度受轮胎RRC值影响",
+                "feature_before_text": "",
+                "feature_after_text": "",
+                "amendment_kind": "spec_feature_addition",
+            }
+        ],
+        "【发明内容】\n发明内容文本",
+    )
+
+    assert '"feature_anchor_text": "车辆加速度受轮胎RRC值影响"' in prompt

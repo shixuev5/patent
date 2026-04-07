@@ -138,11 +138,12 @@ class SupportBasisCheckNode:
 
 【具体审查规则】
 1. **严格限定范围**：只能以用户提供的【说明书相关文本】为依据，绝对禁止引入外部常识或主观推理来补足未记载的技术特征。
-2. **支持的情形（support_found = true）**：
+2. **锚点优先**：若同时提供“修改后原句片段”和“客观技术特征摘要”，必须优先依据“修改后原句片段”判断是否存在原始记载；客观摘要仅用于辅助理解，不得据此引入新的概念层级、目标层级或上位概括。
+3. **支持的情形（support_found = true）**：
    - 原文字义支持：说明书中有完全相同的文字。
    - 同义替换：使用了本领域公知且毫无歧义的同义词。
    - 直接推导：本领域技术人员阅读后必然得出的唯一结论。
-3. **超范围的情形（support_found = false，存在风险）**：
+4. **超范围的情形（support_found = false，存在风险）**：
    - **上位概括**：将原说明书中的具体概念（如“铜”）替换为上位概念（如“金属”），且原说明书未暗示其他可能。
    - **特征剥离**：将具体实施例中相互紧密关联、配合工作的多个特征剥离，仅提取其中一个单独作为新增特征。
    - **新的组合**：将原本分别记载在不同实施例中、毫无关联的特征生硬拼凑在一起。
@@ -174,10 +175,13 @@ class SupportBasisCheckNode:
         features: List[Dict[str, Any]],
         specification_context: str,
     ) -> str:
-        simplified_features =[
+        simplified_features = [
             {
                 "amendment_id": str(item.get("amendment_id", "")).strip(),
+                "feature_anchor_text": str(item.get("feature_after_text", "")).strip()
+                or str(item.get("feature_text", "")).strip(),
                 "feature_text": str(item.get("feature_text", "")).strip(),
+                "feature_before_text": str(item.get("feature_before_text", "")).strip(),
                 "amendment_kind": str(item.get("amendment_kind", "")).strip(),
             }
             for item in features
@@ -185,6 +189,7 @@ class SupportBasisCheckNode:
         return f"""请对以下新增特征逐一进行支持依据核查，并按要求输出 JSON 结果。
 
 【待核查的新增特征（仅 spec）】
+（注：`feature_anchor_text` 为修改后原句片段，是超范围判断的主依据；`feature_text` 仅为辅助理解摘要）
 {json.dumps(simplified_features, ensure_ascii=False, indent=2)}
 
 =========================

@@ -175,9 +175,10 @@ class SubstantiveAmendment(BaseModel):
         description="内容来源：old_claim/specification",
     )
     source_claim_ids: List[str] = Field(default_factory=list, description="若来自旧权利要求，则记录来源权项编号")
-    feature_text: str = Field(..., description="新增或修改后的技术特征文本")
+    feature_text: str = Field(..., description="人类可读的技术特征摘要")
+    search_feature_text: str = Field("", description="供检索链路使用的特征改写文本；为空时回退到 feature_text")
     feature_before_text: str = Field("", description="该变更项对应的旧版本特征片段")
-    feature_after_text: str = Field("", description="该变更项对应的新版本特征片段")
+    feature_after_text: str = Field("", description="该变更项对应的新版本特征片段（法律核查锚点）")
 
 
 class StructuralAdjustment(BaseModel):
