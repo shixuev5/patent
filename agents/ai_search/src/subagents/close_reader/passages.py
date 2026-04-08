@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT, DEFAULT_PASSAGE_PREVIEW_CHARS
 
@@ -19,36 +19,6 @@ def collect_key_terms(search_elements: Dict[str, Any]) -> List[str]:
                 if text and text not in terms:
                     terms.append(text)
     return terms[:24]
-
-
-def collect_claim_terms(claim_context: Dict[str, Any] | None) -> List[str]:
-    payload = claim_context if isinstance(claim_context, dict) else {}
-    outputs: List[str] = []
-
-    def _append_text(value: Any) -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        for token in re.split(r"[，,；;。\n]+", text):
-            normalized = token.strip()
-            if len(normalized) >= 2 and normalized not in outputs:
-                outputs.append(normalized)
-
-    for block_name in ("claim_decomposition", "claim_search_strategy"):
-        block = payload.get(block_name)
-        if not isinstance(block, dict):
-            continue
-        for key in ("decomposition_summary", "strategy_summary"):
-            _append_text(block.get(key))
-        for list_key in ("claim_packets", "limitation_groups", "search_intents", "batch_specs", "targeted_gaps"):
-            values = block.get(list_key)
-            if not isinstance(values, list):
-                continue
-            for item in values:
-                if isinstance(item, dict):
-                    for field in ("claim_text", "feature_text", "goal", "gap_summary", "limitation_text", "summary"):
-                        _append_text(item.get(field))
-    return outputs[:24]
 
 
 def fallback_passages(text: str, terms: List[str]) -> List[Dict[str, Any]]:

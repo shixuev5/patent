@@ -10,8 +10,14 @@ class _StubStorage:
         return []
 
 
+class _StubContext:
+    def __init__(self):
+        self.storage = _StubStorage()
+        self.task_id = "task-search-tools"
+
+
 def test_prepare_lane_queries_includes_gap_seed_fields():
-    tools = build_search_tools(_StubStorage(), "task-search-tools")
+    tools = build_search_tools(_StubContext())
     prepare_lane_queries = next(tool for tool in tools if str(getattr(tool, "__name__", "")) == "prepare_lane_queries")
 
     payload = json.loads(

@@ -18,14 +18,12 @@ from agents.ai_search.main import (
     build_main_agent,
     extract_latest_ai_message,
 )
-from agents.ai_search.src.claim_support import load_structured_claims_from_patent_data
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import format_subagent_label
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
-    PHASE_CLAIM_DECOMPOSITION,
     PHASE_CLOSE_READ,
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_COMPLETED,
@@ -34,14 +32,8 @@ from agents.ai_search.src.state import (
     PHASE_EXECUTE_SEARCH,
     PHASE_FAILED,
     PHASE_GENERATE_FEATURE_TABLE,
-    PHASE_SEARCH_STRATEGY,
-    SEARCH_MODE_CLAIM_AWARE,
-    SEARCH_MODE_TOPIC,
-    build_plan_summary,
     default_ai_search_meta,
     get_ai_search_meta,
-    get_ai_search_mode,
-    latest_search_elements,
     merge_ai_search_meta,
     phase_progress,
     phase_step,
@@ -54,6 +46,8 @@ from backend.usage import _enforce_daily_quota
 from backend.utils import _build_r2_storage
 
 from .analysis_seed import (
+    build_analysis_seed_user_message,
+    build_execution_spec_from_analysis,
     load_json_bytes,
     load_json_file,
     seed_prompt_from_analysis,
@@ -81,16 +75,9 @@ MAIN_AGENT_PROGRESS_POLL_SECONDS = 15.0
 DEFAULT_MESSAGE_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_DRAFTING_PLAN,
-    PHASE_CLAIM_DECOMPOSITION,
-    PHASE_SEARCH_STRATEGY,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_COMPLETED,
 }
-
-def _has_usable_patent_claims(patent_payload: Optional[Dict[str, Any]]) -> bool:
-    if not isinstance(patent_payload, dict):
-        return False
-    return bool(load_structured_claims_from_patent_data(patent_payload))
 
 
 class AiSearchService:
@@ -138,7 +125,7 @@ class AiSearchService:
         )
 
     def _display_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        visible_kinds = {"chat", "question", "answer"}
+        visible_kinds = {"chat", "question", "answer", "plan_confirmation"}
         return [
             item
             for item in messages
@@ -170,14 +157,29 @@ class AiSearchService:
         pending_plan_version = int(meta.get("pending_confirmation_plan_version") or 0)
         if pending_plan_version <= 0:
             return None
-        if current_plan and int(current_plan.get("plan_version") or 0) == pending_plan_version:
-            summary = build_plan_summary(current_plan)
+        if current_plan and int(current_plan.get("planVersion") or 0) == pending_plan_version:
             return {
                 "planVersion": pending_plan_version,
-                "planSummary": summary,
-                "confirmationLabel": "确认检索计划",
+                "confirmationLabel": "实施此计划",
             }
         return None
+
+    def _plan_payload(self, plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(plan, dict):
+            return None
+        return {
+            "taskId": str(plan.get("task_id") or "").strip(),
+            "planVersion": int(plan.get("plan_version") or 0),
+            "status": str(plan.get("status") or "").strip(),
+            "reviewMarkdown": str(plan.get("review_markdown") or "").strip(),
+            "executionSpec": plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {},
+            "createdAt": plan.get("created_at"),
+            "confirmedAt": plan.get("confirmed_at"),
+            "supersededAt": plan.get("superseded_at"),
+        }
+
+    def _execution_todos(self, task: Any) -> List[Dict[str, Any]]:
+        return AiSearchAgentContext(self.storage, task.id)._current_todos(task)
 
     def _documents_for_snapshot(self, task: Any) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         meta = get_ai_search_meta(task)
@@ -206,21 +208,6 @@ class AiSearchService:
             "lastError": str(current_todo.get("last_error") or "").strip(),
         }
 
-    def _source_summary(self, task: Any) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        source_type = str(meta.get("source_type") or "").strip()
-        if source_type != "analysis":
-            return None
-        return {
-            "sourceType": source_type,
-            "sourceTaskId": str(meta.get("source_task_id") or "").strip(),
-            "sourcePn": str(meta.get("source_pn") or "").strip(),
-            "sourceTitle": str(meta.get("source_title") or "").strip(),
-            "seedMode": str(meta.get("seed_mode") or "").strip(),
-            "searchMode": get_ai_search_mode(task),
-            "summaryText": "已从 AI 分析结果导入检索上下文，系统已预填检索要素并起草检索草稿。",
-        }
-
     def _load_analysis_artifacts(self, task: Any) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         metadata = task.metadata if isinstance(task.metadata, dict) else {}
         output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
@@ -244,8 +231,7 @@ class AiSearchService:
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
         task = self._get_owned_session_task(session_id, owner_id)
         messages = self.storage.list_ai_search_messages(task.id)
-        current_plan = self._current_plan(task)
-        search_elements = latest_search_elements(messages)
+        current_plan = self._plan_payload(self._current_plan(task))
         candidate_documents, selected_documents = self._documents_for_snapshot(task)
         feature_table = None
         meta = get_ai_search_meta(task)
@@ -261,9 +247,8 @@ class AiSearchService:
             session=self._session_summary(task),
             phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
             messages=self._display_messages(messages),
-            sourceSummary=self._source_summary(task),
-            searchElements=search_elements,
             currentPlan=current_plan,
+            executionTodos=self._execution_todos(task),
             candidateDocuments=candidate_documents,
             selectedDocuments=selected_documents,
             featureTable=feature_table,
@@ -325,7 +310,7 @@ class AiSearchService:
         for item in todos:
             if not isinstance(item, dict):
                 continue
-            if str(item.get("key") or "").strip() == current_task:
+            if str(item.get("todo_id") or "").strip() == current_task:
                 return item
         return None
 
@@ -365,7 +350,7 @@ class AiSearchService:
             "继续当前失败的 AI 检索执行。"
             "这不是新的用户需求，不要回到需求收集或计划确认。"
             "先读取当前 todo、execution state、documents 与 gap context，"
-            "仅围绕当前失败步骤恢复并推进到下一个合法阶段。\n\n"
+            "仅围绕当前失败步骤恢复并推进到下一个合法步骤或阶段。\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -427,17 +412,21 @@ class AiSearchService:
 
         analysis_payload, patent_payload = self._load_analysis_artifacts(analysis_task)
         seeded_search_elements = seed_search_elements_from_analysis(analysis_payload, patent_payload)
+        seeded_execution_spec = build_execution_spec_from_analysis(analysis_payload, patent_payload, seeded_search_elements)
         source_pn = str(
             analysis_payload.get("metadata", {}).get("resolved_pn")
             if isinstance(analysis_payload.get("metadata"), dict) else ""
         ).strip() or str(getattr(analysis_task, "pn", "") or "").strip()
         source_title = str(getattr(analysis_task, "title", "") or "").strip()
-        search_mode = SEARCH_MODE_CLAIM_AWARE if _has_usable_patent_claims(patent_payload) else SEARCH_MODE_TOPIC
         seed_prompt = seed_prompt_from_analysis(
             analysis_payload,
             patent_payload,
             seeded_search_elements,
-            search_mode=search_mode,
+        )
+        seed_user_message = build_analysis_seed_user_message(
+            analysis_payload,
+            patent_payload,
+            seeded_search_elements,
         )
         task = task_manager.create_task(
             owner_id=owner_id,
@@ -447,7 +436,6 @@ class AiSearchService:
         thread_id = f"ai-search-{task.id}"
         seed_meta = default_ai_search_meta(thread_id)
         seed_meta["current_phase"] = PHASE_DRAFTING_PLAN
-        seed_meta["search_mode"] = search_mode
         self.storage.update_task(
             task.id,
             metadata=merge_ai_search_meta(
@@ -471,18 +459,20 @@ class AiSearchService:
                 "kind": "search_elements_update",
                 "content": str(seeded_search_elements.get("clarification_summary") or "").strip() or None,
                 "stream_status": "completed",
-                "metadata": seeded_search_elements,
+                "metadata": {
+                    **seeded_search_elements,
+                    "execution_spec_seed": seeded_execution_spec,
+                },
             }
         )
         self._append_message(
             task.id,
-            "assistant",
+            "user",
             "chat",
-            "已从 AI 分析结果导入检索上下文，正在生成检索草稿。",
+            seed_user_message,
         )
 
         try:
-            previous_assistant = self._latest_assistant_chat(task.id)
             result = self._run_main_agent(
                 task.id,
                 thread_id,
@@ -490,7 +480,7 @@ class AiSearchService:
             )
             assistant_text = extract_latest_ai_message(result["values"])
             active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-            if assistant_text and assistant_text != previous_assistant:
+            if assistant_text and not bool(result.get("interrupted")):
                 self._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
         except Exception as exc:
             self.storage.update_task(
@@ -859,10 +849,10 @@ class AiSearchService:
                 ):
                     yield event
 
-        if current.searchElements != previous.searchElements:
-            yield self._format_event("search_elements.updated", session_id, phase, current.searchElements)
         if current.currentPlan != previous.currentPlan:
             yield self._format_event("plan.updated", session_id, phase, current.currentPlan)
+        if current.executionTodos != previous.executionTodos:
+            yield self._format_event("todos.updated", session_id, phase, {"items": current.executionTodos})
         if current.pendingQuestion != previous.pendingQuestion and current.pendingQuestion is not None:
             yield self._format_event("question.required", session_id, phase, current.pendingQuestion)
         if current.pendingConfirmation != previous.pendingConfirmation and current.pendingConfirmation is not None:

@@ -41,16 +41,45 @@ def test_ai_search_storage_roundtrip(tmp_path):
             "task_id": "task-ai-search",
             "plan_version": 1,
             "status": "draft",
-            "objective": "检索新能源控制方法",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1, "query_batches": [{"batch_id": "b1"}]},
+            "review_markdown": "# 检索计划\n\n## 检索目标\n检索新能源控制方法",
+            "execution_spec_json": {
+                "search_scope": {"objective": "检索新能源控制方法"},
+                "constraints": {},
+                "execution_policy": {"dynamic_replanning": True, "planner_visibility": "summary_only", "max_rounds": 3},
+                "sub_plans": [
+                    {
+                        "sub_plan_id": "sub_plan_1",
+                        "title": "新能源控制",
+                        "goal": "检索新能源控制方法",
+                        "semantic_query_text": "",
+                        "search_elements": [],
+                        "retrieval_steps": [
+                            {
+                                "step_id": "step_1",
+                                "title": "新能源控制 / 首轮宽召回",
+                                "purpose": "执行首轮宽召回",
+                                "feature_combination": "新能源控制核心特征",
+                                "language_strategy": "中文优先，必要时补英文",
+                                "ipc_cpc_mode": "按需补充 IPC/CPC",
+                                "ipc_cpc_codes": [],
+                                "expected_recall": "获取首轮候选池",
+                                "fallback_action": "结果异常时调整同义词与分类号",
+                                "query_blueprint_refs": ["b1"],
+                                "phase_key": "execute_search",
+                            }
+                        ],
+                        "query_blueprints": [{"batch_id": "b1", "goal": "检索新能源控制方法", "sub_plan_id": "sub_plan_1"}],
+                        "classification_hints": [],
+                    }
+                ],
+            },
         }
     )
     assert storage.update_ai_search_plan("task-ai-search", 1, status="confirmed", confirmed_at="2026-04-04T00:00:00Z")
     plan = storage.get_ai_search_plan("task-ai-search", 1)
     assert plan is not None
     assert plan["status"] == "confirmed"
-    assert plan["plan_json"]["query_batches"][0]["batch_id"] == "b1"
+    assert plan["execution_spec_json"]["sub_plans"][0]["query_blueprints"][0]["batch_id"] == "b1"
 
     assert storage.upsert_ai_search_documents(
         [
@@ -63,6 +92,7 @@ def test_ai_search_storage_roundtrip(tmp_path):
                 "abstract": "摘要",
                 "ipc_cpc_json": ["G06F"],
                 "source_batches_json": ["b1"],
+                "source_sub_plans_json": ["sub_plan_1"],
                 "stage": "candidate",
                 "score": 0.9,
             }
@@ -80,6 +110,8 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert len(documents) == 1
     assert documents[0]["stage"] == "selected"
     assert documents[0]["user_pinned"] is True
+    assert documents[0]["source_sub_plans_json"] == ["sub_plan_1"]
+    assert documents[0]["source_steps_json"] == []
     assert documents[0]["key_passages_json"][0]["passage"] == "关键段落"
 
     assert storage.create_ai_search_feature_table(

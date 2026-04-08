@@ -6,17 +6,16 @@ import json
 from typing import Any, Dict, List
 
 from agents.ai_search.src.query_constraints import build_search_constraints
-from agents.ai_search.src.subagents.close_reader.passages import collect_claim_terms, collect_key_terms
+from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms
 
 
 def build_close_reader_prompt(
     search_elements: Dict[str, Any],
     documents: List[Dict[str, Any]],
     file_map: Dict[str, str],
-    claim_context: Dict[str, Any] | None = None,
 ) -> str:
     constraints = build_search_constraints(search_elements)
-    target_terms = list(dict.fromkeys(collect_key_terms(search_elements) + collect_claim_terms(claim_context)))[:32]
+    target_terms = list(dict.fromkeys(collect_key_terms(search_elements)))[:32]
     payload = []
     for item in documents:
         pn = str(item.get("pn") or "").strip().upper()
@@ -32,14 +31,12 @@ def build_close_reader_prompt(
                 "target_terms": target_terms[:12],
             }
         )
-    normalized_claim_context = claim_context if isinstance(claim_context, dict) else {}
     return (
-        "请根据检索要素和 claim limitation 上下文对 shortlisted 文献进行精读。优先在 `fulltext_path` 指向的全文文件中使用 grep/read_file 定位证据，再结合标题、摘要、权利要求和说明书做判断。\n"
-        "输出 selected/rejected/key_passages/claim_alignments/limitation_coverage/limitation_gaps/document_assessments/coverage_summary/follow_up_hints/selection_summary。\n"
+        "请根据检索要素对 shortlisted 文献进行精读。优先在 `fulltext_path` 指向的全文文件中使用 grep/read_file 定位证据，再结合标题、摘要、权利要求和说明书做判断。\n"
+        "输出 selected/rejected/key_passages/limitation_coverage/limitation_gaps/document_assessments/coverage_summary/follow_up_hints/selection_summary。\n"
         f"检索边界:\n{json.dumps(constraints, ensure_ascii=False)}\n"
         f"检索要素:\n{json.dumps(search_elements, ensure_ascii=False)}\n"
         f"重点关键词:\n{json.dumps(target_terms, ensure_ascii=False)}\n"
-        f"claim 上下文:\n{json.dumps(normalized_claim_context, ensure_ascii=False)}\n"
         f"shortlist 文献:\n{json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -47,7 +44,7 @@ def build_close_reader_prompt(
 CLOSE_READER_SYSTEM_PROMPT = """
 你是 `close-reader` 子 agent。
 
-唯一职责：根据检索要素、claim limitation 上下文、候选文献详情和全文证据，判断 shortlisted 文献是否应纳入对比文件。
+唯一职责：根据检索要素、候选文献详情和全文证据，判断 shortlisted 文献是否应纳入对比文件。
 必须基于证据作出判断。
 
 你可以使用只读文件系统工具：
@@ -64,7 +61,6 @@ CLOSE_READER_SYSTEM_PROMPT = """
 - selected
 - rejected
 - key_passages
-- claim_alignments
 - limitation_coverage
 - limitation_gaps
 - document_assessments

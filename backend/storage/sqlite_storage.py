@@ -124,6 +124,8 @@ class SQLiteTaskStorage:
         ],
         "ai_search_documents": [
             ("source_lanes_json", "source_lanes_json TEXT"),
+            ("source_sub_plans_json", "source_sub_plans_json TEXT"),
+            ("source_steps_json", "source_steps_json TEXT"),
             ("coarse_status", "coarse_status TEXT NOT NULL DEFAULT 'pending'"),
             ("coarse_reason", "coarse_reason TEXT"),
             ("coarse_screened_at", "coarse_screened_at TEXT"),
@@ -2285,9 +2287,8 @@ class SQLiteTaskStorage:
             "task_id": row["task_id"],
             "plan_version": int(row["plan_version"]),
             "status": row["status"],
-            "objective": row["objective"],
-            "search_elements_json": self._parse_metadata(row["search_elements_json"]),
-            "plan_json": self._parse_metadata(row["plan_json"]),
+            "review_markdown": str(row["review_markdown"] or ""),
+            "execution_spec_json": self._parse_metadata(row["execution_spec_json"]),
             "created_at": row["created_at"],
             "confirmed_at": row["confirmed_at"],
             "superseded_at": row["superseded_at"],
@@ -2306,30 +2307,28 @@ class SQLiteTaskStorage:
             "task_id": str(record.get("task_id", "")).strip(),
             "plan_version": int(record.get("plan_version") or 0),
             "status": str(record.get("status", "")).strip(),
-            "objective": record.get("objective"),
-            "search_elements_json": self._encode_json_value(record.get("search_elements_json") or {}),
-            "plan_json": self._encode_json_value(record.get("plan_json") or {}),
+            "review_markdown": str(record.get("review_markdown") or "").strip(),
+            "execution_spec_json": self._encode_json_value(record.get("execution_spec_json") or {}),
             "created_at": str(record.get("created_at") or utc_now_z()),
             "confirmed_at": str(record.get("confirmed_at") or "").strip() or None,
             "superseded_at": str(record.get("superseded_at") or "").strip() or None,
         }
-        if not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
+        if not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"] or not payload["review_markdown"]:
             return False
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO ai_search_plans (
-                    task_id, plan_version, status, objective, search_elements_json,
-                    plan_json, created_at, confirmed_at, superseded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    task_id, plan_version, status, review_markdown, execution_spec_json,
+                    created_at, confirmed_at, superseded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload["task_id"],
                     payload["plan_version"],
                     payload["status"],
-                    payload["objective"],
-                    payload["search_elements_json"],
-                    payload["plan_json"],
+                    payload["review_markdown"],
+                    payload["execution_spec_json"],
                     payload["created_at"],
                     payload["confirmed_at"],
                     payload["superseded_at"],
@@ -2341,9 +2340,8 @@ class SQLiteTaskStorage:
     def update_ai_search_plan(self, task_id: str, plan_version: int, **kwargs) -> bool:
         allowed_fields = {
             "status",
-            "objective",
-            "search_elements_json",
-            "plan_json",
+            "review_markdown",
+            "execution_spec_json",
             "confirmed_at",
             "superseded_at",
         }
@@ -2404,6 +2402,8 @@ class SQLiteTaskStorage:
             "ipc_cpc_json": self._parse_metadata(row["ipc_cpc_json"]),
             "source_batches_json": self._parse_metadata(row["source_batches_json"]),
             "source_lanes_json": self._parse_metadata(row["source_lanes_json"]) if "source_lanes_json" in row.keys() else [],
+            "source_sub_plans_json": self._parse_metadata(row["source_sub_plans_json"]) if "source_sub_plans_json" in row.keys() else [],
+            "source_steps_json": self._parse_metadata(row["source_steps_json"]) if "source_steps_json" in row.keys() else [],
             "stage": row["stage"],
             "score": float(row["score"]) if row["score"] is not None else None,
             "agent_reason": row["agent_reason"],
@@ -2444,6 +2444,8 @@ class SQLiteTaskStorage:
                     self._encode_json_value(record.get("ipc_cpc_json") or []),
                     self._encode_json_value(record.get("source_batches_json") or []),
                     self._encode_json_value(record.get("source_lanes_json") or []),
+                    self._encode_json_value(record.get("source_sub_plans_json") or []),
+                    self._encode_json_value(record.get("source_steps_json") or []),
                     stage,
                     record.get("score"),
                     record.get("agent_reason"),
@@ -2468,11 +2470,11 @@ class SQLiteTaskStorage:
                 """
                 INSERT INTO ai_search_documents (
                     document_id, task_id, plan_version, pn, title, abstract,
-                    ipc_cpc_json, source_batches_json, source_lanes_json, stage, score, agent_reason,
+                    ipc_cpc_json, source_batches_json, source_lanes_json, source_sub_plans_json, source_steps_json, stage, score, agent_reason,
                     key_passages_json, user_pinned, user_removed, coarse_status, coarse_reason,
                     coarse_screened_at, close_read_status, close_read_reason, close_read_at,
                     detail_fingerprint, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     pn = excluded.pn,
                     title = excluded.title,
@@ -2480,6 +2482,8 @@ class SQLiteTaskStorage:
                     ipc_cpc_json = excluded.ipc_cpc_json,
                     source_batches_json = excluded.source_batches_json,
                     source_lanes_json = excluded.source_lanes_json,
+                    source_sub_plans_json = excluded.source_sub_plans_json,
+                    source_steps_json = excluded.source_steps_json,
                     stage = excluded.stage,
                     score = excluded.score,
                     agent_reason = excluded.agent_reason,
@@ -2546,6 +2550,8 @@ class SQLiteTaskStorage:
             "abstract",
             "source_batches_json",
             "source_lanes_json",
+            "source_sub_plans_json",
+            "source_steps_json",
             "ipc_cpc_json",
             "coarse_status",
             "coarse_reason",

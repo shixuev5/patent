@@ -35,8 +35,7 @@ const isExecutionPhase = (phase: string): boolean => EXECUTION_PHASES.includes(S
 
 const formatSubagentName = (name: string): string => {
   if (name === 'search-elements') return '检索要素整理'
-  if (name === 'claim-decomposer') return '权利要求拆解'
-  if (name === 'claim-search-strategist') return '检索策略规划'
+  if (name === 'plan-prober') return '计划预检'
   if (name === 'query-executor') return '检索执行'
   if (name === 'coarse-screener') return '候选粗筛'
   if (name === 'close-reader') return '重点精读'
@@ -105,9 +104,8 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   },
   phase: String(summary.phase || 'collecting_requirements'),
   messages: [],
-  sourceSummary: null,
-  searchElements: null,
   currentPlan: null,
+  executionTodos: [],
   candidateDocuments: [],
   selectedDocuments: [],
   featureTable: null,
@@ -474,18 +472,18 @@ export const useAiSearchStore = defineStore('aiSearch', {
         return
       }
 
-      if (event.type === 'search_elements.updated') {
-        snapshot.searchElements = payload || null
-        return
-      }
-
       if (event.type === 'plan.updated') {
         snapshot.currentPlan = payload || null
-        const planVersion = Number(payload?.plan_version || payload?.planVersion || 0)
+        const planVersion = Number(payload?.planVersion || 0)
         if (planVersion > 0) {
           snapshot.session.activePlanVersion = planVersion
           this._upsertSessionSummary({ ...snapshot.session })
         }
+        return
+      }
+
+      if (event.type === 'todos.updated') {
+        snapshot.executionTodos = Array.isArray(payload?.items) ? payload.items : []
         return
       }
 

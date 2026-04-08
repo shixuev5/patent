@@ -74,10 +74,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         detail_fingerprint=detail.get("detail_fingerprint"),
                     )
                 file_map = prepare_close_read_workspace(workspace_dir, details)
-                claim_context = {
-                    "claim_decomposition": context.latest_message_metadata("claim_decomposition"),
-                    "claim_search_strategy": context.latest_message_metadata("claim_search_strategy"),
-                }
                 pending_ids = [str(item.get("document_id") or "").strip() for item in pending if str(item.get("document_id") or "").strip()]
                 context.update_todos(
                     "close_read",
@@ -95,7 +91,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     {
                         "plan_version": version,
                         "search_elements": context.current_search_elements(version),
-                        "claim_context": claim_context,
                         "workspace_dir": str(workspace_dir),
                         "documents": [
                             {
@@ -109,7 +104,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                             }
                             for item in details
                         ],
-                        "prompt": build_close_reader_prompt(context.current_search_elements(version), details, file_map, claim_context),
+                        "prompt": build_close_reader_prompt(context.current_search_elements(version), details, file_map),
                     },
                     ensure_ascii=False,
                 )
@@ -120,7 +115,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             selected_ids = {str(item).strip() for item in (payload.get("selected") or []) if str(item).strip()}
             rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
             passages_by_doc: Dict[str, List[Dict[str, Any]]] = {}
-            claim_alignments_by_doc: Dict[str, List[Dict[str, Any]]] = {}
             assessments_by_doc: Dict[str, Dict[str, Any]] = {}
             for item in payload.get("key_passages") or []:
                 if not isinstance(item, dict):
@@ -136,22 +130,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         "paragraph_type": str(item.get("paragraph_type") or "").strip(),
                         "hit_terms": item.get("hit_terms") or [],
                         "hit_density": item.get("hit_density"),
-                    }
-                )
-            for item in payload.get("claim_alignments") or []:
-                if not isinstance(item, dict):
-                    continue
-                document_id = str(item.get("document_id") or "").strip()
-                if not document_id:
-                    continue
-                claim_alignments_by_doc.setdefault(document_id, []).append(
-                    {
-                        "claim_id": str(item.get("claim_id") or "").strip(),
-                        "limitation_id": str(item.get("limitation_id") or "").strip(),
-                        "passage": str(item.get("passage") or "")[:400],
-                        "support": str(item.get("support") or "").strip(),
-                        "reason": str(item.get("reason") or "").strip(),
-                        "location": item.get("location"),
                     }
                 )
             for item in payload.get("document_assessments") or []:
@@ -182,9 +160,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         {**passage, "document_id": document_id}
                         for passage in fallback_passages(detail_to_text(detail), terms)[:DEFAULT_KEY_PASSAGES_LIMIT]
                     ]
-                alignments = claim_alignments_by_doc.get(document_id) or []
-                if alignments:
-                    passages = [{**passage, "claim_alignments": alignments} for passage in passages]
                 assessment = assessments_by_doc.get(document_id)
                 if assessment:
                     passages = [{**passage, "assessment": assessment} for passage in passages]

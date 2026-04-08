@@ -64,6 +64,8 @@ def build_search_tools(context: Any) -> List[Any]:
         plan_version: int,
         batch_id: str,
         lane_type: str,
+        sub_plan_id: str,
+        step_id: str,
         raw_item: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         pn = str(raw_item.get("pn") or "").strip().upper()
@@ -75,6 +77,12 @@ def build_search_tools(context: Any) -> List[Any]:
         source_lanes = list(existing.get("source_lanes_json") or []) if existing else []
         if lane_type and lane_type not in source_lanes:
             source_lanes.append(lane_type)
+        source_sub_plans = list(existing.get("source_sub_plans_json") or []) if existing else []
+        if sub_plan_id and sub_plan_id not in source_sub_plans:
+            source_sub_plans.append(sub_plan_id)
+        source_steps = list(existing.get("source_steps_json") or []) if existing else []
+        if step_id and step_id not in source_steps:
+            source_steps.append(step_id)
         return {
             "document_id": stable_ai_search_document_id(task_id, int(plan_version), pn),
             "task_id": task_id,
@@ -85,6 +93,8 @@ def build_search_tools(context: Any) -> List[Any]:
             "ipc_cpc_json": raw_item.get("cpc") or raw_item.get("ipc_cpc_json") or (existing.get("ipc_cpc_json") if existing else []) or [],
             "source_batches_json": source_batches,
             "source_lanes_json": source_lanes,
+            "source_sub_plans_json": source_sub_plans,
+            "source_steps_json": source_steps,
             "stage": str(existing.get("stage") or "candidate") if existing else "candidate",
             "score": raw_item.get("score") if raw_item.get("score") is not None else (existing.get("score") if existing else None),
             "agent_reason": str(existing.get("agent_reason") or "") if existing else "",
@@ -106,6 +116,8 @@ def build_search_tools(context: Any) -> List[Any]:
         plan_version: int,
         batch_id: str,
         lane_type: str,
+        sub_plan_id: str,
+        step_id: str,
         executed_tool: str,
     ) -> str:
         payload = raw_result if isinstance(raw_result, dict) else {}
@@ -125,7 +137,15 @@ def build_search_tools(context: Any) -> List[Any]:
                 deduped_hits += 1
             else:
                 new_unique_candidates += 1
-            record = _candidate_record(existing, plan_version=int(plan_version), batch_id=batch_id, lane_type=lane_type, raw_item=item)
+            record = _candidate_record(
+                existing,
+                plan_version=int(plan_version),
+                batch_id=batch_id,
+                lane_type=lane_type,
+                sub_plan_id=sub_plan_id,
+                step_id=step_id,
+                raw_item=item,
+            )
             if record:
                 records.append(record)
         if records:
@@ -151,6 +171,8 @@ def build_search_tools(context: Any) -> List[Any]:
         limit: int = 20,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
+        sub_plan_id: str = "",
+        step_id: str = "",
         runtime: ToolRuntime = None,
     ) -> str:
         """
@@ -171,8 +193,17 @@ def build_search_tools(context: Any) -> List[Any]:
                     "stop_signal": "trace_unavailable",
                 }
             )
+        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
         result = client.get_similar_patents(str(seed_pn or "").strip().upper(), limit=int(limit or 20))
-        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="trace", executed_tool="search_trace")
+        output = _persist_search_results(
+            result,
+            plan_version=int(plan_version),
+            batch_id=batch_id,
+            lane_type="trace",
+            sub_plan_id=str(sub_plan_id or "").strip(),
+            step_id=resolved_step_id,
+            executed_tool="search_trace",
+        )
         context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
@@ -183,19 +214,30 @@ def build_search_tools(context: Any) -> List[Any]:
         limit: int = 50,
         cutoff_date: str = "",
         applicant_terms: Optional[List[str]] = None,
+        sub_plan_id: str = "",
+        step_id: str = "",
         runtime: ToolRuntime = None,
     ) -> str:
         """
         调用智慧芽语义检索，并把命中文献写入候选池。
         """
         _ = applicant_terms
+        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
         client = SearchClientFactory.get_client("zhihuiya")
         result = client.search_semantic(
             str(query_text or "").strip(),
             to_date=str(cutoff_date or "").strip(),
             limit=int(limit or 50),
         )
-        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="semantic", executed_tool="search_semantic")
+        output = _persist_search_results(
+            result,
+            plan_version=int(plan_version),
+            batch_id=batch_id,
+            lane_type="semantic",
+            sub_plan_id=str(sub_plan_id or "").strip(),
+            step_id=resolved_step_id,
+            executed_tool="search_semantic",
+        )
         context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
@@ -204,16 +246,27 @@ def build_search_tools(context: Any) -> List[Any]:
         batch_id: str,
         query_text: str,
         limit: int = 50,
+        sub_plan_id: str = "",
+        step_id: str = "",
         runtime: ToolRuntime = None,
     ) -> str:
         """
         调用智慧芽布尔检索，并把命中文献写入候选池。
         """
+        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
         client = SearchClientFactory.get_client("zhihuiya")
         result = client.search(str(query_text or "").strip(), limit=int(limit or 50))
         if not isinstance(result, dict):
             result = {"total": 0, "results": []}
-        output = _persist_search_results(result, plan_version=int(plan_version), batch_id=batch_id, lane_type="boolean", executed_tool="search_boolean")
+        output = _persist_search_results(
+            result,
+            plan_version=int(plan_version),
+            batch_id=batch_id,
+            lane_type="boolean",
+            sub_plan_id=str(sub_plan_id or "").strip(),
+            step_id=resolved_step_id,
+            executed_tool="search_boolean",
+        )
         context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
@@ -258,6 +311,7 @@ def build_search_tools(context: Any) -> List[Any]:
             "plan_version": int(plan_version),
             "lane_type": str(lane_type or "").strip(),
             "batch_id": str(batch.get("batch_id") or "").strip(),
+            "sub_plan_id": str(batch.get("sub_plan_id") or "").strip(),
             "gap_type": str(batch.get("gap_type") or "").strip(),
             "claim_id": str(batch.get("claim_id") or "").strip(),
             "limitation_id": str(batch.get("limitation_id") or "").strip(),

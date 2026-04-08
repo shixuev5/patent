@@ -17,14 +17,12 @@ from agents.ai_search.src.state import (
     PHASE_CLOSE_READ,
     PHASE_DRAFTING_PLAN,
     PHASE_EXECUTE_SEARCH,
-    SEARCH_MODE_CLAIM_AWARE,
-    SEARCH_MODE_TOPIC,
 )
 
 
 class _StubStorage:
-    def __init__(self, phase: str, search_mode: str = SEARCH_MODE_TOPIC):
-        self._task = SimpleNamespace(metadata={"ai_search": {"current_phase": phase, "search_mode": search_mode}})
+    def __init__(self, phase: str):
+        self._task = SimpleNamespace(metadata={"ai_search": {"current_phase": phase}})
 
     def get_task(self, _task_id: str):
         return self._task
@@ -64,43 +62,30 @@ def test_main_agent_phase_protocol_blocks_wrong_subagent():
     assert result.content == "子 agent `query-executor` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
-def test_topic_search_blocks_claim_decomposition_tool():
+def test_main_agent_blocks_legacy_tool_outside_phase_policy():
     middleware = AiSearchGuardMiddleware(
         "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_TOPIC),
+        storage=_StubStorage(PHASE_DRAFTING_PLAN),
         task_id="task-topic",
     )
-    request = SimpleNamespace(tool_call={"name": "start_claim_decomposition", "id": "call-topic-1", "args": {}})
+    request = SimpleNamespace(tool_call={"name": "legacy_planner_tool", "id": "call-topic-1", "args": {}})
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result.content == "工具 `start_claim_decomposition` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
+    assert result.content == "工具 `legacy_planner_tool` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
-def test_topic_search_blocks_claim_search_strategist_subagent():
+def test_main_agent_blocks_removed_subagent_type():
     middleware = AiSearchGuardMiddleware(
         "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_TOPIC),
+        storage=_StubStorage(PHASE_DRAFTING_PLAN),
         task_id="task-topic-2",
     )
-    request = SimpleNamespace(tool_call={"name": "task", "id": "call-topic-2", "args": {"subagent_type": "claim-search-strategist"}})
+    request = SimpleNamespace(tool_call={"name": "task", "id": "call-topic-2", "args": {"subagent_type": "legacy-search-worker"}})
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result.content == "子 agent `claim-search-strategist` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
-
-
-def test_claim_aware_search_allows_claim_decomposition_tool():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN, SEARCH_MODE_CLAIM_AWARE),
-        task_id="task-claim-aware",
-    )
-    request = SimpleNamespace(tool_call={"name": "start_claim_decomposition", "id": "call-claim-1", "args": {}})
-
-    result = middleware.wrap_tool_call(request, lambda _request: "ok")
-
-    assert result == "ok"
+    assert result.content == "子 agent `legacy-search-worker` 不允许由 `main-agent` 调用。"
 
 
 def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_phase():

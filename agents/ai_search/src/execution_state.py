@@ -1,320 +1,222 @@
 """
-AI 检索执行状态模型与默认计划补全。
+AI 检索执行状态模型与步骤级计划补全。
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
 
 
-DEFAULT_EXECUTION_MAX_ROUNDS = 3
-DEFAULT_SCREENING_MIN_CANDIDATES = 8
+ALLOWED_STEP_PHASE_KEYS = {
+    "execute_search",
+    "coarse_screen",
+    "close_read",
+    "generate_feature_table",
+}
 
 
-class LaneResultSummary(BaseModel):
-    lane_type: str
-    batch_id: str = ""
-    executed_tool: str = ""
-    new_unique_candidates: int = 0
-    deduped_hits: int = 0
+class ExecutionStepSummary(BaseModel):
+    todo_id: str
+    step_id: str
+    sub_plan_id: str
+    result_summary: str = ""
+    adjustments: List[str] = Field(default_factory=list)
+    plan_change_assessment: Dict[str, Any] = Field(default_factory=dict)
+    next_recommendation: str = ""
     candidate_pool_size: int = 0
-    stop_signal: str = ""
-    reasoning: str = ""
-
-
-class ExecutionRoundSummary(BaseModel):
-    round_id: str
-    lane_results: List[LaneResultSummary] = Field(default_factory=list)
     new_unique_candidates: int = 0
-    deduped_hits: int = 0
-    candidate_pool_size: int = 0
-    result_signal: str = ""
-    coverage_signal: str = ""
-    novelty_signal: str = ""
-    next_lane_priority: str = ""
-    lane_strategy_hint: str = ""
-    replan_reason: str = ""
-    recommended_next_action: str = ""
-    transition_hint: str = ""
-    needs_replan: bool = True
-    recommended_adjustments: List[str] = Field(default_factory=list)
-    stop_signal: str = ""
 
 
-class ExecutionDirective(BaseModel):
-    round_id: str
-    plan_version: int
-    execution_policy: Dict[str, Any] = Field(default_factory=dict)
-    lanes: List[Dict[str, Any]] = Field(default_factory=list)
-    round_stop_rules: List[Dict[str, Any]] = Field(default_factory=list)
-    screening_entry_rules: List[Dict[str, Any]] = Field(default_factory=list)
-    replan_rules: List[Dict[str, Any]] = Field(default_factory=list)
-    previous_round_summaries: List[Dict[str, Any]] = Field(default_factory=list)
-    search_elements_snapshot: Dict[str, Any] = Field(default_factory=dict)
-    gap_context: Dict[str, Any] = Field(default_factory=dict)
+class PlanProbeFindings(BaseModel):
+    overall_observation: str = ""
+    retrieval_step_refs: List[str] = Field(default_factory=list)
+    signals: List[Dict[str, Any]] = Field(default_factory=list)
 
 
-def enrich_execution_round_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(summary or {})
-    lane_results = payload.get("lane_results") if isinstance(payload.get("lane_results"), list) else []
-    trace_increment = 0
-    semantic_increment = 0
-    boolean_increment = 0
-    for item in lane_results:
-        if not isinstance(item, dict):
-            continue
-        lane_type = str(item.get("lane_type") or "").strip().lower()
-        increment = int(item.get("new_unique_candidates") or 0)
-        if lane_type == "trace":
-            trace_increment += increment
-        elif lane_type == "semantic":
-            semantic_increment += increment
-        elif lane_type == "boolean":
-            boolean_increment += increment
+def _string_list(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    items: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return items
 
-    candidate_pool_size = int(payload.get("candidate_pool_size") or 0)
-    new_unique_candidates = int(payload.get("new_unique_candidates") or 0)
-    deduped_hits = int(payload.get("deduped_hits") or 0)
-    result_signal = str(payload.get("result_signal") or "").strip()
-    if not result_signal:
-        if candidate_pool_size <= 0 and new_unique_candidates <= 0 and deduped_hits <= 0:
-            result_signal = "empty"
-        elif new_unique_candidates <= 0:
-            result_signal = "no_increment"
-        elif new_unique_candidates >= 3:
-            result_signal = "strong_increment"
-        else:
-            result_signal = "incremental"
-    payload["result_signal"] = result_signal
 
-    if not str(payload.get("coverage_signal") or "").strip():
-        payload["coverage_signal"] = "broad" if candidate_pool_size >= 8 else ("emerging" if candidate_pool_size > 0 else "empty")
-    if not str(payload.get("novelty_signal") or "").strip():
-        payload["novelty_signal"] = "high" if new_unique_candidates >= 3 else ("low" if new_unique_candidates > 0 else "none")
+def _normalize_blueprint(batch: Dict[str, Any], sub_plan_id: str, index: int) -> Dict[str, Any]:
+    batch_id = str(batch.get("batch_id") or f"{sub_plan_id}-batch-{index}").strip() or f"{sub_plan_id}-batch-{index}"
+    return {
+        **batch,
+        "batch_id": batch_id,
+        "sub_plan_id": str(batch.get("sub_plan_id") or sub_plan_id).strip() or sub_plan_id,
+    }
 
-    if not str(payload.get("next_lane_priority") or "").strip():
-        if result_signal == "empty":
-            payload["next_lane_priority"] = "semantic"
-        elif result_signal == "no_increment" and candidate_pool_size > 0:
-            payload["next_lane_priority"] = "screen"
-        elif trace_increment > 0:
-            payload["next_lane_priority"] = "trace"
-        elif semantic_increment > 0 and boolean_increment <= 0:
-            payload["next_lane_priority"] = "boolean"
-        elif boolean_increment > 0 and semantic_increment <= 0:
-            payload["next_lane_priority"] = "semantic"
-        else:
-            payload["next_lane_priority"] = "semantic"
 
-    if not str(payload.get("lane_strategy_hint") or "").strip():
-        if result_signal == "empty":
-            payload["lane_strategy_hint"] = "expand_semantic_or_change_pivot"
-        elif result_signal == "no_increment" and candidate_pool_size > 0:
-            payload["lane_strategy_hint"] = "screen_existing_pool_or_switch_lane"
-        elif trace_increment > 0:
-            payload["lane_strategy_hint"] = "trace_seed_is_productive"
-        elif semantic_increment > 0 and boolean_increment <= 0:
-            payload["lane_strategy_hint"] = "semantic_recall_working_consider_boolean_narrowing"
-        elif boolean_increment > 0:
-            payload["lane_strategy_hint"] = "boolean_lane_found_increment_keep_constraints"
-        else:
-            payload["lane_strategy_hint"] = "maintain_current_lane_mix"
-
-    if not str(payload.get("replan_reason") or "").strip():
-        if result_signal == "empty":
-            payload["replan_reason"] = "zero_results"
-        elif result_signal == "no_increment" and candidate_pool_size <= 0:
-            payload["replan_reason"] = "no_increment_without_pool"
-        else:
-            payload["replan_reason"] = ""
-    return payload
+def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_ids: set[str], index: int) -> Dict[str, Any]:
+    step_id = str(step.get("step_id") or f"{sub_plan_id}_step_{index}").strip() or f"{sub_plan_id}_step_{index}"
+    query_blueprint_refs = _string_list(step.get("query_blueprint_refs"))
+    if not query_blueprint_refs:
+        raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 缺少 query_blueprint_refs。")
+    invalid_refs = [ref for ref in query_blueprint_refs if ref not in blueprint_ids]
+    if invalid_refs:
+        raise ValueError(
+            f"sub_plan `{sub_plan_id}` step `{step_id}` 引用了未定义的 query_blueprints: {', '.join(invalid_refs)}。"
+        )
+    phase_key = str(step.get("phase_key") or "execute_search").strip() or "execute_search"
+    if phase_key not in ALLOWED_STEP_PHASE_KEYS:
+        raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 使用了不支持的 phase_key `{phase_key}`。")
+    return {
+        "step_id": step_id,
+        "title": str(step.get("title") or f"{sub_plan_id} / step {index}").strip() or f"{sub_plan_id} / step {index}",
+        "purpose": str(step.get("purpose") or "").strip(),
+        "feature_combination": str(step.get("feature_combination") or "").strip(),
+        "language_strategy": str(step.get("language_strategy") or "").strip(),
+        "ipc_cpc_mode": str(step.get("ipc_cpc_mode") or "").strip(),
+        "ipc_cpc_codes": _string_list(step.get("ipc_cpc_codes")),
+        "expected_recall": str(step.get("expected_recall") or "").strip(),
+        "fallback_action": str(step.get("fallback_action") or "").strip(),
+        "query_blueprint_refs": query_blueprint_refs,
+        "phase_key": phase_key,
+        "probe_summary": step.get("probe_summary") if isinstance(step.get("probe_summary"), dict) else {},
+    }
 
 
 def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[str, Any]) -> Dict[str, Any]:
     source = plan_json if isinstance(plan_json, dict) else {}
-    query_batches = source.get("query_batches") if isinstance(source.get("query_batches"), list) else []
+    sub_plans = source.get("sub_plans") if isinstance(source.get("sub_plans"), list) else []
+    if not sub_plans:
+        raise ValueError("execution_spec.sub_plans 不能为空。")
+
+    normalized_sub_plans: List[Dict[str, Any]] = []
+    for sub_index, item in enumerate(sub_plans, start=1):
+        if not isinstance(item, dict):
+            continue
+        sub_plan_id = str(item.get("sub_plan_id") or item.get("id") or f"sub_plan_{sub_index}").strip() or f"sub_plan_{sub_index}"
+        title = str(item.get("title") or f"子计划 {sub_index}").strip() or f"子计划 {sub_index}"
+        goal = str(item.get("goal") or title).strip() or title
+        sub_plan_search_elements = item.get("search_elements") if isinstance(item.get("search_elements"), list) else []
+        raw_query_blueprints = item.get("query_blueprints") if isinstance(item.get("query_blueprints"), list) else []
+        query_blueprints = [
+            _normalize_blueprint(batch, sub_plan_id, index)
+            for index, batch in enumerate(raw_query_blueprints, start=1)
+            if isinstance(batch, dict)
+        ]
+        blueprint_ids = {str(batch.get("batch_id") or "").strip() for batch in query_blueprints}
+        raw_retrieval_steps = item.get("retrieval_steps") if isinstance(item.get("retrieval_steps"), list) else []
+        if not raw_retrieval_steps:
+            raise ValueError(f"sub_plan `{sub_plan_id}` 缺少 retrieval_steps。")
+        retrieval_steps = [
+            _normalize_retrieval_step(step, sub_plan_id, blueprint_ids, index)
+            for index, step in enumerate(raw_retrieval_steps, start=1)
+            if isinstance(step, dict)
+        ]
+        normalized_sub_plans.append(
+            {
+                "sub_plan_id": sub_plan_id,
+                "title": title,
+                "goal": goal,
+                "semantic_query_text": str(item.get("semantic_query_text") or item.get("semanticQueryText") or "").strip(),
+                "search_elements": [element for element in sub_plan_search_elements if isinstance(element, dict)],
+                "retrieval_steps": retrieval_steps,
+                "query_blueprints": query_blueprints,
+                "classification_hints": [hint for hint in (item.get("classification_hints") or []) if isinstance(hint, dict)],
+            }
+        )
 
     execution_policy = source.get("execution_policy") if isinstance(source.get("execution_policy"), dict) else {}
-    execution_policy = {
+    normalized_execution_policy = {
         "dynamic_replanning": bool(execution_policy.get("dynamic_replanning", True)),
-        "planner_visibility": str(execution_policy.get("planner_visibility") or "summary_only"),
-        "max_rounds": int(execution_policy.get("max_rounds") or DEFAULT_EXECUTION_MAX_ROUNDS),
+        "planner_visibility": str(execution_policy.get("planner_visibility") or "step_summary_only"),
+        "max_step_attempts": int(execution_policy.get("max_step_attempts") or 3),
     }
 
-    lanes = source.get("lanes") if isinstance(source.get("lanes"), list) else []
-    normalized_lanes: List[Dict[str, Any]] = []
-    if lanes:
-        for index, lane in enumerate(lanes):
-            if not isinstance(lane, dict):
-                continue
-            batch_specs = lane.get("batch_specs") if isinstance(lane.get("batch_specs"), list) else []
-            normalized_lanes.append(
-                {
-                    "lane_type": str(lane.get("lane_type") or "semantic").strip() or "semantic",
-                    "goal": str(lane.get("goal") or "").strip(),
-                    "priority": int(lane.get("priority") or ((index + 1) * 10)),
-                    "enabled_when": str(lane.get("enabled_when") or "always").strip() or "always",
-                    "batch_specs": [item for item in batch_specs if isinstance(item, dict)],
-                }
-            )
-    else:
-        for index, batch in enumerate(query_batches):
-            if not isinstance(batch, dict):
-                continue
-            goal = str(batch.get("goal") or "").strip()
-            batch_id = str(batch.get("batch_id") or f"batch-{index + 1}").strip() or f"batch-{index + 1}"
-            trace_seed = str(batch.get("seed_pn") or batch.get("seed_publication_number") or "").strip().upper()
-            if trace_seed:
-                normalized_lanes.append(
-                    {
-                        "lane_type": "trace",
-                        "goal": goal or "相似/追踪召回",
-                        "priority": (index * 10) + 10,
-                        "enabled_when": "seed_pn_present",
-                        "batch_specs": [{"batch_id": batch_id, **batch}],
-                    }
-                )
-            normalized_lanes.append(
-                {
-                    "lane_type": "semantic",
-                    "goal": goal or "语义召回",
-                    "priority": (index * 10) + 20,
-                    "enabled_when": "always",
-                    "batch_specs": [{"batch_id": batch_id, **batch}],
-                }
-            )
-            normalized_lanes.append(
-                {
-                    "lane_type": "boolean",
-                    "goal": goal or "布尔补召回",
-                    "priority": (index * 10) + 30,
-                    "enabled_when": "always",
-                    "batch_specs": [{"batch_id": batch_id, **batch}],
-                }
-            )
-
-    round_stop_rules = source.get("round_stop_rules") if isinstance(source.get("round_stop_rules"), list) else []
-    if not round_stop_rules:
-        round_stop_rules = [{"type": "no_new_candidates_round_limit", "limit": 1}]
-
-    screening_entry_rules = source.get("screening_entry_rules") if isinstance(source.get("screening_entry_rules"), list) else []
-    if not screening_entry_rules:
-        screening_entry_rules = [{"type": "candidate_pool_size", "min_count": DEFAULT_SCREENING_MIN_CANDIDATES}]
-
-    replan_rules = source.get("replan_rules") if isinstance(source.get("replan_rules"), list) else []
-    if not replan_rules:
-        replan_rules = [{"type": "summary_after_each_round"}]
-
+    search_scope = source.get("search_scope") if isinstance(source.get("search_scope"), dict) else {}
+    constraints = source.get("constraints") if isinstance(source.get("constraints"), dict) else {}
     return {
         **source,
-        "execution_policy": execution_policy,
-        "lanes": sorted(normalized_lanes, key=lambda item: int(item.get("priority") or 0)),
-        "round_stop_rules": round_stop_rules,
-        "screening_entry_rules": screening_entry_rules,
-        "replan_rules": replan_rules,
+        "search_scope": search_scope,
+        "constraints": constraints,
+        "sub_plans": normalized_sub_plans,
+        "execution_policy": normalized_execution_policy,
         "search_elements_snapshot": search_elements if isinstance(search_elements, dict) else {},
     }
 
 
-def should_enter_screening(plan_json: Dict[str, Any], summary: Dict[str, Any]) -> bool:
-    rules = plan_json.get("screening_entry_rules") if isinstance(plan_json, dict) else None
-    if not isinstance(rules, list):
-        return False
-    candidate_pool_size = int(summary.get("candidate_pool_size") or 0)
-    stop_signal = str(summary.get("stop_signal") or "").strip().lower()
-    if stop_signal in {"screening_ready", "ready_for_screening"}:
-        return True
-    for rule in rules:
-        if not isinstance(rule, dict):
+def build_execution_todo_id(plan_version: int, sub_plan_id: str, step_id: str) -> str:
+    return f"plan_{int(plan_version)}:{str(sub_plan_id or '').strip()}:{str(step_id or '').strip()}"
+
+
+def build_execution_todo_description(step: Dict[str, Any]) -> str:
+    ipc_codes = _string_list(step.get("ipc_cpc_codes"))
+    ipc_text = str(step.get("ipc_cpc_mode") or "").strip() or "不使用 IPC/CPC"
+    if ipc_codes:
+        ipc_text = f"{ipc_text}（{', '.join(ipc_codes)}）"
+    parts = [
+        f"目的：{str(step.get('purpose') or '').strip() or '未填写'}",
+        f"特征组合：{str(step.get('feature_combination') or '').strip() or '未填写'}",
+        f"语言策略：{str(step.get('language_strategy') or '').strip() or '未填写'}",
+        f"IPC/CPC：{ipc_text}",
+        f"目标召回：{str(step.get('expected_recall') or '').strip() or '未填写'}",
+        f"失败调整：{str(step.get('fallback_action') or '').strip() or '未填写'}",
+    ]
+    return "；".join(parts)
+
+
+def build_execution_todos(plan_version: int, execution_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    todos: List[Dict[str, Any]] = []
+    for sub_plan in execution_plan.get("sub_plans") or []:
+        if not isinstance(sub_plan, dict):
             continue
-        if str(rule.get("type") or "") == "candidate_pool_size" and candidate_pool_size >= int(rule.get("min_count") or 0):
-            return True
-    return False
-
-
-def should_stop_execution(plan_json: Dict[str, Any], summaries: List[Dict[str, Any]]) -> bool:
-    if not summaries:
-        return False
-    latest = summaries[-1]
-    stop_signal = str(latest.get("stop_signal") or "").strip().lower()
-    if stop_signal in {"stop", "no_progress", "ready_for_screening", "screening_ready"}:
-        return True
-    rules = plan_json.get("round_stop_rules") if isinstance(plan_json, dict) else None
-    if isinstance(rules, list):
-        for rule in rules:
-            if not isinstance(rule, dict):
+        sub_plan_id = str(sub_plan.get("sub_plan_id") or "").strip()
+        for step in sub_plan.get("retrieval_steps") or []:
+            if not isinstance(step, dict):
                 continue
-            if str(rule.get("type") or "") != "no_new_candidates_round_limit":
-                continue
-            limit = max(int(rule.get("limit") or 1), 1)
-            recent = summaries[-limit:]
-            if len(recent) >= limit and all(int(item.get("new_unique_candidates") or 0) <= 0 for item in recent):
-                return True
-    max_rounds = int(((plan_json or {}).get("execution_policy") or {}).get("max_rounds") or DEFAULT_EXECUTION_MAX_ROUNDS)
-    return len(summaries) >= max_rounds
-
-
-def decide_search_transition(plan_json: Dict[str, Any], summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
-    enriched_summaries = [enrich_execution_round_summary(item) for item in summaries]
-    latest = enriched_summaries[-1] if enriched_summaries else {}
-    candidate_pool_size = int(latest.get("candidate_pool_size") or 0)
-    new_unique_candidates = int(latest.get("new_unique_candidates") or 0)
-    result_signal = str(latest.get("result_signal") or "").strip()
-
-    if should_enter_screening(plan_json, latest):
-        return {
-            "recommended_action": "enter_coarse_screen",
-            "transition_hint": "candidate_pool_ready",
-            "should_continue_search": False,
-        }
-    if result_signal == "empty":
-        recent_empty = enriched_summaries[-2:] if len(enriched_summaries) >= 2 else enriched_summaries
-        if len(recent_empty) >= 2 and all(str(item.get("result_signal") or "") == "empty" for item in recent_empty):
-            return {
-                "recommended_action": "replan_search",
-                "transition_hint": "repeated_zero_results",
-                "should_continue_search": False,
-            }
-        return {
-            "recommended_action": "continue_search",
-            "transition_hint": "expand_recall_after_zero_results",
-            "should_continue_search": True,
-        }
-    if new_unique_candidates <= 0:
-        recent_plateau = enriched_summaries[-2:] if len(enriched_summaries) >= 2 else enriched_summaries
-        if len(recent_plateau) >= 2 and all(str(item.get("result_signal") or "") in {"no_increment", "empty"} for item in recent_plateau):
-            if candidate_pool_size > 0:
-                return {
-                    "recommended_action": "enter_coarse_screen",
-                    "transition_hint": "stable_pool_without_increment",
-                    "should_continue_search": False,
+            step_id = str(step.get("step_id") or "").strip()
+            todo_id = build_execution_todo_id(plan_version, sub_plan_id, step_id)
+            todos.append(
+                {
+                    "todo_id": todo_id,
+                    "sub_plan_id": sub_plan_id,
+                    "step_id": step_id,
+                    "phase_key": str(step.get("phase_key") or "execute_search").strip() or "execute_search",
+                    "title": str(step.get("title") or "").strip(),
+                    "description": build_execution_todo_description(step),
+                    "status": "pending",
+                    "attempt_count": 0,
+                    "resume_from": "run_execution_step.load",
+                    "last_error": "",
+                    "started_at": None,
+                    "completed_at": None,
+                    "state": {
+                        "plan_version": int(plan_version),
+                        "sub_plan_id": sub_plan_id,
+                        "step_id": step_id,
+                        "phase_key": str(step.get("phase_key") or "execute_search").strip() or "execute_search",
+                        "query_blueprint_refs": _string_list(step.get("query_blueprint_refs")),
+                    },
                 }
-            return {
-                "recommended_action": "replan_search",
-                "transition_hint": "repeated_no_increment",
-                "should_continue_search": False,
-            }
-        return {
-            "recommended_action": "continue_search",
-            "transition_hint": "switch_lane_after_no_increment",
-            "should_continue_search": True,
-        }
-    if should_stop_execution(plan_json, enriched_summaries):
-        if candidate_pool_size > 0:
-            return {
-                "recommended_action": "enter_coarse_screen",
-                "transition_hint": "search_stop_rule_with_candidates",
-                "should_continue_search": False,
-            }
-        return {
-            "recommended_action": "replan_search",
-            "transition_hint": "search_stop_rule_without_candidates",
-            "should_continue_search": False,
-        }
-    return {
-        "recommended_action": "continue_search",
-        "transition_hint": "search_has_increment",
-        "should_continue_search": True,
-    }
+            )
+    return todos
+
+
+def iter_plan_steps(execution_plan: Dict[str, Any]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    items: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for sub_plan in execution_plan.get("sub_plans") or []:
+        if not isinstance(sub_plan, dict):
+            continue
+        for step in sub_plan.get("retrieval_steps") or []:
+            if isinstance(step, dict):
+                items.append((sub_plan, step))
+    return items
+
+
+def resolve_plan_step(execution_plan: Dict[str, Any], sub_plan_id: str, step_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    target_sub_plan_id = str(sub_plan_id or "").strip()
+    target_step_id = str(step_id or "").strip()
+    for sub_plan, step in iter_plan_steps(execution_plan):
+        if str(sub_plan.get("sub_plan_id") or "").strip() == target_sub_plan_id and str(step.get("step_id") or "").strip() == target_step_id:
+            return sub_plan, step
+    raise KeyError(f"未找到 execution step: {target_sub_plan_id}:{target_step_id}")

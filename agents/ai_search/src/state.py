@@ -12,8 +12,6 @@ from backend.storage import TaskStatus
 PHASE_COLLECTING_REQUIREMENTS = "collecting_requirements"
 PHASE_AWAITING_USER_ANSWER = "awaiting_user_answer"
 PHASE_DRAFTING_PLAN = "drafting_plan"
-PHASE_CLAIM_DECOMPOSITION = "claim_decomposition"
-PHASE_SEARCH_STRATEGY = "search_strategy"
 PHASE_AWAITING_PLAN_CONFIRMATION = "awaiting_plan_confirmation"
 PHASE_EXECUTE_SEARCH = "execute_search"
 PHASE_COARSE_SCREEN = "coarse_screen"
@@ -23,20 +21,10 @@ PHASE_COMPLETED = "completed"
 PHASE_FAILED = "failed"
 PHASE_CANCELLED = "cancelled"
 
-SEARCH_MODE_TOPIC = "topic_search"
-SEARCH_MODE_CLAIM_AWARE = "claim_aware_search"
-
-AI_SEARCH_MODES = {
-    SEARCH_MODE_TOPIC,
-    SEARCH_MODE_CLAIM_AWARE,
-}
-
 AI_SEARCH_PHASES = {
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_DRAFTING_PLAN,
-    PHASE_CLAIM_DECOMPOSITION,
-    PHASE_SEARCH_STRATEGY,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_EXECUTE_SEARCH,
     PHASE_COARSE_SCREEN,
@@ -51,8 +39,6 @@ AI_SEARCH_PROGRESS = {
     PHASE_COLLECTING_REQUIREMENTS: 10,
     PHASE_AWAITING_USER_ANSWER: 20,
     PHASE_DRAFTING_PLAN: 35,
-    PHASE_CLAIM_DECOMPOSITION: 40,
-    PHASE_SEARCH_STRATEGY: 45,
     PHASE_AWAITING_PLAN_CONFIRMATION: 35,
     PHASE_EXECUTE_SEARCH: 55,
     PHASE_COARSE_SCREEN: 68,
@@ -67,8 +53,6 @@ AI_SEARCH_STEP = {
     PHASE_COLLECTING_REQUIREMENTS: "整理检索需求",
     PHASE_AWAITING_USER_ANSWER: "补全检索要素",
     PHASE_DRAFTING_PLAN: "起草检索计划",
-    PHASE_CLAIM_DECOMPOSITION: "拆解权利要求限制",
-    PHASE_SEARCH_STRATEGY: "生成权项检索策略",
     PHASE_AWAITING_PLAN_CONFIRMATION: "等待计划确认",
     PHASE_EXECUTE_SEARCH: "执行专利检索",
     PHASE_COARSE_SCREEN: "粗筛候选文献",
@@ -88,34 +72,23 @@ ACTIVE_EXECUTION_PHASES = {
 
 MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     PHASE_COLLECTING_REQUIREMENTS: {
-        "tools": {"read_todos", "write_todos", "get_search_elements", "get_gap_context", "evaluate_gap_progress", "start_claim_decomposition", "start_plan_drafting", "ask_user_question"},
+        "tools": {"read_todos", "write_todos", "get_search_elements", "get_gap_context", "evaluate_gap_progress", "start_plan_drafting", "ask_user_question"},
         "subagents": {"search-elements"},
-    },
-    PHASE_CLAIM_DECOMPOSITION: {
-        "tools": {"read_todos", "write_todos", "get_search_elements", "get_claim_context", "get_gap_context", "evaluate_gap_progress", "start_search_strategy", "start_plan_drafting", "ask_user_question"},
-        "subagents": {"claim-decomposer", "search-elements"},
-    },
-    PHASE_SEARCH_STRATEGY: {
-        "tools": {"read_todos", "write_todos", "get_search_elements", "get_claim_context", "get_gap_context", "evaluate_gap_progress", "start_plan_drafting", "ask_user_question"},
-        "subagents": {"claim-search-strategist", "search-elements"},
     },
     PHASE_DRAFTING_PLAN: {
         "tools": {
             "read_todos",
             "write_todos",
             "get_search_elements",
-            "get_claim_context",
             "get_gap_context",
             "evaluate_gap_progress",
-            "start_claim_decomposition",
-            "start_search_strategy",
             "start_plan_drafting",
             "save_search_plan",
             "request_plan_confirmation",
             "begin_execution",
             "ask_user_question",
         },
-        "subagents": {"search-elements", "claim-decomposer", "claim-search-strategist"},
+        "subagents": {"search-elements", "plan-prober"},
     },
     PHASE_AWAITING_USER_ANSWER: {
         "tools": {"ask_user_question"},
@@ -126,7 +99,19 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         "subagents": set(),
     },
     PHASE_EXECUTE_SEARCH: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "decide_search_transition", "list_documents", "start_coarse_screen", "start_plan_drafting", "complete_execution"},
+        "tools": {
+            "read_todos",
+            "get_execution_state",
+            "get_gap_context",
+            "evaluate_gap_progress",
+            "list_documents",
+            "start_execution_step",
+            "complete_execution_step",
+            "pause_execution_for_replan",
+            "start_coarse_screen",
+            "start_plan_drafting",
+            "complete_execution",
+        },
         "subagents": {"query-executor"},
     },
     PHASE_COARSE_SCREEN: {
@@ -138,7 +123,7 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         "subagents": {"close-reader"},
     },
     PHASE_GENERATE_FEATURE_TABLE: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "complete_execution", "start_plan_drafting", "start_search_strategy"},
+        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "complete_execution", "start_plan_drafting"},
         "subagents": {"feature-comparer"},
     },
     PHASE_COMPLETED: {
@@ -159,28 +144,23 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     "search-elements": {
         PHASE_COLLECTING_REQUIREMENTS: {"save_search_elements"},
         PHASE_DRAFTING_PLAN: {"save_search_elements"},
-        PHASE_CLAIM_DECOMPOSITION: {"save_search_elements"},
-        PHASE_SEARCH_STRATEGY: {"save_search_elements"},
-    },
-    "claim-decomposer": {
-        PHASE_COLLECTING_REQUIREMENTS: {"load_structured_claims", "expand_claim_dependency", "build_claim_packets", "save_claim_decomposition"},
-        PHASE_CLAIM_DECOMPOSITION: {"load_structured_claims", "expand_claim_dependency", "build_claim_packets", "save_claim_decomposition"},
-        PHASE_DRAFTING_PLAN: {"load_structured_claims", "expand_claim_dependency", "build_claim_packets", "save_claim_decomposition"},
-    },
-    "claim-search-strategist": {
-        PHASE_SEARCH_STRATEGY: {"get_claim_context", "get_gap_context", "build_gap_strategy_seed", "save_claim_search_strategy"},
-        PHASE_DRAFTING_PLAN: {"get_claim_context", "get_gap_context", "build_gap_strategy_seed", "save_claim_search_strategy"},
-        PHASE_GENERATE_FEATURE_TABLE: {"get_claim_context", "get_gap_context", "build_gap_strategy_seed", "save_claim_search_strategy"},
     },
     "query-executor": {
         PHASE_EXECUTE_SEARCH: {
-            "run_search_round",
+            "run_execution_step",
             "search_trace",
             "search_semantic",
             "search_boolean",
             "count_boolean",
             "fetch_patent_details",
             "prepare_lane_queries",
+        },
+    },
+    "plan-prober": {
+        PHASE_DRAFTING_PLAN: {
+            "probe_search_semantic",
+            "probe_search_boolean",
+            "probe_count_boolean",
         },
     },
     "coarse-screener": {
@@ -194,28 +174,11 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     },
 }
 
-TOPIC_MODE_BLOCKED_MAIN_AGENT_TOOLS = {
-    "get_claim_context",
-    "start_claim_decomposition",
-    "start_search_strategy",
-}
-
-TOPIC_MODE_BLOCKED_MAIN_AGENT_SUBAGENTS = {
-    "claim-decomposer",
-    "claim-search-strategist",
-}
-
-CLAIM_AWARE_PHASES = {
-    PHASE_CLAIM_DECOMPOSITION,
-    PHASE_SEARCH_STRATEGY,
-}
-
 
 def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
     return {
         "thread_id": thread_id,
         "current_phase": PHASE_COLLECTING_REQUIREMENTS,
-        "search_mode": SEARCH_MODE_TOPIC,
         "active_plan_version": None,
         "pending_question_id": None,
         "pending_confirmation_plan_version": None,
@@ -268,31 +231,13 @@ def phase_step(phase: str) -> str:
     return str(AI_SEARCH_STEP.get(phase, AI_SEARCH_STEP[PHASE_COLLECTING_REQUIREMENTS]))
 
 
-def get_ai_search_mode(task: Any) -> str:
-    meta = get_ai_search_meta(task)
-    explicit_mode = str(meta.get("search_mode") or "").strip()
-    if explicit_mode in AI_SEARCH_MODES:
-        return explicit_mode
-    phase = str(meta.get("current_phase") or "").strip()
-    if phase in CLAIM_AWARE_PHASES:
-        return SEARCH_MODE_CLAIM_AWARE
-    return SEARCH_MODE_TOPIC
-
-
 def build_plan_summary(plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(plan, dict):
         return {}
-    plan_json = plan.get("plan_json") if isinstance(plan.get("plan_json"), dict) else plan
-    query_batches = plan_json.get("query_batches") if isinstance(plan_json, dict) else None
-    if not isinstance(query_batches, list):
-        query_batches = []
     return {
-        "planVersion": plan.get("plan_version") or plan_json.get("plan_version"),
-        "objective": plan.get("objective") or plan_json.get("objective"),
-        "selectionCriteria": plan_json.get("selection_criteria") if isinstance(plan_json, dict) else None,
-        "negativeConstraints": plan_json.get("negative_constraints") if isinstance(plan_json, dict) else None,
-        "executionNotes": plan_json.get("execution_notes") if isinstance(plan_json, dict) else None,
-        "queryBatches": query_batches,
+        "planVersion": int(plan.get("plan_version") or 0),
+        "status": str(plan.get("status") or "").strip(),
+        "reviewMarkdown": str(plan.get("review_markdown") or "").strip(),
     }
 
 
@@ -305,20 +250,14 @@ def latest_search_elements(messages: list[dict[str, Any]]) -> Optional[Dict[str,
     return None
 
 
-def allowed_main_agent_tools(phase: str, search_mode: str = SEARCH_MODE_TOPIC) -> set[str]:
+def allowed_main_agent_tools(phase: str) -> set[str]:
     policy = MAIN_AGENT_PHASE_TOOL_POLICY.get(phase) or {}
-    tools = set(policy.get("tools") or set())
-    if search_mode == SEARCH_MODE_TOPIC:
-        tools.difference_update(TOPIC_MODE_BLOCKED_MAIN_AGENT_TOOLS)
-    return tools
+    return set(policy.get("tools") or set())
 
 
-def allowed_main_agent_subagents(phase: str, search_mode: str = SEARCH_MODE_TOPIC) -> set[str]:
+def allowed_main_agent_subagents(phase: str) -> set[str]:
     policy = MAIN_AGENT_PHASE_TOOL_POLICY.get(phase) or {}
-    subagents = set(policy.get("subagents") or set())
-    if search_mode == SEARCH_MODE_TOPIC:
-        subagents.difference_update(TOPIC_MODE_BLOCKED_MAIN_AGENT_SUBAGENTS)
-    return subagents
+    return set(policy.get("subagents") or set())
 
 
 def allowed_role_tools(role: str, phase: str) -> Optional[set[str]]:

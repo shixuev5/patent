@@ -31,5 +31,6 @@ SEARCH_ELEMENTS_SYSTEM_PROMPT = """
 - keywords_zh
 - keywords_en
 可选字段：
+- block_id
 - notes
 """.strip()

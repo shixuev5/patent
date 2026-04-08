@@ -8,6 +8,46 @@ from backend.storage import Task, TaskStatus, TaskType
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 
 
+def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "confirmed") -> dict:
+    return {
+        "task_id": task_id,
+        "plan_version": plan_version,
+        "status": status,
+        "review_markdown": "# 检索计划\n\n## 检索目标\n检索目标",
+        "execution_spec_json": {
+            "search_scope": {"objective": "检索目标"},
+            "constraints": {},
+            "execution_policy": {"dynamic_replanning": True, "planner_visibility": "summary_only", "max_rounds": 3},
+            "sub_plans": [
+                {
+                    "sub_plan_id": "sub_plan_1",
+                    "title": "子计划 1",
+                    "goal": "检索目标",
+                    "semantic_query_text": "",
+                    "search_elements": [],
+                    "retrieval_steps": [
+                        {
+                            "step_id": "step_1",
+                            "title": "子计划 1 / 首轮宽召回",
+                            "purpose": "执行首轮宽召回",
+                            "feature_combination": "检索目标核心特征",
+                            "language_strategy": "中文优先",
+                            "ipc_cpc_mode": "按需补 IPC/CPC",
+                            "ipc_cpc_codes": [],
+                            "expected_recall": "获取候选池",
+                            "fallback_action": "结果异常时调整同义词",
+                            "query_blueprint_refs": ["b1"],
+                            "phase_key": "execute_search",
+                        }
+                    ],
+                    "query_blueprints": [{"batch_id": "b1", "goal": "检索目标", "sub_plan_id": "sub_plan_1"}],
+                    "classification_hints": [],
+                }
+            ],
+        },
+    }
+
+
 def _create_task(storage: SQLiteTaskStorage, task_id: str = "task-gap") -> None:
     now = datetime.now()
     storage.create_task(
@@ -102,26 +142,23 @@ def test_evaluate_gap_progress_recommends_replan_when_gaps_remain(tmp_path):
     payload = json.loads(evaluate_gap_progress())
 
     assert payload["should_continue_search"] is True
-    assert payload["recommended_action"] == "replan_search_strategy"
+    assert payload["recommended_action"] == "replan_search"
     assert payload["coverage_gap_count"] == 1
 
 
-def test_build_execution_directive_includes_gap_context(tmp_path):
+def test_build_execution_step_directive_includes_gap_context(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_directive.db")
     _create_task(storage)
     storage.create_ai_search_plan(
-        {
-            "task_id": "task-gap",
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "检索目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1, "query_batches": [{"batch_id": "b1"}]},
-        }
+        _plan_record("task-gap")
     )
     storage.update_task(
         "task-gap",
         metadata={"ai_search": {"current_phase": "execute_search", "active_plan_version": 1}},
+    )
+    storage.update_task(
+        "task-gap",
+        metadata={"ai_search": {"current_phase": "execute_search", "active_plan_version": 1, "current_task": "plan_1:sub_plan_1:step_1", "todos": [{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "子计划 1 / 首轮宽召回", "description": "目的：执行首轮宽召回", "status": "in_progress"}]}},
     )
     storage.create_ai_search_message(
         {
@@ -139,13 +176,14 @@ def test_build_execution_directive_includes_gap_context(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    directive = context.build_execution_directive(1)
+    directive = context.build_execution_step_directive(1)
 
     assert directive["gap_context"]["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
     assert directive["gap_context"]["feature_compare_result"]["coverage_gaps"][0]["gap_type"] == "combination_gap"
+    assert directive["current_todo"]["todo_id"] == "plan_1:sub_plan_1:step_1"
 
 
-def test_build_gap_strategy_seed_extracts_targeted_gaps(tmp_path):
+def test_build_gap_strategy_seed_payload_extracts_targeted_gaps(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_seed.db")
     _create_task(storage)
     storage.create_ai_search_message(
@@ -171,57 +209,11 @@ def test_build_gap_strategy_seed_extracts_targeted_gaps(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    build_gap_strategy_seed = next(
-        tool for tool in context.build_claim_search_strategist_tools() if str(getattr(tool, "__name__", "")) == "build_gap_strategy_seed"
-    )
-
-    payload = json.loads(build_gap_strategy_seed())
+    payload = context.build_gap_strategy_seed_payload()
 
     assert payload["planning_mode"] == "gap_replan"
     assert payload["targeted_gaps"][0]["limitation_id"] == "1-L2"
     assert payload["seed_batch_specs"][0]["seed_terms"] == ["约束条件", "参数窗口"]
-
-
-def test_save_claim_search_strategy_backfills_seed_fields(tmp_path):
-    storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_strategy_save.db")
-    _create_task(storage)
-    storage.create_ai_search_message(
-        {
-            "message_id": "msg-feature",
-            "task_id": "task-gap",
-            "role": "assistant",
-            "kind": "feature_compare_result",
-            "content": "还需补搜",
-            "metadata": {
-                "coverage_gaps": [
-                    {
-                        "claim_id": "1",
-                        "limitation_id": "1-L3",
-                        "gap_type": "combination_gap",
-                        "gap_summary": "需要补一篇组合文献",
-                    }
-                ],
-                "follow_up_search_hints": ["补搜实现方式B"],
-                "creativity_readiness": "needs_more_evidence",
-            },
-        }
-    )
-
-    context = AiSearchAgentContext(storage, "task-gap")
-    save_claim_search_strategy = next(
-        tool for tool in context.build_claim_search_strategist_tools() if str(getattr(tool, "__name__", "")) == "save_claim_search_strategy"
-    )
-
-    save_claim_search_strategy(json.dumps({"strategy_summary": "按 gap 重规划"}, ensure_ascii=False))
-
-    messages = storage.list_ai_search_messages("task-gap")
-    strategy_messages = [item for item in messages if str(item.get("kind") or "") == "claim_search_strategy"]
-
-    assert len(strategy_messages) == 1
-    metadata = strategy_messages[0]["metadata"]
-    assert metadata["planning_mode"] == "gap_replan"
-    assert metadata["targeted_gaps"][0]["gap_type"] == "combination_gap"
-    assert metadata["batch_specs"][0]["batch_id"] == "gap-1"
 
 
 def test_complete_execution_is_blocked_when_gap_replan_is_required(tmp_path):
@@ -254,7 +246,7 @@ def test_complete_execution_is_blocked_when_gap_replan_is_required(tmp_path):
 
     assert payload["blocked"] is True
     assert payload["reason"] == "gap_replan_required"
-    assert payload["recommended_action"] == "replan_search_strategy"
+    assert payload["recommended_action"] == "replan_search"
 
 
 def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_path):
@@ -295,14 +287,7 @@ def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_resume_todo.db")
     _create_task(storage)
     storage.create_ai_search_plan(
-        {
-            "task_id": "task-gap",
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "检索目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1, "query_batches": [{"batch_id": "b1"}]},
-        }
+        _plan_record("task-gap")
     )
     storage.update_task(
         "task-gap",
@@ -311,8 +296,8 @@ def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
                 "current_phase": "drafting_plan",
                 "active_plan_version": 1,
                 "todos": [
-                    {"key": "execute_search", "title": "执行检索召回", "status": "pending"},
-                    {"key": "coarse_screen", "title": "粗筛候选文献", "status": "pending"},
+                    {"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：执行首轮宽召回", "status": "pending"},
+                    {"todo_id": "plan_1:sub_plan_1:step_2", "sub_plan_id": "sub_plan_1", "step_id": "step_2", "phase_key": "execute_search", "title": "执行步骤 2", "description": "目的：收窄检索", "status": "pending"},
                 ],
             }
         },
@@ -326,26 +311,19 @@ def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
 
     begin_execution(plan_version=1)
     payload = json.loads(read_todos())
-    execute_todo = next(item for item in payload["todos"] if item["key"] == "execute_search")
+    execute_todo = next(item for item in payload["todos"] if item["todo_id"] == "plan_1:sub_plan_1:step_1")
 
     assert execute_todo["status"] == "in_progress"
-    assert execute_todo["resume_from"] == "run_search_round.load"
+    assert execute_todo["resume_from"] == "run_execution_step.load"
     assert execute_todo["attempt_count"] == 1
     assert execute_todo["started_at"]
 
 
-def test_run_search_round_commit_dedupes_existing_round_id(tmp_path):
+def test_run_execution_step_commit_persists_step_summary(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_round_dedupe.db")
     _create_task(storage)
     storage.create_ai_search_plan(
-        {
-            "task_id": "task-gap",
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "检索目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1, "query_batches": [{"batch_id": "b1"}]},
-        }
+        _plan_record("task-gap")
     )
     storage.update_task(
         "task-gap",
@@ -353,36 +331,36 @@ def test_run_search_round_commit_dedupes_existing_round_id(tmp_path):
             "ai_search": {
                 "current_phase": "execute_search",
                 "active_plan_version": 1,
-                "current_task": "execute_search",
-                "todos": [{"key": "execute_search", "title": "执行检索召回", "status": "in_progress"}],
+                "current_task": "plan_1:sub_plan_1:step_1",
+                "todos": [{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：执行首轮宽召回", "status": "in_progress"}],
             }
         },
     )
-    storage.create_ai_search_message(
-        {
-            "message_id": "msg-round-1",
-            "task_id": "task-gap",
-            "plan_version": 1,
-            "role": "assistant",
-            "kind": "execution_summary",
-            "content": "{}",
-            "metadata": {"round_id": "round-1", "new_unique_candidates": 1, "candidate_pool_size": 1},
-        }
-    )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    run_search_round = next(
-        tool for tool in context.build_query_executor_tools() if str(getattr(tool, "__name__", "")) == "run_search_round"
+    run_execution_step = next(
+        tool for tool in context.build_query_executor_tools() if str(getattr(tool, "__name__", "")) == "run_execution_step"
     )
 
-    result = json.loads(
-        run_search_round(
+    result = run_execution_step(
             operation="commit",
-            payload_json=json.dumps({"round_id": "round-1", "new_unique_candidates": 2, "candidate_pool_size": 3}, ensure_ascii=False),
+            payload_json=json.dumps(
+                {
+                    "todo_id": "plan_1:sub_plan_1:step_1",
+                    "step_id": "step_1",
+                    "sub_plan_id": "sub_plan_1",
+                    "result_summary": "首轮召回有效",
+                    "adjustments": ["补充英文同义词"],
+                    "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
+                    "next_recommendation": "advance_to_next_step",
+                    "new_unique_candidates": 2,
+                    "candidate_pool_size": 3,
+                },
+                ensure_ascii=False,
+            ),
             plan_version=1,
         )
-    )
-
-    summaries = [item for item in storage.list_ai_search_messages("task-gap") if str(item.get("kind") or "") == "execution_summary"]
-    assert result["deduped"] is True
+    summaries = [item for item in storage.list_ai_search_messages("task-gap") if str(item.get("kind") or "") == "execution_step_summary"]
+    assert result == "execution step summary saved"
     assert len(summaries) == 1
+    assert summaries[0]["metadata"]["todo_id"] == "plan_1:sub_plan_1:step_1"

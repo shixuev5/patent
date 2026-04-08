@@ -16,16 +16,14 @@ from agents.ai_search.src.state import (
     allowed_main_agent_tools,
     allowed_role_tools,
     get_ai_search_meta,
-    get_ai_search_mode,
 )
 from config import settings
 
 
 ALL_AI_SEARCH_SUBAGENTS = {
     "search-elements",
-    "claim-decomposer",
-    "claim-search-strategist",
     "query-executor",
+    "plan-prober",
     "coarse-screener",
     "close-reader",
     "feature-comparer",
@@ -33,9 +31,8 @@ ALL_AI_SEARCH_SUBAGENTS = {
 
 SUBAGENT_DISPLAY_LABELS = {
     "search-elements": "检索要素整理",
-    "claim-decomposer": "权利要求拆解",
-    "claim-search-strategist": "检索策略规划",
     "query-executor": "检索执行",
+    "plan-prober": "计划预检",
     "coarse-screener": "候选粗筛",
     "close-reader": "重点精读",
     "feature-comparer": "特征对比",
@@ -54,15 +51,11 @@ ROLE_TOOL_POLICIES: dict[str, dict[str, set[str]]] = {
         "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
         "allowed_subagents": set(),
     },
-    "claim-decomposer": {
-        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
-        "allowed_subagents": set(),
-    },
-    "claim-search-strategist": {
-        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
-        "allowed_subagents": set(),
-    },
     "query-executor": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "plan-prober": {
         "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
         "allowed_subagents": set(),
     },
@@ -98,12 +91,12 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         self.blocked_tools = set(blocked_tools or defaults["blocked_tools"])
         self.allowed_subagents = set(allowed_subagents or defaults["allowed_subagents"])
 
-    def _current_task_state(self) -> tuple[str, str]:
+    def _current_task_state(self) -> str:
         if self.storage is None or not self.task_id:
-            return "", ""
+            return ""
         task = self.storage.get_task(self.task_id)
         meta = get_ai_search_meta(task)
-        return str(meta.get("current_phase") or "").strip(), get_ai_search_mode(task)
+        return str(meta.get("current_phase") or "").strip()
 
     def wrap_tool_call(
         self,
@@ -111,7 +104,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         handler,
     ) -> ToolMessage | Command[Any]:
         tool_name = str(request.tool_call.get("name") or "").strip()
-        phase, search_mode = self._current_task_state()
+        phase = self._current_task_state()
         if tool_name in self.blocked_tools:
             return ToolMessage(
                 content=f"工具 `{tool_name}` 对 `{self.role}` 不可用。",
@@ -120,7 +113,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
             )
         if phase:
             if self.role == "main-agent":
-                allowed_tools = allowed_main_agent_tools(phase, search_mode)
+                allowed_tools = allowed_main_agent_tools(phase)
                 if tool_name != "task" and tool_name not in allowed_tools:
                     return ToolMessage(
                         content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
@@ -144,7 +137,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
                     tool_call_id=request.tool_call["id"],
                 )
             if phase and self.role == "main-agent":
-                allowed_subagents = allowed_main_agent_subagents(phase, search_mode)
+                allowed_subagents = allowed_main_agent_subagents(phase)
                 if subagent_type not in allowed_subagents:
                     return ToolMessage(
                         content=f"子 agent `{subagent_type or 'unknown'}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",

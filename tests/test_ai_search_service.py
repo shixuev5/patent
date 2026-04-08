@@ -11,8 +11,6 @@ import pytest
 from fastapi import HTTPException
 
 stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
-stub_ai_search_agents.build_claim_decomposer_agent = lambda: None
-stub_ai_search_agents.build_claim_search_strategist_agent = lambda: None
 stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
@@ -66,9 +64,6 @@ from agents.ai_search.src.state import (
     PHASE_DRAFTING_PLAN,
     PHASE_EXECUTE_SEARCH,
     PHASE_GENERATE_FEATURE_TABLE,
-    SEARCH_MODE_CLAIM_AWARE,
-    SEARCH_MODE_TOPIC,
-    get_ai_search_mode,
     merge_ai_search_meta,
 )
 from backend.storage import TaskStatus, TaskType
@@ -111,6 +106,54 @@ def _set_phase(storage: SQLiteTaskStorage, task_id: str, phase: str, **meta_upda
     )
 
 
+def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "draft", title: str = "检索计划") -> dict:
+    return {
+        "task_id": task_id,
+        "plan_version": plan_version,
+        "status": status,
+        "review_markdown": f"# {title}\n\n## 检索目标\n测试目标\n\n## 检索边界\n无\n\n## 检索要素\n- 要素A\n\n## 分步检索方案\n1. 步骤一\n\n## 调整策略\n- 若结果过少则扩词\n\n## 待确认\n确认后实施",
+        "execution_spec_json": {
+            "search_scope": {
+                "objective": "测试目标",
+                "applicants": [],
+                "filing_date": None,
+                "priority_date": None,
+                "languages": ["zh", "en"],
+                "databases": ["zhihuiya"],
+                "excluded_items": [],
+            },
+            "constraints": {},
+            "execution_policy": {"dynamic_replanning": True, "planner_visibility": "summary_only", "max_rounds": 3},
+            "sub_plans": [
+                {
+                    "sub_plan_id": "sub_plan_1",
+                    "title": "子计划 1",
+                    "goal": "测试目标",
+                    "semantic_query_text": "",
+                    "search_elements": [{"element_name": "要素A", "keywords_zh": ["要素A"], "keywords_en": ["feature a"], "block_id": "B1", "notes": ""}],
+                    "retrieval_steps": [
+                        {
+                            "step_id": "step_1",
+                            "title": "子计划 1 / 首轮宽召回",
+                            "purpose": "验证首轮召回质量",
+                            "feature_combination": "A+B1",
+                            "language_strategy": "中文优先，补英文",
+                            "ipc_cpc_mode": "按需补 IPC/CPC",
+                            "ipc_cpc_codes": [],
+                            "expected_recall": "获取首轮候选池",
+                            "fallback_action": "结果异常时调整同义词和分类号",
+                            "query_blueprint_refs": ["b1"],
+                            "phase_key": "execute_search",
+                        }
+                    ],
+                    "query_blueprints": [{"batch_id": "b1", "goal": "测试目标", "sub_plan_id": "sub_plan_1"}],
+                    "classification_hints": [],
+                }
+            ],
+        },
+    }
+
+
 def test_create_session_and_snapshot(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
 
@@ -125,13 +168,13 @@ def test_create_session_and_snapshot(monkeypatch, tmp_path):
     assert snapshot.session.pinned is False
 
 
-def test_create_session_defaults_to_topic_search(monkeypatch, tmp_path):
+def test_create_session_uses_unified_flow_metadata(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
 
     created = service.create_session("guest_ai_search")
     task = storage.get_task(created.sessionId)
 
-    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC
+    assert (task.metadata.get("ai_search") or {}).get("current_phase") == "collecting_requirements"
 
 
 def test_update_session_supports_rename_and_pin(monkeypatch, tmp_path):
@@ -187,7 +230,7 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
 
 
-def test_stream_message_keeps_topic_search_without_structured_claim_source(monkeypatch, tmp_path):
+def test_stream_message_keeps_unified_flow_without_structured_claim_source(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     monkeypatch.setattr(
@@ -208,7 +251,7 @@ def test_stream_message_keeps_topic_search_without_structured_claim_source(monke
 
     task = storage.get_task(created.sessionId)
 
-    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC
+    assert (task.metadata.get("ai_search") or {}).get("current_phase") == PHASE_DRAFTING_PLAN
 
 
 def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path):
@@ -218,8 +261,8 @@ def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path
         storage,
         created.sessionId,
         PHASE_EXECUTE_SEARCH,
-        current_task="execute_search",
-        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round"}],
+        current_task="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step"}],
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -235,8 +278,8 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
         storage,
         created.sessionId,
         PHASE_EXECUTE_SEARCH,
-        current_task="execute_search",
-        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "failed", "resume_from": "run_search_round", "last_error": "timeout"}],
+        current_task="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step", "last_error": "timeout"}],
     )
 
     monkeypatch.setattr(
@@ -248,6 +291,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
             else (_ for _ in ()).throw(AssertionError("unexpected resume payload"))
         ),
     )
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
     monkeypatch.setattr(
         ai_search_service_module,
         "extract_latest_ai_message",
@@ -270,8 +314,8 @@ def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_pa
         storage,
         created.sessionId,
         PHASE_EXECUTE_SEARCH,
-        current_task="execute_search",
-        todos=[{"key": "execute_search", "title": "执行检索召回", "status": "in_progress", "resume_from": "run_search_round"}],
+        current_task="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "in_progress", "resume_from": "run_execution_step"}],
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -300,24 +344,10 @@ def test_stream_plan_confirmation_rejects_stale_version(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "superseded",
-            "objective": "旧计划",
-            "search_elements_json": {"status": "complete"},
-            "plan_json": {"plan_version": 1},
-        }
+        _plan_record(created.sessionId, plan_version=1, status="superseded", title="旧计划")
     )
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 2,
-            "status": "awaiting_confirmation",
-            "objective": "新计划",
-            "search_elements_json": {"status": "complete"},
-            "plan_json": {"plan_version": 2},
-        }
+        _plan_record(created.sessionId, plan_version=2, status="awaiting_confirmation", title="新计划")
     )
     _set_phase(
         storage,
@@ -337,14 +367,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "awaiting_confirmation",
-            "objective": "待确认计划",
-            "search_elements_json": {"status": "complete"},
-            "plan_json": {"plan_version": 1},
-        }
+        _plan_record(created.sessionId, plan_version=1, status="awaiting_confirmation", title="待确认计划")
     )
     _set_phase(
         storage,
@@ -359,6 +382,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
         "_run_main_agent",
         lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
     )
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
 
     events = asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
 
@@ -371,14 +395,7 @@ def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(mo
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "测试目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1},
-        }
+        _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
     storage.upsert_ai_search_documents(
         [
@@ -425,14 +442,7 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "测试目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1},
-        }
+        _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
     storage.upsert_ai_search_documents(
         [
@@ -469,14 +479,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "awaiting_confirmation",
-            "objective": "原计划",
-            "search_elements_json": {"status": "complete"},
-            "plan_json": {"plan_version": 1, "query_batches": []},
-        }
+        _plan_record(created.sessionId, plan_version=1, status="awaiting_confirmation", title="原计划")
     )
     _set_phase(
         storage,
@@ -491,6 +494,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
         "_run_main_agent",
         lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
     )
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "把日期范围缩窄到最近五年")))
 
@@ -700,16 +704,7 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
 def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    storage.create_ai_search_plan(
-        {
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "status": "confirmed",
-            "objective": "测试目标",
-            "search_elements_json": {"status": "complete", "search_elements": []},
-            "plan_json": {"plan_version": 1},
-        }
-    )
+    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
     storage.upsert_ai_search_documents(
         [
             {
@@ -824,10 +819,11 @@ def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):
 
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.searchElements is not None
-    assert snapshot.searchElements["applicants"] == ["杭州海康威视数字技术股份有限公司"]
-    assert snapshot.searchElements["filing_date"] == "2024-03-01"
-    assert snapshot.searchElements["priority_date"] == "2023-10-15"
+    context = AiSearchAgentContext(storage, created.sessionId)
+
+    assert context.current_search_elements()["applicants"] == ["杭州海康威视数字技术股份有限公司"]
+    assert context.current_search_elements()["filing_date"] == "2024-03-01"
+    assert context.current_search_elements()["priority_date"] == "2023-10-15"
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -928,10 +924,8 @@ def test_seed_search_elements_from_analysis_preserves_context_fields():
     assert payload["applicants"] == ["杭州海康威视数字技术股份有限公司"]
     assert payload["filing_date"] == "2024-03-01"
     assert payload["priority_date"] == "2023-10-15"
-    assert payload["search_elements"][0]["block_id"] == "B1"
-    assert payload["search_elements"][0]["element_role"] == "KeyFeature"
-    assert payload["search_elements"][0]["priority_tier"] == "core"
-    assert payload["search_elements"][0]["effect_cluster_ids"] == ["E1"]
+    assert payload["search_elements"][0]["element_name"] == "异常检测"
+    assert payload["search_elements"][0]["notes"] == "核心算法要素"
 
 
 def test_seed_search_elements_from_analysis_keeps_optional_fields_missing():
@@ -1050,13 +1044,21 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         assert thread_id == f"ai-search-{task_id}"
         assert "AI 分析结果" in payload["messages"][0]["content"]
         storage.create_ai_search_plan(
+            _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")
+        )
+        storage.create_ai_search_message(
             {
+                "message_id": "msg-plan-confirmation",
                 "task_id": task_id,
                 "plan_version": 1,
-                "status": "awaiting_confirmation",
-                "objective": "基于分析结果的检索计划",
-                "search_elements_json": {"status": "complete"},
-                "plan_json": {"plan_version": 1, "objective": "基于分析结果的检索计划", "query_batches": []},
+                "role": "assistant",
+                "kind": "plan_confirmation",
+                "content": _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")["review_markdown"],
+                "stream_status": "completed",
+                "metadata": {
+                    "plan_version": 1,
+                    "confirmation_label": "实施此计划",
+                },
             }
         )
         task = storage.get_task(task_id)
@@ -1078,18 +1080,16 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
     task = storage.get_task(created.sessionId)
+    visible_kinds = [message["kind"] for message in snapshot.messages]
 
     assert snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION
-    assert snapshot.sourceSummary is not None
-    assert snapshot.sourceSummary["sourceType"] == "analysis"
-    assert snapshot.sourceSummary["sourceTaskId"] == analysis_task.id
-    assert snapshot.sourceSummary["sourcePn"] == "CN123456A"
-    assert snapshot.sourceSummary["searchMode"] == SEARCH_MODE_CLAIM_AWARE
     assert snapshot.pendingConfirmation is not None
-    assert snapshot.searchElements is not None
-    assert snapshot.searchElements["search_elements"][0]["element_name"] == "异常检测"
-    assert snapshot.messages[0]["content"] == "已从 AI 分析结果导入检索上下文，正在生成检索草稿。"
-    assert get_ai_search_mode(task) == SEARCH_MODE_CLAIM_AWARE
+    assert snapshot.currentPlan is not None
+    assert snapshot.currentPlan["reviewMarkdown"].startswith("# 基于分析结果的检索计划")
+    assert snapshot.messages[0]["role"] == "user"
+    assert "请基于以上信息生成一份可审核的检索计划。" in snapshot.messages[0]["content"]
+    assert visible_kinds == ["chat", "plan_confirmation"]
+    assert (task.metadata.get("ai_search") or {}).get("seed_mode") == "analysis"
 
 
 def test_create_session_from_analysis_can_pause_for_missing_information(monkeypatch, tmp_path):
@@ -1138,10 +1138,11 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
     task = storage.get_task(created.sessionId)
+    visible_kinds = [message["kind"] for message in snapshot.messages]
 
     assert snapshot.phase == PHASE_AWAITING_USER_ANSWER
     assert snapshot.pendingQuestion is not None
     assert snapshot.pendingQuestion["question_id"] == "q-seed-1"
-    assert snapshot.searchElements is not None
-    assert snapshot.searchElements["status"] == "needs_answer"
-    assert get_ai_search_mode(task) == SEARCH_MODE_TOPIC
+    assert AiSearchAgentContext(storage, created.sessionId).current_search_elements()["status"] == "needs_answer"
+    assert visible_kinds == ["chat", "question"]
+    assert (task.metadata.get("ai_search") or {}).get("seed_mode") == "analysis"

@@ -31,9 +31,9 @@
 
 它负责：
 
-- 维护 todo 和当前任务
+- 维护步骤级 `executionTodos` 和当前 `todo_id`
 - 调 `search-elements` 整理检索要素
-- 调 `claim-decomposer` / `claim-search-strategist` 走 claim-aware 路径
+- 必要时调 `plan-prober` 做轻量预检
 - 生成并确认检索计划
 - 决定何时调 `query-executor`、`coarse-screener`、`close-reader`、`feature-comparer`
 - 汇总 specialist 结果并决定继续、重规划、追问或结束
@@ -42,8 +42,6 @@
 主 agent 遵循固定阶段协议：
 
 - `collect_requirements`
-- `claim_decomposition`
-- `search_strategy`
 - `draft_plan`
 - `await_plan_confirmation`
 - `execute_search`
@@ -54,23 +52,29 @@
 
 执行阶段切换使用显式入口工具：
 
-- `start_claim_decomposition`
-- `start_search_strategy`
 - `start_plan_drafting`
 - `begin_execution`
+- `start_execution_step`
+- `complete_execution_step`
+- `pause_execution_for_replan`
 - `start_coarse_screen`
 - `start_close_read`
 - `start_feature_table_generation`
 - `complete_execution`
 
-主 agent 还有两个确定性决策工具：
+主 agent 还有一个确定性决策工具：
 
 - `evaluate_gap_progress`
   读取最新 `close_read_result` / `feature_compare_result`，输出 `should_continue_search` 和 `recommended_action`
-- `decide_search_transition`
-  读取当前搜索轮次摘要和执行规则，输出 `continue_search` / `enter_coarse_screen` / `replan_search`
 
 这里不再存在独立 Python orchestrator。service 不再硬编码“先检索再筛选再精读”的流程。
+
+用户态执行进度使用业务自定义的 `executionTodos`：
+
+- 数据保存在 task metadata 的 `ai_search.todos`
+- 每条 todo 直接对应 `executionSpec.sub_plans[*].retrieval_steps[*]`
+- 前端 [search.vue](/Users/yanhao/Documents/codes/patent/frontend/pages/search.vue) 渲染的是这份业务数据，而不是 deepagents 内部 todo 视图
+- todo 采用步骤级字段：`todo_id`、`sub_plan_id`、`step_id`、`phase_key`、`title`、`description`、`status`
 
 ## Specialist Agents
 
@@ -78,12 +82,10 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 
 - [search_elements](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/search_elements)
   从用户输入和上下文抽取结构化检索要素；`normalize.py` 负责 payload 归一化。
-- [claim_decomposer](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/claim_decomposer)
-  读取权利要求并拆成 limitation groups。
-- [claim_search_strategist](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/claim_search_strategist)
-  根据 claim limitation 和 gap 信息规划 claim-aware 检索策略。
+- [plan_prober](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/plan_prober)
+  在 `draft_plan` 阶段做低成本、非持久化 probe，只返回规划信号。
 - [query_executor](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/query_executor)
-  执行当前检索轮次，并输出 round summary。
+  执行当前 retrieval step，并输出 `execution_step_summary`。
 - [coarse_screener](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/coarse_screener)
   根据标题、摘要、分类号和来源批次做轻量粗筛。
 - [close_reader](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/close_reader)
@@ -108,10 +110,11 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `close-reader` 会输出 `limitation_coverage`、`limitation_gaps` 和 `follow_up_hints`
 - 若模型没有给出足够证据，系统会用关键词命中生成 fallback passages
 - `feature-comparer` 统一消费 `key_passages_json`，并输出 `difference_highlights`、`coverage_gaps`、`follow_up_search_hints` 和 `creativity_readiness`
-- 主 agent 与 `claim-search-strategist` 都可以通过 `get_gap_context` 读取这些结果，驱动下一轮检索修正
-- `claim-search-strategist` 的 `build_gap_strategy_seed` 会把最新 limitation / coverage gaps 转成下一轮可直接消费的 `targeted_gaps` 和 `seed_batch_specs`
-- `query-executor` 也会在执行 directive 中拿到最新 gap 上下文，用于优先围绕 targeted gaps 调整下一轮检索顺序
-- `prepare_lane_queries` 会把 `seed_terms`、`pivot_terms`、`gap_type`、`claim_id`、`limitation_id` 编进下一轮 `query_text` / `semantic_text`
+- 主 agent 可以通过 `get_gap_context` 读取这些结果，驱动下一轮检索修正
+- `build_gap_strategy_seed` 会把最新 limitation / coverage gaps 转成下一轮可直接消费的 `targeted_gaps` 和 `seed_batch_specs`
+- `query-executor` 会在当前 step directive 中拿到最新 gap 上下文，用于优先围绕 targeted gaps 调整当前步骤
+- `prepare_lane_queries` 会把 `seed_terms`、`pivot_terms`、`gap_type`、`claim_id`、`limitation_id` 编进当前执行查询
+- 正式检索命中的文献会写入 `ai_search_documents`，并记录 `source_sub_plans_json` 与 `source_steps_json`
 
 ## Runtime
 
@@ -121,6 +124,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `main-agent` 可调度 specialist，但不能直接使用文件系统工具
 - `close-reader` 允许只读文件系统工具：`ls`、`read_file`、`glob`、`grep`
 - `close-reader` 禁止：`write_file`、`edit_file`、`execute`
+- `plan-prober` 只允许 `probe_count_boolean`、`probe_search_boolean`、`probe_search_semantic`
 
 ## Stable Exports
 
@@ -132,8 +136,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 它们继续导出：
 
 - `build_main_agent`
-- `build_claim_decomposer_agent`
-- `build_claim_search_strategist_agent`
+- `build_plan_prober_agent`
 - `build_query_executor_agent`
 - `build_coarse_screener_agent`
 - `build_close_reader_agent`

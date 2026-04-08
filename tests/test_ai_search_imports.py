@@ -9,6 +9,7 @@ def test_public_ai_search_imports_are_stable():
 
     assert hasattr(pkg, "build_main_agent")
     assert hasattr(pkg, "build_query_executor_agent")
+    assert hasattr(pkg, "build_plan_prober_agent")
     assert hasattr(main, "build_main_agent")
     assert hasattr(main, "extract_structured_response")
 
@@ -17,8 +18,7 @@ def test_reorganized_ai_search_packages_import_without_cycles():
     module_names = [
         "agents.ai_search.src.main_agent",
         "agents.ai_search.src.subagents.search_elements",
-        "agents.ai_search.src.subagents.claim_decomposer",
-        "agents.ai_search.src.subagents.claim_search_strategist",
+        "agents.ai_search.src.subagents.plan_prober",
         "agents.ai_search.src.subagents.query_executor",
         "agents.ai_search.src.subagents.coarse_screener",
         "agents.ai_search.src.subagents.close_reader",

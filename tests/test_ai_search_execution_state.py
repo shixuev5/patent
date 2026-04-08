@@ -1,111 +1,103 @@
 from agents.ai_search.src.execution_state import (
-    decide_search_transition,
-    enrich_execution_round_summary,
+    build_execution_todos,
     normalize_execution_plan,
-    should_enter_screening,
-    should_stop_execution,
+    resolve_plan_step,
 )
 
 
-def test_normalize_execution_plan_builds_default_lanes_from_query_batches():
-    normalized = normalize_execution_plan(
-        {
-            "query_batches": [
-                {
-                    "batch_id": "b1",
-                    "goal": "异常检测",
-                    "must_terms_zh": ["异常检测"],
-                }
-            ]
-        },
-        {"objective": "检索异常检测方案"},
-    )
-
-    lane_types = [item["lane_type"] for item in normalized["lanes"]]
-    assert lane_types == ["semantic", "boolean"]
-    assert normalized["execution_policy"]["dynamic_replanning"] is True
-    assert normalized["execution_policy"]["planner_visibility"] == "summary_only"
-
-
-def test_normalize_execution_plan_keeps_trace_lane_when_seed_present():
-    normalized = normalize_execution_plan(
-        {
-            "query_batches": [
-                {
-                    "batch_id": "b1",
-                    "goal": "相似追踪",
-                    "seed_pn": "CN123456A",
-                }
-            ]
-        },
-        {},
-    )
-
-    lane_types = [item["lane_type"] for item in normalized["lanes"]]
-    assert lane_types == ["trace", "semantic", "boolean"]
-
-
-def test_execution_rules_stop_and_enter_screening():
-    normalized = normalize_execution_plan({}, {})
-    summary = {
-        "candidate_pool_size": 12,
-        "new_unique_candidates": 0,
-        "stop_signal": "",
+def _plan() -> dict:
+    return {
+        "sub_plans": [
+            {
+                "sub_plan_id": "sub_plan_1",
+                "goal": "异常检测",
+                "query_blueprints": [{"batch_id": "b1", "goal": "异常检测"}],
+                "retrieval_steps": [
+                    {
+                        "step_id": "step_1",
+                        "title": "首轮宽召回",
+                        "purpose": "验证召回方向",
+                        "feature_combination": "A+B1",
+                        "language_strategy": "中文优先",
+                        "ipc_cpc_mode": "先不加 IPC/CPC",
+                        "ipc_cpc_codes": [],
+                        "expected_recall": "50-100 条",
+                        "fallback_action": "结果过宽时补限定词",
+                        "query_blueprint_refs": ["b1"],
+                        "phase_key": "execute_search",
+                    }
+                ],
+            }
+        ]
     }
 
-    assert should_enter_screening(normalized, summary) is True
-    assert should_stop_execution(
-        normalized,
-        [
-            {"new_unique_candidates": 0, "stop_signal": ""},
-        ],
-    ) is True
+
+def test_normalize_execution_plan_requires_retrieval_steps():
+    try:
+        normalize_execution_plan(
+            {
+                "sub_plans": [
+                    {
+                        "sub_plan_id": "sub_plan_1",
+                        "query_blueprints": [{"batch_id": "b1"}],
+                        "retrieval_steps": [],
+                    }
+                ]
+            },
+            {},
+        )
+    except ValueError as exc:
+        assert "retrieval_steps" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
 
-def test_enrich_execution_round_summary_backfills_decision_fields():
-    enriched = enrich_execution_round_summary(
-        {
-            "round_id": "round-1",
-            "lane_results": [{"lane_type": "semantic", "new_unique_candidates": 2}],
-            "new_unique_candidates": 2,
-            "deduped_hits": 1,
-            "candidate_pool_size": 3,
-        }
-    )
+def test_normalize_execution_plan_rejects_cross_sub_plan_query_refs():
+    try:
+        normalize_execution_plan(
+            {
+                "sub_plans": [
+                    {
+                        "sub_plan_id": "sub_plan_1",
+                        "query_blueprints": [{"batch_id": "b1"}],
+                        "retrieval_steps": [
+                            {
+                                "step_id": "step_1",
+                                "title": "step",
+                                "purpose": "purpose",
+                                "feature_combination": "A+B",
+                                "language_strategy": "zh",
+                                "ipc_cpc_mode": "none",
+                                "ipc_cpc_codes": [],
+                                "expected_recall": "10",
+                                "fallback_action": "retry",
+                                "query_blueprint_refs": ["missing"],
+                                "phase_key": "execute_search",
+                            }
+                        ],
+                    }
+                ]
+            },
+            {},
+        )
+    except ValueError as exc:
+        assert "query_blueprints" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
-    assert enriched["result_signal"] == "incremental"
-    assert enriched["coverage_signal"] == "emerging"
-    assert enriched["novelty_signal"] == "low"
-    assert enriched["next_lane_priority"] == "boolean"
-    assert enriched["lane_strategy_hint"] == "semantic_recall_working_consider_boolean_narrowing"
+
+def test_build_execution_todos_comes_from_retrieval_steps():
+    normalized = normalize_execution_plan(_plan(), {"objective": "检索异常检测方案"})
+    todos = build_execution_todos(1, normalized)
+
+    assert [item["todo_id"] for item in todos] == ["plan_1:sub_plan_1:step_1"]
+    assert todos[0]["description"].startswith("目的：验证召回方向")
+    assert todos[0]["phase_key"] == "execute_search"
 
 
-def test_decide_search_transition_replans_after_repeated_zero_results():
-    normalized = normalize_execution_plan({}, {})
+def test_resolve_plan_step_returns_matching_sub_plan_and_step():
+    normalized = normalize_execution_plan(_plan(), {})
+    sub_plan, step = resolve_plan_step(normalized, "sub_plan_1", "step_1")
 
-    decision = decide_search_transition(
-        normalized,
-        [
-            {"round_id": "r1", "new_unique_candidates": 0, "deduped_hits": 0, "candidate_pool_size": 0},
-            {"round_id": "r2", "new_unique_candidates": 0, "deduped_hits": 0, "candidate_pool_size": 0},
-        ],
-    )
-
-    assert decision["recommended_action"] == "replan_search"
-    assert decision["transition_hint"] == "repeated_zero_results"
-
-
-def test_decide_search_transition_enters_screen_after_plateau_with_pool():
-    normalized = normalize_execution_plan({}, {})
-
-    decision = decide_search_transition(
-        normalized,
-        [
-            {"round_id": "r1", "new_unique_candidates": 2, "deduped_hits": 0, "candidate_pool_size": 6},
-            {"round_id": "r2", "new_unique_candidates": 0, "deduped_hits": 4, "candidate_pool_size": 6},
-            {"round_id": "r3", "new_unique_candidates": 0, "deduped_hits": 2, "candidate_pool_size": 6},
-        ],
-    )
-
-    assert decision["recommended_action"] == "enter_coarse_screen"
-    assert decision["transition_hint"] == "stable_pool_without_increment"
+    assert sub_plan["sub_plan_id"] == "sub_plan_1"
+    assert step["step_id"] == "step_1"

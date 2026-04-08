@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from agents.ai_search.src import main_agent as main_agent_module
 from agents.ai_search.src.main_agent import agent as main_agent_agent_module
-from agents.ai_search.src.subagents import claim_decomposer as claim_decomposer_module
-from agents.ai_search.src.subagents import claim_search_strategist as claim_search_strategist_module
 from agents.ai_search.src.subagents import close_reader as close_reader_module
 from agents.ai_search.src.subagents import coarse_screener as coarse_screener_module
 from agents.ai_search.src.subagents import feature_comparer as feature_comparer_module
@@ -34,17 +32,16 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
         "read_todos",
         "write_todos",
         "get_search_elements",
-        "get_claim_context",
         "get_gap_context",
         "evaluate_gap_progress",
-        "decide_search_transition",
-        "start_claim_decomposition",
-        "start_search_strategy",
         "start_plan_drafting",
         "save_search_plan",
         "ask_user_question",
         "request_plan_confirmation",
         "begin_execution",
+        "start_execution_step",
+        "complete_execution_step",
+        "pause_execution_for_replan",
         "start_coarse_screen",
         "start_close_read",
         "start_feature_table_generation",
@@ -61,14 +58,6 @@ def test_specialists_own_domain_tools():
     search_elements_tools = {
         str(getattr(tool, "__name__", ""))
         for tool in search_elements_module.build_search_elements_subagent(storage, task_id)["tools"]
-    }
-    claim_decomposer_tools = {
-        str(getattr(tool, "__name__", ""))
-        for tool in claim_decomposer_module.build_claim_decomposer_subagent(storage, task_id)["tools"]
-    }
-    claim_strategy_tools = {
-        str(getattr(tool, "__name__", ""))
-        for tool in claim_search_strategist_module.build_claim_search_strategist_subagent(storage, task_id)["tools"]
     }
     query_tools = {
         str(getattr(tool, "__name__", ""))
@@ -88,14 +77,7 @@ def test_specialists_own_domain_tools():
     }
 
     assert search_elements_tools == {"save_search_elements"}
-    assert claim_decomposer_tools == {
-        "load_structured_claims",
-        "expand_claim_dependency",
-        "build_claim_packets",
-        "save_claim_decomposition",
-    }
-    assert claim_strategy_tools == {"get_claim_context", "get_gap_context", "build_gap_strategy_seed", "save_claim_search_strategy"}
-    assert "run_search_round" in query_tools
+    assert "run_execution_step" in query_tools
     assert coarse_tools == {"run_coarse_screen_batch"}
     assert close_tools == {"run_close_read_batch"}
     assert feature_tools == {"run_feature_compare"}

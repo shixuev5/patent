@@ -3,24 +3,22 @@ AI 检索 Agent 核心能力。
 """
 
 from agents.ai_search.main import (
-    build_claim_decomposer_agent,
-    build_claim_search_strategist_agent,
     build_close_reader_agent,
     build_coarse_screener_agent,
     build_feature_comparer_agent,
     build_main_agent,
+    build_plan_prober_agent,
     build_query_executor_agent,
     extract_latest_ai_message,
     extract_structured_response,
 )
 
 __all__ = [
-    "build_claim_decomposer_agent",
-    "build_claim_search_strategist_agent",
     "build_close_reader_agent",
     "build_coarse_screener_agent",
     "build_feature_comparer_agent",
     "build_main_agent",
+    "build_plan_prober_agent",
     "build_query_executor_agent",
     "extract_latest_ai_message",
     "extract_structured_response",

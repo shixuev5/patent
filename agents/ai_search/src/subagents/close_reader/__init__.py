@@ -1,6 +1,6 @@
 """Close reader specialist package."""
 
-from agents.ai_search.src.subagents.close_reader.passages import collect_claim_terms, collect_key_terms, fallback_passages
+from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt
 
 
@@ -43,7 +43,6 @@ __all__ = [
     "build_close_reader_agent",
     "build_close_reader_subagent",
     "build_close_reader_prompt",
-    "collect_claim_terms",
     "collect_key_terms",
     "detail_fingerprint",
     "detail_to_text",

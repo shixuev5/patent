@@ -76,6 +76,7 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
                 "element_name": element_name,
                 "keywords_zh": _normalize_string_list(item.get("keywords_zh") or []),
                 "keywords_en": _normalize_string_list(item.get("keywords_en") or []),
+                "block_id": str(item.get("block_id") or "").strip().upper(),
                 "notes": str(item.get("notes") or "").strip(),
             }
         )

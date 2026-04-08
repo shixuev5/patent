@@ -6,22 +6,24 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agents.ai_search.src.execution_state import normalize_execution_plan
+from agents.ai_search.src.execution_state import (
+    build_execution_todos,
+    normalize_execution_plan,
+    resolve_plan_step,
+)
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.state import (
     get_ai_search_meta,
-    get_ai_search_mode,
     merge_ai_search_meta,
     phase_progress,
     phase_step,
     phase_to_task_status,
 )
-from agents.ai_search.src.subagents.claim_decomposer.tools import build_claim_decomposer_tools
-from agents.ai_search.src.subagents.claim_search_strategist.tools import build_claim_search_strategist_tools
 from agents.ai_search.src.subagents.close_reader.tools import build_close_reader_tools
 from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools
 from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_comparer_tools
+from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
 from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
 from backend.time_utils import utc_now_z
@@ -75,10 +77,13 @@ class AiSearchAgentContext:
         state = base.get("state") if isinstance(base.get("state"), dict) else {}
         incoming_state = item.get("state") if isinstance(item.get("state"), dict) else {}
         return {
-            "key": str(item.get("key") or base.get("key") or "").strip(),
+            "todo_id": str(item.get("todo_id") or base.get("todo_id") or "").strip(),
+            "sub_plan_id": str(item.get("sub_plan_id") or base.get("sub_plan_id") or "").strip(),
+            "step_id": str(item.get("step_id") or base.get("step_id") or "").strip(),
+            "phase_key": str(item.get("phase_key") or base.get("phase_key") or "").strip(),
             "title": str(item.get("title") or base.get("title") or "").strip(),
             "status": str(item.get("status") or base.get("status") or "pending").strip() or "pending",
-            "details": str(item.get("details") or base.get("details") or "").strip(),
+            "description": str(item.get("description") or base.get("description") or "").strip(),
             "started_at": item.get("started_at") or base.get("started_at"),
             "completed_at": item.get("completed_at") or base.get("completed_at"),
             "attempt_count": int(item.get("attempt_count") or base.get("attempt_count") or 0),
@@ -95,7 +100,7 @@ class AiSearchAgentContext:
 
     def _todo_map(self, task: Any | None = None) -> Dict[str, Dict[str, Any]]:
         todos = self._current_todos(task)
-        return {str(item.get("key") or ""): item for item in todos if str(item.get("key") or "").strip()}
+        return {str(item.get("todo_id") or ""): item for item in todos if str(item.get("todo_id") or "").strip()}
 
     def current_todo(self) -> Optional[Dict[str, Any]]:
         task = self.storage.get_task(self.task_id)
@@ -103,17 +108,28 @@ class AiSearchAgentContext:
         current_task = str(meta.get("current_task") or "").strip()
         if not current_task:
             return None
-        return self._todo_map(task).get(current_task)
+        todo_map = self._todo_map(task)
+        return todo_map.get(current_task)
 
-    def update_todos(
+    def replace_todos(self, todos: List[Dict[str, Any]], *, current_task: Any = _UNSET, runtime: Any | None = None) -> None:
+        task = self.storage.get_task(self.task_id)
+        normalized = [self._normalized_todo(item) for item in todos if isinstance(item, dict)]
+        updates: Dict[str, Any] = {"todos": normalized}
+        if current_task is not _UNSET:
+            updates["current_task"] = current_task
+        self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, **updates))
+        self.notify_snapshot_changed(runtime, reason="todos")
+
+    def update_todo(
         self,
-        task_key: str,
+        todo_id: str,
         status: str,
         *,
         current_task: Any = _UNSET,
         resume_from: Optional[str] = None,
         last_error: Optional[str] = None,
         state_updates: Optional[Dict[str, Any]] = None,
+        runtime: Any | None = None,
     ) -> None:
         task = self.storage.get_task(self.task_id)
         todos = self._current_todos(task)
@@ -121,7 +137,7 @@ class AiSearchAgentContext:
         now = utc_now_z()
         for item in todos:
             next_item = self._normalized_todo(item)
-            if str(next_item.get("key") or "") == task_key:
+            if str(next_item.get("todo_id") or "").strip() == str(todo_id or "").strip():
                 previous_status = str(next_item.get("status") or "pending").strip() or "pending"
                 next_item["status"] = status
                 if status == "in_progress":
@@ -133,6 +149,8 @@ class AiSearchAgentContext:
                     next_item["completed_at"] = next_item.get("completed_at") or now
                     next_item["last_error"] = ""
                     next_item["resume_from"] = "completed"
+                elif status == "paused":
+                    next_item["completed_at"] = None
                 elif status == "failed":
                     next_item["last_error"] = str(last_error or next_item.get("last_error") or "").strip()
                 elif last_error is not None:
@@ -150,11 +168,37 @@ class AiSearchAgentContext:
             self.task_id,
             metadata=merge_ai_search_meta(task, **metadata_updates),
         )
+        self.notify_snapshot_changed(runtime, reason="todos")
 
-    def record_todo_failure(self, task_key: str, error: str, *, current_task: str, resume_from: str) -> str:
+    def first_pending_todo(self, *, phase_key: str = "") -> Optional[Dict[str, Any]]:
+        for todo in self._current_todos():
+            if str(todo.get("status") or "").strip() != "pending":
+                continue
+            if phase_key and str(todo.get("phase_key") or "").strip() != str(phase_key or "").strip():
+                continue
+            return todo
+        return None
+
+    def next_pending_todo(self, current_todo_id: str = "", *, phase_key: str = "") -> Optional[Dict[str, Any]]:
+        seen_current = not current_todo_id
+        for todo in self._current_todos():
+            if not seen_current:
+                if str(todo.get("todo_id") or "").strip() == str(current_todo_id or "").strip():
+                    seen_current = True
+                continue
+            if str(todo.get("todo_id") or "").strip() == str(current_todo_id or "").strip():
+                continue
+            if str(todo.get("status") or "").strip() != "pending":
+                continue
+            if phase_key and str(todo.get("phase_key") or "").strip() != str(phase_key or "").strip():
+                continue
+            return todo
+        return None
+
+    def record_todo_failure(self, todo_id: str, error: str, *, current_task: str, resume_from: str) -> str:
         message = str(error or "unknown_error").strip() or "unknown_error"
-        self.update_todos(
-            task_key,
+        self.update_todo(
+            todo_id,
             "failed",
             current_task=current_task,
             last_error=message,
@@ -183,17 +227,47 @@ class AiSearchAgentContext:
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
 
-    def current_search_mode(self) -> str:
-        task = self.storage.get_task(self.task_id)
-        return get_ai_search_mode(task)
+    def _search_scope_from_execution_spec(self, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
+        return execution_spec.get("search_scope") if isinstance(execution_spec.get("search_scope"), dict) else {}
+
+    def _sub_plans_from_execution_spec(self, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        raw = execution_spec.get("sub_plans") if isinstance(execution_spec.get("sub_plans"), list) else []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def _aggregated_search_elements_from_execution_spec(self, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
+        search_scope = self._search_scope_from_execution_spec(execution_spec)
+        aggregated: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for sub_plan in self._sub_plans_from_execution_spec(execution_spec):
+            for item in sub_plan.get("search_elements") or []:
+                if not isinstance(item, dict):
+                    continue
+                element_name = str(item.get("element_name") or item.get("feature") or item.get("name") or "").strip()
+                block_id = str(item.get("block_id") or "").strip().upper()
+                signature = f"{block_id}:{element_name}".strip(":")
+                if not element_name or signature in seen:
+                    continue
+                seen.add(signature)
+                aggregated.append(item)
+        return {
+            "status": "complete" if aggregated else "needs_answer",
+            "objective": str(search_scope.get("objective") or "").strip(),
+            "applicants": search_scope.get("applicants") if isinstance(search_scope.get("applicants"), list) else [],
+            "filing_date": search_scope.get("filing_date"),
+            "priority_date": search_scope.get("priority_date"),
+            "search_elements": aggregated,
+            "sub_plans": self._sub_plans_from_execution_spec(execution_spec),
+        }
 
     def current_search_elements(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
         if version > 0:
             plan = self.storage.get_ai_search_plan(self.task_id, version) or {}
-            payload = plan.get("search_elements_json")
-            if isinstance(payload, dict):
-                return payload
+            execution_spec = plan.get("execution_spec_json")
+            if isinstance(execution_spec, dict):
+                payload = self._aggregated_search_elements_from_execution_spec(execution_spec)
+                if payload.get("search_elements"):
+                    return payload
         for item in reversed(self.storage.list_ai_search_messages(self.task_id)):
             if str(item.get("kind") or "") != "search_elements_update":
                 continue
@@ -241,35 +315,57 @@ class AiSearchAgentContext:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def list_execution_summaries(self, plan_version: int) -> List[Dict[str, Any]]:
+    def list_execution_step_summaries(self, plan_version: int, *, sub_plan_id: str = "") -> List[Dict[str, Any]]:
         summaries: List[Dict[str, Any]] = []
         for item in self.storage.list_ai_search_messages(self.task_id):
-            if str(item.get("kind") or "") != "execution_summary":
+            if str(item.get("kind") or "") != "execution_step_summary":
                 continue
             if int(item.get("plan_version") or 0) != int(plan_version):
                 continue
             metadata = item.get("metadata")
-            if isinstance(metadata, dict):
+            if isinstance(metadata, dict) and (not sub_plan_id or str(metadata.get("sub_plan_id") or "").strip() == str(sub_plan_id or "").strip()):
                 summaries.append(metadata)
         return summaries
 
-    def build_execution_directive(self, plan_version: int) -> Dict[str, Any]:
+    def build_execution_step_directive(self, plan_version: int) -> Dict[str, Any]:
         plan = self.storage.get_ai_search_plan(self.task_id, int(plan_version)) or {}
-        plan_json = plan.get("plan_json") if isinstance(plan.get("plan_json"), dict) else {}
-        normalized_plan = normalize_execution_plan(plan_json, self.current_search_elements(plan_version))
-        claim_strategy = self.latest_message_metadata("claim_search_strategy")
-        summaries = self.list_execution_summaries(int(plan_version))
+        execution_spec = plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
+        normalized_plan = normalize_execution_plan(execution_spec, self.current_search_elements(plan_version))
+        current_todo = self.current_todo()
+        if not current_todo:
+            return {
+                "plan_version": int(plan_version),
+                "current_todo": None,
+                "current_step": None,
+                "query_blueprints": [],
+                "history": [],
+                "search_elements_snapshot": normalized_plan.get("search_elements_snapshot") or {},
+                "gap_context": self.latest_gap_context(),
+                "execution_policy": normalized_plan.get("execution_policy") or {},
+            }
+        sub_plan_id = str(current_todo.get("sub_plan_id") or "").strip()
+        step_id = str(current_todo.get("step_id") or "").strip()
+        sub_plan, step = resolve_plan_step(normalized_plan, sub_plan_id, step_id)
+        query_refs = {
+            str(ref or "").strip()
+            for ref in (step.get("query_blueprint_refs") or [])
+            if str(ref or "").strip()
+        }
+        query_blueprints = [
+            item
+            for item in (sub_plan.get("query_blueprints") or [])
+            if isinstance(item, dict) and str(item.get("batch_id") or "").strip() in query_refs
+        ]
+        summaries = self.list_execution_step_summaries(int(plan_version), sub_plan_id=sub_plan_id)
         return {
-            "round_id": f"round-{len(summaries) + 1}",
             "plan_version": int(plan_version),
+            "current_todo": current_todo,
+            "current_step": step,
+            "current_sub_plan": sub_plan,
             "execution_policy": normalized_plan.get("execution_policy") or {},
-            "lanes": normalized_plan.get("lanes") or [],
-            "round_stop_rules": normalized_plan.get("round_stop_rules") or [],
-            "screening_entry_rules": normalized_plan.get("screening_entry_rules") or [],
-            "replan_rules": normalized_plan.get("replan_rules") or [],
-            "previous_round_summaries": summaries,
+            "query_blueprints": query_blueprints,
+            "history": summaries,
             "search_elements_snapshot": normalized_plan.get("search_elements_snapshot") or {},
-            "claim_search_strategy": claim_strategy,
             "gap_context": self.latest_gap_context(),
         }
 
@@ -278,7 +374,7 @@ class AiSearchAgentContext:
         if version <= 0:
             return {}
         plan = self.storage.get_ai_search_plan(self.task_id, version) or {}
-        return plan.get("plan_json") if isinstance(plan.get("plan_json"), dict) else {}
+        return plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
 
     def latest_gap_context(self) -> Dict[str, Any]:
         return {
@@ -401,7 +497,7 @@ class AiSearchAgentContext:
             recommended_action = "complete_execution"
             should_continue_search = False
         elif has_material_gap:
-            recommended_action = "replan_search_strategy"
+            recommended_action = "replan_search"
             should_continue_search = True
         elif selected_count > 0:
             recommended_action = "generate_feature_table"
@@ -430,14 +526,11 @@ class AiSearchAgentContext:
     def build_search_elements_tools(self) -> List[Any]:
         return build_search_elements_tools(self)
 
-    def build_claim_decomposer_tools(self) -> List[Any]:
-        return build_claim_decomposer_tools(self)
-
-    def build_claim_search_strategist_tools(self) -> List[Any]:
-        return build_claim_search_strategist_tools(self)
-
     def build_query_executor_tools(self) -> List[Any]:
         return build_query_executor_tools(self)
+
+    def build_plan_prober_tools(self) -> List[Any]:
+        return build_plan_prober_tools(self)
 
     def build_coarse_screener_tools(self) -> List[Any]:
         return build_coarse_screener_tools(self)
@@ -447,3 +540,7 @@ class AiSearchAgentContext:
 
     def build_feature_comparer_tools(self) -> List[Any]:
         return build_feature_comparer_tools(self)
+
+    def execution_todos_from_plan(self, plan_version: int, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        normalized = normalize_execution_plan(execution_spec, self.current_search_elements(plan_version))
+        return build_execution_todos(plan_version, normalized)
