@@ -53,6 +53,20 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
             keep_ids = {str(item).strip() for item in (payload.get("keep") or []) if str(item).strip()}
             discard_ids = {str(item).strip() for item in (payload.get("discard") or []) if str(item).strip()}
             current_records = context.storage.list_ai_search_documents(context.task_id, version)
+            pending_ids = {
+                str(item.get("document_id") or "").strip()
+                for item in current_records
+                if str(item.get("coarse_status") or "pending") == "pending" and str(item.get("stage") or "") in {"candidate", ""}
+            }
+            overlap_ids = keep_ids & discard_ids
+            unresolved_ids = pending_ids - keep_ids - discard_ids
+            unknown_ids = (keep_ids | discard_ids) - pending_ids
+            if overlap_ids:
+                raise ValueError(f"coarse_screen 结果中存在重复 document_id: {', '.join(sorted(overlap_ids))}")
+            if unresolved_ids:
+                raise ValueError(f"coarse_screen 结果遗漏了待处理 document_id: {', '.join(sorted(unresolved_ids))}")
+            if unknown_ids:
+                raise ValueError(f"coarse_screen 结果包含非待处理 document_id: {', '.join(sorted(unknown_ids))}")
             applied = {"kept": 0, "discarded": 0}
             for item in current_records:
                 if str(item.get("coarse_status") or "pending") != "pending":

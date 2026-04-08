@@ -364,12 +364,12 @@
               </span>
               <button
                 type="button"
-                class="absolute bottom-3 right-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                class="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 aria-label="发送消息"
                 :disabled="!canSubmitMessage"
                 @click="submitMessage"
               >
-                <ArrowUpIcon class="h-4 w-4" />
+                <ArrowUpIcon class="h-3.5 w-3.5" />
               </button>
             </div>
             <p

@@ -27,7 +27,7 @@ def detail_fingerprint(detail: Dict[str, Any]) -> str:
 
 def load_document_details(pn: str) -> Dict[str, Any]:
     client = SearchClientFactory.get_client("zhihuiya")
-    detail = client.get_patent_details(pn)
+    detail = client.get_patent_detail(pn)
     detail = detail if isinstance(detail, dict) else {}
     normalized = {
         "pn": pn,

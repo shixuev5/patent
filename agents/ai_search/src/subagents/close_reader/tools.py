@@ -165,6 +165,21 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             payload = extract_json_object(payload_json)
             selected_ids = {str(item).strip() for item in (payload.get("selected") or []) if str(item).strip()}
             rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
+            current_records = context.storage.list_ai_search_documents(context.task_id, version)
+            pending_ids = {
+                str(item.get("document_id") or "").strip()
+                for item in current_records
+                if str(item.get("coarse_status") or "") == "kept" and str(item.get("close_read_status") or "pending") == "pending"
+            }
+            overlap_ids = selected_ids & rejected_ids
+            unresolved_ids = pending_ids - selected_ids - rejected_ids
+            unknown_ids = (selected_ids | rejected_ids) - pending_ids
+            if overlap_ids:
+                raise ValueError(f"close_read 结果中存在重复 document_id: {', '.join(sorted(overlap_ids))}")
+            if unresolved_ids:
+                raise ValueError(f"close_read 结果遗漏了待处理 document_id: {', '.join(sorted(unresolved_ids))}")
+            if unknown_ids:
+                raise ValueError(f"close_read 结果包含非待处理 document_id: {', '.join(sorted(unknown_ids))}")
             passages_by_doc: Dict[str, List[Dict[str, Any]]] = {}
             assessments_by_doc: Dict[str, Dict[str, Any]] = {}
             claim_ids_by_doc: Dict[str, List[str]] = {}
@@ -220,7 +235,6 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     "missing_evidence": item.get("missing_evidence") or [],
                 }
             terms = collect_key_terms(context.current_search_elements(version))
-            current_records = context.storage.list_ai_search_documents(context.task_id, version)
             selected_count = 0
             for item in current_records:
                 document_id = str(item.get("document_id") or "")
