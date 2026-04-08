@@ -1,4 +1,4 @@
-"""Close-reader specialist tools."""
+"""精读子代理工具。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,50 @@ from agents.ai_search.src.subagents.close_reader.workspace import (
 )
 from agents.ai_search.src.runtime import extract_json_object
 from backend.time_utils import utc_now_z
+
+
+def _primary_ipc(detail: Dict[str, Any], fallback_values: List[Any]) -> str:
+    for source in (
+        detail.get("ipc"),
+        detail.get("cpc"),
+        fallback_values,
+    ):
+        if not isinstance(source, list):
+            continue
+        for value in source:
+            text = str(value or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _format_evidence_location(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("paragraph_"):
+        raw_number = text.split("_", 1)[1]
+        try:
+            return f"说明书第{int(raw_number):02d}段"
+        except Exception:
+            return text
+    return text
+
+
+def _sorted_claim_ids(values: List[str]) -> List[str]:
+    unique = {str(value or "").strip() for value in values if str(value or "").strip()}
+    return sorted(unique, key=lambda item: (0, int(item)) if item.isdigit() else (1, item))
+
+
+def _summarize_evidence_locations(values: List[str]) -> str:
+    ordered = []
+    seen = set()
+    for value in values:
+        text = _format_evidence_location(value)
+        if text and text not in seen:
+            seen.add(text)
+            ordered.append(text)
+    return "；".join(ordered[:4])
 
 
 def build_close_reader_tools(context: Any) -> List[Any]:
@@ -61,6 +105,10 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                             "abstract": str(cached_detail.get("abstract") or item.get("abstract") or "").strip(),
                             "claims": str(cached_detail.get("claims") or "").strip(),
                             "description": str(cached_detail.get("description") or "").strip(),
+                            "publication_date": str(cached_detail.get("publication_date") or item.get("publication_date") or "").strip(),
+                            "application_date": str(cached_detail.get("application_date") or item.get("application_date") or "").strip(),
+                            "ipc": cached_detail.get("ipc") if isinstance(cached_detail.get("ipc"), list) else [],
+                            "cpc": cached_detail.get("cpc") if isinstance(cached_detail.get("cpc"), list) else [],
                             "detail_fingerprint": cached_detail.get("detail_fingerprint"),
                         }
                     else:
@@ -71,6 +119,9 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         context.task_id,
                         version,
                         item["document_id"],
+                        publication_date=str(detail.get("publication_date") or item.get("publication_date") or "").strip() or None,
+                        application_date=str(detail.get("application_date") or item.get("application_date") or "").strip() or None,
+                        primary_ipc=_primary_ipc(detail, item.get("ipc_cpc_json") or []),
                         detail_fingerprint=detail.get("detail_fingerprint"),
                     )
                 file_map = prepare_close_read_workspace(workspace_dir, details)
@@ -116,6 +167,8 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
             passages_by_doc: Dict[str, List[Dict[str, Any]]] = {}
             assessments_by_doc: Dict[str, Dict[str, Any]] = {}
+            claim_ids_by_doc: Dict[str, List[str]] = {}
+            locations_by_doc: Dict[str, List[str]] = {}
             for item in payload.get("key_passages") or []:
                 if not isinstance(item, dict):
                     continue
@@ -132,6 +185,28 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         "hit_density": item.get("hit_density"),
                     }
                 )
+                location = str(item.get("location") or "").strip()
+                if location:
+                    locations_by_doc.setdefault(document_id, []).append(location)
+            for item in payload.get("claim_alignments") or []:
+                if not isinstance(item, dict):
+                    continue
+                document_id = str(item.get("document_id") or "").strip()
+                claim_id = str(item.get("claim_id") or "").strip()
+                location = str(item.get("location") or "").strip()
+                if document_id and claim_id:
+                    claim_ids_by_doc.setdefault(document_id, []).append(claim_id)
+                if document_id and location:
+                    locations_by_doc.setdefault(document_id, []).append(location)
+            for item in payload.get("limitation_coverage") or []:
+                if not isinstance(item, dict):
+                    continue
+                claim_id = str(item.get("claim_id") or "").strip()
+                supporting_ids = item.get("supporting_document_ids") if isinstance(item.get("supporting_document_ids"), list) else []
+                for document_id in supporting_ids:
+                    doc_id = str(document_id or "").strip()
+                    if doc_id and claim_id:
+                        claim_ids_by_doc.setdefault(doc_id, []).append(claim_id)
             for item in payload.get("document_assessments") or []:
                 if not isinstance(item, dict):
                     continue
@@ -163,6 +238,14 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                 assessment = assessments_by_doc.get(document_id)
                 if assessment:
                     passages = [{**passage, "assessment": assessment} for passage in passages]
+                claim_ids = _sorted_claim_ids(claim_ids_by_doc.get(document_id, []))
+                evidence_locations = []
+                for passage in passages:
+                    location = str(passage.get("location") or "").strip()
+                    if location:
+                        evidence_locations.append(location)
+                evidence_locations.extend(locations_by_doc.get(document_id, []))
+                evidence_summary = _summarize_evidence_locations(evidence_locations)
                 if document_id in selected_ids:
                     context.storage.update_ai_search_document(
                         context.task_id,
@@ -170,6 +253,9 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         document_id,
                         stage="selected",
                         key_passages_json=passages,
+                        claim_ids_json=claim_ids,
+                        evidence_locations_json=evidence_locations,
+                        evidence_summary=evidence_summary,
                         agent_reason="纳入对比文件",
                         close_read_status="selected",
                         close_read_reason="精读后纳入对比文件",
@@ -183,6 +269,9 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         document_id,
                         stage="rejected",
                         key_passages_json=passages,
+                        claim_ids_json=claim_ids,
+                        evidence_locations_json=evidence_locations,
+                        evidence_summary=evidence_summary,
                         agent_reason="精读后排除",
                         close_read_status="rejected",
                         close_read_reason="精读后排除",
@@ -191,7 +280,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             context.update_todos(
                 "close_read",
                 "completed",
-                current_task="generate_feature_table",
+                current_task="feature_comparison",
                 state_updates={"selected_count": selected_count, "document_assessments": assessments_by_doc},
             )
             context.storage.create_ai_search_message(

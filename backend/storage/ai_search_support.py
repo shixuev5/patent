@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS ai_search_documents (
     pn TEXT,
     title TEXT,
     abstract TEXT,
+    publication_date TEXT,
+    application_date TEXT,
+    primary_ipc TEXT,
+    document_type TEXT,
+    claim_ids_json TEXT,
+    evidence_locations_json TEXT,
+    evidence_summary TEXT,
+    report_row_order INTEGER,
     ipc_cpc_json TEXT,
     source_batches_json TEXT,
     source_lanes_json TEXT,
@@ -65,8 +73,8 @@ CREATE TABLE IF NOT EXISTS ai_search_documents (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS ai_search_feature_tables (
-    feature_table_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS ai_search_feature_comparisons (
+    feature_comparison_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     plan_version INTEGER NOT NULL,
     status TEXT NOT NULL,
@@ -113,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_search_messages_task_question ON ai_search_mes
 CREATE INDEX IF NOT EXISTS idx_ai_search_plans_task_created ON ai_search_plans(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_task_plan_stage ON ai_search_documents(task_id, plan_version, stage);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_task_plan_pn ON ai_search_documents(task_id, plan_version, pn);
-CREATE INDEX IF NOT EXISTS idx_ai_search_feature_tables_task_plan_updated ON ai_search_feature_tables(task_id, plan_version, updated_at);
+CREATE INDEX IF NOT EXISTS idx_ai_search_feature_comparisons_task_plan_updated ON ai_search_feature_comparisons(task_id, plan_version, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_checkpoints_thread_created ON ai_search_checkpoints(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_checkpoint_writes_thread_checkpoint ON ai_search_checkpoint_writes(thread_id, checkpoint_ns, checkpoint_id);
 """

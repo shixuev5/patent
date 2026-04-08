@@ -58,7 +58,7 @@ def _create_task(storage: SQLiteTaskStorage, task_id: str = "task-gap") -> None:
             status=TaskStatus.PROCESSING,
             created_at=now,
             updated_at=now,
-            metadata={"ai_search": {"current_phase": "generate_feature_table"}},
+            metadata={"ai_search": {"current_phase": "feature_comparison"}},
         )
     )
 
@@ -216,12 +216,116 @@ def test_build_gap_strategy_seed_payload_extracts_targeted_gaps(tmp_path):
     assert payload["seed_batch_specs"][0]["seed_terms"] == ["约束条件", "参数窗口"]
 
 
+def test_execution_policy_uses_takeover_defaults(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_execution_policy.db")
+    _create_task(storage)
+    storage.create_ai_search_plan(_plan_record("task-gap"))
+    storage.update_task(
+        "task-gap",
+        metadata={"ai_search": {"current_phase": "drafting_plan", "active_plan_version": 1}},
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+    policy = context.execution_policy(1)
+
+    assert policy["max_rounds"] == 3
+    assert policy["max_no_progress_rounds"] == 2
+    assert policy["max_selected_documents"] == 5
+    assert policy["decision_on_exhaustion"] is True
+
+
+def test_evaluate_exhaustion_payload_triggers_human_takeover_on_no_progress_limit(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_exhaustion_eval.db")
+    _create_task(storage)
+    plan = _plan_record("task-gap")
+    plan["execution_spec_json"]["execution_policy"].update(
+        {
+            "max_rounds": 5,
+            "max_no_progress_rounds": 2,
+            "max_selected_documents": 5,
+            "decision_on_exhaustion": True,
+        }
+    )
+    storage.create_ai_search_plan(plan)
+    storage.update_task(
+        "task-gap",
+        metadata={
+            "ai_search": {
+                "current_phase": "feature_comparison",
+                "active_plan_version": 1,
+                "execution_round_count": 1,
+                "no_progress_round_count": 1,
+                "last_selected_count": 1,
+                "last_readiness": "needs_more_evidence",
+                "last_gap_signature": {
+                    "limitation_gap_count": 0,
+                    "coverage_gap_count": 1,
+                    "follow_up_hint_count": 0,
+                    "weak_evidence_count": 0,
+                },
+                "processed_execution_summary_count": 0,
+            }
+        },
+    )
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": "task-gap",
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+            }
+        ]
+    )
+    storage.create_ai_search_message(
+        {
+            "message_id": "msg-step-summary",
+            "task_id": "task-gap",
+            "plan_version": 1,
+            "role": "assistant",
+            "kind": "execution_step_summary",
+            "content": "{}",
+            "metadata": {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "new_unique_candidates": 0,
+                "candidate_pool_size": 1,
+            },
+        }
+    )
+    storage.create_ai_search_message(
+        {
+            "message_id": "msg-feature",
+            "task_id": "task-gap",
+            "role": "assistant",
+            "kind": "feature_compare_result",
+            "content": "还需要更多证据",
+            "metadata": {
+                "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
+                "creativity_readiness": "needs_more_evidence",
+            },
+        }
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+    payload = context.evaluate_exhaustion_payload(1)
+
+    assert payload["is_no_progress"] is True
+    assert payload["no_progress_round_count"] == 2
+    assert payload["triggered_limit"] == "max_no_progress_rounds"
+    assert payload["should_request_decision"] is True
+
+
 def test_complete_execution_is_blocked_when_gap_replan_is_required(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_block.db")
     _create_task(storage)
     storage.update_task(
         "task-gap",
-        metadata={"ai_search": {"current_phase": "generate_feature_table", "active_plan_version": 1}},
+        metadata={"ai_search": {"current_phase": "feature_comparison", "active_plan_version": 1}},
     )
     storage.create_ai_search_message(
         {

@@ -1,4 +1,4 @@
-"""Query-executor specialist tools."""
+"""检索执行子代理工具。"""
 
 from __future__ import annotations
 

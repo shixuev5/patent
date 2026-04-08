@@ -1,4 +1,4 @@
-"""Close reader specialist package."""
+"""精读子代理包。"""
 
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt

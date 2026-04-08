@@ -1,4 +1,4 @@
-"""Coarse-screener specialist tools."""
+"""粗筛子代理工具。"""
 
 from __future__ import annotations
 

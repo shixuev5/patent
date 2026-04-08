@@ -13,7 +13,7 @@ from backend.models import CurrentUser
 from backend.ai_search.models import (
     AiSearchAnswerRequest,
     AiSearchCreateFromAnalysisRequest,
-    AiSearchFeatureTableRequest,
+    AiSearchFeatureComparisonRequest,
     AiSearchMessageRequest,
     AiSearchPlanConfirmRequest,
     AiSearchSessionUpdateRequest,
@@ -144,14 +144,38 @@ async def patch_ai_search_selected_documents(
     )
 
 
-@router.post("/api/ai-search/sessions/{session_id}/feature-table/stream")
-async def stream_ai_search_feature_table(
+@router.post("/api/ai-search/sessions/{session_id}/feature-comparison/stream")
+async def stream_ai_search_feature_comparison(
     session_id: str,
-    request: AiSearchFeatureTableRequest,
+    request: AiSearchFeatureComparisonRequest,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return StreamingResponse(
-        service.stream_feature_table(session_id, current_user.user_id, request.planVersion),
+        service.stream_feature_comparison(session_id, current_user.user_id, request.planVersion),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/api/ai-search/sessions/{session_id}/decision/continue")
+async def stream_ai_search_decision_continue(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return StreamingResponse(
+        service.stream_decision_continue(session_id, current_user.user_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/api/ai-search/sessions/{session_id}/decision/complete")
+async def stream_ai_search_decision_complete(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return StreamingResponse(
+        service.stream_decision_complete(session_id, current_user.user_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

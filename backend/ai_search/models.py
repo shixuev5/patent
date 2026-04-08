@@ -69,7 +69,7 @@ class AiSearchSelectedDocumentsPatchRequest(BaseModel):
     removeDocumentIds: Optional[List[str]] = None
 
 
-class AiSearchFeatureTableRequest(BaseModel):
+class AiSearchFeatureComparisonRequest(BaseModel):
     planVersion: int = Field(..., ge=1)
 
 
@@ -77,11 +77,13 @@ class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
     phase: str
     messages: List[Dict[str, Any]]
+    downloadUrl: Optional[str] = None
+    humanDecisionAction: Optional[Dict[str, Any]] = None
     currentPlan: Optional[Dict[str, Any]] = None
     executionTodos: List[Dict[str, Any]] = Field(default_factory=list)
     candidateDocuments: List[Dict[str, Any]] = Field(default_factory=list)
     selectedDocuments: List[Dict[str, Any]] = Field(default_factory=list)
-    featureTable: Optional[Dict[str, Any]] = None
+    featureComparison: Optional[Dict[str, Any]] = None
     pendingQuestion: Optional[Dict[str, Any]] = None
     pendingConfirmation: Optional[Dict[str, Any]] = None
     resumeAction: Optional[Dict[str, Any]] = None

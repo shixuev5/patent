@@ -116,3 +116,41 @@ def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert "run.completed" in response.text
+
+
+def test_handoff_continue_endpoint_streams_continue_run(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    async def _fake_continue(session_id: str, owner_id: str):
+        assert owner_id == "guest_ai_search"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+
+    monkeypatch.setattr(service, "stream_decision_continue", _fake_continue)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/ai-search/sessions")
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/ai-search/sessions/{session_id}/decision/continue")
+
+    assert response.status_code == 200
+    assert "run.completed" in response.text
+
+
+def test_handoff_complete_endpoint_streams_complete_run(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    async def _fake_complete(session_id: str, owner_id: str):
+        assert owner_id == "guest_ai_search"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'completed', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+
+    monkeypatch.setattr(service, "stream_decision_complete", _fake_complete)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/ai-search/sessions")
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/ai-search/sessions/{session_id}/decision/complete")
+
+    assert response.status_code == 200
+    assert "run.completed" in response.text

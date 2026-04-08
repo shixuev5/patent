@@ -15,6 +15,7 @@ stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
 stub_ai_search_agents.build_main_agent = lambda storage, task_id: None
+stub_ai_search_agents.build_plan_prober_agent = lambda: None
 stub_ai_search_agents.build_query_executor_agent = lambda: None
 stub_ai_search_agents.extract_latest_ai_message = lambda values: ""
 stub_ai_search_agents.extract_structured_response = lambda values: {}
@@ -58,12 +59,14 @@ from backend.ai_search.models import (
 import agents.ai_search.src.context as ai_search_context_module
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.state import (
+    PHASE_AWAITING_HUMAN_DECISION,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_CLOSE_READ,
+    PHASE_COMPLETED,
     PHASE_DRAFTING_PLAN,
     PHASE_EXECUTE_SEARCH,
-    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_FEATURE_COMPARISON,
     merge_ai_search_meta,
 )
 from backend.storage import TaskStatus, TaskType
@@ -101,7 +104,7 @@ def _set_phase(storage: SQLiteTaskStorage, task_id: str, phase: str, **meta_upda
     assert task is not None
     storage.update_task(
         task_id,
-        status=TaskStatus.PAUSED.value if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION} else TaskStatus.PROCESSING.value,
+        status=TaskStatus.PAUSED.value if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_HUMAN_DECISION} else TaskStatus.PROCESSING.value,
         metadata=merge_ai_search_meta(task, current_phase=phase, **meta_updates),
     )
 
@@ -391,7 +394,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     assert not any("run.completed" in item for item in events)
 
 
-def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(monkeypatch, tmp_path):
+def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_table(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
@@ -414,9 +417,9 @@ def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(mo
             }
         ]
     )
-    storage.create_ai_search_feature_table(
+    storage.create_ai_search_feature_comparison(
         {
-            "feature_table_id": "ft-1",
+            "feature_comparison_id": "ft-1",
             "task_id": created.sessionId,
             "plan_version": 1,
             "status": "completed",
@@ -429,13 +432,13 @@ def test_patch_selected_documents_reopens_feature_table_and_hides_stale_table(mo
         created.sessionId,
         "completed",
         active_plan_version=1,
-        current_feature_table_id="ft-1",
+        current_feature_comparison_id="ft-1",
     )
 
     snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, ["doc-1"], [])
 
-    assert snapshot.phase == PHASE_GENERATE_FEATURE_TABLE
-    assert snapshot.featureTable is None
+    assert snapshot.phase == PHASE_FEATURE_COMPARISON
+    assert snapshot.featureComparison is None
 
 
 def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_empty(monkeypatch, tmp_path):
@@ -464,9 +467,9 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_GENERATE_FEATURE_TABLE,
+        PHASE_FEATURE_COMPARISON,
         active_plan_version=1,
-        current_feature_table_id=None,
+        current_feature_comparison_id=None,
     )
 
     snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])
@@ -701,9 +704,15 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
     assert any(event["type"] == "subagent.completed" and event["payload"]["label"] == "检索要素整理" for event in parsed)
 
 
-def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
+def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    output_dir = Path(storage.get_task(created.sessionId).output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = output_dir / "ai_search_result_bundle.zip"
+    bundle_path.write_bytes(b"PK\x03\x04")
+    pdf_path = output_dir / "ai_search_report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
     storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
     storage.upsert_ai_search_documents(
         [
@@ -723,20 +732,38 @@ def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monk
             }
         ]
     )
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "build_ai_search_terminal_artifacts",
+        lambda **kwargs: {
+            "pdf": str(pdf_path),
+            "bundle_zip": str(bundle_path),
+            "feature_comparison_csv": None,
+            "classified_documents": [
+                {
+                    "document_id": "doc-1",
+                    "document_type": "X",
+                    "report_row_order": 1,
+                    "stage": "selected",
+                    "pn": "CN1",
+                }
+            ],
+        },
+    )
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_GENERATE_FEATURE_TABLE,
+        PHASE_FEATURE_COMPARISON,
         active_plan_version=1,
-        current_feature_table_id=None,
+        current_feature_comparison_id=None,
     )
 
     class _FakeFeatureAgent:
         def invoke(self, payload):
-            assert "生成特征对比表" in payload["messages"][0]["content"]
-            storage.create_ai_search_feature_table(
+            assert "特征对比分析" in payload["messages"][0]["content"]
+            storage.create_ai_search_feature_comparison(
                 {
-                    "feature_table_id": "ft-new",
+                    "feature_comparison_id": "ft-new",
                     "task_id": created.sessionId,
                     "plan_version": 1,
                     "status": "completed",
@@ -767,10 +794,10 @@ def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monk
                 created.sessionId,
                 metadata=merge_ai_search_meta(
                     storage.get_task(created.sessionId),
-                    current_phase=PHASE_GENERATE_FEATURE_TABLE,
+                    current_phase=PHASE_FEATURE_COMPARISON,
                     active_plan_version=1,
-                    current_feature_table_id="ft-new",
-                    current_task="generate_feature_table",
+                    current_feature_comparison_id="ft-new",
+                    current_task="feature_comparison",
                 ),
             )
             return {"messages": [{"role": "assistant", "content": "done"}]}
@@ -785,13 +812,259 @@ def test_stream_feature_table_uses_bound_feature_agent_and_persists_outputs(monk
         ),
     )
 
-    events = asyncio.run(_collect_stream(service.stream_feature_table(created.sessionId, "guest_ai_search", 1)))
+    events = asyncio.run(_collect_stream(service.stream_feature_comparison(created.sessionId, "guest_ai_search", 1)))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    documents = storage.list_ai_search_documents(created.sessionId, 1)
+    task = storage.get_task(created.sessionId)
 
     assert snapshot.phase == "completed"
-    assert snapshot.featureTable is not None
-    assert snapshot.featureTable["feature_table_id"] == "ft-new"
-    assert any("feature_table.updated" in item for item in events)
+    assert snapshot.featureComparison is not None
+    assert snapshot.featureComparison["feature_comparison_id"] == "ft-new"
+    assert snapshot.downloadUrl == f"/api/tasks/{created.sessionId}/download"
+    assert documents[0]["document_type"] == "X"
+    assert documents[0]["report_row_order"] == 1
+    assert task.metadata["output_files"]["bundle_zip"] == str(bundle_path)
+    assert any("feature_comparison.updated" in item for item in events)
+    assert any("artifacts.updated" in item for item in events)
+
+
+def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_hits(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    plan = _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
+    plan["execution_spec_json"]["execution_policy"].update(
+        {
+            "max_rounds": 5,
+            "max_no_progress_rounds": 1,
+            "max_selected_documents": 5,
+            "decision_on_exhaustion": True,
+        }
+    )
+    storage.create_ai_search_plan(plan)
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+                "key_passages_json": [{"passage": "证据"}],
+            }
+        ]
+    )
+    storage.create_ai_search_message(
+        {
+            "message_id": "msg-step-summary",
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "role": "assistant",
+            "kind": "execution_step_summary",
+            "content": "{}",
+            "metadata": {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "new_unique_candidates": 0,
+                "candidate_pool_size": 1,
+            },
+        }
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_FEATURE_COMPARISON,
+        active_plan_version=1,
+        current_feature_comparison_id=None,
+        current_task="feature_comparison",
+        execution_round_count=0,
+        no_progress_round_count=0,
+        last_selected_count=1,
+        last_readiness="needs_more_evidence",
+        last_gap_signature={"limitation_gap_count": 0, "coverage_gap_count": 1, "follow_up_hint_count": 0, "weak_evidence_count": 0},
+        processed_execution_summary_count=0,
+    )
+
+    class _FakeFeatureAgent:
+        def invoke(self, payload):
+            assert "特征对比分析" in payload["messages"][0]["content"]
+            storage.create_ai_search_feature_comparison(
+                {
+                    "feature_comparison_id": "ft-handoff",
+                    "task_id": created.sessionId,
+                    "plan_version": 1,
+                    "status": "completed",
+                    "table_json": [{"feature": "A"}],
+                    "summary_markdown": "特征表",
+                }
+            )
+            storage.create_ai_search_message(
+                {
+                    "message_id": "msg-feature-result",
+                    "task_id": created.sessionId,
+                    "plan_version": 1,
+                    "role": "assistant",
+                    "kind": "feature_compare_result",
+                    "content": "仍需继续检索",
+                    "metadata": {
+                        "table_rows": [{"feature": "A"}],
+                        "summary_markdown": "特征表",
+                        "overall_findings": "仍需继续检索",
+                        "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
+                        "follow_up_search_hints": ["补搜实现方式B"],
+                        "creativity_readiness": "needs_more_evidence",
+                        "readiness_rationale": "证据仍不足。",
+                    },
+                }
+            )
+            storage.update_task(
+                created.sessionId,
+                metadata=merge_ai_search_meta(
+                    storage.get_task(created.sessionId),
+                    current_phase=PHASE_FEATURE_COMPARISON,
+                    active_plan_version=1,
+                    current_feature_comparison_id="ft-handoff",
+                    current_task="feature_comparison",
+                ),
+            )
+            return {"messages": [{"role": "assistant", "content": "done"}]}
+
+    monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
+
+    events = asyncio.run(_collect_stream(service.stream_feature_comparison(created.sessionId, "guest_ai_search", 1)))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.phase == PHASE_AWAITING_HUMAN_DECISION
+    assert snapshot.downloadUrl is None
+    assert snapshot.humanDecisionAction is not None
+    assert snapshot.humanDecisionAction["available"] is True
+    assert snapshot.humanDecisionAction["selectedCount"] == 1
+    assert any("decision.updated" in item for item in events)
+
+
+def test_stream_message_rejects_when_human_decision_pending(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_AWAITING_HUMAN_DECISION,
+        active_plan_version=1,
+        human_decision_reason="no_progress_limit_reached",
+        human_decision_summary="需要人工决策",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "继续跑下去")))
+
+    assert exc_info.value.status_code == 409
+
+
+def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_AWAITING_HUMAN_DECISION,
+        active_plan_version=1,
+        execution_round_count=3,
+        no_progress_round_count=2,
+        human_decision_reason="no_progress_limit_reached",
+        human_decision_summary="需要人工决策",
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_main_agent",
+        lambda task_id, thread_id, payload, **kwargs: (
+            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "我会重新起草计划。"}]}}
+            if "人工决策态" in payload["messages"][0]["content"]
+            else (_ for _ in ()).throw(AssertionError("unexpected decision continue payload"))
+        ),
+    )
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: values["messages"][-1]["content"])
+
+    events = asyncio.run(_collect_stream(service.stream_decision_continue(created.sessionId, "guest_ai_search")))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.phase == PHASE_DRAFTING_PLAN
+    assert snapshot.humanDecisionAction is None
+    assert (storage.get_task(created.sessionId).metadata["ai_search"]["execution_round_count"]) == 0
+    assert any("run.completed" in item for item in events)
+
+
+def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    output_dir = Path(storage.get_task(created.sessionId).output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = output_dir / "ai_search_result_bundle.zip"
+    bundle_path.write_bytes(b"PK\x03\x04")
+    pdf_path = output_dir / "ai_search_report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN1",
+                "title": "文献1",
+                "abstract": "",
+                "stage": "selected",
+            }
+        ]
+    )
+    storage.create_ai_search_feature_comparison(
+        {
+            "feature_comparison_id": "ft-1",
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "status": "completed",
+            "table_json": [{"feature": "A"}],
+            "summary_markdown": "特征表",
+        }
+    )
+    _set_phase(
+        storage,
+        created.sessionId,
+        PHASE_AWAITING_HUMAN_DECISION,
+        active_plan_version=1,
+        current_feature_comparison_id="ft-1",
+        human_decision_reason="no_progress_limit_reached",
+        human_decision_summary="需要人工决策",
+    )
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "build_ai_search_terminal_artifacts",
+        lambda **kwargs: {
+            "pdf": str(pdf_path),
+            "bundle_zip": str(bundle_path),
+            "feature_comparison_csv": None,
+            "classified_documents": [
+                {
+                    "document_id": "doc-1",
+                    "document_type": "Y",
+                    "report_row_order": 1,
+                    "stage": "selected",
+                    "pn": "CN1",
+                }
+            ],
+        },
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_decision_complete(created.sessionId, "guest_ai_search")))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.phase == PHASE_COMPLETED
+    assert snapshot.downloadUrl == f"/api/tasks/{created.sessionId}/download"
+    assert snapshot.humanDecisionAction is None
+    assert any("run.completed" in item for item in events)
 
 
 def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):

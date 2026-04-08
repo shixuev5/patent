@@ -91,6 +91,14 @@ def test_ai_search_storage_roundtrip(tmp_path):
                 "title": "一种控制方法",
                 "abstract": "摘要",
                 "ipc_cpc_json": ["G06F"],
+                "publication_date": "20240102",
+                "application_date": "20230102",
+                "primary_ipc": "G06F 9/00",
+                "document_type": "Y",
+                "claim_ids_json": ["1", "3"],
+                "evidence_locations_json": ["paragraph_0001", "figure_2"],
+                "evidence_summary": "说明书第01段；figure_2",
+                "report_row_order": 2,
                 "source_batches_json": ["b1"],
                 "source_sub_plans_json": ["sub_plan_1"],
                 "stage": "candidate",
@@ -113,10 +121,18 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert documents[0]["source_sub_plans_json"] == ["sub_plan_1"]
     assert documents[0]["source_steps_json"] == []
     assert documents[0]["key_passages_json"][0]["passage"] == "关键段落"
+    assert documents[0]["publication_date"] == "20240102"
+    assert documents[0]["application_date"] == "20230102"
+    assert documents[0]["primary_ipc"] == "G06F 9/00"
+    assert documents[0]["document_type"] == "Y"
+    assert documents[0]["claim_ids_json"] == ["1", "3"]
+    assert documents[0]["evidence_locations_json"] == ["paragraph_0001", "figure_2"]
+    assert documents[0]["evidence_summary"] == "说明书第01段；figure_2"
+    assert documents[0]["report_row_order"] == 2
 
-    assert storage.create_ai_search_feature_table(
+    assert storage.create_ai_search_feature_comparison(
         {
-            "feature_table_id": "ft-1",
+            "feature_comparison_id": "ft-1",
             "task_id": "task-ai-search",
             "plan_version": 1,
             "status": "completed",
@@ -124,10 +140,10 @@ def test_ai_search_storage_roundtrip(tmp_path):
             "summary_markdown": "总结",
         }
     )
-    feature_table = storage.get_ai_search_feature_table("task-ai-search", 1)
-    assert feature_table is not None
-    assert feature_table["table_json"][0]["feature"] == "A"
-    assert feature_table["summary_markdown"] == "总结"
+    feature_comparison = storage.get_ai_search_feature_comparison("task-ai-search", 1)
+    assert feature_comparison is not None
+    assert feature_comparison["table_json"][0]["feature"] == "A"
+    assert feature_comparison["summary_markdown"] == "总结"
 
     checkpoint_json = encode_typed_value(("json", b'{"id":"cp-1","channel_versions":{"messages":1}}'))
     metadata_json = encode_typed_value(("json", b'{"source":"test"}'))

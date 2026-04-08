@@ -1,4 +1,4 @@
-"""AI Search main-agent package."""
+"""智能检索主控代理包。"""
 
 
 def build_main_agent(*args, **kwargs):

@@ -1147,15 +1147,14 @@ const buildUrlWithToken = (url: string, token: string): string => {
 const canDownloadEntityTask = (row: AdminEntityTaskItem): boolean => {
   const taskId = String(row.taskId || '').trim()
   const status = String(row.status || '').trim().toLowerCase()
-  const taskType = String(row.taskType || '').trim().toLowerCase()
-  return !!taskId && status === 'completed' && taskType !== 'ai_search'
+  return !!taskId && status === 'completed'
 }
 const buildEntityTaskDownloadFilename = (row: AdminEntityTaskItem): string => {
   const taskType = String(row.taskType || '').trim().toLowerCase()
   const artifactName = String(row.title || row.taskId || '').trim() || String(row.taskId || 'task')
   if (taskType === 'ai_reply') return `AI 答复报告_${artifactName}.pdf`
   if (taskType === 'ai_review') return `AI 审查报告_${artifactName}.pdf`
-  if (taskType === 'ai_search') return `AI 检索结果_${artifactName}.json`
+  if (taskType === 'ai_search') return `AI 检索结果_${artifactName}.zip`
   return `AI 分析报告_${artifactName}.pdf`
 }
 const downloadEntityTask = async (row: AdminEntityTaskItem) => {

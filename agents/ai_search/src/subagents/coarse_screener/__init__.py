@@ -1,4 +1,4 @@
-"""Coarse screener specialist package."""
+"""粗筛子代理包。"""
 
 
 def build_coarse_screener_agent(*args, **kwargs):

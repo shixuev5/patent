@@ -47,7 +47,7 @@
 - `execute_search`
 - `coarse_screen`
 - `close_read`
-- `generate_feature_table`
+- `generate_feature_comparison`
 - `completed`
 
 执行阶段切换使用显式入口工具：
@@ -59,7 +59,7 @@
 - `pause_execution_for_replan`
 - `start_coarse_screen`
 - `start_close_read`
-- `start_feature_table_generation`
+- `start_feature_comparison`
 - `complete_execution`
 
 主 agent 还有一个确定性决策工具：
@@ -91,7 +91,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - [close_reader](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/close_reader)
   结合全文证据、claim limitation、权利要求和说明书做精读。
 - [feature_comparer](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/feature_comparer)
-  基于已选对比文件和关键证据段落生成特征对比表。
+  基于已选对比文件和关键证据段落生成特征对比分析结果。
 
 边界原则：
 

@@ -1,4 +1,4 @@
-"""Feature-comparer specialist definition."""
+"""特征对比子代理定义。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def build_feature_comparer_subagent(storage: object, task_id: str) -> dict:
     context = AiSearchAgentContext(storage, task_id)
     return {
         "name": "feature-comparer",
-        "description": "基于已选文献和关键证据段落生成特征对比表。",
+        "description": "基于已选文献和关键证据段落生成特征对比分析结果。",
         "system_prompt": FEATURE_COMPARER_SYSTEM_PROMPT,
         "model": large_model(),
         "tools": context.build_feature_comparer_tools(),

@@ -165,7 +165,7 @@ def _build_task_pdf_r2_key(task_type: str, pn: Optional[str], r2_storage: Any) -
 def _build_task_download_filename(task_type: str, pn: Optional[str], title: Optional[str], task_id: str) -> str:
     artifact_name = str(pn or title or task_id or "").strip() or task_id
     if task_type == TaskType.AI_SEARCH.value:
-        return f"AI 检索结果_{artifact_name}.json"
+        return f"AI 检索结果_{artifact_name}.zip"
     if task_type == TaskType.AI_REPLY.value:
         return f"AI 答复报告_{artifact_name}.pdf"
     if task_type == TaskType.AI_REVIEW.value:
@@ -339,6 +339,35 @@ async def download_admin_entity_task_result(
 
     metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
     output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+
+    if task_type == TaskType.AI_SEARCH.value:
+        bundle_path_text = str(output_files.get("bundle_zip") or "").strip()
+        bundle_path = Path(bundle_path_text) if bundle_path_text else Path(str(row.get("output_dir") or settings.OUTPUT_DIR / task_id)) / "ai_search_result_bundle.zip"
+        if not bundle_path.exists():
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "检索结果文件不存在",
+                    "message": f"未找到检索结果文件：{bundle_path}",
+                    "task_id": task_id,
+                    "suggestion": "请稍后重试或联系管理员。",
+                },
+            )
+        emit_system_log(
+            category="task_execution",
+            event_name="task_download",
+            owner_id=current_user.user_id,
+            task_id=task_id,
+            task_type=task_type,
+            success=True,
+            message="管理员下载 AI 检索结果",
+            payload={"filename": filename, "targetOwnerId": row.get("owner_id")},
+        )
+        return FileResponse(
+            path=str(bundle_path),
+            filename=filename,
+            media_type="application/zip",
+        )
 
     r2_storage = _build_r2_storage()
     r2_key = _build_task_pdf_r2_key(task_type, task_pn, r2_storage)

@@ -13,7 +13,17 @@ ALLOWED_STEP_PHASE_KEYS = {
     "execute_search",
     "coarse_screen",
     "close_read",
-    "generate_feature_table",
+    "feature_comparison",
+}
+
+DEFAULT_EXECUTION_POLICY = {
+    "dynamic_replanning": True,
+    "planner_visibility": "step_summary_only",
+    "max_step_attempts": 3,
+    "max_rounds": 3,
+    "max_no_progress_rounds": 2,
+    "max_selected_documents": 5,
+    "decision_on_exhaustion": True,
 }
 
 
@@ -128,9 +138,19 @@ def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[st
 
     execution_policy = source.get("execution_policy") if isinstance(source.get("execution_policy"), dict) else {}
     normalized_execution_policy = {
-        "dynamic_replanning": bool(execution_policy.get("dynamic_replanning", True)),
-        "planner_visibility": str(execution_policy.get("planner_visibility") or "step_summary_only"),
-        "max_step_attempts": int(execution_policy.get("max_step_attempts") or 3),
+        "dynamic_replanning": bool(execution_policy.get("dynamic_replanning", DEFAULT_EXECUTION_POLICY["dynamic_replanning"])),
+        "planner_visibility": str(execution_policy.get("planner_visibility") or DEFAULT_EXECUTION_POLICY["planner_visibility"]),
+        "max_step_attempts": max(int(execution_policy.get("max_step_attempts") or DEFAULT_EXECUTION_POLICY["max_step_attempts"]), 1),
+        "max_rounds": max(int(execution_policy.get("max_rounds") or DEFAULT_EXECUTION_POLICY["max_rounds"]), 1),
+        "max_no_progress_rounds": max(
+            int(execution_policy.get("max_no_progress_rounds") or DEFAULT_EXECUTION_POLICY["max_no_progress_rounds"]),
+            1,
+        ),
+        "max_selected_documents": max(
+            int(execution_policy.get("max_selected_documents") or DEFAULT_EXECUTION_POLICY["max_selected_documents"]),
+            1,
+        ),
+        "decision_on_exhaustion": bool(execution_policy.get("decision_on_exhaustion", DEFAULT_EXECUTION_POLICY["decision_on_exhaustion"])),
     }
 
     search_scope = source.get("search_scope") if isinstance(source.get("search_scope"), dict) else {}

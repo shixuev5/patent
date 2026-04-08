@@ -1,4 +1,4 @@
-"""Query-executor specialist definition."""
+"""检索执行子代理定义。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def build_query_executor_subagent(storage: object, task_id: str) -> dict:
     context = AiSearchAgentContext(storage, task_id)
     return {
         "name": "query-executor",
-        "description": "根据执行指令动态执行 trace/semantic/boolean 检索，并只返回摘要状态。",
+        "description": "根据执行指令动态执行追踪检索、语义检索和布尔检索，并只返回摘要状态。",
         "system_prompt": QUERY_EXECUTOR_SYSTEM_PROMPT,
         "model": default_model(),
         "tools": context.build_query_executor_tools() + build_search_tools(context),

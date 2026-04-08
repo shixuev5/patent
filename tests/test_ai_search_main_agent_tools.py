@@ -44,7 +44,7 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
         "pause_execution_for_replan",
         "start_coarse_screen",
         "start_close_read",
-        "start_feature_table_generation",
+        "start_feature_comparison",
         "get_execution_state",
         "list_documents",
         "complete_execution",

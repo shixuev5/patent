@@ -1,4 +1,4 @@
-"""Shared AI Search context plus thin wrappers for role-specific tool builders."""
+"""智能检索共享上下文及角色专用工具构建包装。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agents.ai_search.src.execution_state import (
+    DEFAULT_EXECUTION_POLICY,
     build_execution_todos,
     normalize_execution_plan,
     resolve_plan_step,
@@ -14,6 +15,7 @@ from agents.ai_search.src.execution_state import (
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.state import (
+    PHASE_AWAITING_HUMAN_DECISION,
     get_ai_search_meta,
     merge_ai_search_meta,
     phase_progress,
@@ -30,6 +32,40 @@ from backend.time_utils import utc_now_z
 from backend.utils import _build_r2_storage
 
 _UNSET = object()
+
+
+def _gap_signature(progress: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "limitation_gap_count": int(progress.get("limitation_gap_count") or 0),
+        "coverage_gap_count": int(progress.get("coverage_gap_count") or 0),
+        "follow_up_hint_count": int(progress.get("follow_up_hint_count") or 0),
+        "weak_evidence_count": int(progress.get("weak_evidence_count") or 0),
+    }
+
+
+def _gap_signature_score(signature: Dict[str, Any]) -> int:
+    if not isinstance(signature, dict):
+        return 0
+    return sum(int(signature.get(key) or 0) for key in (
+        "limitation_gap_count",
+        "coverage_gap_count",
+        "follow_up_hint_count",
+        "weak_evidence_count",
+    ))
+
+
+def _readiness_rank(value: Any) -> int:
+    mapping = {
+        "unknown": 0,
+        "needs_more_evidence": 1,
+        "insufficient": 1,
+        "partial": 2,
+        "developing": 2,
+        "ready": 3,
+        "sufficient": 3,
+        "enough": 3,
+    }
+    return mapping.get(str(value or "").strip().lower(), 0)
 
 
 def _load_json_bytes(raw: Optional[bytes]) -> Optional[Dict[str, Any]]:
@@ -169,6 +205,38 @@ class AiSearchAgentContext:
             metadata=merge_ai_search_meta(task, **metadata_updates),
         )
         self.notify_snapshot_changed(runtime, reason="todos")
+
+    def update_todos(
+        self,
+        todo_id: str,
+        status: str,
+        *,
+        current_task: Any = _UNSET,
+        resume_from: Optional[str] = None,
+        last_error: Optional[str] = None,
+        state_updates: Optional[Dict[str, Any]] = None,
+        runtime: Any | None = None,
+    ) -> None:
+        resolved_todo_id = str(todo_id or "").strip()
+        target = self._todo_map().get(resolved_todo_id)
+        if target is None and resolved_todo_id:
+            for item in self._current_todos():
+                if str(item.get("phase_key") or "").strip() == resolved_todo_id:
+                    target = item
+                    break
+        if target is None:
+            target = self.current_todo()
+        if target is None:
+            return
+        self.update_todo(
+            str(target.get("todo_id") or "").strip(),
+            status,
+            current_task=current_task,
+            resume_from=resume_from,
+            last_error=last_error,
+            state_updates=state_updates,
+            runtime=runtime,
+        )
 
     def first_pending_todo(self, *, phase_key: str = "") -> Optional[Dict[str, Any]]:
         for todo in self._current_todos():
@@ -376,11 +444,191 @@ class AiSearchAgentContext:
         plan = self.storage.get_ai_search_plan(self.task_id, version) or {}
         return plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
 
+    def execution_policy(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
+        execution_plan = self.execution_plan_json(plan_version)
+        if not execution_plan:
+            return dict(DEFAULT_EXECUTION_POLICY)
+        normalized = normalize_execution_plan(execution_plan, self.current_search_elements(plan_version))
+        policy = normalized.get("execution_policy") if isinstance(normalized.get("execution_policy"), dict) else {}
+        return {**DEFAULT_EXECUTION_POLICY, **policy}
+
     def latest_gap_context(self) -> Dict[str, Any]:
         return {
             "close_read_result": self.latest_message_metadata("close_read_result"),
             "feature_compare_result": self.latest_message_metadata("feature_compare_result"),
         }
+
+    def reset_execution_control(
+        self,
+        plan_version: Optional[int] = None,
+        *,
+        clear_human_decision: bool = False,
+        runtime: Any | None = None,
+    ) -> None:
+        version = int(plan_version or self.active_plan_version() or 0)
+        progress = self.evaluate_gap_progress_payload(version)
+        task = self.storage.get_task(self.task_id)
+        updates: Dict[str, Any] = {
+            "execution_round_count": 0,
+            "no_progress_round_count": 0,
+            "last_selected_count": int(progress.get("selected_count") or 0),
+            "last_readiness": str(progress.get("readiness") or "unknown").strip() or "unknown",
+            "last_gap_signature": _gap_signature(progress),
+            "last_new_unique_candidates": 0,
+            "last_recommended_action": str(progress.get("recommended_action") or "").strip() or None,
+            "processed_execution_summary_count": len(self.list_execution_step_summaries(version)) if version > 0 else 0,
+            "last_exhaustion_reason": None,
+            "last_exhaustion_summary": None,
+        }
+        if clear_human_decision:
+            updates["human_decision_reason"] = None
+            updates["human_decision_summary"] = None
+        self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, **updates))
+        self.notify_snapshot_changed(runtime, reason="execution_control")
+
+    def evaluate_exhaustion_payload(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
+        version = int(plan_version or self.active_plan_version() or 0)
+        task = self.storage.get_task(self.task_id)
+        meta = get_ai_search_meta(task)
+        progress = self.evaluate_gap_progress_payload(version)
+        policy = self.execution_policy(version)
+        summaries = self.list_execution_step_summaries(version) if version > 0 else []
+        processed_count = min(int(meta.get("processed_execution_summary_count") or 0), len(summaries))
+        current_round_summaries = summaries[processed_count:]
+        new_unique_candidates = sum(int(item.get("new_unique_candidates") or 0) for item in current_round_summaries if isinstance(item, dict))
+
+        selected_count = int(progress.get("selected_count") or 0)
+        readiness = str(progress.get("readiness") or "unknown").strip() or "unknown"
+        recommended_action = str(progress.get("recommended_action") or "").strip()
+        gap_signature = _gap_signature(progress)
+
+        previous_selected = meta.get("last_selected_count")
+        previous_readiness = meta.get("last_readiness")
+        previous_gap_signature = meta.get("last_gap_signature") if isinstance(meta.get("last_gap_signature"), dict) else None
+
+        has_previous_baseline = previous_selected is not None or previous_readiness is not None or previous_gap_signature is not None
+        readiness_improved = has_previous_baseline and _readiness_rank(readiness) > _readiness_rank(previous_readiness)
+        gap_improved = has_previous_baseline and _gap_signature_score(gap_signature) < _gap_signature_score(previous_gap_signature or {})
+        selected_grew = has_previous_baseline and selected_count > int(previous_selected or 0)
+
+        is_no_progress = bool(
+            new_unique_candidates == 0
+            or (
+                has_previous_baseline
+                and not selected_grew
+                and not readiness_improved
+                and not gap_improved
+            )
+            or recommended_action == "replan_search"
+        )
+        no_progress_round_count = (
+            int(meta.get("no_progress_round_count") or 0) + 1
+            if is_no_progress
+            else 0
+        )
+        execution_round_count = int(meta.get("execution_round_count") or 0) + 1
+
+        triggered_limit = ""
+        if selected_count >= int(policy.get("max_selected_documents") or DEFAULT_EXECUTION_POLICY["max_selected_documents"]):
+            triggered_limit = "max_selected_documents"
+        elif no_progress_round_count >= int(policy.get("max_no_progress_rounds") or DEFAULT_EXECUTION_POLICY["max_no_progress_rounds"]):
+            triggered_limit = "max_no_progress_rounds"
+        elif execution_round_count >= int(policy.get("max_rounds") or DEFAULT_EXECUTION_POLICY["max_rounds"]):
+            triggered_limit = "max_rounds"
+
+        decision_reason = ""
+        if triggered_limit == "max_selected_documents":
+            decision_reason = "selected_documents_limit_reached"
+        elif triggered_limit == "max_no_progress_rounds":
+            decision_reason = "no_progress_limit_reached"
+        elif triggered_limit == "max_rounds":
+            decision_reason = "round_limit_reached"
+
+        summary_parts = [
+            f"已完成 {execution_round_count} 轮检索评估",
+            f"连续无进展 {no_progress_round_count} 轮" if is_no_progress or no_progress_round_count > 0 else "",
+            f"当前已选对比文献 {selected_count} 篇",
+            f"本轮新增唯一候选 {new_unique_candidates} 篇",
+            f"当前建议动作：{recommended_action or 'unknown'}",
+        ]
+        decision_summary = "；".join(part for part in summary_parts if part)
+
+        should_request_decision = bool(triggered_limit) and bool(policy.get("decision_on_exhaustion", DEFAULT_EXECUTION_POLICY["decision_on_exhaustion"]))
+        return {
+            "plan_version": version,
+            "execution_policy": policy,
+            "is_no_progress": is_no_progress,
+            "triggered_limit": triggered_limit,
+            "decision_reason": decision_reason,
+            "decision_summary": decision_summary,
+            "should_request_decision": should_request_decision,
+            "new_unique_candidates": new_unique_candidates,
+            "execution_round_count": execution_round_count,
+            "no_progress_round_count": no_progress_round_count,
+            "selected_count": selected_count,
+            "readiness": readiness,
+            "recommended_action": recommended_action,
+            "gap_signature": gap_signature,
+            "processed_execution_summary_count": len(summaries),
+        }
+
+    def commit_round_evaluation(self, plan_version: Optional[int] = None, *, runtime: Any | None = None) -> Dict[str, Any]:
+        version = int(plan_version or self.active_plan_version() or 0)
+        payload = self.evaluate_exhaustion_payload(version)
+        task = self.storage.get_task(self.task_id)
+        updates = {
+            "execution_round_count": int(payload.get("execution_round_count") or 0),
+            "no_progress_round_count": int(payload.get("no_progress_round_count") or 0),
+            "last_selected_count": int(payload.get("selected_count") or 0),
+            "last_readiness": str(payload.get("readiness") or "unknown").strip() or "unknown",
+            "last_gap_signature": payload.get("gap_signature") if isinstance(payload.get("gap_signature"), dict) else {},
+            "last_new_unique_candidates": int(payload.get("new_unique_candidates") or 0),
+            "last_recommended_action": str(payload.get("recommended_action") or "").strip() or None,
+            "processed_execution_summary_count": int(payload.get("processed_execution_summary_count") or 0),
+            "last_exhaustion_reason": str(payload.get("decision_reason") or "").strip() or None,
+            "last_exhaustion_summary": str(payload.get("decision_summary") or "").strip() or None,
+        }
+        self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, **updates))
+        self.notify_snapshot_changed(runtime, reason="execution_round")
+        return payload
+
+    def enter_human_decision(
+        self,
+        *,
+        reason: str,
+        summary: str,
+        runtime: Any | None = None,
+    ) -> None:
+        plan_version = int(self.active_plan_version() or 0)
+        selected_count = len(self.storage.list_ai_search_documents(self.task_id, plan_version, stages=["selected"])) if plan_version > 0 else 0
+        current = self.current_todo()
+        if current:
+            self.update_todo(
+                str(current.get("todo_id") or "").strip(),
+                "paused",
+                current_task=None,
+                resume_from="awaiting_human_decision",
+                last_error=str(summary or "").strip(),
+                runtime=runtime,
+            )
+        task = self.storage.get_task(self.task_id)
+        self.storage.update_task(
+            self.task_id,
+            metadata=merge_ai_search_meta(
+                task,
+                current_phase=PHASE_AWAITING_HUMAN_DECISION,
+                current_task=None,
+                selected_document_count=selected_count,
+                human_decision_reason=str(reason or "").strip() or None,
+                human_decision_summary=str(summary or "").strip() or None,
+                last_exhaustion_reason=str(reason or "").strip() or None,
+                last_exhaustion_summary=str(summary or "").strip() or None,
+            ),
+            status=phase_to_task_status(PHASE_AWAITING_HUMAN_DECISION),
+            progress=phase_progress(PHASE_AWAITING_HUMAN_DECISION),
+            current_step=phase_step(PHASE_AWAITING_HUMAN_DECISION),
+        )
+        self.notify_snapshot_changed(runtime, reason="human_decision")
 
     def build_gap_strategy_seed_payload(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
@@ -500,7 +748,7 @@ class AiSearchAgentContext:
             recommended_action = "replan_search"
             should_continue_search = True
         elif selected_count > 0:
-            recommended_action = "generate_feature_table"
+            recommended_action = "feature_comparison"
             should_continue_search = False
         else:
             recommended_action = "replan_draft_plan"

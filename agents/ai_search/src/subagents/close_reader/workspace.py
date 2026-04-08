@@ -1,4 +1,4 @@
-"""Patent detail loading and close-read workspace helpers."""
+"""专利详情加载与精读工作区辅助工具。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,10 @@ def load_document_details(pn: str) -> Dict[str, Any]:
         "abstract": str(detail.get("abstract") or detail.get("basic_info", {}).get("abstract") or "").strip(),
         "claims": str(detail.get("claims") or detail.get("claims_info") or "").strip(),
         "description": str(detail.get("description") or detail.get("description_info") or "").strip(),
+        "publication_date": str(detail.get("publication_date") or "").strip(),
+        "application_date": str(detail.get("application_date") or "").strip(),
+        "ipc": detail.get("ipc") if isinstance(detail.get("ipc"), list) else [],
+        "cpc": detail.get("cpc") if isinstance(detail.get("cpc"), list) else [],
         "raw": detail,
     }
     normalized["detail_fingerprint"] = detail_fingerprint(normalized)

@@ -581,9 +581,11 @@ class ZhihuiyaClient(BaseSearchClient):
             "title": self._clean_html(raw_item.get("TITLE", "")),
             "abstract": self._clean_html(raw_item.get("ABST", "")),
             "claims": self._clean_html(raw_item.get("ICLMS", "")),
+            "ipc": raw_item.get("IPC", []) or [],
             "cpc": cpcs, # 去重
             "assignees": assignees,
             "publication_date": raw_item.get("PBD", ""),
+            "application_date": raw_item.get("APD", ""),
             "score": score, # 格式化后的数字 (e.g. 88.0)
             "source_db": "Zhihuiya",
             "image_url": image_url

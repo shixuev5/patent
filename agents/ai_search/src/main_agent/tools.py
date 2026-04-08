@@ -1,4 +1,4 @@
-"""Main-agent orchestration tools."""
+"""主控代理的编排工具。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from langgraph.types import interrupt
 from agents.ai_search.src.execution_state import normalize_execution_plan
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.state import (
+    PHASE_AWAITING_HUMAN_DECISION,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_CLOSE_READ,
@@ -19,7 +20,7 @@ from agents.ai_search.src.state import (
     PHASE_COARSE_SCREEN,
     PHASE_DRAFTING_PLAN,
     PHASE_EXECUTE_SEARCH,
-    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_FEATURE_COMPARISON,
     get_ai_search_meta,
 )
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
@@ -33,8 +34,8 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             return PHASE_COARSE_SCREEN
         if phase_key == PHASE_CLOSE_READ:
             return PHASE_CLOSE_READ
-        if phase_key == PHASE_GENERATE_FEATURE_TABLE:
-            return PHASE_GENERATE_FEATURE_TABLE
+        if phase_key == PHASE_FEATURE_COMPARISON:
+            return PHASE_FEATURE_COMPARISON
         return PHASE_EXECUTE_SEARCH
 
     def read_todos() -> str:
@@ -93,7 +94,13 @@ def build_main_agent_tools(context: Any) -> List[Any]:
 
     def start_plan_drafting(runtime: ToolRuntime = None) -> str:
         """显式进入 draft plan 阶段。"""
-        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, current_task=None)
+        context.update_task_phase(
+            PHASE_DRAFTING_PLAN,
+            runtime=runtime,
+            current_task=None,
+            human_decision_reason=None,
+            human_decision_summary=None,
+        )
         return "phase switched to drafting_plan"
 
     def save_search_plan(payload_json: str, runtime: ToolRuntime = None) -> str:
@@ -316,8 +323,8 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             return start_coarse_screen(version, runtime)
         if action == "enter_close_read":
             return start_close_read(version, runtime)
-        if action == "enter_feature_table":
-            return start_feature_table_generation(version, runtime)
+        if action == "enter_feature_comparison":
+            return start_feature_comparison(version, runtime)
         target = context._todo_map().get(str(next_todo_id or "").strip()) if str(next_todo_id or "").strip() else context.next_pending_todo(current_id)
         if target:
             return start_execution_step(str(target.get("todo_id") or "").strip(), version, runtime)
@@ -329,6 +336,34 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         current = context.current_todo()
         if not current:
             return "missing_current_todo"
+        round_evaluation = context.commit_round_evaluation(version, runtime=runtime)
+        if bool(round_evaluation.get("should_request_decision")):
+            summary = str(round_evaluation.get("decision_summary") or str(reason or "").strip()).strip() or "自动检索已停止，需要人工决策。"
+            context.enter_human_decision(
+                reason=str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(),
+                summary=summary,
+                runtime=runtime,
+            )
+            context.storage.create_ai_search_message(
+                {
+                    "message_id": uuid.uuid4().hex,
+                    "task_id": context.task_id,
+                    "plan_version": version or None,
+                    "role": "assistant",
+                    "kind": "chat",
+                    "content": summary,
+                    "stream_status": "completed",
+                    "metadata": {"reason": round_evaluation.get("decision_reason"), "kind": "human_decision"},
+                }
+            )
+            return json.dumps(
+                {
+                    "todo_id": str(current.get("todo_id") or "").strip(),
+                    "reason": round_evaluation.get("decision_reason"),
+                    "phase": PHASE_AWAITING_HUMAN_DECISION,
+                },
+                ensure_ascii=False,
+            )
         todo_id = str(current.get("todo_id") or "").strip()
         context.update_todo(
             todo_id,
@@ -361,14 +396,14 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, current_task=None)
         return json.dumps({"plan_version": version, "shortlisted_count": shortlisted_count}, ensure_ascii=False)
 
-    def start_feature_table_generation(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
-        """显式进入 feature table 阶段。"""
+    def start_feature_comparison(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
+        """显式进入特征对比分析阶段。"""
         version = int(plan_version or context.active_plan_version() or 0)
         selected_count = len(context.storage.list_ai_search_documents(context.task_id, version, stages=["selected"]))
         if selected_count <= 0:
             return "no_selected_documents"
         context.update_task_phase(
-            PHASE_GENERATE_FEATURE_TABLE,
+            PHASE_FEATURE_COMPARISON,
             runtime=runtime,
             active_plan_version=version,
             current_task=None,
@@ -410,11 +445,16 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         docs = context.storage.list_ai_search_documents(context.task_id, version, stages=stages)
         return json.dumps({"count": len(docs), "items": docs}, ensure_ascii=False)
 
-    def complete_execution(summary: str = "", plan_version: int = 0, runtime: ToolRuntime = None) -> str:
+    def complete_execution(
+        summary: str = "",
+        plan_version: int = 0,
+        force_from_decision: bool = False,
+        runtime: ToolRuntime = None,
+    ) -> str:
         """结束执行阶段并更新汇总状态。"""
         version = int(plan_version or context.active_plan_version() or 0)
         current_phase = context.current_phase()
-        if current_phase == PHASE_GENERATE_FEATURE_TABLE:
+        if current_phase == PHASE_FEATURE_COMPARISON and not force_from_decision:
             progress = context.evaluate_gap_progress_payload(version)
             if str(progress.get("recommended_action") or "") == "replan_search":
                 return json.dumps(
@@ -445,6 +485,8 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             runtime=runtime,
             active_plan_version=version or None,
             selected_document_count=selected_count,
+            human_decision_reason=None if force_from_decision else None,
+            human_decision_summary=None if force_from_decision else None,
             current_task=None,
         )
         return json.dumps({"selected_count": selected_count}, ensure_ascii=False)
@@ -465,7 +507,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         pause_execution_for_replan,
         start_coarse_screen,
         start_close_read,
-        start_feature_table_generation,
+        start_feature_comparison,
         get_execution_state,
         list_documents,
         complete_execution,

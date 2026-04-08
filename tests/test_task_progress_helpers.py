@@ -77,6 +77,7 @@ def test_build_task_pdf_r2_key_uses_task_type_specific_layout() -> None:
         tasks_route._build_task_pdf_r2_key(TaskType.AI_REPLY.value, "cn123", storage)
         == "workspace/CN123/ai_reply.pdf"
     )
+    assert tasks_route._build_task_pdf_r2_key(TaskType.AI_SEARCH.value, "cn123", storage) is None
     assert tasks_route._build_task_pdf_r2_key(TaskType.AI_REPLY.value, None, storage) is None
 
 
@@ -91,6 +92,12 @@ def test_build_task_download_filename_prefers_pn_then_title_then_task_id() -> No
     assert (
         tasks_route._build_task_download_filename(TaskType.AI_REVIEW.value, task)
         == "AI 审查报告_标题B.pdf"
+    )
+
+    task = SimpleNamespace(id="task-3", pn=None, title="检索会话")
+    assert (
+        tasks_route._build_task_download_filename(TaskType.AI_SEARCH.value, task)
+        == "AI 检索结果_检索会话.zip"
     )
 
     task = SimpleNamespace(id="task-3", pn=None, title=None)

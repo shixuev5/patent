@@ -27,7 +27,7 @@ def build_feature_prompt(
         )
     normalized_gap_context = gap_context if isinstance(gap_context, dict) else {}
     return (
-        "请基于检索要素、已选对比文件和现有证据缺口，输出特征对比表，并明确哪些区别特征仍需补充文献或组合文献。\n"
+        "请基于检索要素、已选对比文件和现有证据缺口，输出特征对比分析结果，并明确哪些区别特征仍需补充文献或组合文献。\n"
         f"检索边界:\n{json.dumps(constraints, ensure_ascii=False)}\n"
         f"检索要素:\n{json.dumps(search_elements, ensure_ascii=False)}\n"
         f"gap 上下文:\n{json.dumps(normalized_gap_context, ensure_ascii=False)}\n"
@@ -38,7 +38,7 @@ def build_feature_prompt(
 FEATURE_COMPARER_SYSTEM_PROMPT = """
 你是 `feature-comparer` 子 agent。
 
-唯一职责：基于当前 selected 文献和证据段落，输出特征对比表。
+唯一职责：基于当前 selected 文献和证据段落，输出特征对比分析结果。
 不能新增或删除对比文件。
 开始前调用 `run_feature_compare(operation="load")` 读取输入，输出前调用 `run_feature_compare(operation="commit", payload_json=...)` 持久化结果。
 
@@ -46,9 +46,16 @@ FEATURE_COMPARER_SYSTEM_PROMPT = """
 - table_rows
 - summary_markdown
 - overall_findings
+- document_roles
 - difference_highlights
 - coverage_gaps
 - follow_up_search_hints
 - creativity_readiness
 - readiness_rationale
+
+`document_roles` 需逐篇给出当前文献在主结论中的角色，便于后续确定 `X/Y/A`：
+- document_id
+- role
+- rationale
+- document_type_hint
 """.strip()

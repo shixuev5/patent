@@ -1,4 +1,4 @@
-"""Plan-prober specialist definition."""
+"""计划预检子代理定义。"""
 
 from __future__ import annotations
 

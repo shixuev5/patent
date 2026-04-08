@@ -270,6 +270,9 @@ def build_execution_spec_from_analysis(
             "dynamic_replanning": True,
             "planner_visibility": "summary_only",
             "max_rounds": 3,
+            "max_no_progress_rounds": 2,
+            "max_selected_documents": 5,
+            "decision_on_exhaustion": True,
         },
         "sub_plans": build_analysis_sub_plans(analysis_payload),
     }

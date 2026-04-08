@@ -1,4 +1,4 @@
-"""Search backend tools used by the query-executor specialist."""
+"""检索执行子代理使用的检索后端工具。"""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ def _load_patent_details(pn: str) -> Dict[str, Any]:
         "abstract": str(detail.get("abstract") or detail.get("basic_info", {}).get("abstract") or "").strip(),
         "claims": str(detail.get("claims") or detail.get("claims_info") or "").strip(),
         "description": str(detail.get("description") or detail.get("description_info") or "").strip(),
+        "publication_date": str(detail.get("publication_date") or "").strip(),
+        "application_date": str(detail.get("application_date") or "").strip(),
+        "ipc": detail.get("ipc") if isinstance(detail.get("ipc"), list) else [],
+        "cpc": detail.get("cpc") if isinstance(detail.get("cpc"), list) else [],
         "raw": detail,
     }
 
@@ -43,6 +47,43 @@ def _detail_fingerprint(detail: Dict[str, Any]) -> Optional[str]:
     if not text:
         return None
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _normalized_ipc_list(raw_item: Dict[str, Any], existing: Optional[Dict[str, Any]]) -> List[str]:
+    values: List[str] = []
+    for source in (
+        raw_item.get("ipc"),
+        raw_item.get("cpc"),
+        raw_item.get("ipc_cpc_json"),
+        existing.get("ipc_cpc_json") if existing else [],
+    ):
+        if not isinstance(source, list):
+            continue
+        for value in source:
+            text = str(value or "").strip()
+            if text and text not in values:
+                values.append(text)
+    return values
+
+
+def _primary_ipc(raw_item: Dict[str, Any], existing: Optional[Dict[str, Any]]) -> str:
+    for source in (
+        raw_item.get("ipc"),
+        existing.get("primary_ipc") if existing else "",
+        raw_item.get("cpc"),
+        raw_item.get("ipc_cpc_json"),
+        existing.get("ipc_cpc_json") if existing else [],
+    ):
+        if isinstance(source, list):
+            for value in source:
+                text = str(value or "").strip()
+                if text:
+                    return text
+        else:
+            text = str(source or "").strip()
+            if text:
+                return text
+    return ""
 
 
 def build_search_tools(context: Any) -> List[Any]:
@@ -90,7 +131,10 @@ def build_search_tools(context: Any) -> List[Any]:
             "pn": pn,
             "title": str(raw_item.get("title") or existing.get("title") or "").strip() if existing else str(raw_item.get("title") or "").strip(),
             "abstract": str(raw_item.get("abstract") or existing.get("abstract") or "").strip() if existing else str(raw_item.get("abstract") or "").strip(),
-            "ipc_cpc_json": raw_item.get("cpc") or raw_item.get("ipc_cpc_json") or (existing.get("ipc_cpc_json") if existing else []) or [],
+            "publication_date": str(raw_item.get("publication_date") or existing.get("publication_date") or "").strip() if existing else str(raw_item.get("publication_date") or "").strip(),
+            "application_date": str(raw_item.get("application_date") or existing.get("application_date") or "").strip() if existing else str(raw_item.get("application_date") or "").strip(),
+            "primary_ipc": _primary_ipc(raw_item, existing),
+            "ipc_cpc_json": _normalized_ipc_list(raw_item, existing),
             "source_batches_json": source_batches,
             "source_lanes_json": source_lanes,
             "source_sub_plans_json": source_sub_plans,

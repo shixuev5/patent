@@ -1,4 +1,4 @@
-"""Query executor specialist package."""
+"""检索执行子代理包。"""
 
 
 def build_query_executor_agent(*args, **kwargs):

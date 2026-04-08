@@ -1,4 +1,4 @@
-"""Shared stage limits for AI Search execution helpers."""
+"""智能检索执行辅助模块的共享阶段限制。"""
 
 DEFAULT_SHORTLIST_LIMIT = 20
 DEFAULT_SELECTED_LIMIT = 10

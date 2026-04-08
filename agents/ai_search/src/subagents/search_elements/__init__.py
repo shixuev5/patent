@@ -1,4 +1,4 @@
-"""Search elements specialist package."""
+"""检索要素子代理包。"""
 
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_date_text, normalize_search_elements_payload
 

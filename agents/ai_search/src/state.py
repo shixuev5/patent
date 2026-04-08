@@ -16,7 +16,8 @@ PHASE_AWAITING_PLAN_CONFIRMATION = "awaiting_plan_confirmation"
 PHASE_EXECUTE_SEARCH = "execute_search"
 PHASE_COARSE_SCREEN = "coarse_screen"
 PHASE_CLOSE_READ = "close_read"
-PHASE_GENERATE_FEATURE_TABLE = "generate_feature_table"
+PHASE_FEATURE_COMPARISON = "feature_comparison"
+PHASE_AWAITING_HUMAN_DECISION = "awaiting_human_decision"
 PHASE_COMPLETED = "completed"
 PHASE_FAILED = "failed"
 PHASE_CANCELLED = "cancelled"
@@ -29,7 +30,8 @@ AI_SEARCH_PHASES = {
     PHASE_EXECUTE_SEARCH,
     PHASE_COARSE_SCREEN,
     PHASE_CLOSE_READ,
-    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_FEATURE_COMPARISON,
+    PHASE_AWAITING_HUMAN_DECISION,
     PHASE_COMPLETED,
     PHASE_FAILED,
     PHASE_CANCELLED,
@@ -43,7 +45,8 @@ AI_SEARCH_PROGRESS = {
     PHASE_EXECUTE_SEARCH: 55,
     PHASE_COARSE_SCREEN: 68,
     PHASE_CLOSE_READ: 82,
-    PHASE_GENERATE_FEATURE_TABLE: 92,
+    PHASE_FEATURE_COMPARISON: 92,
+    PHASE_AWAITING_HUMAN_DECISION: 95,
     PHASE_COMPLETED: 100,
     PHASE_FAILED: 100,
     PHASE_CANCELLED: 100,
@@ -57,7 +60,8 @@ AI_SEARCH_STEP = {
     PHASE_EXECUTE_SEARCH: "执行专利检索",
     PHASE_COARSE_SCREEN: "粗筛候选文献",
     PHASE_CLOSE_READ: "精读并提取证据",
-    PHASE_GENERATE_FEATURE_TABLE: "生成特征对比表",
+    PHASE_FEATURE_COMPARISON: "特征对比分析",
+    PHASE_AWAITING_HUMAN_DECISION: "等待人工决策",
     PHASE_COMPLETED: "当前轮完成",
     PHASE_FAILED: "当前轮失败",
     PHASE_CANCELLED: "会话已终止",
@@ -67,7 +71,7 @@ ACTIVE_EXECUTION_PHASES = {
     PHASE_EXECUTE_SEARCH,
     PHASE_COARSE_SCREEN,
     PHASE_CLOSE_READ,
-    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_FEATURE_COMPARISON,
 }
 
 MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
@@ -119,12 +123,16 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         "subagents": {"coarse-screener"},
     },
     PHASE_CLOSE_READ: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_feature_table_generation", "start_plan_drafting", "complete_execution"},
+        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_feature_comparison", "start_plan_drafting", "complete_execution"},
         "subagents": {"close-reader"},
     },
-    PHASE_GENERATE_FEATURE_TABLE: {
+    PHASE_FEATURE_COMPARISON: {
         "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "complete_execution", "start_plan_drafting"},
         "subagents": {"feature-comparer"},
+    },
+    PHASE_AWAITING_HUMAN_DECISION: {
+        "tools": {"read_todos", "get_search_elements", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_plan_drafting", "complete_execution"},
+        "subagents": set(),
     },
     PHASE_COMPLETED: {
         "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents"},
@@ -170,7 +178,7 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         PHASE_CLOSE_READ: {"run_close_read_batch", "ls", "read_file", "glob", "grep"},
     },
     "feature-comparer": {
-        PHASE_GENERATE_FEATURE_TABLE: {"run_feature_compare"},
+        PHASE_FEATURE_COMPARISON: {"run_feature_compare"},
     },
 }
 
@@ -183,10 +191,22 @@ def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
         "pending_question_id": None,
         "pending_confirmation_plan_version": None,
         "selected_document_count": 0,
-        "current_feature_table_id": None,
+        "current_feature_comparison_id": None,
         "todos": [],
         "current_task": None,
         "pinned": False,
+        "execution_round_count": 0,
+        "no_progress_round_count": 0,
+        "last_selected_count": None,
+        "last_readiness": None,
+        "last_gap_signature": None,
+        "last_new_unique_candidates": None,
+        "last_recommended_action": None,
+        "processed_execution_summary_count": 0,
+        "human_decision_reason": None,
+        "human_decision_summary": None,
+        "last_exhaustion_reason": None,
+        "last_exhaustion_summary": None,
     }
 
 
@@ -212,7 +232,7 @@ def merge_ai_search_meta(task: Any, **updates: Any) -> Dict[str, Any]:
 
 
 def phase_to_task_status(phase: str) -> str:
-    if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION}:
+    if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_HUMAN_DECISION}:
         return TaskStatus.PAUSED.value
     if phase == PHASE_COMPLETED:
         return TaskStatus.COMPLETED.value

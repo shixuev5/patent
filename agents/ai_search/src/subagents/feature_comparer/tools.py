@@ -1,4 +1,4 @@
-"""Feature-comparer specialist tools."""
+"""特征对比子代理工具。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.stage_limits import DEFAULT_SELECTED_LIMIT
-from agents.ai_search.src.state import PHASE_GENERATE_FEATURE_TABLE
+from agents.ai_search.src.state import PHASE_FEATURE_COMPARISON
 from agents.ai_search.src.subagents.feature_comparer.prompt import build_feature_prompt
 
 
@@ -29,9 +29,9 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                 selected_documents = context.storage.list_ai_search_documents(context.task_id, version, stages=["selected"])[:DEFAULT_SELECTED_LIMIT]
                 selected_ids = [str(item.get("document_id") or "").strip() for item in selected_documents if str(item.get("document_id") or "").strip()]
                 context.update_todos(
-                    "generate_feature_table",
+                    "feature_comparison",
                     "in_progress",
-                    current_task="generate_feature_table",
+                    current_task="feature_comparison",
                     resume_from="run_feature_compare.commit",
                     state_updates={"selected_document_ids": selected_ids, "plan_version": version},
                 )
@@ -49,10 +49,10 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
             if not str(payload_json or "").strip():
                 raise ValueError("run_feature_compare 在 commit 模式下必须提供 payload_json。")
             payload = extract_json_object(payload_json)
-            feature_table_id = uuid.uuid4().hex
-            context.storage.create_ai_search_feature_table(
+            feature_comparison_id = uuid.uuid4().hex
+            context.storage.create_ai_search_feature_comparison(
                 {
-                    "feature_table_id": feature_table_id,
+                    "feature_comparison_id": feature_comparison_id,
                     "task_id": context.task_id,
                     "plan_version": version,
                     "status": "completed",
@@ -72,7 +72,7 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
-            findings = str(payload.get("overall_findings") or "特征对比表已生成。").strip()
+            findings = str(payload.get("overall_findings") or "特征对比分析结果已生成。").strip()
             if findings:
                 context.storage.create_ai_search_message(
                     {
@@ -87,24 +87,24 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                     }
                 )
             context.update_task_phase(
-                PHASE_GENERATE_FEATURE_TABLE,
+                PHASE_FEATURE_COMPARISON,
                 runtime=runtime,
                 active_plan_version=version,
-                current_feature_table_id=feature_table_id,
-                current_task="generate_feature_table",
+                current_feature_comparison_id=feature_comparison_id,
+                current_task="feature_comparison",
             )
             context.update_todos(
-                "generate_feature_table",
+                "feature_comparison",
                 "completed",
-                current_task="generate_feature_table",
-                state_updates={"feature_table_id": feature_table_id},
+                current_task="feature_comparison",
+                state_updates={"feature_comparison_id": feature_comparison_id},
             )
-            return json.dumps({"feature_table_id": feature_table_id}, ensure_ascii=False)
+            return json.dumps({"feature_comparison_id": feature_comparison_id}, ensure_ascii=False)
         except Exception as exc:
             return context.record_todo_failure(
-                "generate_feature_table",
+                "feature_comparison",
                 str(exc),
-                current_task="generate_feature_table",
+                current_task="feature_comparison",
                 resume_from="run_feature_compare",
             )
 

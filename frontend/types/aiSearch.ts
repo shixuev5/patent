@@ -15,11 +15,13 @@ export interface AiSearchSnapshot {
   session: AiSearchSessionSummary
   phase: string
   messages: Array<Record<string, any>>
+  downloadUrl?: string | null
+  humanDecisionAction?: Record<string, any> | null
   currentPlan?: Record<string, any> | null
   executionTodos: Array<Record<string, any>>
   candidateDocuments: Array<Record<string, any>>
   selectedDocuments: Array<Record<string, any>>
-  featureTable?: Record<string, any> | null
+  featureComparison?: Record<string, any> | null
   pendingQuestion?: Record<string, any> | null
   pendingConfirmation?: Record<string, any> | null
   resumeAction?: Record<string, any> | null

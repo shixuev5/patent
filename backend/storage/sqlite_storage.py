@@ -123,6 +123,14 @@ class SQLiteTaskStorage:
             ("replaced_by_token_hash", "replaced_by_token_hash TEXT"),
         ],
         "ai_search_documents": [
+            ("publication_date", "publication_date TEXT"),
+            ("application_date", "application_date TEXT"),
+            ("primary_ipc", "primary_ipc TEXT"),
+            ("document_type", "document_type TEXT"),
+            ("claim_ids_json", "claim_ids_json TEXT"),
+            ("evidence_locations_json", "evidence_locations_json TEXT"),
+            ("evidence_summary", "evidence_summary TEXT"),
+            ("report_row_order", "report_row_order INTEGER"),
             ("source_lanes_json", "source_lanes_json TEXT"),
             ("source_sub_plans_json", "source_sub_plans_json TEXT"),
             ("source_steps_json", "source_steps_json TEXT"),
@@ -2399,6 +2407,14 @@ class SQLiteTaskStorage:
             "pn": row["pn"],
             "title": row["title"],
             "abstract": row["abstract"],
+            "publication_date": row["publication_date"] if "publication_date" in row.keys() else None,
+            "application_date": row["application_date"] if "application_date" in row.keys() else None,
+            "primary_ipc": row["primary_ipc"] if "primary_ipc" in row.keys() else None,
+            "document_type": row["document_type"] if "document_type" in row.keys() else None,
+            "claim_ids_json": self._parse_metadata(row["claim_ids_json"]) if "claim_ids_json" in row.keys() else [],
+            "evidence_locations_json": self._parse_metadata(row["evidence_locations_json"]) if "evidence_locations_json" in row.keys() else [],
+            "evidence_summary": row["evidence_summary"] if "evidence_summary" in row.keys() else None,
+            "report_row_order": int(row["report_row_order"]) if "report_row_order" in row.keys() and row["report_row_order"] is not None else None,
             "ipc_cpc_json": self._parse_metadata(row["ipc_cpc_json"]),
             "source_batches_json": self._parse_metadata(row["source_batches_json"]),
             "source_lanes_json": self._parse_metadata(row["source_lanes_json"]) if "source_lanes_json" in row.keys() else [],
@@ -2441,6 +2457,14 @@ class SQLiteTaskStorage:
                     record.get("pn"),
                     record.get("title"),
                     record.get("abstract"),
+                    record.get("publication_date"),
+                    record.get("application_date"),
+                    record.get("primary_ipc"),
+                    record.get("document_type"),
+                    self._encode_json_value(record.get("claim_ids_json") or []),
+                    self._encode_json_value(record.get("evidence_locations_json") or []),
+                    record.get("evidence_summary"),
+                    record.get("report_row_order"),
                     self._encode_json_value(record.get("ipc_cpc_json") or []),
                     self._encode_json_value(record.get("source_batches_json") or []),
                     self._encode_json_value(record.get("source_lanes_json") or []),
@@ -2470,15 +2494,25 @@ class SQLiteTaskStorage:
                 """
                 INSERT INTO ai_search_documents (
                     document_id, task_id, plan_version, pn, title, abstract,
+                    publication_date, application_date, primary_ipc, document_type, claim_ids_json, evidence_locations_json,
+                    evidence_summary, report_row_order,
                     ipc_cpc_json, source_batches_json, source_lanes_json, source_sub_plans_json, source_steps_json, stage, score, agent_reason,
                     key_passages_json, user_pinned, user_removed, coarse_status, coarse_reason,
                     coarse_screened_at, close_read_status, close_read_reason, close_read_at,
                     detail_fingerprint, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     pn = excluded.pn,
                     title = excluded.title,
                     abstract = excluded.abstract,
+                    publication_date = excluded.publication_date,
+                    application_date = excluded.application_date,
+                    primary_ipc = excluded.primary_ipc,
+                    document_type = excluded.document_type,
+                    claim_ids_json = excluded.claim_ids_json,
+                    evidence_locations_json = excluded.evidence_locations_json,
+                    evidence_summary = excluded.evidence_summary,
+                    report_row_order = excluded.report_row_order,
                     ipc_cpc_json = excluded.ipc_cpc_json,
                     source_batches_json = excluded.source_batches_json,
                     source_lanes_json = excluded.source_lanes_json,
@@ -2544,6 +2578,14 @@ class SQLiteTaskStorage:
             "score",
             "agent_reason",
             "key_passages_json",
+            "publication_date",
+            "application_date",
+            "primary_ipc",
+            "document_type",
+            "claim_ids_json",
+            "evidence_locations_json",
+            "evidence_summary",
+            "report_row_order",
             "user_pinned",
             "user_removed",
             "title",
@@ -2585,9 +2627,9 @@ class SQLiteTaskStorage:
             conn.commit()
             return cursor.rowcount > 0
 
-    def _row_to_ai_search_feature_table(self, row: sqlite3.Row) -> Dict[str, Any]:
+    def _row_to_ai_search_feature_comparison(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {
-            "feature_table_id": row["feature_table_id"],
+            "feature_comparison_id": row["feature_comparison_id"],
             "task_id": row["task_id"],
             "plan_version": int(row["plan_version"]),
             "status": row["status"],
@@ -2597,9 +2639,9 @@ class SQLiteTaskStorage:
             "updated_at": row["updated_at"],
         }
 
-    def create_ai_search_feature_table(self, record: Dict[str, Any]) -> bool:
+    def create_ai_search_feature_comparison(self, record: Dict[str, Any]) -> bool:
         payload = {
-            "feature_table_id": str(record.get("feature_table_id", "")).strip(),
+            "feature_comparison_id": str(record.get("feature_comparison_id", "")).strip(),
             "task_id": str(record.get("task_id", "")).strip(),
             "plan_version": int(record.get("plan_version") or 0),
             "status": str(record.get("status", "")).strip(),
@@ -2608,18 +2650,18 @@ class SQLiteTaskStorage:
             "created_at": str(record.get("created_at") or utc_now_z()),
             "updated_at": str(record.get("updated_at") or utc_now_z()),
         }
-        if not payload["feature_table_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
+        if not payload["feature_comparison_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
             return False
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO ai_search_feature_tables (
-                    feature_table_id, task_id, plan_version, status, table_json,
+                INSERT INTO ai_search_feature_comparisons (
+                    feature_comparison_id, task_id, plan_version, status, table_json,
                     summary_markdown, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    payload["feature_table_id"],
+                    payload["feature_comparison_id"],
                     payload["task_id"],
                     payload["plan_version"],
                     payload["status"],
@@ -2632,45 +2674,45 @@ class SQLiteTaskStorage:
             conn.commit()
             return cursor.rowcount > 0
 
-    def list_ai_search_feature_tables(self, task_id: str, plan_version: int) -> List[Dict[str, Any]]:
+    def list_ai_search_feature_comparisons(self, task_id: str, plan_version: int) -> List[Dict[str, Any]]:
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT *
-                FROM ai_search_feature_tables
+                FROM ai_search_feature_comparisons
                 WHERE task_id = ? AND plan_version = ?
-                ORDER BY updated_at DESC, feature_table_id DESC
+                ORDER BY updated_at DESC, feature_comparison_id DESC
                 """,
                 (task_id, int(plan_version)),
             ).fetchall()
-        return [self._row_to_ai_search_feature_table(row) for row in rows]
+        return [self._row_to_ai_search_feature_comparison(row) for row in rows]
 
-    def get_ai_search_feature_table(
+    def get_ai_search_feature_comparison(
         self,
         task_id: str,
         plan_version: int,
-        feature_table_id: Optional[str] = None,
+        feature_comparison_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        if feature_table_id:
+        if feature_comparison_id:
             sql = """
                 SELECT *
-                FROM ai_search_feature_tables
-                WHERE task_id = ? AND plan_version = ? AND feature_table_id = ?
+                FROM ai_search_feature_comparisons
+                WHERE task_id = ? AND plan_version = ? AND feature_comparison_id = ?
                 LIMIT 1
             """
-            params = (task_id, int(plan_version), feature_table_id)
+            params = (task_id, int(plan_version), feature_comparison_id)
         else:
             sql = """
                 SELECT *
-                FROM ai_search_feature_tables
+                FROM ai_search_feature_comparisons
                 WHERE task_id = ? AND plan_version = ?
-                ORDER BY updated_at DESC, feature_table_id DESC
+                ORDER BY updated_at DESC, feature_comparison_id DESC
                 LIMIT 1
             """
             params = (task_id, int(plan_version))
         with self._get_connection() as conn:
             row = conn.execute(sql, params).fetchone()
-        return self._row_to_ai_search_feature_table(row) if row else None
+        return self._row_to_ai_search_feature_comparison(row) if row else None
 
     def _row_to_ai_search_checkpoint(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {

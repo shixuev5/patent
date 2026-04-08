@@ -22,6 +22,7 @@ from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import format_subagent_label
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
+    PHASE_AWAITING_HUMAN_DECISION,
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
     PHASE_CLOSE_READ,
@@ -31,7 +32,7 @@ from agents.ai_search.src.state import (
     PHASE_DRAFTING_PLAN,
     PHASE_EXECUTE_SEARCH,
     PHASE_FAILED,
-    PHASE_GENERATE_FEATURE_TABLE,
+    PHASE_FEATURE_COMPARISON,
     default_ai_search_meta,
     get_ai_search_meta,
     merge_ai_search_meta,
@@ -45,6 +46,7 @@ from backend.time_utils import utc_now_z
 from backend.usage import _enforce_daily_quota
 from backend.utils import _build_r2_storage
 
+from .reporting import build_ai_search_terminal_artifacts
 from .analysis_seed import (
     build_analysis_seed_user_message,
     build_execution_spec_from_analysis,
@@ -208,6 +210,21 @@ class AiSearchService:
             "lastError": str(current_todo.get("last_error") or "").strip(),
         }
 
+    def _human_decision_action(self, task: Any) -> Optional[Dict[str, Any]]:
+        meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or "").strip()
+        if phase != PHASE_AWAITING_HUMAN_DECISION:
+            return None
+        return {
+            "available": True,
+            "reason": str(meta.get("human_decision_reason") or "").strip(),
+            "summary": str(meta.get("human_decision_summary") or "").strip(),
+            "roundCount": int(meta.get("execution_round_count") or 0),
+            "noProgressRoundCount": int(meta.get("no_progress_round_count") or 0),
+            "selectedCount": int(meta.get("selected_document_count") or 0),
+            "recommendedActions": ["continue_search", "complete_current_results"],
+        }
+
     def _load_analysis_artifacts(self, task: Any) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         metadata = task.metadata if isinstance(task.metadata, dict) else {}
         output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
@@ -228,30 +245,117 @@ class AiSearchService:
             raise HTTPException(status_code=409, detail="AI 分析结果不存在，暂时无法生成检索草稿。")
         return analysis_payload, patent_payload if isinstance(patent_payload, dict) else None
 
+    def _snapshot_download_url(self, task: Any) -> Optional[str]:
+        if str(getattr(task.status, "value", task.status) or "").strip().lower() != PHASE_COMPLETED:
+            return None
+        metadata = task.metadata if isinstance(task.metadata, dict) else {}
+        output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+        bundle_zip = str(output_files.get("bundle_zip") or "").strip()
+        if not bundle_zip:
+            return None
+        bundle_path = Path(bundle_zip)
+        if not bundle_path.exists() or not bundle_path.is_file():
+            return None
+        return f"/api/tasks/{task.id}/download"
+
+    def _current_feature_comparison(
+        self,
+        task: Any,
+        plan_version: int,
+        *,
+        fallback_latest: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        if plan_version <= 0:
+            return None
+        meta = get_ai_search_meta(task)
+        current_feature_comparison_id = str(meta.get("current_feature_comparison_id") or "").strip()
+        if current_feature_comparison_id:
+            table = self.storage.get_ai_search_feature_comparison(
+                task.id,
+                plan_version,
+                feature_comparison_id=current_feature_comparison_id,
+            )
+            if table:
+                return table
+        if fallback_latest:
+            return self.storage.get_ai_search_feature_comparison(task.id, plan_version)
+        return None
+
+    def _finalize_terminal_artifacts(
+        self,
+        task_id: str,
+        plan_version: int,
+        *,
+        termination_reason: str = "",
+    ) -> Dict[str, Any]:
+        task = self.storage.get_task(task_id)
+        current_plan = self._plan_payload(self.storage.get_ai_search_plan(task_id, plan_version))
+        documents = self.storage.list_ai_search_documents(task_id, plan_version)
+        feature_comparison = self._current_feature_comparison(task, plan_version, fallback_latest=True)
+        context = AiSearchAgentContext(self.storage, task_id)
+        gap_context = context.latest_gap_context()
+        artifacts = build_ai_search_terminal_artifacts(
+            task=task,
+            current_plan=current_plan,
+            documents=documents,
+            feature_comparison=feature_comparison,
+            close_read_result=gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
+            feature_compare_result=gap_context.get("feature_compare_result") if isinstance(gap_context.get("feature_compare_result"), dict) else None,
+            source_patent_data=context.load_source_patent_data(),
+            termination_reason=termination_reason,
+        )
+        for item in artifacts.get("classified_documents") or []:
+            document_id = str(item.get("document_id") or "").strip()
+            if not document_id:
+                continue
+            self.storage.update_ai_search_document(
+                task_id,
+                plan_version,
+                document_id,
+                document_type=str(item.get("document_type") or "").strip().upper() or None,
+                report_row_order=int(item.get("report_row_order") or 0) or None,
+            )
+
+        refreshed_task = self.storage.get_task(task_id)
+        metadata = refreshed_task.metadata if isinstance(refreshed_task.metadata, dict) else {}
+        output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+        next_output_files = {
+            **output_files,
+            "pdf": artifacts.get("pdf"),
+            "bundle_zip": artifacts.get("bundle_zip"),
+        }
+        feature_comparison_csv = str(artifacts.get("feature_comparison_csv") or "").strip()
+        if feature_comparison_csv:
+            next_output_files["feature_comparison_csv"] = feature_comparison_csv
+        self.storage.update_task(
+            task_id,
+            metadata={
+                **metadata,
+                "output_files": next_output_files,
+            },
+        )
+        return artifacts
+
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
         task = self._get_owned_session_task(session_id, owner_id)
         messages = self.storage.list_ai_search_messages(task.id)
         current_plan = self._plan_payload(self._current_plan(task))
         candidate_documents, selected_documents = self._documents_for_snapshot(task)
-        feature_table = None
+        feature_comparison = None
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
-        current_feature_table_id = str(meta.get("current_feature_table_id") or "").strip()
-        if active_plan_version > 0 and current_feature_table_id:
-            feature_table = self.storage.get_ai_search_feature_table(
-                task.id,
-                active_plan_version,
-                feature_table_id=current_feature_table_id,
-            )
+        feature_comparison = self._current_feature_comparison(task, active_plan_version)
         return AiSearchSnapshotResponse(
             session=self._session_summary(task),
             phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
             messages=self._display_messages(messages),
+            downloadUrl=self._snapshot_download_url(task),
+            humanDecisionAction=self._human_decision_action(task),
             currentPlan=current_plan,
             executionTodos=self._execution_todos(task),
             candidateDocuments=candidate_documents,
             selectedDocuments=selected_documents,
-            featureTable=feature_table,
+            featureComparison=feature_comparison,
             pendingQuestion=self._pending_question(task, messages),
             pendingConfirmation=self._pending_confirmation(task, current_plan),
             resumeAction=self._resume_action(task),
@@ -362,6 +466,40 @@ class AiSearchService:
                 detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "当前没有可恢复的失败执行步骤。"},
             )
         return resume_action
+
+    def _require_human_decision_action(self, task: Any) -> Dict[str, Any]:
+        decision_action = self._human_decision_action(task)
+        if decision_action is None:
+            raise HTTPException(status_code=409, detail="当前不在人工决策状态。")
+        return decision_action
+
+    def _build_decision_continue_prompt(self, task_id: str, decision_action: Dict[str, Any]) -> str:
+        context = AiSearchAgentContext(self.storage, task_id)
+        payload = {
+            "decision_reason": decision_action.get("reason"),
+            "decision_summary": decision_action.get("summary"),
+            "round_count": decision_action.get("roundCount"),
+            "no_progress_round_count": decision_action.get("noProgressRoundCount"),
+            "selected_count": decision_action.get("selectedCount"),
+            "gap_context": context.latest_gap_context(),
+        }
+        return (
+            "继续当前 AI 检索，但这不是新的用户需求。"
+            "当前会话已进入人工决策态，请基于现有文献池、gap context 和决策摘要重新起草计划，"
+            "然后请求用户确认，不要直接恢复旧执行步骤。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _decision_termination_reason(self, task: Any) -> str:
+        meta = get_ai_search_meta(task)
+        reason = str(meta.get("human_decision_reason") or "").strip()
+        summary = str(meta.get("human_decision_summary") or "").strip()
+        parts = ["人工决策后按当前结果完成"]
+        if reason:
+            parts.append(f"原因：{reason}")
+        if summary:
+            parts.append(summary)
+        return "；".join(parts)
 
     def create_session(self, owner_id: str) -> AiSearchCreateSessionResponse:
         _enforce_daily_quota(owner_id, task_type=TaskType.AI_SEARCH.value)
@@ -871,8 +1009,12 @@ class AiSearchService:
                 phase,
                 {"count": len(current.selectedDocuments), "items": current.selectedDocuments},
             )
-        if current.featureTable != previous.featureTable:
-            yield self._format_event("feature_table.updated", session_id, phase, current.featureTable)
+        if current.featureComparison != previous.featureComparison:
+            yield self._format_event("feature_comparison.updated", session_id, phase, current.featureComparison)
+        if current.downloadUrl != previous.downloadUrl:
+            yield self._format_event("artifacts.updated", session_id, phase, {"downloadUrl": current.downloadUrl})
+        if current.humanDecisionAction != previous.humanDecisionAction:
+            yield self._format_event("decision.updated", session_id, phase, current.humanDecisionAction)
 
     async def _consume_live_agent_stream(
         self,
@@ -1078,6 +1220,8 @@ class AiSearchService:
         owner_id: str,
         plan_version: int,
         previous_phase: str = "",
+        force_complete: bool = False,
+        termination_reason: str = "",
     ) -> AsyncIterator[str]:
         previous_assistant = self._latest_assistant_chat(task.id)
         initial_snapshot = self.get_snapshot(task.id, owner_id)
@@ -1087,7 +1231,7 @@ class AiSearchService:
             "messages": [
                 {
                     "role": "user",
-                    "content": "请基于当前活动计划和已选对比文件生成特征对比表，并使用工具加载上下文后持久化结果。",
+                    "content": "请基于当前活动计划和已选对比文件完成特征对比分析，并使用工具加载上下文后持久化结果。",
                 }
             ]
         }
@@ -1126,21 +1270,53 @@ class AiSearchService:
 
             refreshed_task = self.storage.get_task(task.id)
             refreshed_meta = get_ai_search_meta(refreshed_task)
-            feature_table_id = str(refreshed_meta.get("current_feature_table_id") or "").strip()
-            progress = AiSearchAgentContext(self.storage, task.id).evaluate_gap_progress_payload(plan_version)
-            final_phase = (
-                PHASE_COMPLETED
-                if str(progress.get("recommended_action") or "").strip() == "complete_execution"
-                else PHASE_GENERATE_FEATURE_TABLE
-            )
+            feature_comparison_id = str(refreshed_meta.get("current_feature_comparison_id") or "").strip()
+            context = AiSearchAgentContext(self.storage, task.id)
+            progress = context.evaluate_gap_progress_payload(plan_version)
+            round_evaluation = context.commit_round_evaluation(plan_version)
+            final_phase = PHASE_FEATURE_COMPARISON
+            if force_complete:
+                final_phase = PHASE_COMPLETED
+            elif bool(round_evaluation.get("should_request_decision")):
+                final_phase = PHASE_AWAITING_HUMAN_DECISION
+            elif str(progress.get("recommended_action") or "").strip() == "complete_execution":
+                final_phase = PHASE_COMPLETED
             selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
-            self._update_phase(
-                task.id,
-                final_phase,
-                current_feature_table_id=feature_table_id or None,
-                selected_document_count=selected_count,
-                current_task=None if final_phase == PHASE_COMPLETED else "generate_feature_table",
-            )
+            if final_phase == PHASE_AWAITING_HUMAN_DECISION:
+                summary = str(round_evaluation.get("decision_summary") or "").strip() or "自动检索已停止，需要人工决策。"
+                context.enter_human_decision(
+                    reason=str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(),
+                    summary=summary,
+                )
+                self._append_message(
+                    task.id,
+                    "assistant",
+                    "chat",
+                    summary,
+                    plan_version=plan_version or None,
+                    metadata={"reason": round_evaluation.get("decision_reason"), "kind": "human_decision"},
+                )
+                self._update_phase(
+                    task.id,
+                    final_phase,
+                    current_feature_comparison_id=feature_comparison_id or None,
+                    selected_document_count=selected_count,
+                    current_task=None,
+                    human_decision_reason=str(round_evaluation.get("decision_reason") or "").strip() or None,
+                    human_decision_summary=summary,
+                )
+            else:
+                self._update_phase(
+                    task.id,
+                    final_phase,
+                    current_feature_comparison_id=feature_comparison_id or None,
+                    selected_document_count=selected_count,
+                    current_task=None if final_phase == PHASE_COMPLETED else "feature_comparison",
+                    human_decision_reason=None if final_phase == PHASE_COMPLETED else refreshed_meta.get("human_decision_reason"),
+                    human_decision_summary=None if final_phase == PHASE_COMPLETED else refreshed_meta.get("human_decision_summary"),
+                )
+            if final_phase == PHASE_COMPLETED:
+                self._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
 
             final_snapshot = self.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
@@ -1160,8 +1336,9 @@ class AiSearchService:
                 self._current_phase_value(task.id, final_snapshot.phase),
                 {
                     "interrupted": False,
-                    "featureTableId": feature_table_id or None,
+                    "featureComparisonId": feature_comparison_id or None,
                     "recommendedAction": progress.get("recommended_action"),
+                    "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
                 },
             )
         except Exception as exc:
@@ -1181,6 +1358,8 @@ class AiSearchService:
                 status_code=409,
                 detail={"code": SEARCH_IN_PROGRESS_CODE, "message": "检索执行阶段不支持发送普通消息；如需继续失败步骤，请调用 resume 接口。"},
             )
+        if phase == PHASE_AWAITING_HUMAN_DECISION:
+            self._raise_invalid_phase(phase, "当前处于人工决策状态，请使用继续检索或按当前结果完成。")
         if phase == PHASE_AWAITING_USER_ANSWER and meta.get("pending_question_id"):
             raise HTTPException(
                 status_code=409,
@@ -1280,6 +1459,93 @@ class AiSearchService:
         ):
             yield event
 
+    async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        task = self._get_owned_session_task(session_id, owner_id)
+        decision_action = self._require_human_decision_action(task)
+        meta = get_ai_search_meta(task)
+        plan_version = int(meta.get("active_plan_version") or 0)
+        if plan_version <= 0:
+            raise HTTPException(status_code=409, detail="当前没有活动计划版本，无法继续检索。")
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+        context = AiSearchAgentContext(self.storage, task.id)
+        context.reset_execution_control(plan_version, clear_human_decision=True)
+        self._update_phase(
+            task.id,
+            PHASE_DRAFTING_PLAN,
+            current_task=None,
+            human_decision_reason=None,
+            human_decision_summary=None,
+        )
+        prompt = self._build_decision_continue_prompt(task.id, decision_action)
+        async for event in self._stream_main_agent_execution(
+            task=self.storage.get_task(task.id),
+            owner_id=owner_id,
+            thread_id=thread_id,
+            payload={"messages": [{"role": "user", "content": prompt}]},
+            previous_phase=PHASE_AWAITING_HUMAN_DECISION,
+        ):
+            yield event
+
+    async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        task = self._get_owned_session_task(session_id, owner_id)
+        self._require_human_decision_action(task)
+        meta = get_ai_search_meta(task)
+        plan_version = int(meta.get("active_plan_version") or 0)
+        if plan_version <= 0:
+            raise HTTPException(status_code=409, detail="当前没有活动计划版本，无法按当前结果完成。")
+        selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
+        if not selected_documents:
+            raise HTTPException(status_code=409, detail="当前没有已选对比文献，无法按当前结果完成。")
+
+        termination_reason = self._decision_termination_reason(task)
+        feature_comparison = self._current_feature_comparison(task, plan_version)
+        if feature_comparison is None:
+            self._update_phase(
+                task.id,
+                PHASE_FEATURE_COMPARISON,
+                active_plan_version=plan_version,
+                current_task="feature_comparison",
+            )
+            async for event in self._stream_feature_agent_execution(
+                task=self.storage.get_task(task.id),
+                owner_id=owner_id,
+                plan_version=plan_version,
+                previous_phase=PHASE_AWAITING_HUMAN_DECISION,
+                force_complete=True,
+                termination_reason=termination_reason,
+            ):
+                yield event
+            return
+
+        previous_assistant = self._latest_assistant_chat(task.id)
+        initial_snapshot = self.get_snapshot(task.id, owner_id)
+        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
+        yield self._format_event("run.started", task.id, initial_snapshot.phase, {})
+        self._update_phase(
+            task.id,
+            PHASE_COMPLETED,
+            active_plan_version=plan_version,
+            current_feature_comparison_id=str(meta.get("current_feature_comparison_id") or "").strip() or None,
+            selected_document_count=len(selected_documents),
+            current_task=None,
+            human_decision_reason=None,
+            human_decision_summary=None,
+        )
+        self._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+        final_snapshot = self.get_snapshot(task.id, owner_id)
+        async for event in self._emit_snapshot_diff_events(
+            stream_state["last_snapshot"],
+            final_snapshot,
+            stream_state=stream_state,
+        ):
+            yield event
+        yield self._format_event(
+            "run.completed",
+            task.id,
+            self._current_phase_value(task.id, final_snapshot.phase),
+            {"interrupted": False, "completedFromTakeover": True},
+        )
+
     def patch_selected_documents(
         self,
         session_id: str,
@@ -1297,7 +1563,7 @@ class AiSearchService:
                 detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许操作活动计划版本。"},
             )
         phase = str(meta.get("current_phase") or "")
-        if phase not in {PHASE_CLOSE_READ, PHASE_GENERATE_FEATURE_TABLE, PHASE_COMPLETED}:
+        if phase not in {PHASE_CLOSE_READ, PHASE_FEATURE_COMPARISON, PHASE_AWAITING_HUMAN_DECISION, PHASE_COMPLETED}:
             self._raise_invalid_phase(phase, "当前阶段不允许调整对比文件。")
         add_ids = [str(item).strip() for item in (add_document_ids or []) if str(item).strip()]
         remove_ids = [str(item).strip() for item in (remove_document_ids or []) if str(item).strip()]
@@ -1326,34 +1592,34 @@ class AiSearchService:
                 agent_reason="用户手动移出对比文件",
             )
         selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
-        next_phase = PHASE_GENERATE_FEATURE_TABLE if selected_count > 0 else PHASE_CLOSE_READ
+        next_phase = PHASE_FEATURE_COMPARISON if selected_count > 0 else PHASE_CLOSE_READ
         self._update_phase(
             task.id,
             next_phase,
             selected_document_count=selected_count,
-            current_feature_table_id=None,
-            current_task="generate_feature_table" if selected_count > 0 else "close_read",
+            current_feature_comparison_id=None,
+            current_task="feature_comparison" if selected_count > 0 else "close_read",
         )
         return self.get_snapshot(task.id, owner_id)
 
-    async def stream_feature_table(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+    async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
         if active_plan_version != int(plan_version):
             raise HTTPException(
                 status_code=409,
-                detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许生成活动计划版本的特征对比表。"},
+                detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许生成活动计划版本的特征对比分析结果。"},
             )
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
-            self._raise_invalid_phase(PHASE_GENERATE_FEATURE_TABLE, "当前没有已选对比文件。")
+            self._raise_invalid_phase(PHASE_FEATURE_COMPARISON, "当前没有已选对比文件。")
         previous_phase = str(meta.get("current_phase") or "")
         self._update_phase(
             task.id,
-            PHASE_GENERATE_FEATURE_TABLE,
+            PHASE_FEATURE_COMPARISON,
             active_plan_version=plan_version,
-            current_task="generate_feature_table",
+            current_task="feature_comparison",
         )
         async for event in self._stream_feature_agent_execution(
             task=self.storage.get_task(task.id),

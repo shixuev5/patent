@@ -1,4 +1,4 @@
-"""AI Search main-agent definition."""
+"""智能检索主控代理定义。"""
 
 from __future__ import annotations
 

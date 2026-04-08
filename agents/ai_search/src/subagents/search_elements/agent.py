@@ -1,4 +1,4 @@
-"""Search-elements specialist definition."""
+"""检索要素子代理定义。"""
 
 from __future__ import annotations
 

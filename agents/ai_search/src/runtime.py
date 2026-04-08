@@ -1,4 +1,4 @@
-"""AI 检索 Agent 共享运行时工具。"""
+"""智能检索代理的共享运行时工具。"""
 
 from __future__ import annotations
 

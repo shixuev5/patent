@@ -1,4 +1,4 @@
-"""Response schemas for the close-reader specialist."""
+"""精读子代理的响应结构。"""
 
 from __future__ import annotations
 

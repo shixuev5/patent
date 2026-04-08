@@ -1,4 +1,4 @@
-"""Keyword extraction and fallback passage selection for close reading."""
+"""精读场景的关键词提取与兜底段落选择。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Response schemas for the coarse-screener specialist."""
+"""粗筛子代理的响应结构。"""
 
 from __future__ import annotations
 

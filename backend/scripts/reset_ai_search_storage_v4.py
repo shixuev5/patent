@@ -23,7 +23,7 @@ AI_SEARCH_TABLES = (
     "ai_search_messages",
     "ai_search_plans",
     "ai_search_documents",
-    "ai_search_feature_tables",
+    "ai_search_feature_comparisons",
     "ai_search_checkpoints",
     "ai_search_checkpoint_writes",
     "ai_search_checkpoint_blobs",

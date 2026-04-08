@@ -1,4 +1,4 @@
-"""Non-persistent probe tools for plan drafting."""
+"""计划起草阶段的非持久化预检工具。"""
 
 from __future__ import annotations
 

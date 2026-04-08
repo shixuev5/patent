@@ -56,26 +56,17 @@
         <div v-else-if="!sidebarCollapsed && !sessions.length" class="flex-1 rounded-2xl bg-slate-50/90 px-3 py-6 text-center text-[13px] text-slate-500">
           暂无会话
         </div>
-        <div v-else-if="!sidebarCollapsed" class="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-          <section
-            v-for="group in groupedSessions"
-            :key="group.key"
-            class="space-y-2"
-          >
-            <p class="px-1 text-[11px] font-semibold tracking-[0.18em] text-slate-400">{{ group.label }}</p>
-            <AiSearchSessionListItem
-              v-for="session in group.items"
-              :key="session.sessionId"
-              :session="session"
-              :active="session.sessionId === currentSession?.session.sessionId"
-              :busy="isSessionMutating(session.sessionId)"
-              @select="selectSession"
-              @rename="renameSession"
-              @toggle-pin="toggleSessionPin"
-              @delete="deleteSession"
-            />
-          </section>
-        </div>
+        <AiSearchSessionGroups
+          v-else-if="!sidebarCollapsed"
+          class="min-h-0 flex-1 overflow-y-auto pr-1"
+          :groups="groupedSessions"
+          :active-session-id="currentSession?.session.sessionId"
+          :is-busy="isSessionMutating"
+          @select="selectSession"
+          @rename="renameSession"
+          @toggle-pin="toggleSessionPin"
+          @delete="deleteSession"
+        />
       </aside>
 
       <section
@@ -148,6 +139,14 @@
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-2 self-center">
+              <button
+                v-if="currentSession?.downloadUrl"
+                type="button"
+                class="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
+                @click="downloadCurrentResult"
+              >
+                下载结果
+              </button>
               <div class="hidden shrink-0 items-center gap-2 lg:flex">
                 <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
                   {{ activePhaseLabel }}
@@ -340,6 +339,14 @@
             </div>
           </section>
 
+          <AiSearchHumanDecisionCard
+            v-else-if="humanDecisionAction?.available"
+            :action="humanDecisionAction"
+            :disabled="streaming"
+            @continue-search="continueSearchFromDecision"
+            @complete-current-results="completeCurrentResultsFromDecision"
+          />
+
           <section v-else>
             <div class="relative">
               <textarea
@@ -366,7 +373,7 @@
               </button>
             </div>
             <p
-              v-if="['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(currentSession?.phase || '')"
+              v-if="['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(currentSession?.phase || '')"
               class="mt-2 text-xs text-slate-500"
             >
               当前轮检索执行中，执行完成后可继续调整计划。
@@ -408,26 +415,16 @@
           <div v-else-if="!sessions.length" class="rounded-2xl bg-slate-50/90 px-3 py-5 text-center text-[13px] text-slate-500">
             暂无会话
           </div>
-          <div v-else class="space-y-3">
-            <section
-              v-for="group in groupedSessions"
-              :key="group.key"
-              class="space-y-2"
-            >
-              <p class="px-1 text-[11px] font-semibold tracking-[0.18em] text-slate-400">{{ group.label }}</p>
-              <AiSearchSessionListItem
-                v-for="session in group.items"
-                :key="session.sessionId"
-                :session="session"
-                :active="session.sessionId === currentSession?.session.sessionId"
-                :busy="isSessionMutating(session.sessionId)"
-                @select="selectSession"
-                @rename="renameSession"
-                @toggle-pin="toggleSessionPin"
-                @delete="deleteSession"
-              />
-            </section>
-          </div>
+          <AiSearchSessionGroups
+            v-else
+            :groups="groupedSessions"
+            :active-session-id="currentSession?.session.sessionId"
+            :is-busy="isSessionMutating"
+            @select="selectSession"
+            @rename="renameSession"
+            @toggle-pin="toggleSessionPin"
+            @delete="deleteSession"
+          />
         </div>
       </aside>
     </transition>
@@ -439,14 +436,17 @@ import { ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, Ch
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
 import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
-import AiSearchSessionListItem from '~/components/ai-search/AiSearchSessionListItem.vue'
+import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
 import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
+import { useTaskStore } from '~/stores/task'
 import type { AiSearchSessionSummary } from '~/types/aiSearch'
+import { aiSearchPhaseLabel, isAiSearchExecutionPhase } from '~/utils/aiSearch'
 
 type SessionGroup = {
   key: string
@@ -460,6 +460,7 @@ const config = useRuntimeConfig()
 const authStore = useAuthStore()
 const adminUsageStore = useAdminUsageStore()
 const aiSearchStore = useAiSearchStore()
+const taskStore = useTaskStore()
 const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
@@ -488,6 +489,7 @@ const messages = computed(() => currentSession.value?.messages || [])
 const pendingQuestion = computed<Record<string, any> | null>(() => currentSession.value?.pendingQuestion || null)
 const pendingConfirmation = computed<Record<string, any> | null>(() => currentSession.value?.pendingConfirmation || null)
 const resumeAction = computed<Record<string, any> | null>(() => currentSession.value?.resumeAction || null)
+const humanDecisionAction = computed<Record<string, any> | null>(() => currentSession.value?.humanDecisionAction || null)
 const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.executionTodos || [])
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
 const activeExecutionTodoTitle = computed(() => {
@@ -507,7 +509,7 @@ const activePlanVersion = computed(() => {
 
 const confirmationPlanVersion = computed(() => Number(pendingConfirmation.value?.planVersion || activePlanVersion.value || 0))
 const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
-const activePhaseLabel = computed(() => phaseLabel(currentSession.value?.phase || 'collecting_requirements'))
+const activePhaseLabel = computed(() => aiSearchPhaseLabel(currentSession.value?.phase || 'collecting_requirements'))
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
 const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
@@ -521,7 +523,7 @@ const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.v
 const showExecutionPanel = computed(() => (
   executionTodos.value.length > 0
   || activeSubagentList.value.length > 0
-  || ['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table', 'completed', 'failed'].includes(currentSession.value?.phase || '')
+  || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(currentSession.value?.phase || '')
 ))
 
 const layoutClass = computed(() => (sidebarCollapsed.value
@@ -550,11 +552,43 @@ const canSubmitHeaderRename = computed(() => {
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
   if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
-  if (['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(currentSession.value.phase)) {
+  if (humanDecisionAction.value?.available) return '当前处于人工决策状态，请选择继续检索或按当前结果完成。'
+  if (isAiSearchExecutionPhase(currentSession.value.phase)) {
     return '检索执行中，请稍后再补充消息。'
   }
   return '继续修改检索计划，例如调整检索要素、检索顺序、中文/英文策略或 IPC/CPC 使用方式。'
 })
+
+const withTokenQuery = (url: string, token: string): string => {
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${encodeURIComponent(token)}`
+}
+
+const downloadCurrentResult = async () => {
+  const rawPath = String(currentSession.value?.downloadUrl || '').trim()
+  if (!rawPath) return
+  const rawDownloadUrl = rawPath.startsWith('http') ? rawPath : `${config.public.apiBaseUrl}${rawPath}`
+  const fileTitle = String(currentSession.value?.session.title || currentSession.value?.session.taskId || 'task').trim() || 'task'
+
+  try {
+    const authed = await taskStore.ensureAuth()
+    const downloadUrl = authed && taskStore.authToken
+      ? withTokenQuery(rawDownloadUrl, taskStore.authToken)
+      : rawDownloadUrl
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.target = '_blank'
+    link.rel = 'noopener'
+    link.download = `AI 检索结果_${fileTitle}.zip`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } catch (error) {
+    console.error('下载 AI 检索结果失败：', error)
+    showMessage('下载失败，请稍后重试。', 'error')
+    window.open(rawDownloadUrl, '_blank')
+  }
+}
 
 const onComposerEnter = (event: KeyboardEvent) => {
   if (event.isComposing || inputDisabled.value || !currentSession.value || !composer.value.trim()) return
@@ -665,22 +699,7 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
   return { key: `month-${monthLabel}`, label: monthLabel }
 }
 
-const phaseLabel = (phase: string): string => {
-  const map: Record<string, string> = {
-    collecting_requirements: '整理需求',
-    awaiting_user_answer: '等待回答',
-    drafting_plan: '起草计划',
-    awaiting_plan_confirmation: '待确认',
-    execute_search: '执行检索',
-    coarse_screen: '粗筛候选文献',
-    close_read: '精读并提取证据',
-    generate_feature_table: '生成特征对比表',
-    completed: '已完成',
-    failed: '失败',
-    cancelled: '已终止',
-  }
-  return map[phase] || phase || '未知阶段'
-}
+const phaseLabel = (phase: string): string => aiSearchPhaseLabel(phase)
 
 const todoStatusLabel = (status?: string): string => {
   if (status === 'in_progress') return '进行中'
@@ -821,6 +840,7 @@ const submitMessage = async () => {
   if (!content) return
   if (pendingQuestion.value) return
   if (resumeAction.value?.available) return
+  if (humanDecisionAction.value?.available) return
   if (!currentSession.value) return
   composer.value = ''
   await aiSearchStore.sendMessage(content)
@@ -842,6 +862,16 @@ const confirmPlan = async () => {
 const resumeExecution = async () => {
   if (!resumeAction.value?.available) return
   await aiSearchStore.resumeExecution()
+}
+
+const continueSearchFromDecision = async () => {
+  if (!humanDecisionAction.value?.available) return
+  await aiSearchStore.continueFromDecision()
+}
+
+const completeCurrentResultsFromDecision = async () => {
+  if (!humanDecisionAction.value?.available) return
+  await aiSearchStore.completeCurrentResultsFromDecision()
 }
 
 watch(
@@ -873,7 +903,7 @@ watch(
 watch(
   () => currentSession.value?.phase || '',
   (phase) => {
-    if (['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table'].includes(phase)) {
+    if (isAiSearchExecutionPhase(phase)) {
       executionPanelOpen.value = true
     }
   },

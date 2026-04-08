@@ -1,4 +1,4 @@
-"""Feature comparer specialist package."""
+"""特征对比子代理包。"""
 
 from agents.ai_search.src.subagents.feature_comparer.prompt import build_feature_prompt
 

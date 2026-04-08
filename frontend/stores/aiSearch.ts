@@ -12,7 +12,7 @@ import type {
   AiSearchSubagentStatus,
 } from '~/types/aiSearch'
 
-const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'generate_feature_table']
+const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison']
 
 interface AiSearchSessionRuntime {
   activeRun: AiSearchActiveRun | null
@@ -24,7 +24,7 @@ interface AiSearchSessionRuntime {
 }
 
 const phaseToTaskStatus = (phase: string): string => {
-  if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation') return 'paused'
+  if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation' || phase === 'awaiting_human_decision') return 'paused'
   if (phase === 'completed') return 'completed'
   if (phase === 'failed') return 'failed'
   if (phase === 'cancelled') return 'cancelled'
@@ -104,11 +104,13 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   },
   phase: String(summary.phase || 'collecting_requirements'),
   messages: [],
+  downloadUrl: null,
+  humanDecisionAction: null,
   currentPlan: null,
   executionTodos: [],
   candidateDocuments: [],
   selectedDocuments: [],
-  featureTable: null,
+  featureComparison: null,
   pendingQuestion: null,
   pendingConfirmation: null,
   resumeAction: null,
@@ -163,7 +165,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     inputDisabled(): boolean {
       const phase = this.currentSession?.phase || ''
-      return this.streaming || isExecutionPhase(phase) || !!this.currentSession?.pendingQuestion || !!this.currentSession?.resumeAction?.available
+      return this.streaming
+        || isExecutionPhase(phase)
+        || !!this.currentSession?.pendingQuestion
+        || !!this.currentSession?.resumeAction?.available
+        || !!this.currentSession?.humanDecisionAction?.available
     },
   },
 
@@ -335,6 +341,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (normalizedPhase !== 'awaiting_plan_confirmation') {
         snapshot.pendingConfirmation = null
       }
+      if (normalizedPhase !== 'awaiting_human_decision') {
+        snapshot.humanDecisionAction = null
+      }
       if (!isExecutionPhase(normalizedPhase)) {
         snapshot.resumeAction = null
       }
@@ -504,8 +513,18 @@ export const useAiSearchStore = defineStore('aiSearch', {
         return
       }
 
-      if (event.type === 'feature_table.updated') {
-        snapshot.featureTable = payload || null
+      if (event.type === 'feature_comparison.updated') {
+        snapshot.featureComparison = payload || null
+        return
+      }
+
+      if (event.type === 'artifacts.updated') {
+        snapshot.downloadUrl = payload?.downloadUrl || null
+        return
+      }
+
+      if (event.type === 'decision.updated') {
+        snapshot.humanDecisionAction = payload || null
         return
       }
 
@@ -803,20 +822,20 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async generateFeatureTable(planVersion: number) {
+    async generateFeatureComparison(planVersion: number) {
       const sessionId = String(this.currentSessionId || '').trim()
       const snapshot = this._getSnapshot(sessionId)
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, 'generate_feature_table', true)
+      this._startPendingAssistant(sessionId, 'feature_comparison', true)
       try {
         await this._postStream(
-          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/feature-table/stream`,
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/feature-comparison/stream`,
           { planVersion },
         )
       } catch (error: any) {
-        this._setRuntimeError(sessionId, error?.message || '生成特征对比表失败')
+        this._setRuntimeError(sessionId, error?.message || '生成特征对比分析失败')
         this._resetTransientRunState(sessionId)
       } finally {
         this._setStreaming(sessionId, false)
@@ -838,6 +857,48 @@ export const useAiSearchStore = defineStore('aiSearch', {
         )
       } catch (error: any) {
         this._setRuntimeError(sessionId, error?.message || '恢复执行失败')
+        this._resetTransientRunState(sessionId)
+      } finally {
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
+      }
+    },
+
+    async continueFromDecision() {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._startPendingAssistant(sessionId, 'drafting_plan', true)
+      try {
+        await this._postStream(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/decision/continue`,
+          {},
+        )
+      } catch (error: any) {
+        this._setRuntimeError(sessionId, error?.message || '继续检索失败')
+        this._resetTransientRunState(sessionId)
+      } finally {
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
+      }
+    },
+
+    async completeCurrentResultsFromDecision() {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._startPendingAssistant(sessionId, snapshot.phase, true)
+      try {
+        await this._postStream(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/decision/complete`,
+          {},
+        )
+      } catch (error: any) {
+        this._setRuntimeError(sessionId, error?.message || '按当前结果完成失败')
         this._resetTransientRunState(sessionId)
       } finally {
         this._setStreaming(sessionId, false)

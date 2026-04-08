@@ -1,4 +1,4 @@
-"""Search-elements specialist tools."""
+"""检索要素子代理工具。"""
 
 from __future__ import annotations
 
