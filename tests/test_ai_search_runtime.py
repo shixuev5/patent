@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from deepagents.backends.state import StateBackend
@@ -101,6 +102,19 @@ def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_pha
     assert result.content == "工具 `search_semantic` 不能在阶段 `drafting_plan` 由 `query-executor` 调用。"
 
 
+def test_planner_phase_protocol_blocks_plan_save_tool():
+    middleware = AiSearchGuardMiddleware(
+        "planner",
+        storage=_StubStorage(PHASE_DRAFTING_PLAN),
+        task_id="task-planner",
+    )
+    request = SimpleNamespace(tool_call={"name": "save_search_plan", "id": "call-planner-1", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result.content == "工具 `save_search_plan` 不能在阶段 `drafting_plan` 由 `planner` 调用。"
+
+
 def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
     middleware = AiSearchGuardMiddleware(
         "close-reader",
@@ -138,6 +152,18 @@ def test_main_agent_allows_interrupt_tool_resume_in_awaiting_plan_confirmation()
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
     assert result == "ok"
+
+
+def test_main_agent_async_tool_guard_blocks_read_file():
+    middleware = AiSearchGuardMiddleware("main-agent")
+    request = SimpleNamespace(tool_call={"name": "read_file", "id": "call-async-1", "args": {}})
+
+    async def _handler(_request):
+        raise AssertionError("handler should not be called for blocked async tools")
+
+    result = asyncio.run(middleware.awrap_tool_call(request, _handler))
+
+    assert result.content == "工具 `read_file` 对 `main-agent` 不可用。"
 
 
 def test_close_reader_subagent_middleware_names_are_unique():

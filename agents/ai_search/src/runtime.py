@@ -22,6 +22,7 @@ from config import settings
 
 ALL_AI_SEARCH_SUBAGENTS = {
     "search-elements",
+    "planner",
     "query-executor",
     "plan-prober",
     "coarse-screener",
@@ -31,6 +32,7 @@ ALL_AI_SEARCH_SUBAGENTS = {
 
 SUBAGENT_DISPLAY_LABELS = {
     "search-elements": "检索要素整理",
+    "planner": "检索规划",
     "query-executor": "检索执行",
     "plan-prober": "计划预检",
     "coarse-screener": "候选粗筛",
@@ -52,6 +54,10 @@ ROLE_TOOL_POLICIES: dict[str, dict[str, set[str]]] = {
         "allowed_subagents": set(),
     },
     "query-executor": {
+        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
+        "allowed_subagents": set(),
+    },
+    "planner": {
         "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
         "allowed_subagents": set(),
     },
@@ -98,11 +104,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
 
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler,
-    ) -> ToolMessage | Command[Any]:
+    def _guard_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = str(request.tool_call.get("name") or "").strip()
         phase = self._current_task_state()
         if tool_name in self.blocked_tools:
@@ -144,7 +146,27 @@ class AiSearchGuardMiddleware(AgentMiddleware):
                         name="task",
                         tool_call_id=request.tool_call["id"],
                     )
+        return None
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler,
+    ) -> ToolMessage | Command[Any]:
+        blocked = self._guard_tool_call(request)
+        if blocked is not None:
+            return blocked
         return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler,
+    ) -> ToolMessage | Command[Any]:
+        blocked = self._guard_tool_call(request)
+        if blocked is not None:
+            return blocked
+        return await handler(request)
 
 
 def build_guard_middleware(role: str, storage: Any = None, task_id: str = "") -> AiSearchGuardMiddleware:

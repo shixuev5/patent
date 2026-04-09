@@ -86,13 +86,14 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "get_search_elements",
             "get_gap_context",
             "evaluate_gap_progress",
+            "get_planner_draft",
             "start_plan_drafting",
             "save_search_plan",
             "request_plan_confirmation",
             "begin_execution",
             "ask_user_question",
         },
-        "subagents": {"search-elements", "plan-prober"},
+        "subagents": {"search-elements", "plan-prober", "planner"},
     },
     PHASE_AWAITING_USER_ANSWER: {
         "tools": {"ask_user_question"},
@@ -171,6 +172,9 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "probe_count_boolean",
         },
     },
+    "planner": {
+        PHASE_DRAFTING_PLAN: {"commit_plan_draft"},
+    },
     "coarse-screener": {
         PHASE_COARSE_SCREEN: {"run_coarse_screen_batch"},
     },
@@ -192,6 +196,7 @@ def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
         "pending_confirmation_plan_version": None,
         "selected_document_count": 0,
         "current_feature_comparison_id": None,
+        "planner_draft": None,
         "todos": [],
         "current_task": None,
         "pinned": False,

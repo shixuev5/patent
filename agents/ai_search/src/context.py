@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,7 @@ from agents.ai_search.src.state import (
 from agents.ai_search.src.subagents.close_reader.tools import build_close_reader_tools
 from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools
 from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_comparer_tools
+from agents.ai_search.src.subagents.planner.tools import build_planner_tools
 from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
 from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
@@ -294,6 +296,49 @@ class AiSearchAgentContext:
         task = self.storage.get_task(self.task_id)
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
+
+    def current_planner_draft(self) -> Dict[str, Any]:
+        task = self.storage.get_task(self.task_id)
+        meta = get_ai_search_meta(task)
+        draft = meta.get("planner_draft")
+        return dict(draft) if isinstance(draft, dict) else {}
+
+    def clear_planner_draft(self, *, runtime: Any | None = None) -> None:
+        task = self.storage.get_task(self.task_id)
+        self.storage.update_task(
+            self.task_id,
+            metadata=merge_ai_search_meta(task, planner_draft=None),
+        )
+        self.notify_snapshot_changed(runtime, reason="planner_draft")
+
+    def commit_planner_draft(
+        self,
+        *,
+        review_markdown: str,
+        execution_spec: Dict[str, Any],
+        probe_findings: Optional[Dict[str, Any]] = None,
+        runtime: Any | None = None,
+    ) -> Dict[str, Any]:
+        task = self.storage.get_task(self.task_id)
+        meta = get_ai_search_meta(task)
+        current = meta.get("planner_draft") if isinstance(meta.get("planner_draft"), dict) else {}
+        draft_version = int(current.get("draft_version") or 0) + 1
+        draft = {
+            "draft_id": uuid.uuid4().hex[:12],
+            "draft_version": draft_version,
+            "phase": self.current_phase() or "drafting_plan",
+            "execution_round_count": int(meta.get("execution_round_count") or 0),
+            "review_markdown": str(review_markdown or "").strip(),
+            "execution_spec": execution_spec if isinstance(execution_spec, dict) else {},
+            "probe_findings": probe_findings if isinstance(probe_findings, dict) and probe_findings else None,
+            "committed_at": utc_now_z(),
+        }
+        self.storage.update_task(
+            self.task_id,
+            metadata=merge_ai_search_meta(task, planner_draft=draft),
+        )
+        self.notify_snapshot_changed(runtime, reason="planner_draft")
+        return draft
 
     def _search_scope_from_execution_spec(self, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
         return execution_spec.get("search_scope") if isinstance(execution_spec.get("search_scope"), dict) else {}
@@ -773,6 +818,9 @@ class AiSearchAgentContext:
 
     def build_search_elements_tools(self) -> List[Any]:
         return build_search_elements_tools(self)
+
+    def build_planner_tools(self) -> List[Any]:
+        return build_planner_tools(self)
 
     def build_query_executor_tools(self) -> List[Any]:
         return build_query_executor_tools(self)

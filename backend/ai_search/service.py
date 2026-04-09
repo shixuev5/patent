@@ -166,6 +166,21 @@ class AiSearchService:
             }
         return None
 
+    def _has_planner_draft(self, task: Any) -> bool:
+        meta = get_ai_search_meta(task)
+        draft = meta.get("planner_draft")
+        return isinstance(draft, dict) and bool(str(draft.get("draft_id") or "").strip())
+
+    def _validate_drafting_outcome(self, task_id: str, snapshot: AiSearchSnapshotResponse) -> None:
+        if snapshot.phase != PHASE_DRAFTING_PLAN:
+            return
+        if snapshot.pendingQuestion or snapshot.pendingConfirmation:
+            return
+        task = self.storage.get_task(task_id)
+        if self._has_planner_draft(task):
+            return
+        raise RuntimeError("drafting_plan 结束时未产生 planner 草案、待追问或待确认状态。")
+
     def _plan_payload(self, plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(plan, dict):
             return None
@@ -1028,6 +1043,7 @@ class AiSearchService:
         initial_snapshot: AiSearchSnapshotResponse,
         previous_phase: str = "",
         config: Optional[Dict[str, Any]] = None,
+        forward_model_text: bool = True,
     ) -> AsyncIterator[str]:
         yield self._format_event("run.started", session_id, initial_snapshot.phase, {})
         if previous_phase and previous_phase != initial_snapshot.phase:
@@ -1083,7 +1099,7 @@ class AiSearchService:
                 stream_state["last_snapshot"] = snapshot
                 continue
 
-            if mode != "messages" or not self._is_root_namespace(namespace):
+            if mode != "messages" or not self._is_root_namespace(namespace) or not forward_model_text:
                 continue
 
             delta = self._extract_message_delta(raw_payload)
@@ -1104,11 +1120,17 @@ class AiSearchService:
                 },
             )
 
-    async def _emit_final_assistant_if_needed(self, task_id: str, stream_state: Dict[str, Any]) -> AsyncIterator[str]:
+    async def _emit_final_assistant_if_needed(
+        self,
+        task_id: str,
+        stream_state: Dict[str, Any],
+        *,
+        allow_model_fallback: bool = True,
+    ) -> AsyncIterator[str]:
         if stream_state["assistant_completed"]:
             return
         content = str(stream_state.get("assistant_buffer") or "")
-        if not content.strip() and stream_state.get("final_values"):
+        if allow_model_fallback and not content.strip() and stream_state.get("final_values"):
             fallback = extract_latest_ai_message(stream_state["final_values"])
             if fallback and fallback != stream_state.get("previous_assistant"):
                 content = fallback
@@ -1162,6 +1184,7 @@ class AiSearchService:
                     initial_snapshot=initial_snapshot,
                     previous_phase=previous_phase,
                     config=self._main_agent_config(thread_id, for_resume=for_resume),
+                    forward_model_text=False,
                 ):
                     yield event
                 state = None
@@ -1188,6 +1211,7 @@ class AiSearchService:
                 completion_payload = {}
 
             final_snapshot = self.get_snapshot(task.id, owner_id)
+            self._validate_drafting_outcome(task.id, final_snapshot)
             async for event in self._emit_snapshot_diff_events(
                 stream_state["last_snapshot"],
                 final_snapshot,
@@ -1196,7 +1220,11 @@ class AiSearchService:
                 yield event
             stream_state["last_snapshot"] = final_snapshot
 
-            async for event in self._emit_final_assistant_if_needed(task.id, stream_state):
+            async for event in self._emit_final_assistant_if_needed(
+                task.id,
+                stream_state,
+                allow_model_fallback=False,
+            ):
                 yield event
 
             yield self._format_event(

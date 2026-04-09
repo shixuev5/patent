@@ -11,6 +11,7 @@ from backend.routes import ai_search as ai_search_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 from backend.ai_search import service as ai_search_service_module
+from agents.ai_search.src.state import merge_ai_search_meta
 
 
 def _mount_app(monkeypatch, tmp_path):
@@ -27,6 +28,23 @@ def _mount_app(monkeypatch, tmp_path):
     app.include_router(ai_search_route.router)
     app.dependency_overrides[ai_search_route._get_current_user] = lambda: CurrentUser(user_id="guest_ai_search")
     return app, service
+
+
+def _set_planner_draft(service, session_id: str):
+    task = service.storage.get_task(session_id)
+    service.storage.update_task(
+        session_id,
+        metadata=merge_ai_search_meta(
+            task,
+            planner_draft={
+                "draft_id": "draft-1",
+                "draft_version": 1,
+                "phase": "drafting_plan",
+                "review_markdown": "# 计划",
+                "execution_spec": {},
+            },
+        ),
+    )
 
 
 def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
@@ -69,6 +87,7 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
     created = client.post("/api/ai-search/sessions")
     assert created.status_code == 200
     session_id = created.json()["sessionId"]
+    _set_planner_draft(_service, session_id)
 
     response = client.post(
         f"/api/ai-search/sessions/{session_id}/messages/stream",
@@ -77,7 +96,6 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     body = response.text
-    assert "assistant.message.completed" in body
     assert "run.completed" in body
 
     events = []
@@ -87,13 +105,9 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
         events.append(json.loads(block[6:]))
 
     assert events[0]["type"] == "run.started"
-    assert any(event["type"] == "assistant.message.started" for event in events)
-    assert any(event["type"] == "assistant.message.delta" for event in events)
-    assert any(
-        event["type"] == "assistant.message.completed"
-        and event["payload"]["content"] == "好的，我先整理检索计划。"
-        for event in events
-    )
+    assert not any(event["type"] == "assistant.message.started" for event in events)
+    assert not any(event["type"] == "assistant.message.delta" for event in events)
+    assert not any(event["type"] == "assistant.message.completed" for event in events)
     assert events[-1]["type"] == "run.completed"
 
 

@@ -10,6 +10,7 @@ from langchain.tools import ToolRuntime
 from langgraph.types import interrupt
 
 from agents.ai_search.src.execution_state import normalize_execution_plan
+from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
@@ -92,8 +93,13 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         """根据最新 gap/readiness 状态给出下一步建议。"""
         return json.dumps(context.evaluate_gap_progress_payload(plan_version), ensure_ascii=False)
 
+    def get_planner_draft() -> str:
+        """读取最近一次 planner 提交的正式计划草案。"""
+        return json.dumps(context.current_planner_draft(), ensure_ascii=False)
+
     def start_plan_drafting(runtime: ToolRuntime = None) -> str:
         """显式进入 draft plan 阶段。"""
+        context.clear_planner_draft(runtime=runtime)
         context.update_task_phase(
             PHASE_DRAFTING_PLAN,
             runtime=runtime,
@@ -103,14 +109,15 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         return "phase switched to drafting_plan"
 
-    def save_search_plan(payload_json: str, runtime: ToolRuntime = None) -> str:
+    def save_search_plan(
+        review_markdown: str,
+        execution_spec: SearchPlanExecutionSpecInput,
+        search_elements_snapshot: Dict[str, Any] | None = None,
+        runtime: ToolRuntime = None,
+    ) -> str:
         """持久化检索计划草案。"""
-        payload = extract_json_object(payload_json)
-        search_elements_snapshot = normalize_search_elements_payload(payload.get("search_elements_snapshot") or {})
-        review_markdown = str(payload.get("review_markdown") or payload.get("reviewMarkdown") or "").strip()
-        raw_execution_spec = payload.get("execution_spec") if isinstance(payload.get("execution_spec"), dict) else payload.get("executionSpec")
-        execution_spec = raw_execution_spec if isinstance(raw_execution_spec, dict) else {}
-        normalized_plan = normalize_execution_plan(execution_spec, search_elements_snapshot)
+        search_elements_snapshot = normalize_search_elements_payload(search_elements_snapshot or {})
+        normalized_plan = normalize_execution_plan(execution_spec.model_dump(mode="python"), search_elements_snapshot)
         search_scope = normalized_plan.get("search_scope") if isinstance(normalized_plan.get("search_scope"), dict) else {}
         search_scope = {
             "objective": str(search_scope.get("objective") or search_elements_snapshot.get("objective") or "").strip(),
@@ -158,6 +165,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             active_plan_version=plan_version,
             pending_confirmation_plan_version=None,
         )
+        context.clear_planner_draft(runtime=runtime)
         return json.dumps({"plan_version": plan_version}, ensure_ascii=False)
 
     def ask_user_question(
@@ -497,6 +505,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         get_search_elements,
         get_gap_context,
         evaluate_gap_progress,
+        get_planner_draft,
         start_plan_drafting,
         save_search_plan,
         ask_user_question,

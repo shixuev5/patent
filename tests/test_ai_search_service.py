@@ -15,6 +15,7 @@ stub_ai_search_agents.build_close_reader_agent = lambda: None
 stub_ai_search_agents.build_coarse_screener_agent = lambda: None
 stub_ai_search_agents.build_feature_comparer_agent = lambda: None
 stub_ai_search_agents.build_main_agent = lambda storage, task_id: None
+stub_ai_search_agents.build_planner_agent = lambda: None
 stub_ai_search_agents.build_plan_prober_agent = lambda: None
 stub_ai_search_agents.build_query_executor_agent = lambda: None
 stub_ai_search_agents.extract_latest_ai_message = lambda values: ""
@@ -106,6 +107,24 @@ def _set_phase(storage: SQLiteTaskStorage, task_id: str, phase: str, **meta_upda
         task_id,
         status=TaskStatus.PAUSED.value if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_HUMAN_DECISION} else TaskStatus.PROCESSING.value,
         metadata=merge_ai_search_meta(task, current_phase=phase, **meta_updates),
+    )
+
+
+def _set_planner_draft(storage: SQLiteTaskStorage, task_id: str, *, review_markdown: str = "# 计划") -> None:
+    task = storage.get_task(task_id)
+    assert task is not None
+    storage.update_task(
+        task_id,
+        metadata=merge_ai_search_meta(
+            task,
+            planner_draft={
+                "draft_id": "draft-1",
+                "draft_version": 1,
+                "phase": PHASE_DRAFTING_PLAN,
+                "review_markdown": review_markdown,
+                "execution_spec": _plan_record(task_id)["execution_spec_json"],
+            },
+        ),
     )
 
 
@@ -236,6 +255,7 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
 def test_stream_message_keeps_unified_flow_without_structured_claim_source(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_run_main_agent",
@@ -307,7 +327,8 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     assert snapshot.phase == PHASE_EXECUTE_SEARCH
     assert snapshot.resumeAction is not None
     assert snapshot.resumeAction["lastError"] == "timeout"
-    assert any("assistant.message.completed" in item for item in events)
+    assert not any("assistant.message.completed" in item for item in events)
+    assert any("run.completed" in item for item in events)
 
 
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
@@ -481,6 +502,7 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
 def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    _set_planner_draft(storage, created.sessionId)
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="awaiting_confirmation", title="原计划")
     )
@@ -630,9 +652,10 @@ def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkey
     assert config["configurable"]["checkpoint_id"] == "0001"
 
 
-def test_stream_message_emits_run_started_keepalive_and_assistant_completion(monkeypatch, tmp_path):
+def test_stream_message_ignores_main_agent_free_text_deltas(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    _set_planner_draft(_storage, created.sessionId)
     monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
 
     class _FakeChunk:
@@ -666,15 +689,44 @@ def test_stream_message_emits_run_started_keepalive_and_assistant_completion(mon
     assert events[0].startswith("data: ")
     assert parsed[0]["type"] == "run.started"
     assert any(item.startswith(": keepalive") for item in events)
-    assert any(event["type"] == "assistant.message.delta" for event in parsed)
-    assert any(event["type"] == "assistant.message.completed" for event in parsed)
+    assert not any(event["type"] == "assistant.message.delta" for event in parsed)
+    assert not any(event["type"] == "assistant.message.completed" for event in parsed)
     assert events[-1].startswith("data: ")
     assert "run.completed" in events[-1]
+
+
+def test_stream_message_emits_run_error_when_drafting_completes_without_draft(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    class _FakeState:
+        values = {"messages": []}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload == {"messages": [{"role": "user", "content": "请开始规划"}]}
+            if False:
+                yield None
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+
+    assert any("run.error" in item for item in events)
+    assert not any("run.completed" in item for item in events)
 
 
 def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    _set_planner_draft(_storage, created.sessionId)
 
     class _FakeState:
         values = {"messages": []}
@@ -965,6 +1017,7 @@ def test_stream_message_rejects_when_human_decision_pending(monkeypatch, tmp_pat
 def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
+    _set_planner_draft(storage, created.sessionId)
     storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
     _set_phase(
         storage,

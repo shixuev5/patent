@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import typing
+
 from agents.ai_search.src import main_agent as main_agent_module
 from agents.ai_search.src.main_agent import agent as main_agent_agent_module
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
+from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.subagents import close_reader as close_reader_module
 from agents.ai_search.src.subagents import coarse_screener as coarse_screener_module
 from agents.ai_search.src.subagents import feature_comparer as feature_comparer_module
+from agents.ai_search.src.subagents import planner as planner_module
 from agents.ai_search.src.subagents.close_reader.prompt import CLOSE_READER_SYSTEM_PROMPT, build_close_reader_prompt
 from agents.ai_search.src.subagents.coarse_screener.prompt import COARSE_SCREEN_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.feature_comparer.prompt import FEATURE_COMPARER_SYSTEM_PROMPT
+from agents.ai_search.src.subagents.planner.prompt import PLANNER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.plan_prober.prompt import PLAN_PROBER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.query_executor.prompt import QUERY_EXECUTOR_SYSTEM_PROMPT
 from agents.ai_search.src.subagents import query_executor as query_executor_module
@@ -41,6 +46,7 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
         "get_search_elements",
         "get_gap_context",
         "evaluate_gap_progress",
+        "get_planner_draft",
         "start_plan_drafting",
         "save_search_plan",
         "ask_user_question",
@@ -56,6 +62,10 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
         "list_documents",
         "complete_execution",
     }
+
+    save_search_plan = next(tool for tool in tools if getattr(tool, "__name__", "") == "save_search_plan")
+    hints = typing.get_type_hints(save_search_plan)
+    assert hints["execution_spec"] is SearchPlanExecutionSpecInput
 
 
 def test_specialists_own_domain_tools():
@@ -74,6 +84,10 @@ def test_specialists_own_domain_tools():
         str(getattr(tool, "__name__", ""))
         for tool in coarse_screener_module.build_coarse_screener_subagent(storage, task_id)["tools"]
     }
+    planner_tools = {
+        str(getattr(tool, "__name__", ""))
+        for tool in planner_module.build_planner_subagent(storage, task_id)["tools"]
+    }
     close_tools = {
         str(getattr(tool, "__name__", ""))
         for tool in close_reader_module.build_close_reader_subagent(storage, task_id)["tools"]
@@ -84,6 +98,7 @@ def test_specialists_own_domain_tools():
     }
 
     assert search_elements_tools == {"save_search_elements"}
+    assert planner_tools == {"commit_plan_draft"}
     assert "run_execution_step" in query_tools
     assert coarse_tools == {"run_coarse_screen_batch"}
     assert close_tools == {"run_close_read_batch"}
@@ -97,21 +112,30 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`collect_requirements`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`draft_plan`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
+    assert "query_blueprint_refs" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "status=complete" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "不得因为缺少申请人" in MAIN_AGENT_SYSTEM_PROMPT
 
 
 def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "`save_search_elements`" in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert "clarification_summary" in SEARCH_ELEMENTS_SYSTEM_PROMPT
+    assert '"申请人"' in SEARCH_ELEMENTS_SYSTEM_PROMPT
 
     assert "`probe_search_semantic`" in PLAN_PROBER_SYSTEM_PROMPT
     assert "overall_observation" in PLAN_PROBER_SYSTEM_PROMPT
     assert "retrieval_step_refs" in PLAN_PROBER_SYSTEM_PROMPT
     assert "signals" in PLAN_PROBER_SYSTEM_PROMPT
 
+    assert "`commit_plan_draft`" in PLANNER_SYSTEM_PROMPT
+    assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
+
     assert "`prepare_lane_queries`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "`fetch_patent_details`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "plan_change_assessment" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "next_recommendation" in QUERY_EXECUTOR_SYSTEM_PROMPT
+    assert "adjustments`: 数组" in QUERY_EXECUTOR_SYSTEM_PROMPT
 
     assert "`run_coarse_screen_batch`" in COARSE_SCREEN_SYSTEM_PROMPT
     assert "不能遗漏" in COARSE_SCREEN_SYSTEM_PROMPT
@@ -120,10 +144,13 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "claim_alignments" in CLOSE_READER_SYSTEM_PROMPT
     assert "selected" in CLOSE_READER_SYSTEM_PROMPT
     assert "rejected" in CLOSE_READER_SYSTEM_PROMPT
+    assert "follow_up_hints`: 数组" in CLOSE_READER_SYSTEM_PROMPT
 
     assert "`run_feature_compare`" in FEATURE_COMPARER_SYSTEM_PROMPT
     assert "document_roles" in FEATURE_COMPARER_SYSTEM_PROMPT
     assert "creativity_readiness" in FEATURE_COMPARER_SYSTEM_PROMPT
+    assert '"needs_more_evidence"' in FEATURE_COMPARER_SYSTEM_PROMPT
+    assert "follow_up_search_hints`: 数组" in FEATURE_COMPARER_SYSTEM_PROMPT
 
 
 def test_close_reader_dynamic_prompt_mentions_claim_alignments():

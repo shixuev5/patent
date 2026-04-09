@@ -22,6 +22,7 @@ def test_normalize_search_elements_payload_keeps_applicants_optional():
 
     assert payload["status"] == "complete"
     assert payload["applicants"] == []
+    assert "申请人" in payload["missing_items"]
     assert "未提供申请人，无法执行申请人追溯检索。" in payload["clarification_summary"]
 
 

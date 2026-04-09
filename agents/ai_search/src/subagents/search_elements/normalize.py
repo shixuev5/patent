@@ -83,6 +83,8 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
 
     if not filing_date and not priority_date and "申请日或优先权日" not in missing_items:
         missing_items.append("申请日或优先权日")
+    if not applicants and "申请人" not in missing_items:
+        missing_items.append("申请人")
 
     clarification_parts: List[str] = []
     raw_summary = str(source.get("clarification_summary") or "").strip()
