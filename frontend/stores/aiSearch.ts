@@ -105,6 +105,7 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   phase: String(summary.phase || 'collecting_requirements'),
   messages: [],
   downloadUrl: null,
+  analysisSeed: summary.analysisSeed || null,
   humanDecisionAction: null,
   currentPlan: null,
   executionTodos: [],
@@ -281,6 +282,20 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (options.activate !== false) {
         this._setCurrentSessionId(sessionId)
       }
+    },
+
+    _shouldAutoStartAnalysisSeed(sessionId: string): boolean {
+      const snapshot = this._getSnapshot(sessionId)
+      const status = String(snapshot?.analysisSeed?.status || '').trim()
+      const runtime = this._ensureRuntime(sessionId)
+      if (!snapshot || status !== 'pending') return false
+      return !runtime.streaming
+    },
+
+    _triggerAnalysisSeedIfNeeded(sessionId: string) {
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId || !this._shouldAutoStartAnalysisSeed(targetSessionId)) return
+      void this.streamAnalysisSeed(targetSessionId)
     },
 
     _getSnapshot(sessionId: string): AiSearchSnapshot | null {
@@ -625,8 +640,28 @@ export const useAiSearchStore = defineStore('aiSearch', {
           },
           body: JSON.stringify({ analysisTaskId: taskId }),
         })
-        await this.fetchSessions()
-        return String(data.sessionId || '').trim()
+        const sessionId = String(data.sessionId || '').trim()
+        if (sessionId) {
+          const createdAt = nowIso()
+          this._applySnapshot(
+            createPlaceholderSnapshot({
+              sessionId,
+              taskId: String(data.taskId || sessionId).trim(),
+              title: 'AI 检索草稿',
+              status: 'processing',
+              phase: 'drafting_plan',
+              createdAt,
+              updatedAt: createdAt,
+              analysisSeed: {
+                status: 'pending',
+                sourceTaskId: taskId,
+              },
+            }),
+            { activate: true },
+          )
+          void this.fetchSessions()
+        }
+        return sessionId
       } catch (error: any) {
         const message = error?.message || '创建 AI 检索草稿失败'
         this._setRuntimeError(this.currentSessionId, message)
@@ -636,13 +671,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async loadSession(sessionId: string, options: { activate?: boolean } = {}) {
+    async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
       if (options.activate) {
         this.activateSession(targetSessionId)
       }
-      this.loading = true
+      if (!options.silent) {
+        this.loading = true
+      }
       this._ensureRuntime(targetSessionId).error = ''
       try {
         const token = await this._ensureToken()
@@ -654,10 +691,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
           token,
         })
         this._applySnapshot(data, options)
+        if (options.autoStartSeed !== false) {
+          this._triggerAnalysisSeedIfNeeded(targetSessionId)
+        }
       } catch (error: any) {
         this._setRuntimeError(targetSessionId, error?.message || '加载会话失败')
       } finally {
-        this.loading = false
+        if (!options.silent) {
+          this.loading = false
+        }
       }
     },
 
@@ -882,6 +924,36 @@ export const useAiSearchStore = defineStore('aiSearch', {
       } finally {
         this._setStreaming(sessionId, false)
         await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
+      }
+    },
+
+    async streamAnalysisSeed(sessionId: string) {
+      const targetSessionId = String(sessionId || '').trim()
+      const snapshot = this._getSnapshot(targetSessionId)
+      if (!targetSessionId || !snapshot) return
+      if (String(snapshot.analysisSeed?.status || '').trim() !== 'pending') return
+      this._setRuntimeError(targetSessionId, '')
+      this._setStreaming(targetSessionId, true)
+      snapshot.analysisSeed = {
+        ...(snapshot.analysisSeed || {}),
+        status: 'running',
+      }
+      this._startPendingAssistant(targetSessionId, 'drafting_plan', true)
+      try {
+        await this._postStream(
+          `/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}/analysis-seed/stream`,
+          {},
+        )
+      } catch (error: any) {
+        this._setRuntimeError(targetSessionId, error?.message || '生成 AI 检索草稿失败')
+        this._resetTransientRunState(targetSessionId)
+      } finally {
+        this._setStreaming(targetSessionId, false)
+        await this.loadSession(targetSessionId, {
+          activate: targetSessionId === this.currentSessionId,
+          silent: true,
+          autoStartSeed: false,
+        })
       }
     },
 

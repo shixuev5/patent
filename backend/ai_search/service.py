@@ -166,6 +166,17 @@ class AiSearchService:
             }
         return None
 
+    def _analysis_seed(self, task: Any) -> Optional[Dict[str, Any]]:
+        meta = get_ai_search_meta(task)
+        if str(meta.get("source_type") or "").strip() != "analysis":
+            return None
+        status = str(meta.get("analysis_seed_status") or "").strip() or "completed"
+        payload: Dict[str, Any] = {"status": status}
+        source_task_id = str(meta.get("source_task_id") or "").strip()
+        if source_task_id:
+            payload["sourceTaskId"] = source_task_id
+        return payload
+
     def _has_planner_draft(self, task: Any) -> bool:
         meta = get_ai_search_meta(task)
         draft = meta.get("planner_draft")
@@ -365,6 +376,7 @@ class AiSearchService:
             phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
             messages=self._display_messages(messages),
             downloadUrl=self._snapshot_download_url(task),
+            analysisSeed=self._analysis_seed(task),
             humanDecisionAction=self._human_decision_action(task),
             currentPlan=current_plan,
             executionTodos=self._execution_todos(task),
@@ -540,7 +552,7 @@ class AiSearchService:
         )
         return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
 
-    def create_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
+    def _prepare_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
         _enforce_daily_quota(owner_id, task_type=TaskType.AI_SEARCH.value)
         analysis_task = self.storage.get_task(str(analysis_task_id or "").strip())
         if (
@@ -599,6 +611,8 @@ class AiSearchService:
                 source_pn=source_pn or None,
                 source_title=source_title or None,
                 seed_mode="analysis",
+                analysis_seed_prompt=seed_prompt,
+                analysis_seed_status="pending",
             ),
             status=phase_to_task_status(PHASE_DRAFTING_PLAN),
             progress=phase_progress(PHASE_DRAFTING_PLAN),
@@ -624,6 +638,17 @@ class AiSearchService:
             "chat",
             seed_user_message,
         )
+        return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
+
+    def _complete_analysis_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
+        task = self._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+        seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
+        if not seed_prompt:
+            raise HTTPException(status_code=409, detail="当前会话缺少 AI 分析种子上下文。")
+        source_task_id = str(meta.get("source_task_id") or "").strip()
+        source_pn = str(meta.get("source_pn") or "").strip() or None
 
         try:
             result = self._run_main_agent(
@@ -638,7 +663,11 @@ class AiSearchService:
         except Exception as exc:
             self.storage.update_task(
                 task.id,
-                metadata=merge_ai_search_meta(self.storage.get_task(task.id), current_phase=PHASE_FAILED),
+                metadata=merge_ai_search_meta(
+                    self.storage.get_task(task.id),
+                    current_phase=PHASE_FAILED,
+                    analysis_seed_status="failed",
+                ),
                 status=phase_to_task_status(PHASE_FAILED),
                 progress=phase_progress(PHASE_FAILED),
                 current_step=phase_step(PHASE_FAILED),
@@ -652,10 +681,14 @@ class AiSearchService:
                 task_type=TaskType.AI_SEARCH.value,
                 success=False,
                 message="从 AI 分析创建 AI 检索草稿失败",
-                payload={"analysis_task_id": str(analysis_task.id), "error": str(exc)},
+                payload={"analysis_task_id": source_task_id or None, "error": str(exc)},
             )
             raise
 
+        self.storage.update_task(
+            task.id,
+            metadata=merge_ai_search_meta(self.storage.get_task(task.id), analysis_seed_status="completed"),
+        )
         snapshot = self.get_snapshot(task.id, owner_id)
         emit_system_log(
             category="task_execution",
@@ -666,7 +699,7 @@ class AiSearchService:
             success=True,
             message="已从 AI 分析创建 AI 检索草稿",
             payload={
-                "analysis_task_id": str(analysis_task.id),
+                "analysis_task_id": source_task_id or None,
                 "analysis_pn": source_pn or None,
                 "phase": snapshot.phase,
             },
@@ -680,7 +713,7 @@ class AiSearchService:
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
                 message="AI 检索草稿已进入计划确认阶段",
-                payload={"analysis_task_id": str(analysis_task.id), "plan_version": snapshot.pendingConfirmation.get("planVersion") if snapshot.pendingConfirmation else None},
+                payload={"analysis_task_id": source_task_id or None, "plan_version": snapshot.pendingConfirmation.get("planVersion") if snapshot.pendingConfirmation else None},
             )
         if snapshot.phase == PHASE_AWAITING_USER_ANSWER:
             emit_system_log(
@@ -691,9 +724,17 @@ class AiSearchService:
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
                 message="AI 检索草稿仍需用户补充信息",
-                payload={"analysis_task_id": str(analysis_task.id), "question": snapshot.pendingQuestion.get("prompt") if snapshot.pendingQuestion else None},
+                payload={"analysis_task_id": source_task_id or None, "question": snapshot.pendingQuestion.get("prompt") if snapshot.pendingQuestion else None},
             )
-        return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
+        return snapshot
+
+    def create_session_from_analysis_seed(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
+        return self._prepare_session_from_analysis(owner_id, analysis_task_id)
+
+    def create_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
+        created = self._prepare_session_from_analysis(owner_id, analysis_task_id)
+        self._complete_analysis_seed(owner_id, created.sessionId)
+        return created
 
     def list_sessions(self, owner_id: str) -> AiSearchSessionListResponse:
         tasks = [
@@ -1486,6 +1527,107 @@ class AiSearchService:
             post_run=_post_run,
         ):
             yield event
+
+    async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        task = self._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        if str(meta.get("source_type") or "").strip() != "analysis":
+            raise HTTPException(status_code=409, detail="当前会话不是从 AI 分析创建的检索草稿。")
+        if str(meta.get("analysis_seed_status") or "").strip() != "pending":
+            raise HTTPException(status_code=409, detail="当前检索草稿已生成，不能重复初始化。")
+        phase = str(meta.get("current_phase") or PHASE_DRAFTING_PLAN)
+        seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
+        if not seed_prompt:
+            raise HTTPException(status_code=409, detail="当前会话缺少 AI 分析种子上下文。")
+
+        run_error: Optional[Dict[str, Any]] = None
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+        async for event in self._stream_main_agent_execution(
+            task=task,
+            owner_id=owner_id,
+            thread_id=thread_id,
+            payload={"messages": [{"role": "user", "content": seed_prompt}]},
+            previous_phase=phase,
+        ):
+            if event.startswith("data: "):
+                try:
+                    payload = json.loads(event[6:])
+                except Exception:
+                    payload = {}
+                if str(payload.get("type") or "").strip() == "run.error":
+                    maybe_error = payload.get("payload")
+                    run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索草稿失败。"}
+            yield event
+
+        if run_error is not None:
+            failure_message = str(run_error.get("message") or "生成 AI 检索草稿失败。").strip()
+            self.storage.update_task(
+                task.id,
+                metadata=merge_ai_search_meta(
+                    self.storage.get_task(task.id),
+                    current_phase=PHASE_FAILED,
+                    analysis_seed_status="failed",
+                ),
+                status=phase_to_task_status(PHASE_FAILED),
+                progress=phase_progress(PHASE_FAILED),
+                current_step=phase_step(PHASE_FAILED),
+                error_message=f"生成 AI 检索草稿失败：{failure_message}",
+            )
+            emit_system_log(
+                category="task_execution",
+                event_name="ai_search_seed_failed",
+                owner_id=owner_id,
+                task_id=task.id,
+                task_type=TaskType.AI_SEARCH.value,
+                success=False,
+                message="从 AI 分析创建 AI 检索草稿失败",
+                payload={"analysis_task_id": str(meta.get("source_task_id") or "").strip() or None, "error": failure_message},
+            )
+            return
+
+        self.storage.update_task(
+            task.id,
+            metadata=merge_ai_search_meta(self.storage.get_task(task.id), analysis_seed_status="completed"),
+        )
+        snapshot = self.get_snapshot(task.id, owner_id)
+        source_task_id = str(meta.get("source_task_id") or "").strip() or None
+        source_pn = str(meta.get("source_pn") or "").strip() or None
+        emit_system_log(
+            category="task_execution",
+            event_name="ai_search_seed_created",
+            owner_id=owner_id,
+            task_id=task.id,
+            task_type=TaskType.AI_SEARCH.value,
+            success=True,
+            message="已从 AI 分析创建 AI 检索草稿",
+            payload={
+                "analysis_task_id": source_task_id,
+                "analysis_pn": source_pn,
+                "phase": snapshot.phase,
+            },
+        )
+        if snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION:
+            emit_system_log(
+                category="task_execution",
+                event_name="ai_search_seed_plan_ready",
+                owner_id=owner_id,
+                task_id=task.id,
+                task_type=TaskType.AI_SEARCH.value,
+                success=True,
+                message="AI 检索草稿已进入计划确认阶段",
+                payload={"analysis_task_id": source_task_id, "plan_version": snapshot.pendingConfirmation.get("planVersion") if snapshot.pendingConfirmation else None},
+            )
+        if snapshot.phase == PHASE_AWAITING_USER_ANSWER:
+            emit_system_log(
+                category="task_execution",
+                event_name="ai_search_seed_question_required",
+                owner_id=owner_id,
+                task_id=task.id,
+                task_type=TaskType.AI_SEARCH.value,
+                success=True,
+                message="AI 检索草稿仍需用户补充信息",
+                payload={"analysis_task_id": source_task_id, "question": snapshot.pendingQuestion.get("prompt") if snapshot.pendingQuestion else None},
+            )
 
     async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self._get_owned_session_task(session_id, owner_id)

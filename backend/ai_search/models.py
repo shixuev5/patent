@@ -78,6 +78,7 @@ class AiSearchSnapshotResponse(BaseModel):
     phase: str
     messages: List[Dict[str, Any]]
     downloadUrl: Optional[str] = None
+    analysisSeed: Optional[Dict[str, Any]] = None
     humanDecisionAction: Optional[Dict[str, Any]] = None
     currentPlan: Optional[Dict[str, Any]] = None
     executionTodos: List[Dict[str, Any]] = Field(default_factory=list)

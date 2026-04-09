@@ -11,6 +11,7 @@ from backend.routes import ai_search as ai_search_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 from backend.ai_search import service as ai_search_service_module
+from backend.ai_search.models import AiSearchCreateSessionResponse
 from agents.ai_search.src.state import merge_ai_search_meta
 
 
@@ -127,6 +128,45 @@ def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):
     session_id = created.json()["sessionId"]
 
     response = client.post(f"/api/ai-search/sessions/{session_id}/resume/stream")
+
+    assert response.status_code == 200
+    assert "run.completed" in response.text
+
+
+def test_create_from_analysis_endpoint_only_creates_seeded_session(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        service,
+        "create_session_from_analysis_seed",
+        lambda owner_id, analysis_task_id: AiSearchCreateSessionResponse(
+            sessionId="search-seed-1",
+            taskId="search-seed-1",
+            threadId="ai-search-search-seed-1",
+        ),
+    )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/ai-search/sessions/from-analysis", json={"analysisTaskId": "analysis-1"})
+
+    assert response.status_code == 200
+    assert response.json()["sessionId"] == "search-seed-1"
+
+
+def test_analysis_seed_endpoint_streams_seed_run(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    async def _fake_seed(session_id: str, owner_id: str):
+        assert owner_id == "guest_ai_search"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+
+    monkeypatch.setattr(service, "stream_analysis_seed", _fake_seed)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/ai-search/sessions")
+    session_id = created.json()["sessionId"]
+
+    response = client.post(f"/api/ai-search/sessions/{session_id}/analysis-seed/stream")
 
     assert response.status_code == 200
     assert "run.completed" in response.text

@@ -16,6 +16,7 @@ export interface AiSearchSnapshot {
   phase: string
   messages: Array<Record<string, any>>
   downloadUrl?: string | null
+  analysisSeed?: Record<string, any> | null
   humanDecisionAction?: Record<string, any> | null
   currentPlan?: Record<string, any> | null
   executionTodos: Array<Record<string, any>>

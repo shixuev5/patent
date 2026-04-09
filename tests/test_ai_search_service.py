@@ -1366,8 +1366,9 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         },
     )
 
-    def _fake_planning(task_id, thread_id, payload):
+    def _fake_planning(task_id, thread_id, payload, *, for_resume=False):
         assert thread_id == f"ai-search-{task_id}"
+        assert for_resume is False
         assert "AI 分析结果" in payload["messages"][0]["content"]
         storage.create_ai_search_plan(
             _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")
@@ -1472,3 +1473,72 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
     assert AiSearchAgentContext(storage, created.sessionId).current_search_elements()["status"] == "needs_answer"
     assert visible_kinds == ["chat", "question"]
     assert (task.metadata.get("ai_search") or {}).get("seed_mode") == "analysis"
+
+
+def test_stream_analysis_seed_advances_seeded_session(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(
+        storage,
+        owner_id="guest_ai_search",
+        tmp_path=tmp_path,
+        analysis_payload=_build_analysis_payload(include_semantic=False),
+        patent_payload={
+            **_build_patent_payload(),
+            "claims": [
+                {
+                    "claim_id": "1",
+                    "claim_type": "independent",
+                    "claim_text": "一种异常检测系统，包括处理器和存储器。",
+                    "parent_claim_ids": [],
+                }
+            ],
+        },
+    )
+    created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+
+    def _fake_planning(task_id, thread_id, payload, *, for_resume=False):
+        assert thread_id == f"ai-search-{task_id}"
+        assert for_resume is False
+        assert "AI 分析结果" in payload["messages"][0]["content"]
+        storage.create_ai_search_plan(
+            _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")
+        )
+        storage.create_ai_search_message(
+            {
+                "message_id": "msg-plan-confirmation",
+                "task_id": task_id,
+                "plan_version": 1,
+                "role": "assistant",
+                "kind": "plan_confirmation",
+                "content": _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")["review_markdown"],
+                "stream_status": "completed",
+                "metadata": {
+                    "plan_version": 1,
+                    "confirmation_label": "实施此计划",
+                },
+            }
+        )
+        task = storage.get_task(task_id)
+        storage.update_task(
+            task_id,
+            metadata=merge_ai_search_meta(
+                task,
+                current_phase=PHASE_AWAITING_PLAN_CONFIRMATION,
+                active_plan_version=1,
+                pending_confirmation_plan_version=1,
+                analysis_seed_status="completed",
+            ),
+            status=TaskStatus.PAUSED.value,
+        )
+        return {"interrupted": True, "values": {"messages": []}}
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
+    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索草稿已生成，请确认计划。")
+
+    events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert any("run.completed" in item for item in events)
+    assert snapshot.pendingConfirmation is not None
+    assert snapshot.analysisSeed is not None
+    assert snapshot.analysisSeed["status"] == "completed"

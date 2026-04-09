@@ -45,7 +45,7 @@ async def create_ai_search_session_from_analysis(
     request: AiSearchCreateFromAnalysisRequest,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
-    return service.create_session_from_analysis(current_user.user_id, request.analysisTaskId)
+    return service.create_session_from_analysis_seed(current_user.user_id, request.analysisTaskId)
 
 
 @router.get("/api/ai-search/sessions/{session_id}")
@@ -98,6 +98,18 @@ async def stream_ai_search_resume(
 ):
     return StreamingResponse(
         service.stream_resume(session_id, current_user.user_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/api/ai-search/sessions/{session_id}/analysis-seed/stream")
+async def stream_ai_search_analysis_seed(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return StreamingResponse(
+        service.stream_analysis_seed(session_id, current_user.user_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
