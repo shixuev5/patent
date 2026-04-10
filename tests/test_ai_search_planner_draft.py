@@ -72,15 +72,15 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     )
     payload = json.loads(result)
     draft = context.current_planner_draft()
-    fetched = json.loads(main_tools["get_planner_draft"]())
+    fetched = json.loads(main_tools["get_planning_context"]())
 
     assert payload["draft_id"] == draft["draft_id"]
     assert draft["draft_version"] == 1
     assert draft["execution_spec"]["sub_plans"][0]["retrieval_steps"][0]["query_blueprint_refs"] == ["b1"]
-    assert fetched["draft_id"] == draft["draft_id"]
-    assert fetched["probe_findings"]["signals"][0]["type"] == "semantic_probe"
+    assert fetched["planner_draft"]["draft_id"] == draft["draft_id"]
+    assert fetched["planner_draft"]["probe_findings"]["signals"][0]["type"] == "semantic_probe"
 
     context.clear_planner_draft()
 
     assert context.current_planner_draft() == {}
-    assert json.loads(main_tools["get_planner_draft"]()) == {}
+    assert json.loads(main_tools["get_planning_context"]())["planner_draft"] == {}

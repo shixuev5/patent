@@ -161,37 +161,37 @@ def _seed_gap_results(storage: SQLiteTaskStorage, task_id: str = "task-gap", *, 
     return run_id, feature_batch_id
 
 
-def test_get_gap_context_reads_latest_close_read_and_feature_compare_results(tmp_path):
+def test_get_planning_context_reads_latest_close_read_and_feature_compare_results(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_context.db")
     _create_task(storage)
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
-    get_gap_context = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_gap_context"
+    get_planning_context = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
     )
 
-    payload = json.loads(get_gap_context())
+    payload = json.loads(get_planning_context())
 
-    assert payload["close_read_result"]["limitation_gaps"][0]["limitation_id"] == "1-L2"
-    assert payload["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
+    assert payload["gap_context"]["close_read_result"]["limitation_gaps"][0]["limitation_id"] == "1-L2"
+    assert payload["gap_context"]["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
 
 
-def test_evaluate_gap_progress_recommends_replan_when_gaps_remain(tmp_path):
+def test_get_planning_context_reports_replan_when_gaps_remain(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_eval.db")
     _create_task(storage)
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
-    evaluate_gap_progress = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "evaluate_gap_progress"
+    get_planning_context = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
     )
 
-    payload = json.loads(evaluate_gap_progress())
+    payload = json.loads(get_planning_context())
 
-    assert payload["should_continue_search"] is True
-    assert payload["recommended_action"] == "replan_search"
-    assert payload["coverage_gap_count"] == 1
+    assert payload["gap_progress"]["should_continue_search"] is True
+    assert payload["gap_progress"]["recommended_action"] == "replan_search"
+    assert payload["gap_progress"]["coverage_gap_count"] == 1
 
 
 def test_build_execution_step_directive_includes_gap_context(tmp_path):
@@ -373,7 +373,7 @@ def test_evaluate_exhaustion_payload_triggers_human_takeover_on_no_progress_limi
     assert payload["should_request_decision"] is True
 
 
-def test_complete_execution_is_blocked_when_gap_replan_is_required(tmp_path):
+def test_complete_session_is_blocked_when_gap_replan_is_required(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_block.db")
     _create_task(storage)
     run_id = _create_run(storage, "task-gap", plan_version=1, phase="feature_comparison")
@@ -391,11 +391,11 @@ def test_complete_execution_is_blocked_when_gap_replan_is_required(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    complete_execution = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_execution"
+    complete_session = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_session"
     )
 
-    payload = json.loads(complete_execution(plan_version=1))
+    payload = json.loads(complete_session(plan_version=1))
 
     assert payload["blocked"] is True
     assert payload["reason"] == "gap_replan_required"
@@ -456,7 +456,7 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
     assert any(str(item.get("content") or "") == "仍需补一篇组合文献。" for item in chat_messages)
 
 
-def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
+def test_advance_workflow_begin_execution_sets_resume_metadata_on_todo(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_resume_todo.db")
     _create_task(storage)
     storage.create_ai_search_plan(
@@ -468,7 +468,7 @@ def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
             "ai_search": {
                 "current_phase": "drafting_plan",
                 "active_plan_version": 1,
-                "todos": [
+                "draft_todos": [
                     {"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：执行首轮宽召回", "status": "pending"},
                     {"todo_id": "plan_1:sub_plan_1:step_2", "sub_plan_id": "sub_plan_1", "step_id": "step_2", "phase_key": "execute_search", "title": "执行步骤 2", "description": "目的：收窄检索", "status": "pending"},
                 ],
@@ -477,19 +477,21 @@ def test_begin_execution_sets_resume_metadata_on_todo(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    begin_execution = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "begin_execution"
+    advance_workflow = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "advance_workflow"
     )
-    read_todos = next(tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "read_todos")
+    get_execution_context = next(tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_execution_context")
 
-    begin_execution(plan_version=1)
-    payload = json.loads(read_todos())
-    execute_todo = next(item for item in payload["todos"] if item["todo_id"] == "plan_1:sub_plan_1:step_1")
+    advance_workflow(action="begin_execution", plan_version=1)
+    payload = json.loads(get_execution_context(plan_version=1))
+    todos = context._current_todos()
+    execute_todo = next(item for item in todos if item["todo_id"] == "plan_1:sub_plan_1:step_1")
 
     assert execute_todo["status"] == "in_progress"
     assert execute_todo["resume_from"] == "run_execution_step.load"
     assert execute_todo["attempt_count"] == 1
     assert execute_todo["started_at"]
+    assert payload["current_todo"]["todo_id"] == "plan_1:sub_plan_1:step_1"
 
 
 def test_run_execution_step_commit_persists_step_summary(tmp_path):
@@ -681,7 +683,7 @@ def test_conditional_todo_stays_dormant_when_signals_do_not_match(tmp_path):
     assert context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1") == []
 
 
-def test_complete_execution_step_materializes_and_starts_conditional_todo(tmp_path):
+def test_advance_workflow_step_completed_materializes_and_starts_conditional_todo(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_conditional_complete.db")
     _create_task(storage)
     storage.create_ai_search_plan(_plan_record("task-gap", include_conditional=True))
@@ -723,13 +725,13 @@ def test_complete_execution_step_materializes_and_starts_conditional_todo(tmp_pa
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    complete_execution_step = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_execution_step"
+    advance_workflow = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "advance_workflow"
     )
-    payload = json.loads(complete_execution_step(plan_version=1))
+    payload = json.loads(advance_workflow(action="step_completed", plan_version=1))
     todos = {item["todo_id"]: item for item in context._current_todos()}
 
-    assert payload["todo_id"] == "plan_1:sub_plan_1:step_2"
+    assert payload["activated_todo_ids"] == ["plan_1:sub_plan_1:step_2"]
     assert todos["plan_1:sub_plan_1:step_1"]["status"] == "completed"
     assert todos["plan_1:sub_plan_1:step_2"]["status"] == "in_progress"
     assert context.current_todo()["todo_id"] == "plan_1:sub_plan_1:step_2"

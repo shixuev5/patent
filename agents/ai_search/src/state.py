@@ -76,27 +76,23 @@ ACTIVE_EXECUTION_PHASES = {
 
 MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     PHASE_COLLECTING_REQUIREMENTS: {
-        "tools": {"read_todos", "write_todos", "get_search_elements", "get_gap_context", "evaluate_gap_progress", "start_plan_drafting", "ask_user_question"},
+        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "request_user_question"},
         "subagents": {"search-elements"},
     },
     PHASE_DRAFTING_PLAN: {
         "tools": {
-            "read_todos",
-            "write_todos",
-            "get_search_elements",
-            "get_gap_context",
-            "evaluate_gap_progress",
-            "get_planner_draft",
+            "get_session_context",
+            "get_planning_context",
             "start_plan_drafting",
-            "save_search_plan",
+            "publish_planner_draft",
             "request_plan_confirmation",
-            "begin_execution",
-            "ask_user_question",
+            "advance_workflow",
+            "request_user_question",
         },
         "subagents": {"search-elements", "plan-prober", "planner"},
     },
     PHASE_AWAITING_USER_ANSWER: {
-        "tools": {"ask_user_question"},
+        "tools": {"request_user_question"},
         "subagents": set(),
     },
     PHASE_AWAITING_PLAN_CONFIRMATION: {
@@ -105,38 +101,32 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     },
     PHASE_EXECUTE_SEARCH: {
         "tools": {
-            "read_todos",
-            "get_execution_state",
-            "get_gap_context",
-            "evaluate_gap_progress",
-            "list_documents",
-            "start_execution_step",
-            "complete_execution_step",
-            "pause_execution_for_replan",
-            "start_coarse_screen",
+            "get_session_context",
+            "get_execution_context",
             "start_plan_drafting",
-            "complete_execution",
+            "advance_workflow",
+            "complete_session",
         },
         "subagents": {"query-executor"},
     },
     PHASE_COARSE_SCREEN: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_close_read", "start_plan_drafting", "complete_execution"},
+        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
         "subagents": {"coarse-screener"},
     },
     PHASE_CLOSE_READ: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_feature_comparison", "start_plan_drafting", "complete_execution"},
+        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
         "subagents": {"close-reader"},
     },
     PHASE_FEATURE_COMPARISON: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents", "complete_execution", "start_plan_drafting"},
+        "tools": {"get_session_context", "get_execution_context", "complete_session", "advance_workflow", "start_plan_drafting"},
         "subagents": {"feature-comparer"},
     },
     PHASE_AWAITING_HUMAN_DECISION: {
-        "tools": {"read_todos", "get_search_elements", "get_gap_context", "evaluate_gap_progress", "list_documents", "start_plan_drafting", "complete_execution"},
+        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "complete_session"},
         "subagents": set(),
     },
     PHASE_COMPLETED: {
-        "tools": {"read_todos", "get_execution_state", "get_gap_context", "evaluate_gap_progress", "list_documents"},
+        "tools": {"get_session_context", "get_execution_context"},
         "subagents": set(),
     },
     PHASE_FAILED: {

@@ -108,11 +108,11 @@ def test_planner_phase_protocol_blocks_plan_save_tool():
         storage=_StubStorage(PHASE_DRAFTING_PLAN),
         task_id="task-planner",
     )
-    request = SimpleNamespace(tool_call={"name": "save_search_plan", "id": "call-planner-1", "args": {}})
+    request = SimpleNamespace(tool_call={"name": "publish_planner_draft", "id": "call-planner-1", "args": {}})
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result.content == "工具 `save_search_plan` 不能在阶段 `drafting_plan` 由 `planner` 调用。"
+    assert result.content == "工具 `publish_planner_draft` 不能在阶段 `drafting_plan` 由 `planner` 调用。"
 
 
 def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
@@ -134,7 +134,7 @@ def test_main_agent_allows_interrupt_tool_resume_in_awaiting_user_answer():
         storage=_StubStorage(PHASE_AWAITING_USER_ANSWER),
         task_id="task-4",
     )
-    request = SimpleNamespace(tool_call={"name": "ask_user_question", "id": "call-7", "args": {}})
+    request = SimpleNamespace(tool_call={"name": "request_user_question", "id": "call-7", "args": {}})
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 

@@ -261,6 +261,21 @@ def _seed_run_todos(
     run_id = _create_run(storage, task_id, plan_version=plan_version, phase=phase)
     if todos:
         storage.replace_ai_search_retrieval_todos(run_id, task_id, plan_version, todos)
+        active_todo = next((item for item in todos if str(item.get("todo_id") or "").strip() == str(active_todo_id or "").strip()), None)
+        if isinstance(active_todo, dict) and str(active_todo.get("status") or "").strip() == "failed":
+            _create_pending_action(
+                storage,
+                task_id,
+                "resume",
+                run_id=run_id,
+                payload={
+                    "todo_id": str(active_todo.get("todo_id") or "").strip(),
+                    "resume_from": str(active_todo.get("resume_from") or "").strip(),
+                    "last_error": str(active_todo.get("last_error") or "").strip(),
+                    "attempt_count": int(active_todo.get("attempt_count") or 0),
+                    "checkpoint_ref": {"thread_id": f"ai-search-{task_id}"},
+                },
+            )
     if active_todo_id:
         storage.update_ai_search_run(task_id, run_id, active_retrieval_todo_id=active_todo_id, **(run_updates or {}))
     elif run_updates:
@@ -275,6 +290,8 @@ def _create_pending_action(
     action_type: str,
     *,
     run_id: str | None = None,
+    plan_version: int | None = None,
+    source: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> str:
     action_id = f"{task_id}-{action_type}-action"
@@ -283,8 +300,10 @@ def _create_pending_action(
             "action_id": action_id,
             "task_id": task_id,
             "run_id": run_id,
+            "plan_version": plan_version,
             "action_type": action_type,
             "status": "pending",
+            "source": source,
             "payload": payload or {},
         }
     )

@@ -204,11 +204,16 @@ CREATE TABLE IF NOT EXISTS ai_search_pending_actions (
     action_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
     run_id TEXT,
+    plan_version INTEGER,
     action_type TEXT NOT NULL,
     status TEXT NOT NULL,
+    source TEXT,
     payload_json TEXT,
+    resolution_json TEXT,
     created_at TEXT NOT NULL,
-    resolved_at TEXT
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    superseded_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ai_search_checkpoints (

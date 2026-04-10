@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import typing
-
 from agents.ai_search.src import main_agent as main_agent_module
 from agents.ai_search.src.main_agent import agent as main_agent_agent_module
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
-from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.subagents import close_reader as close_reader_module
 from agents.ai_search.src.subagents import coarse_screener as coarse_screener_module
 from agents.ai_search.src.subagents import feature_comparer as feature_comparer_module
@@ -41,31 +38,16 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
 
     tool_names = {str(getattr(tool, "__name__", "")) for tool in tools}
     assert tool_names == {
-        "read_todos",
-        "write_todos",
-        "get_search_elements",
-        "get_gap_context",
-        "evaluate_gap_progress",
-        "get_planner_draft",
+        "get_session_context",
+        "get_planning_context",
+        "get_execution_context",
         "start_plan_drafting",
-        "save_search_plan",
-        "ask_user_question",
+        "publish_planner_draft",
+        "request_user_question",
         "request_plan_confirmation",
-        "begin_execution",
-        "start_execution_step",
-        "complete_execution_step",
-        "pause_execution_for_replan",
-        "start_coarse_screen",
-        "start_close_read",
-        "start_feature_comparison",
-        "get_execution_state",
-        "list_documents",
-        "complete_execution",
+        "advance_workflow",
+        "complete_session",
     }
-
-    save_search_plan = next(tool for tool in tools if getattr(tool, "__name__", "") == "save_search_plan")
-    hints = typing.get_type_hints(save_search_plan)
-    assert hints["execution_spec"] is SearchPlanExecutionSpecInput
 
 
 def test_specialists_own_domain_tools():
@@ -112,12 +94,11 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`collect_requirements`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`draft_plan`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
-    assert "query_blueprint_refs" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "conditional" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "outcome_signals" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_planning_context" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_execution_context" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "advance_workflow" in MAIN_AGENT_SYSTEM_PROMPT
     assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "status=complete" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "不得因为缺少申请人" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "缺少申请人、申请日、优先权日时" in MAIN_AGENT_SYSTEM_PROMPT
 
 
 def test_specialist_prompts_describe_allowed_tools_and_required_fields():

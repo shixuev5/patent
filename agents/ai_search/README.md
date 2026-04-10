@@ -31,7 +31,7 @@
 
 它负责：
 
-- 维护步骤级 `executionTodos` 和当前 `todo_id`
+- 读取会话 / 规划 / 执行三个聚合上下文 read model
 - 调 `search-elements` 整理检索要素
 - 必要时调 `plan-prober` 做轻量预检
 - 生成并确认检索计划
@@ -47,27 +47,41 @@
 - `execute_search`
 - `coarse_screen`
 - `close_read`
-- `generate_feature_comparison`
+- `feature_comparison`
 - `completed`
 
-执行阶段切换使用显式入口工具：
+主 agent 工具现在分成两类：
 
-- `start_plan_drafting`
+- 读模型工具：
+  - `get_session_context`
+  - `get_planning_context`
+  - `get_execution_context`
+- 高层命令工具：
+  - `start_plan_drafting`
+  - `publish_planner_draft`
+  - `request_user_question`
+  - `request_plan_confirmation`
+  - `advance_workflow`
+  - `complete_session`
+
+执行阶段切换不再依赖多个细粒度写工具，而是统一由 `advance_workflow` 承接：
+
 - `begin_execution`
-- `start_execution_step`
-- `complete_execution_step`
-- `pause_execution_for_replan`
-- `start_coarse_screen`
-- `start_close_read`
-- `start_feature_comparison`
-- `complete_execution`
+- `step_completed`
+- `request_replan`
+- `enter_coarse_screen`
+- `enter_close_read`
+- `enter_feature_comparison`
+- `enter_drafting_plan`
 
-主 agent 还有一个确定性决策工具：
+确定性编排逻辑下沉到 [orchestration](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/orchestration)：
 
-- `evaluate_gap_progress`
-  读取最新 `close_read_result` / `feature_compare_result`，输出 `should_continue_search` 和 `recommended_action`
+- `phase_machine`
+- `planning_runtime`
+- `execution_runtime`
+- `session_views`
 
-这里不再存在独立 Python orchestrator。service 不再硬编码“先检索再筛选再精读”的流程。
+这些模块负责 phase 合法迁移、planner draft 发布、todo 物化与条件激活、round / exhaustion 判定，以及 session / planning / execution read model 聚合。
 
 用户态执行进度使用业务自定义的 `executionTodos`：
 
@@ -110,7 +124,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `close-reader` 会输出 `limitation_coverage`、`limitation_gaps` 和 `follow_up_hints`
 - 若模型没有给出足够证据，系统会用关键词命中生成 fallback passages
 - `feature-comparer` 统一消费 `key_passages_json`，并输出 `difference_highlights`、`coverage_gaps`、`follow_up_search_hints` 和 `creativity_readiness`
-- 主 agent 可以通过 `get_gap_context` 读取这些结果，驱动下一轮检索修正
+- 主 agent 通过 `get_planning_context` / `get_execution_context` 中的 `gap_context` 和 `gap_progress` 驱动下一轮检索修正
 - `build_gap_strategy_seed` 会把最新 limitation / coverage gaps 转成下一轮可直接消费的 `targeted_gaps` 和 `seed_batch_specs`
 - `query-executor` 会在当前 step directive 中拿到最新 gap 上下文，用于优先围绕 targeted gaps 调整当前步骤
 - `prepare_lane_queries` 会把 `seed_terms`、`pivot_terms`、`gap_type`、`claim_id`、`limitation_id` 编进当前执行查询
@@ -157,3 +171,16 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - 读取 snapshot
 
 它不承担策略编排职责。
+
+当前 backend 协作者拆分为：
+
+- [session_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/session_service.py)
+  处理 create/list/update/delete 与 ownership 校验。
+- [analysis_seed_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/analysis_seed_service.py)
+  处理 analysis artifact 加载、seeded prompt 构建、seeded session 初始化与补全。
+- [agent_run_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/agent_run_service.py)
+  处理 main-agent / feature-comparer 调用、checkpoint 恢复、SSE 流事件。
+- [snapshot_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/snapshot_service.py)
+  聚合 snapshot、当前 plan/run/messages/documents 的 read model。
+- [artifacts_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/artifacts_service.py)
+  处理 terminal report / bundle / download url。
