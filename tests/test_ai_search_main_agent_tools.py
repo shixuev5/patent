@@ -99,6 +99,11 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "advance_workflow" in MAIN_AGENT_SYSTEM_PROMPT
     assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
     assert "缺少申请人、申请日、优先权日时" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "异常处理与防死循环" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "私下决策检查清单" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "不要向用户输出思维链" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "同一执行上下文下最多重试 2 次" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "越权零容忍" in MAIN_AGENT_SYSTEM_PROMPT
 
 
 def test_specialist_prompts_describe_allowed_tools_and_required_fields():
