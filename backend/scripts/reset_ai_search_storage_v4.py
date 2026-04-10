@@ -1,5 +1,5 @@
 """
-Destructively reset AI search storage for the V4 schema.
+Destructively reset AI search storage for the current schema.
 """
 
 from __future__ import annotations
@@ -20,6 +20,15 @@ from backend.storage.sqlite_storage import SQLiteTaskStorage
 BackendType = Literal["sqlite", "d1"]
 
 AI_SEARCH_TABLES = (
+    "ai_search_pending_actions",
+    "ai_search_feature_compare_results",
+    "ai_search_close_read_results",
+    "ai_search_batch_documents",
+    "ai_search_batches",
+    "ai_search_document_decisions",
+    "ai_search_execution_summaries",
+    "ai_search_retrieval_todos",
+    "ai_search_runs",
     "ai_search_messages",
     "ai_search_plans",
     "ai_search_documents",
@@ -83,7 +92,7 @@ def _reset(storage: Any, backend: BackendType) -> dict[str, Any]:
 
 
 def _parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reset AI search tables and sessions for V4 schema.")
+    parser = argparse.ArgumentParser(description="Reset AI search tables and sessions for the current schema.")
     parser.add_argument("--backend", choices=("sqlite", "d1"), required=True)
     parser.add_argument("--sqlite-path", default=None)
     return parser.parse_args(list(argv) if argv is not None else None)

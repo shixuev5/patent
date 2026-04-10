@@ -21,6 +21,8 @@ class AiSearchCreateSessionResponse(BaseModel):
     sessionId: str
     taskId: str
     threadId: str
+    reused: bool = False
+    sourceTaskId: Optional[str] = None
 
 
 class AiSearchCreateFromAnalysisRequest(BaseModel):
@@ -33,6 +35,8 @@ class AiSearchSessionSummary(BaseModel):
     title: str
     status: str
     phase: str
+    sourceTaskId: Optional[str] = None
+    sourceType: Optional[str] = None
     pinned: bool = False
     activePlanVersion: Optional[int] = None
     selectedDocumentCount: int = 0
@@ -75,16 +79,10 @@ class AiSearchFeatureComparisonRequest(BaseModel):
 
 class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
-    phase: str
-    messages: List[Dict[str, Any]]
-    downloadUrl: Optional[str] = None
+    run: Dict[str, Any]
+    conversation: Dict[str, Any]
+    plan: Dict[str, Any]
+    retrieval: Dict[str, Any]
+    analysis: Dict[str, Any]
+    artifacts: Dict[str, Any]
     analysisSeed: Optional[Dict[str, Any]] = None
-    humanDecisionAction: Optional[Dict[str, Any]] = None
-    currentPlan: Optional[Dict[str, Any]] = None
-    executionTodos: List[Dict[str, Any]] = Field(default_factory=list)
-    candidateDocuments: List[Dict[str, Any]] = Field(default_factory=list)
-    selectedDocuments: List[Dict[str, Any]] = Field(default_factory=list)
-    featureComparison: Optional[Dict[str, Any]] = None
-    pendingQuestion: Optional[Dict[str, Any]] = None
-    pendingConfirmation: Optional[Dict[str, Any]] = None
-    resumeAction: Optional[Dict[str, Any]] = None

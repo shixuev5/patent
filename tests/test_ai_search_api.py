@@ -143,6 +143,8 @@ def test_create_from_analysis_endpoint_only_creates_seeded_session(monkeypatch, 
             sessionId="search-seed-1",
             taskId="search-seed-1",
             threadId="ai-search-search-seed-1",
+            reused=True,
+            sourceTaskId=analysis_task_id,
         ),
     )
 
@@ -151,6 +153,8 @@ def test_create_from_analysis_endpoint_only_creates_seeded_session(monkeypatch, 
 
     assert response.status_code == 200
     assert response.json()["sessionId"] == "search-seed-1"
+    assert response.json()["reused"] is True
+    assert response.json()["sourceTaskId"] == "analysis-1"
 
 
 def test_analysis_seed_endpoint_streams_seed_run(monkeypatch, tmp_path):

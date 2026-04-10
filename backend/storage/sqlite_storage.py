@@ -123,6 +123,7 @@ class SQLiteTaskStorage:
             ("replaced_by_token_hash", "replaced_by_token_hash TEXT"),
         ],
         "ai_search_documents": [
+            ("run_id", "run_id TEXT"),
             ("publication_date", "publication_date TEXT"),
             ("application_date", "application_date TEXT"),
             ("primary_ipc", "primary_ipc TEXT"),
@@ -290,12 +291,25 @@ class SQLiteTaskStorage:
 
     def _init_database(self):
         with self._get_connection() as conn:
-            conn.executescript(self.CREATE_TABLES_SQL)
+            deferred_statements: List[str] = []
+            for statement in self.CREATE_TABLES_SQL.split(";"):
+                sql = statement.strip()
+                if not sql:
+                    continue
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError as exc:
+                    if sql.upper().startswith("CREATE INDEX") and "no such column" in str(exc).lower():
+                        deferred_statements.append(sql)
+                        continue
+                    raise
             for table_name, required_columns in self.REQUIRED_COLUMNS.items():
                 existing_columns = self._get_existing_columns(conn, table_name)
                 for column_name, ddl in required_columns:
                     if column_name not in existing_columns:
                         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+            for sql in deferred_statements:
+                conn.execute(sql)
             patent_analysis_columns = self._get_existing_columns(conn, "patent_analyses")
             if "sha256" in patent_analysis_columns:
                 conn.execute(
@@ -423,6 +437,17 @@ class SQLiteTaskStorage:
             return to_utc_z(value, naive_strategy="utc")
         return value
 
+    @staticmethod
+    def _normalize_usage_timestamp(value: Any, *, field: str) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, datetime) and str(value).strip() == "":
+            return None
+        normalized = to_utc_z(value, naive_strategy="utc")
+        if normalized is None:
+            raise ValueError(f"Invalid task_llm_usage timestamp for {field}: {value}")
+        return normalized
+
     def create_task(self, task: Task) -> Task:
         with self._get_connection() as conn:
             conn.execute(
@@ -531,11 +556,11 @@ class SQLiteTaskStorage:
             "estimated_cost_cny": float(usage.get("estimated_cost_cny") or 0),
             "price_missing": 1 if usage.get("price_missing") else 0,
             "model_breakdown_json": self._encode_metadata(usage.get("model_breakdown_json") or {}),
-            "first_usage_at": str(usage.get("first_usage_at") or "").strip() or None,
-            "last_usage_at": str(usage.get("last_usage_at") or "").strip() or None,
+            "first_usage_at": self._normalize_usage_timestamp(usage.get("first_usage_at"), field="first_usage_at"),
+            "last_usage_at": self._normalize_usage_timestamp(usage.get("last_usage_at"), field="last_usage_at"),
             "currency": str(usage.get("currency") or "CNY").strip() or "CNY",
-            "created_at": str(usage.get("created_at") or utc_now_z()),
-            "updated_at": str(usage.get("updated_at") or utc_now_z()),
+            "created_at": self._normalize_usage_timestamp(usage.get("created_at") or utc_now_z(), field="created_at"),
+            "updated_at": self._normalize_usage_timestamp(usage.get("updated_at") or utc_now_z(), field="updated_at"),
         }
         if not payload["task_id"] or not payload["owner_id"] or not payload["task_type"]:
             return False
@@ -2399,8 +2424,553 @@ class SQLiteTaskStorage:
             ).fetchall()
         return [self._row_to_ai_search_plan(row) for row in rows]
 
+    def _row_to_ai_search_run(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "run_id": row["run_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "phase": row["phase"],
+            "status": row["status"],
+            "active_retrieval_todo_id": row["active_retrieval_todo_id"],
+            "active_batch_id": row["active_batch_id"],
+            "selected_document_count": int(row["selected_document_count"] or 0),
+            "human_decision_state": self._parse_metadata(row["human_decision_state"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "completed_at": row["completed_at"],
+        }
+
+    def create_ai_search_run(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "run_id": str(record.get("run_id") or "").strip(),
+            "task_id": str(record.get("task_id") or "").strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "phase": str(record.get("phase") or "").strip(),
+            "status": str(record.get("status") or "").strip(),
+            "active_retrieval_todo_id": str(record.get("active_retrieval_todo_id") or "").strip() or None,
+            "active_batch_id": str(record.get("active_batch_id") or "").strip() or None,
+            "selected_document_count": int(record.get("selected_document_count") or 0),
+            "human_decision_state": self._encode_json_value(record.get("human_decision_state") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+            "updated_at": str(record.get("updated_at") or utc_now_z()),
+            "completed_at": record.get("completed_at"),
+        }
+        if not payload["run_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["phase"] or not payload["status"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_runs (
+                    run_id, task_id, plan_version, phase, status,
+                    active_retrieval_todo_id, active_batch_id, selected_document_count,
+                    human_decision_state, created_at, updated_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["run_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["phase"],
+                    payload["status"],
+                    payload["active_retrieval_todo_id"],
+                    payload["active_batch_id"],
+                    payload["selected_document_count"],
+                    payload["human_decision_state"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                    payload["completed_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_ai_search_run(self, task_id: str, run_id: Optional[str] = None, *, plan_version: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        if run_id:
+            sql = "SELECT * FROM ai_search_runs WHERE task_id = ? AND run_id = ? LIMIT 1"
+            params: tuple[Any, ...] = (task_id, str(run_id))
+        elif plan_version is not None:
+            sql = """
+                SELECT *
+                FROM ai_search_runs
+                WHERE task_id = ? AND plan_version = ?
+                ORDER BY updated_at DESC, run_id DESC
+                LIMIT 1
+            """
+            params = (task_id, int(plan_version))
+        else:
+            sql = """
+                SELECT *
+                FROM ai_search_runs
+                WHERE task_id = ?
+                ORDER BY updated_at DESC, run_id DESC
+                LIMIT 1
+            """
+            params = (task_id,)
+        with self._get_connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._row_to_ai_search_run(row) if row else None
+
+    def list_ai_search_runs(self, task_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_runs
+                WHERE task_id = ?
+                ORDER BY updated_at DESC, run_id DESC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_ai_search_run(row) for row in rows]
+
+    def update_ai_search_run(self, task_id: str, run_id: str, **kwargs) -> bool:
+        allowed_fields = {
+            "phase",
+            "status",
+            "active_retrieval_todo_id",
+            "active_batch_id",
+            "selected_document_count",
+            "human_decision_state",
+            "updated_at",
+            "completed_at",
+        }
+        updates = {key: kwargs[key] for key in kwargs if key in allowed_fields}
+        if not updates:
+            return False
+        updates.setdefault("updated_at", utc_now_z())
+        for key in list(updates.keys()):
+            if key == "human_decision_state":
+                updates[key] = self._encode_json_value(updates[key] or {})
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [task_id, str(run_id)]
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE ai_search_runs SET {set_clause} WHERE task_id = ? AND run_id = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def _row_to_ai_search_retrieval_todo(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "todo_id": row["todo_id"],
+            "run_id": row["run_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "sub_plan_id": row["sub_plan_id"],
+            "step_id": row["step_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "attempt_count": int(row["attempt_count"] or 0),
+            "last_error": row["last_error"] or "",
+            "resume_from": row["resume_from"] or "",
+            "state": self._parse_metadata(row["state_json"]),
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def replace_ai_search_retrieval_todos(self, run_id: str, task_id: str, plan_version: int, todos: List[Dict[str, Any]]) -> int:
+        now = utc_now_z()
+        values = []
+        for item in todos:
+            todo_id = str(item.get("todo_id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not todo_id or not title:
+                continue
+            values.append(
+                (
+                    todo_id,
+                    run_id,
+                    task_id,
+                    int(plan_version),
+                    str(item.get("sub_plan_id") or "").strip() or None,
+                    str(item.get("step_id") or "").strip() or None,
+                    title,
+                    str(item.get("description") or "").strip(),
+                    str(item.get("status") or "pending").strip() or "pending",
+                    int(item.get("attempt_count") or 0),
+                    str(item.get("last_error") or "").strip() or None,
+                    str(item.get("resume_from") or "").strip() or None,
+                    self._encode_json_value(item.get("state") or {}),
+                    item.get("started_at"),
+                    item.get("completed_at"),
+                    str(item.get("created_at") or now),
+                    str(item.get("updated_at") or now),
+                )
+            )
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM ai_search_retrieval_todos WHERE run_id = ?", (run_id,))
+            if not values:
+                conn.commit()
+                return 0
+            cursor = conn.executemany(
+                """
+                INSERT INTO ai_search_retrieval_todos (
+                    todo_id, run_id, task_id, plan_version, sub_plan_id, step_id,
+                    title, description, status, attempt_count, last_error, resume_from,
+                    state_json, started_at, completed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_ai_search_retrieval_todos(self, run_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_retrieval_todos
+                WHERE run_id = ?
+                ORDER BY created_at ASC, todo_id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        return [self._row_to_ai_search_retrieval_todo(row) for row in rows]
+
+    def get_ai_search_retrieval_todo(self, run_id: str, todo_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_retrieval_todos
+                WHERE run_id = ? AND todo_id = ?
+                LIMIT 1
+                """,
+                (run_id, todo_id),
+            ).fetchone()
+        return self._row_to_ai_search_retrieval_todo(row) if row else None
+
+    def update_ai_search_retrieval_todo(self, run_id: str, todo_id: str, **kwargs) -> bool:
+        allowed_fields = {
+            "status",
+            "attempt_count",
+            "last_error",
+            "resume_from",
+            "state_json",
+            "started_at",
+            "completed_at",
+            "updated_at",
+        }
+        updates = {}
+        for key, value in kwargs.items():
+            if key not in allowed_fields:
+                continue
+            if key == "state_json":
+                updates[key] = self._encode_json_value(value or {})
+            else:
+                updates[key] = value
+        if not updates:
+            return False
+        updates.setdefault("updated_at", utc_now_z())
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [run_id, todo_id]
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE ai_search_retrieval_todos SET {set_clause} WHERE run_id = ? AND todo_id = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def _row_to_ai_search_execution_summary(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "summary_id": row["summary_id"],
+            "run_id": row["run_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "todo_id": row["todo_id"],
+            "step_id": row["step_id"],
+            "sub_plan_id": row["sub_plan_id"],
+            "result_summary": row["result_summary"] or "",
+            "adjustments": self._parse_metadata(row["adjustments_json"]),
+            "plan_change_assessment": self._parse_metadata(row["plan_change_assessment_json"]),
+            "next_recommendation": row["next_recommendation"] or "",
+            "candidate_pool_size": int(row["candidate_pool_size"] or 0),
+            "new_unique_candidates": int(row["new_unique_candidates"] or 0),
+            "metadata": self._parse_metadata(row["metadata_json"]),
+            "created_at": row["created_at"],
+        }
+
+    def create_ai_search_execution_summary(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "summary_id": str(record.get("summary_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip(),
+            "task_id": str(record.get("task_id") or "").strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "todo_id": str(record.get("todo_id") or "").strip(),
+            "step_id": str(record.get("step_id") or "").strip() or None,
+            "sub_plan_id": str(record.get("sub_plan_id") or "").strip() or None,
+            "result_summary": str(record.get("result_summary") or "").strip() or None,
+            "adjustments_json": self._encode_json_value(record.get("adjustments") or []),
+            "plan_change_assessment_json": self._encode_json_value(record.get("plan_change_assessment") or {}),
+            "next_recommendation": str(record.get("next_recommendation") or "").strip() or None,
+            "candidate_pool_size": int(record.get("candidate_pool_size") or 0),
+            "new_unique_candidates": int(record.get("new_unique_candidates") or 0),
+            "metadata_json": self._encode_json_value(record.get("metadata") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["summary_id"] or not payload["run_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["todo_id"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_execution_summaries (
+                    summary_id, run_id, task_id, plan_version, todo_id, step_id, sub_plan_id,
+                    result_summary, adjustments_json, plan_change_assessment_json, next_recommendation,
+                    candidate_pool_size, new_unique_candidates, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["summary_id"],
+                    payload["run_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["todo_id"],
+                    payload["step_id"],
+                    payload["sub_plan_id"],
+                    payload["result_summary"],
+                    payload["adjustments_json"],
+                    payload["plan_change_assessment_json"],
+                    payload["next_recommendation"],
+                    payload["candidate_pool_size"],
+                    payload["new_unique_candidates"],
+                    payload["metadata_json"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_ai_search_execution_summaries(self, run_id: str, *, sub_plan_id: str = "") -> List[Dict[str, Any]]:
+        where = ["run_id = ?"]
+        params: List[Any] = [run_id]
+        if sub_plan_id:
+            where.append("sub_plan_id = ?")
+            params.append(sub_plan_id)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM ai_search_execution_summaries
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at ASC, summary_id ASC
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_ai_search_execution_summary(row) for row in rows]
+
+    def _row_to_ai_search_batch(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "batch_id": row["batch_id"],
+            "run_id": row["run_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "batch_type": row["batch_type"],
+            "status": row["status"],
+            "workspace_dir": row["workspace_dir"],
+            "input_hash": row["input_hash"],
+            "loaded_at": row["loaded_at"],
+            "committed_at": row["committed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_ai_search_batch(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "batch_id": str(record.get("batch_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip(),
+            "task_id": str(record.get("task_id") or "").strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "batch_type": str(record.get("batch_type") or "").strip(),
+            "status": str(record.get("status") or "").strip(),
+            "workspace_dir": str(record.get("workspace_dir") or "").strip() or None,
+            "input_hash": str(record.get("input_hash") or "").strip() or None,
+            "loaded_at": str(record.get("loaded_at") or utc_now_z()),
+            "committed_at": record.get("committed_at"),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+            "updated_at": str(record.get("updated_at") or utc_now_z()),
+        }
+        if not payload["batch_id"] or not payload["run_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["batch_type"] or not payload["status"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_batches (
+                    batch_id, run_id, task_id, plan_version, batch_type, status,
+                    workspace_dir, input_hash, loaded_at, committed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["batch_id"],
+                    payload["run_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["batch_type"],
+                    payload["status"],
+                    payload["workspace_dir"],
+                    payload["input_hash"],
+                    payload["loaded_at"],
+                    payload["committed_at"],
+                    payload["created_at"],
+                    payload["updated_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_ai_search_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ai_search_batches WHERE batch_id = ? LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+        return self._row_to_ai_search_batch(row) if row else None
+
+    def get_latest_ai_search_batch(self, run_id: str, batch_type: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_batches
+                WHERE run_id = ? AND batch_type = ?
+                ORDER BY created_at DESC, batch_id DESC
+                LIMIT 1
+                """,
+                (run_id, batch_type),
+            ).fetchone()
+        return self._row_to_ai_search_batch(row) if row else None
+
+    def update_ai_search_batch(self, batch_id: str, **kwargs) -> bool:
+        allowed_fields = {"status", "workspace_dir", "input_hash", "loaded_at", "committed_at", "updated_at"}
+        updates = {key: kwargs[key] for key in kwargs if key in allowed_fields}
+        if not updates:
+            return False
+        updates.setdefault("updated_at", utc_now_z())
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [batch_id]
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE ai_search_batches SET {set_clause} WHERE batch_id = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def replace_ai_search_batch_documents(self, batch_id: str, run_id: str, document_ids: List[str]) -> int:
+        values = [
+            (batch_id, run_id, document_id, index)
+            for index, document_id in enumerate(document_ids, start=1)
+            if str(document_id or "").strip()
+        ]
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM ai_search_batch_documents WHERE batch_id = ?", (batch_id,))
+            if not values:
+                conn.commit()
+                return 0
+            cursor = conn.executemany(
+                """
+                INSERT INTO ai_search_batch_documents (batch_id, run_id, document_id, ord)
+                VALUES (?, ?, ?, ?)
+                """,
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_ai_search_batch_documents(self, batch_id: str) -> List[str]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT document_id
+                FROM ai_search_batch_documents
+                WHERE batch_id = ?
+                ORDER BY ord ASC, document_id ASC
+                """,
+                (batch_id,),
+            ).fetchall()
+        return [str(row["document_id"] or "").strip() for row in rows if str(row["document_id"] or "").strip()]
+
+    def _row_to_ai_search_pending_action(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "action_id": row["action_id"],
+            "task_id": row["task_id"],
+            "run_id": row["run_id"],
+            "action_type": row["action_type"],
+            "status": row["status"],
+            "payload": self._parse_metadata(row["payload_json"]),
+            "created_at": row["created_at"],
+            "resolved_at": row["resolved_at"],
+        }
+
+    def create_ai_search_pending_action(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "action_id": str(record.get("action_id") or "").strip(),
+            "task_id": str(record.get("task_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip() or None,
+            "action_type": str(record.get("action_type") or "").strip(),
+            "status": str(record.get("status") or "pending").strip() or "pending",
+            "payload_json": self._encode_json_value(record.get("payload") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+            "resolved_at": record.get("resolved_at"),
+        }
+        if not payload["action_id"] or not payload["task_id"] or not payload["action_type"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_pending_actions (
+                    action_id, task_id, run_id, action_type, status, payload_json, created_at, resolved_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["action_id"],
+                    payload["task_id"],
+                    payload["run_id"],
+                    payload["action_type"],
+                    payload["status"],
+                    payload["payload_json"],
+                    payload["created_at"],
+                    payload["resolved_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_ai_search_pending_action(self, task_id: str, action_type: str, *, status: str = "pending") -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_pending_actions
+                WHERE task_id = ? AND action_type = ? AND status = ?
+                ORDER BY created_at DESC, action_id DESC
+                LIMIT 1
+                """,
+                (task_id, action_type, status),
+            ).fetchone()
+        return self._row_to_ai_search_pending_action(row) if row else None
+
+    def resolve_ai_search_pending_action(self, action_id: str, *, status: str = "resolved") -> bool:
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE ai_search_pending_actions
+                SET status = ?, resolved_at = ?
+                WHERE action_id = ?
+                """,
+                (status, utc_now_z(), action_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def _row_to_ai_search_document(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {
+            "run_id": row["run_id"] if "run_id" in row.keys() else None,
             "document_id": row["document_id"],
             "task_id": row["task_id"],
             "plan_version": int(row["plan_version"]),
@@ -2437,6 +3007,19 @@ class SQLiteTaskStorage:
             "updated_at": row["updated_at"],
         }
 
+    def _resolve_ai_search_run_id(self, task_id: str, plan_version_or_run_id: Any) -> Optional[str]:
+        if isinstance(plan_version_or_run_id, str) and not str(plan_version_or_run_id).isdigit():
+            return str(plan_version_or_run_id).strip() or None
+        if isinstance(plan_version_or_run_id, str) and str(plan_version_or_run_id).strip():
+            try:
+                plan_version_or_run_id = int(str(plan_version_or_run_id).strip())
+            except Exception:
+                return str(plan_version_or_run_id).strip() or None
+        if isinstance(plan_version_or_run_id, int):
+            run = self.get_ai_search_run(task_id, plan_version=int(plan_version_or_run_id))
+            return str(run.get("run_id") or "").strip() if run else None
+        return None
+
     def upsert_ai_search_documents(self, records: List[Dict[str, Any]]) -> int:
         if not records:
             return 0
@@ -2444,13 +3027,17 @@ class SQLiteTaskStorage:
         values = []
         for record in records:
             document_id = str(record.get("document_id", "")).strip()
+            run_id = str(record.get("run_id", "")).strip()
             task_id = str(record.get("task_id", "")).strip()
             plan_version = int(record.get("plan_version") or 0)
             stage = str(record.get("stage", "")).strip()
-            if not document_id or not task_id or plan_version <= 0 or not stage:
+            if not run_id and task_id and plan_version > 0:
+                run_id = str(self._resolve_ai_search_run_id(task_id, plan_version) or "").strip()
+            if not document_id or not run_id or not task_id or plan_version <= 0 or not stage:
                 continue
             values.append(
                 (
+                    run_id,
                     document_id,
                     task_id,
                     plan_version,
@@ -2493,15 +3080,15 @@ class SQLiteTaskStorage:
             cursor = conn.executemany(
                 """
                 INSERT INTO ai_search_documents (
-                    document_id, task_id, plan_version, pn, title, abstract,
+                    run_id, document_id, task_id, plan_version, pn, title, abstract,
                     publication_date, application_date, primary_ipc, document_type, claim_ids_json, evidence_locations_json,
                     evidence_summary, report_row_order,
                     ipc_cpc_json, source_batches_json, source_lanes_json, source_sub_plans_json, source_steps_json, stage, score, agent_reason,
                     key_passages_json, user_pinned, user_removed, coarse_status, coarse_reason,
                     coarse_screened_at, close_read_status, close_read_reason, close_read_at,
                     detail_fingerprint, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(document_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, document_id) DO UPDATE SET
                     pn = excluded.pn,
                     title = excluded.title,
                     abstract = excluded.abstract,
@@ -2542,11 +3129,14 @@ class SQLiteTaskStorage:
     def list_ai_search_documents(
         self,
         task_id: str,
-        plan_version: int,
+        plan_version: Any,
         stages: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        where = ["task_id = ?", "plan_version = ?"]
-        params: List[Any] = [task_id, int(plan_version)]
+        run_id = self._resolve_ai_search_run_id(task_id, plan_version)
+        if not run_id:
+            return []
+        where = ["task_id = ?", "run_id = ?"]
+        params: List[Any] = [task_id, run_id]
         if stages:
             placeholders = ", ".join("?" for _ in stages)
             where.append(f"stage IN ({placeholders})")
@@ -2573,6 +3163,9 @@ class SQLiteTaskStorage:
         return [self._row_to_ai_search_document(row) for row in rows]
 
     def update_ai_search_document(self, task_id: str, plan_version: int, document_id: str, **kwargs) -> bool:
+        run_id = self._resolve_ai_search_run_id(task_id, plan_version)
+        if not run_id:
+            return False
         allowed_fields = {
             "stage",
             "score",
@@ -2620,53 +3213,152 @@ class SQLiteTaskStorage:
                 f"""
                 UPDATE ai_search_documents
                 SET {set_clause}
-                WHERE task_id = ? AND plan_version = ? AND document_id = ?
+                WHERE task_id = ? AND run_id = ? AND document_id = ?
                 """,
-                values,
+                list(updates.values()) + [task_id, run_id, document_id],
             )
             conn.commit()
             return cursor.rowcount > 0
 
+    def create_ai_search_document_decision(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "decision_id": str(record.get("decision_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip(),
+            "batch_id": str(record.get("batch_id") or "").strip() or None,
+            "task_id": str(record.get("task_id") or "").strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "document_id": str(record.get("document_id") or "").strip(),
+            "decision_stage": str(record.get("decision_stage") or "").strip(),
+            "decision": str(record.get("decision") or "").strip(),
+            "reason": str(record.get("reason") or "").strip() or None,
+            "metadata_json": self._encode_json_value(record.get("metadata") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["decision_id"] or not payload["run_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["document_id"] or not payload["decision_stage"] or not payload["decision"]:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_document_decisions (
+                    decision_id, run_id, batch_id, task_id, plan_version, document_id,
+                    decision_stage, decision, reason, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["decision_id"],
+                    payload["run_id"],
+                    payload["batch_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["document_id"],
+                    payload["decision_stage"],
+                    payload["decision"],
+                    payload["reason"],
+                    payload["metadata_json"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def list_ai_search_document_decisions(self, run_id: str, *, decision_stage: str = "") -> List[Dict[str, Any]]:
+        where = ["run_id = ?"]
+        params: List[Any] = [run_id]
+        if decision_stage:
+            where.append("decision_stage = ?")
+            params.append(decision_stage)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM ai_search_document_decisions
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at ASC, decision_id ASC
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "decision_id": row["decision_id"],
+                "run_id": row["run_id"],
+                "batch_id": row["batch_id"],
+                "task_id": row["task_id"],
+                "plan_version": int(row["plan_version"]),
+                "document_id": row["document_id"],
+                "decision_stage": row["decision_stage"],
+                "decision": row["decision"],
+                "reason": row["reason"],
+                "metadata": self._parse_metadata(row["metadata_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def _row_to_ai_search_feature_comparison(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {
-            "feature_comparison_id": row["feature_comparison_id"],
+            "feature_comparison_id": row["result_id"],
+            "result_id": row["result_id"],
+            "run_id": row["run_id"],
+            "batch_id": row["batch_id"],
             "task_id": row["task_id"],
             "plan_version": int(row["plan_version"]),
-            "status": row["status"],
-            "table_json": self._parse_metadata(row["table_json"]),
+            "status": "completed",
+            "table_json": self._parse_metadata(row["table_rows_json"]),
+            "table_rows": self._parse_metadata(row["table_rows_json"]),
             "summary_markdown": row["summary_markdown"],
+            "overall_findings": row["overall_findings"],
+            "coverage_gaps": self._parse_metadata(row["coverage_gaps_json"]),
+            "difference_highlights": self._parse_metadata(row["difference_highlights_json"]),
+            "follow_up_search_hints": self._parse_metadata(row["follow_up_search_hints_json"]),
+            "creativity_readiness": row["creativity_readiness"],
+            "readiness_rationale": row["readiness_rationale"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
 
     def create_ai_search_feature_comparison(self, record: Dict[str, Any]) -> bool:
         payload = {
-            "feature_comparison_id": str(record.get("feature_comparison_id", "")).strip(),
+            "result_id": str(record.get("feature_comparison_id") or record.get("result_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip(),
+            "batch_id": str(record.get("batch_id") or "").strip(),
             "task_id": str(record.get("task_id", "")).strip(),
             "plan_version": int(record.get("plan_version") or 0),
-            "status": str(record.get("status", "")).strip(),
-            "table_json": self._encode_json_value(record.get("table_json") or []),
+            "table_rows_json": self._encode_json_value(record.get("table_rows") or record.get("table_json") or []),
             "summary_markdown": record.get("summary_markdown"),
+            "overall_findings": record.get("overall_findings"),
+            "coverage_gaps_json": self._encode_json_value(record.get("coverage_gaps") or []),
+            "difference_highlights_json": self._encode_json_value(record.get("difference_highlights") or []),
+            "follow_up_search_hints_json": self._encode_json_value(record.get("follow_up_search_hints") or []),
+            "creativity_readiness": record.get("creativity_readiness"),
+            "readiness_rationale": record.get("readiness_rationale"),
             "created_at": str(record.get("created_at") or utc_now_z()),
             "updated_at": str(record.get("updated_at") or utc_now_z()),
         }
-        if not payload["feature_comparison_id"] or not payload["task_id"] or payload["plan_version"] <= 0 or not payload["status"]:
+        if not payload["result_id"] or not payload["run_id"] or not payload["batch_id"] or not payload["task_id"] or payload["plan_version"] <= 0:
             return False
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO ai_search_feature_comparisons (
-                    feature_comparison_id, task_id, plan_version, status, table_json,
-                    summary_markdown, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO ai_search_feature_compare_results (
+                    result_id, run_id, batch_id, task_id, plan_version, table_rows_json,
+                    summary_markdown, overall_findings, coverage_gaps_json, difference_highlights_json,
+                    follow_up_search_hints_json, creativity_readiness, readiness_rationale, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    payload["feature_comparison_id"],
+                    payload["result_id"],
+                    payload["run_id"],
+                    payload["batch_id"],
                     payload["task_id"],
                     payload["plan_version"],
-                    payload["status"],
-                    payload["table_json"],
+                    payload["table_rows_json"],
                     payload["summary_markdown"],
+                    payload["overall_findings"],
+                    payload["coverage_gaps_json"],
+                    payload["difference_highlights_json"],
+                    payload["follow_up_search_hints_json"],
+                    payload["creativity_readiness"],
+                    payload["readiness_rationale"],
                     payload["created_at"],
                     payload["updated_at"],
                 ),
@@ -2675,44 +3367,129 @@ class SQLiteTaskStorage:
             return cursor.rowcount > 0
 
     def list_ai_search_feature_comparisons(self, task_id: str, plan_version: int) -> List[Dict[str, Any]]:
+        run_id = self._resolve_ai_search_run_id(task_id, plan_version)
+        if not run_id:
+            return []
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT *
-                FROM ai_search_feature_comparisons
-                WHERE task_id = ? AND plan_version = ?
-                ORDER BY updated_at DESC, feature_comparison_id DESC
+                FROM ai_search_feature_compare_results
+                WHERE task_id = ? AND run_id = ?
+                ORDER BY updated_at DESC, result_id DESC
                 """,
-                (task_id, int(plan_version)),
+                (task_id, run_id),
             ).fetchall()
         return [self._row_to_ai_search_feature_comparison(row) for row in rows]
 
     def get_ai_search_feature_comparison(
         self,
         task_id: str,
-        plan_version: int,
+        plan_version: Any,
         feature_comparison_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
+        run_id = self._resolve_ai_search_run_id(task_id, plan_version)
+        if not run_id:
+            return None
         if feature_comparison_id:
             sql = """
                 SELECT *
-                FROM ai_search_feature_comparisons
-                WHERE task_id = ? AND plan_version = ? AND feature_comparison_id = ?
+                FROM ai_search_feature_compare_results
+                WHERE task_id = ? AND run_id = ? AND result_id = ?
                 LIMIT 1
             """
-            params = (task_id, int(plan_version), feature_comparison_id)
+            params = (task_id, run_id, feature_comparison_id)
         else:
             sql = """
                 SELECT *
-                FROM ai_search_feature_comparisons
-                WHERE task_id = ? AND plan_version = ?
-                ORDER BY updated_at DESC, feature_comparison_id DESC
+                FROM ai_search_feature_compare_results
+                WHERE task_id = ? AND run_id = ?
+                ORDER BY updated_at DESC, result_id DESC
                 LIMIT 1
             """
-            params = (task_id, int(plan_version))
+            params = (task_id, run_id)
         with self._get_connection() as conn:
             row = conn.execute(sql, params).fetchone()
         return self._row_to_ai_search_feature_comparison(row) if row else None
+
+    def create_ai_search_close_read_result(self, record: Dict[str, Any]) -> bool:
+        payload = {
+            "result_id": str(record.get("result_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip(),
+            "batch_id": str(record.get("batch_id") or "").strip(),
+            "task_id": str(record.get("task_id") or "").strip(),
+            "plan_version": int(record.get("plan_version") or 0),
+            "coverage_summary": record.get("coverage_summary"),
+            "selection_summary": record.get("selection_summary"),
+            "follow_up_hints_json": self._encode_json_value(record.get("follow_up_hints") or []),
+            "document_assessments_json": self._encode_json_value(record.get("document_assessments") or []),
+            "key_passages_json": self._encode_json_value(record.get("key_passages") or []),
+            "claim_alignments_json": self._encode_json_value(record.get("claim_alignments") or []),
+            "limitation_coverage_json": self._encode_json_value(record.get("limitation_coverage") or []),
+            "limitation_gaps_json": self._encode_json_value(record.get("limitation_gaps") or []),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["result_id"] or not payload["run_id"] or not payload["batch_id"] or not payload["task_id"] or payload["plan_version"] <= 0:
+            return False
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO ai_search_close_read_results (
+                    result_id, run_id, batch_id, task_id, plan_version, coverage_summary, selection_summary,
+                    follow_up_hints_json, document_assessments_json, key_passages_json, claim_alignments_json,
+                    limitation_coverage_json, limitation_gaps_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["result_id"],
+                    payload["run_id"],
+                    payload["batch_id"],
+                    payload["task_id"],
+                    payload["plan_version"],
+                    payload["coverage_summary"],
+                    payload["selection_summary"],
+                    payload["follow_up_hints_json"],
+                    payload["document_assessments_json"],
+                    payload["key_passages_json"],
+                    payload["claim_alignments_json"],
+                    payload["limitation_coverage_json"],
+                    payload["limitation_gaps_json"],
+                    payload["created_at"],
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_latest_ai_search_close_read_result(self, run_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ai_search_close_read_results
+                WHERE run_id = ?
+                ORDER BY created_at DESC, result_id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "result_id": row["result_id"],
+            "run_id": row["run_id"],
+            "batch_id": row["batch_id"],
+            "task_id": row["task_id"],
+            "plan_version": int(row["plan_version"]),
+            "coverage_summary": row["coverage_summary"],
+            "selection_summary": row["selection_summary"],
+            "follow_up_hints": self._parse_metadata(row["follow_up_hints_json"]),
+            "document_assessments": self._parse_metadata(row["document_assessments_json"]),
+            "key_passages": self._parse_metadata(row["key_passages_json"]),
+            "claim_alignments": self._parse_metadata(row["claim_alignments_json"]),
+            "limitation_coverage": self._parse_metadata(row["limitation_coverage_json"]),
+            "limitation_gaps": self._parse_metadata(row["limitation_gaps_json"]),
+            "created_at": row["created_at"],
+        }
 
     def _row_to_ai_search_checkpoint(self, row: sqlite3.Row) -> Dict[str, Any]:
         return {

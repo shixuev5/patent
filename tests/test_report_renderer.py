@@ -443,9 +443,9 @@ def test_render_analysis_section_does_not_bold_independent_preamble_feature_name
     assert '<td style="font-weight: normal; color: #666;">前序特征</td>' in content
     assert '<td style="font-weight: bold; color: #222;">区别特征</td>' in content
     assert '<td style="font-weight: normal; color: #222;">从权特征</td>' in content
-    assert "⚪ 前序特征" in content
-    assert "🌟 区别特征" in content
-    assert "🔹 从权特征" in content
+    assert "<td style=\"text-align: center;\">前序特征</td>" in content
+    assert "<td style=\"text-align: center;\">区别特征</td>" in content
+    assert "<td style=\"text-align: center;\">从权特征</td>" in content
 
 
 def test_get_search_matrix_guide_returns_wrapped_newlines() -> None:

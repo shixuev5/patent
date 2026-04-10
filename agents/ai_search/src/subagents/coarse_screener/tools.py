@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any, List
 
 from langchain.tools import ToolRuntime
@@ -31,15 +32,23 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
                     if str(item.get("coarse_status") or "pending") == "pending" and str(item.get("stage") or "") in {"candidate", ""}
                 ][: max(int(limit or DEFAULT_SHORTLIST_LIMIT), 1)]
                 pending_ids = [str(item.get("document_id") or "").strip() for item in pending if str(item.get("document_id") or "").strip()]
-                context.update_todos(
-                    "coarse_screen",
-                    "in_progress",
-                    current_task="coarse_screen",
-                    resume_from="run_coarse_screen_batch.commit",
-                    state_updates={"pending_document_ids": pending_ids, "plan_version": version},
+                batch_id = uuid.uuid4().hex
+                run_id = context.active_run_id(version)
+                context.storage.create_ai_search_batch(
+                    {
+                        "batch_id": batch_id,
+                        "run_id": run_id,
+                        "task_id": context.task_id,
+                        "plan_version": version,
+                        "batch_type": "coarse_screen",
+                        "status": "loaded",
+                    }
                 )
+                context.storage.replace_ai_search_batch_documents(batch_id, run_id, pending_ids)
+                context.update_task_phase("coarse_screen", runtime=runtime, active_plan_version=version, run_id=run_id, active_batch_id=batch_id)
                 return json.dumps(
                     {
+                        "batch_id": batch_id,
                         "plan_version": version,
                         "search_elements": context.current_search_elements(version),
                         "documents": pending,
@@ -50,14 +59,16 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
             if not str(payload_json or "").strip():
                 raise ValueError("run_coarse_screen_batch 在 commit 模式下必须提供 payload_json。")
             payload = json.loads(payload_json)
+            batch_id = str(payload.get("batch_id") or "").strip()
+            batch = context.storage.get_ai_search_batch(batch_id)
+            if not batch or str(batch.get("batch_type") or "") != "coarse_screen":
+                raise ValueError("coarse_screen commit 缺少有效 batch_id。")
+            if str(batch.get("status") or "") == "committed":
+                raise ValueError("coarse_screen batch 已提交，不能重复提交。")
             keep_ids = {str(item).strip() for item in (payload.get("keep") or []) if str(item).strip()}
             discard_ids = {str(item).strip() for item in (payload.get("discard") or []) if str(item).strip()}
             current_records = context.storage.list_ai_search_documents(context.task_id, version)
-            pending_ids = {
-                str(item.get("document_id") or "").strip()
-                for item in current_records
-                if str(item.get("coarse_status") or "pending") == "pending" and str(item.get("stage") or "") in {"candidate", ""}
-            }
+            pending_ids = set(context.storage.list_ai_search_batch_documents(batch_id))
             overlap_ids = keep_ids & discard_ids
             unresolved_ids = pending_ids - keep_ids - discard_ids
             unknown_ids = (keep_ids | discard_ids) - pending_ids
@@ -84,6 +95,20 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
                         coarse_reason="粗筛保留",
                         coarse_screened_at=utc_now_z(),
                     )
+                    context.storage.create_ai_search_document_decision(
+                        {
+                            "decision_id": uuid.uuid4().hex,
+                            "run_id": str(batch.get("run_id") or ""),
+                            "batch_id": batch_id,
+                            "task_id": context.task_id,
+                            "plan_version": version,
+                            "document_id": document_id,
+                            "decision_stage": "coarse_screen",
+                            "decision": "kept",
+                            "reason": "粗筛保留",
+                            "metadata": {"batch_id": batch_id},
+                        }
+                    )
                     applied["kept"] += 1
                 elif document_id in discard_ids:
                     context.storage.update_ai_search_document(
@@ -95,14 +120,24 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
                         coarse_reason="粗筛排除",
                         coarse_screened_at=utc_now_z(),
                     )
+                    context.storage.create_ai_search_document_decision(
+                        {
+                            "decision_id": uuid.uuid4().hex,
+                            "run_id": str(batch.get("run_id") or ""),
+                            "batch_id": batch_id,
+                            "task_id": context.task_id,
+                            "plan_version": version,
+                            "document_id": document_id,
+                            "decision_stage": "coarse_screen",
+                            "decision": "discarded",
+                            "reason": "粗筛排除",
+                            "metadata": {"batch_id": batch_id},
+                        }
+                    )
                     applied["discarded"] += 1
+            context.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
             context.notify_snapshot_changed(runtime, reason="documents")
-            context.update_todos(
-                "coarse_screen",
-                "completed",
-                current_task="close_read",
-                state_updates={"applied": applied, "kept_ids": sorted(keep_ids), "discard_ids": sorted(discard_ids)},
-            )
+            context.update_task_phase("coarse_screen", runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
             return json.dumps(applied, ensure_ascii=False)
         except Exception as exc:
             return context.record_todo_failure("coarse_screen", str(exc), current_task="coarse_screen", resume_from="run_coarse_screen_batch")

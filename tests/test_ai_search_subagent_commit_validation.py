@@ -21,6 +21,39 @@ def _create_task(storage: SQLiteTaskStorage, task_id: str, phase: str, *, active
             metadata={"ai_search": {"current_phase": phase, "active_plan_version": active_plan_version}},
         )
     )
+    storage.create_ai_search_run(
+        {
+            "run_id": f"{task_id}-run-{active_plan_version}",
+            "task_id": task_id,
+            "plan_version": active_plan_version,
+            "phase": phase,
+            "status": TaskStatus.PROCESSING.value,
+        }
+    )
+
+
+def _create_batch(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    *,
+    plan_version: int = 1,
+    batch_type: str,
+    document_ids: list[str],
+) -> str:
+    run_id = f"{task_id}-run-{plan_version}"
+    batch_id = f"{task_id}-{batch_type}-batch"
+    storage.create_ai_search_batch(
+        {
+            "batch_id": batch_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "plan_version": plan_version,
+            "batch_type": batch_type,
+            "status": "loaded",
+        }
+    )
+    storage.replace_ai_search_batch_documents(batch_id, run_id, document_ids)
+    return batch_id
 
 
 def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
@@ -51,12 +84,13 @@ def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
 
     context = AiSearchAgentContext(storage, "task-coarse")
     tool = next(tool for tool in context.build_coarse_screener_tools() if tool.__name__ == "run_coarse_screen_batch")
+    batch_id = _create_batch(storage, "task-coarse", batch_type="coarse_screen", document_ids=["doc-1", "doc-2"])
 
     result = json.loads(
         tool(
             operation="commit",
             plan_version=1,
-            payload_json=json.dumps({"keep": ["doc-1"], "discard": []}, ensure_ascii=False),
+            payload_json=json.dumps({"batch_id": batch_id, "keep": ["doc-1"], "discard": []}, ensure_ascii=False),
         )
     )
 
@@ -85,12 +119,13 @@ def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
 
     context = AiSearchAgentContext(storage, "task-close")
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
+    batch_id = _create_batch(storage, "task-close", batch_type="close_read", document_ids=["doc-1"])
 
     result = json.loads(
         tool(
             operation="commit",
             plan_version=1,
-            payload_json=json.dumps({"selected": ["doc-1"], "rejected": ["doc-1"]}, ensure_ascii=False),
+            payload_json=json.dumps({"batch_id": batch_id, "selected": ["doc-1"], "rejected": ["doc-1"]}, ensure_ascii=False),
         )
     )
 
@@ -120,8 +155,10 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
 
     context = AiSearchAgentContext(storage, "task-align")
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
+    batch_id = _create_batch(storage, "task-align", batch_type="close_read", document_ids=["doc-1"])
 
     payload = {
+        "batch_id": batch_id,
         "selected": ["doc-1"],
         "rejected": [],
         "key_passages": [

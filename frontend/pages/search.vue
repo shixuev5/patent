@@ -140,7 +140,7 @@
             </div>
             <div class="flex shrink-0 items-center gap-2 self-center">
               <button
-                v-if="currentSession?.downloadUrl"
+                v-if="currentSession?.artifacts?.downloadUrl"
                 type="button"
                 class="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
                 @click="downloadCurrentResult"
@@ -193,7 +193,11 @@
                 >
                   <template v-if="entry.entryType === 'pending-assistant'">
                     <div v-if="entry.content" class="text-slate-700">
-                      <AiSearchMarkdown :content="entry.content" />
+                      <AiSearchStructuredPlan
+                        v-if="structuredPlanExecutionSpec"
+                        :execution-spec="structuredPlanExecutionSpec"
+                      />
+                      <AiSearchMarkdown v-else :content="entry.content" />
                     </div>
                     <div v-else class="space-y-3">
                       <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
@@ -373,7 +377,7 @@
               </button>
             </div>
             <p
-              v-if="['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(currentSession?.phase || '')"
+              v-if="['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase || '')"
               class="mt-2 text-xs text-slate-500"
             >
               当前轮检索执行中，执行完成后可继续调整计划。
@@ -441,6 +445,7 @@ import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
+import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
 import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
@@ -485,12 +490,28 @@ const sidebarCollapsed = ref(false)
 const mobileDrawerOpen = ref(false)
 const executionPanelOpen = ref(true)
 
-const messages = computed(() => currentSession.value?.messages || [])
-const pendingQuestion = computed<Record<string, any> | null>(() => currentSession.value?.pendingQuestion || null)
-const pendingConfirmation = computed<Record<string, any> | null>(() => currentSession.value?.pendingConfirmation || null)
-const resumeAction = computed<Record<string, any> | null>(() => currentSession.value?.resumeAction || null)
-const humanDecisionAction = computed<Record<string, any> | null>(() => currentSession.value?.humanDecisionAction || null)
-const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.executionTodos || [])
+const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
+const messages = computed(() => currentSession.value?.conversation?.messages || [])
+const currentPendingAction = computed<Record<string, any> | null>(() => {
+  const value = currentSession.value?.conversation?.pendingAction
+  return value && typeof value === 'object' ? value as Record<string, any> : null
+})
+const pendingQuestion = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'question' ? currentPendingAction.value : null)
+const pendingConfirmation = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'plan_confirmation' ? currentPendingAction.value : null)
+const humanDecisionAction = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'human_decision' ? currentPendingAction.value : null)
+const resumeAction = computed<Record<string, any> | null>(() => {
+  const activeTodo = currentSession.value?.retrieval?.activeTodo
+  if (!activeTodo || String(activeTodo.status || '') !== 'failed') return null
+  return {
+    available: true,
+    currentTask: String(activeTodo.todo_id || '').trim() || null,
+    taskTitle: String(activeTodo.title || '').trim() || null,
+    resumeFrom: String(activeTodo.resume_from || '').trim() || null,
+    attemptCount: Number(activeTodo.attempt_count || 0),
+    lastError: String(activeTodo.last_error || '').trim() || null,
+  }
+})
+const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.todos || [])
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
 const activeExecutionTodoTitle = computed(() => {
   const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
@@ -500,16 +521,22 @@ const activeExecutionTodoTitle = computed(() => {
 })
 
 const activePlanVersion = computed(() => {
-  const candidate = pendingConfirmation.value?.planVersion
-    || currentSession.value?.currentPlan?.planVersion
+  const candidate = pendingConfirmation.value?.plan_version
+    || pendingConfirmation.value?.planVersion
+    || currentSession.value?.plan?.currentPlan?.planVersion
+    || currentSession.value?.run?.planVersion
     || currentSession.value?.session.activePlanVersion
   const value = Number(candidate || 0)
   return Number.isFinite(value) && value > 0 ? value : 0
 })
 
-const confirmationPlanVersion = computed(() => Number(pendingConfirmation.value?.planVersion || activePlanVersion.value || 0))
-const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
-const activePhaseLabel = computed(() => aiSearchPhaseLabel(currentSession.value?.phase || 'collecting_requirements'))
+const confirmationPlanVersion = computed(() => Number(pendingConfirmation.value?.plan_version || pendingConfirmation.value?.planVersion || activePlanVersion.value || 0))
+const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmation_label || pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
+const structuredPlanExecutionSpec = computed<Record<string, any> | null>(() => {
+  const executionSpec = currentSession.value?.plan?.currentPlan?.executionSpec
+  return executionSpec && typeof executionSpec === 'object' ? executionSpec as Record<string, any> : null
+})
+const activePhaseLabel = computed(() => aiSearchPhaseLabel(activePhase.value || 'collecting_requirements'))
 const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
 const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
@@ -517,13 +544,13 @@ const resumeLastError = computed(() => String(resumeAction.value?.lastError || '
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
 const questionPrompt = computed(() => String(pendingQuestion.value?.prompt || '').trim())
 const questionReason = computed(() => String(pendingQuestion.value?.reason || '').trim())
-const questionAnswerShape = computed(() => String(pendingQuestion.value?.expected_answer_shape || '').trim())
+const questionAnswerShape = computed(() => String(pendingQuestion.value?.expected_answer_shape || pendingQuestion.value?.expectedAnswerShape || '').trim())
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
 const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.value || {}).filter((item) => item.name !== 'plan-prober'))
 const showExecutionPanel = computed(() => (
   executionTodos.value.length > 0
   || activeSubagentList.value.length > 0
-  || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(currentSession.value?.phase || '')
+  || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(activePhase.value || '')
 ))
 
 const layoutClass = computed(() => (sidebarCollapsed.value
@@ -553,10 +580,10 @@ const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
   if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
   if (humanDecisionAction.value?.available) return '当前处于人工决策状态，请选择继续检索或按当前结果完成。'
-  if (isAiSearchExecutionPhase(currentSession.value.phase)) {
+  if (isAiSearchExecutionPhase(activePhase.value)) {
     return '检索执行中，请稍后再补充消息。'
   }
-  return '继续修改检索计划，例如调整检索要素、检索顺序、中文/英文策略或 IPC/CPC 使用方式。'
+  return '继续调整检索计划'
 })
 
 const withTokenQuery = (url: string, token: string): string => {
@@ -565,7 +592,7 @@ const withTokenQuery = (url: string, token: string): string => {
 }
 
 const downloadCurrentResult = async () => {
-  const rawPath = String(currentSession.value?.downloadUrl || '').trim()
+  const rawPath = String(currentSession.value?.artifacts?.downloadUrl || '').trim()
   if (!rawPath) return
   const rawDownloadUrl = rawPath.startsWith('http') ? rawPath : `${config.public.apiBaseUrl}${rawPath}`
   const fileTitle = String(currentSession.value?.session.title || currentSession.value?.session.taskId || 'task').trim() || 'task'
@@ -901,7 +928,7 @@ watch(
 )
 
 watch(
-  () => currentSession.value?.phase || '',
+  () => activePhase.value,
   (phase) => {
     if (isAiSearchExecutionPhase(phase)) {
       executionPanelOpen.value = true

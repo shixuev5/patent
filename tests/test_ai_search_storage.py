@@ -81,9 +81,20 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert plan["status"] == "confirmed"
     assert plan["execution_spec_json"]["sub_plans"][0]["query_blueprints"][0]["batch_id"] == "b1"
 
+    assert storage.create_ai_search_run(
+        {
+            "run_id": "run-1",
+            "task_id": "task-ai-search",
+            "plan_version": 1,
+            "phase": "execute_search",
+            "status": "processing",
+        }
+    )
+
     assert storage.upsert_ai_search_documents(
         [
             {
+                "run_id": "run-1",
                 "document_id": "doc-1",
                 "task_id": "task-ai-search",
                 "plan_version": 1,
@@ -130,12 +141,23 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert documents[0]["evidence_summary"] == "说明书第01段；figure_2"
     assert documents[0]["report_row_order"] == 2
 
+    assert storage.create_ai_search_batch(
+        {
+            "batch_id": "batch-feature-1",
+            "run_id": "run-1",
+            "task_id": "task-ai-search",
+            "plan_version": 1,
+            "batch_type": "feature_compare",
+            "status": "loaded",
+        }
+    )
     assert storage.create_ai_search_feature_comparison(
         {
             "feature_comparison_id": "ft-1",
+            "run_id": "run-1",
+            "batch_id": "batch-feature-1",
             "task_id": "task-ai-search",
             "plan_version": 1,
-            "status": "completed",
             "table_json": [{"feature": "A", "doc": "CN123456A"}],
             "summary_markdown": "总结",
         }

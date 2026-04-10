@@ -5,6 +5,7 @@ Helpers for initializing AI search sessions from patent-analysis artifacts.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -88,20 +89,294 @@ def _semantic_queries(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [item for item in queries if isinstance(item, dict)]
 
 
-def _mapped_element(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _effect_cluster_ids(item: Dict[str, Any]) -> List[str]:
+    cluster_ids: List[str] = []
+    for value in _string_list(item.get("effect_cluster_ids")):
+        cluster_id = value.upper()
+        if cluster_id and cluster_id not in cluster_ids:
+            cluster_ids.append(cluster_id)
+    return cluster_ids
+
+
+def _mapped_element(item: Dict[str, Any], *, block_id_override: Optional[str] = None, notes_suffix: str = "") -> Optional[Dict[str, Any]]:
     element_name = str(item.get("element_name") or "").strip()
     if not element_name:
         return None
     notes_parts = _string_list(item.get("notes"))
     if not notes_parts and str(item.get("notes") or "").strip():
         notes_parts = [str(item.get("notes") or "").strip()]
+    if notes_suffix:
+        notes_parts.append(notes_suffix)
     return {
         "element_name": element_name,
         "keywords_zh": _string_list(item.get("keywords_zh")),
         "keywords_en": _string_list(item.get("keywords_en")),
-        "block_id": str(item.get("block_id") or "").strip().upper(),
+        "ipc_cpc_ref": _string_list(item.get("ipc_cpc_ref")),
+        "block_id": str(block_id_override or item.get("block_id") or "").strip().upper(),
         "notes": "；".join(part for part in notes_parts if part),
     }
+
+
+def _technical_effect_items(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    report_core = analysis_payload.get("report_core") if isinstance(analysis_payload.get("report_core"), dict) else {}
+    report = analysis_payload.get("report") if isinstance(analysis_payload.get("report"), dict) else {}
+    effects = report_core.get("technical_effects") if isinstance(report_core.get("technical_effects"), list) else []
+    if not effects:
+        effects = report.get("technical_effects") if isinstance(report.get("technical_effects"), list) else []
+    outputs: List[Dict[str, Any]] = []
+    for index, item in enumerate(effects, start=1):
+        if not isinstance(item, dict):
+            continue
+        effect_text = _safe_text(item.get("effect")) or f"技术效果 {index}"
+        outputs.append(
+            {
+                "effect_index": index,
+                "effect_text": effect_text,
+                "score": _safe_int(item.get("tcs_score"), default=0),
+                "contributing_features": _string_list(item.get("contributing_features")),
+                "dependent_on": _string_list(item.get("dependent_on")),
+                "evidence": _safe_text(item.get("evidence")),
+                "rationale": _safe_text(item.get("rationale")),
+            }
+        )
+    return outputs
+
+
+def _dedupe_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        key = (_safe_text(item.get("block_id")).upper(), _safe_text(item.get("element_name")))
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _render_elements_table(elements: List[Dict[str, Any]]) -> List[str]:
+    if not elements:
+        return ["> 未识别到可展示的检索要素。"]
+    lines = [
+        "| 逻辑块 | 检索要素 | 中文扩展 | 英文扩展 | 分类号 (IPC/CPC) |",
+        "| :--- | :--- | :--- | :--- | :--- |",
+    ]
+    for item in elements:
+        block_id = _safe_text(item.get("block_id")).upper() or "-"
+        zh_terms = "；".join(_string_list(item.get("keywords_zh"))) or "-"
+        en_terms = "；".join(_string_list(item.get("keywords_en"))) or "-"
+        ipc_terms = "；".join(_string_list(item.get("ipc_cpc_ref"))) or "-"
+        lines.append(
+            f"| Block {block_id} | {_safe_text(item.get('element_name')) or '-'} | {zh_terms} | {en_terms} | {ipc_terms} |"
+        )
+    return lines
+
+
+def _feature_match_score(left: str, right: str) -> bool:
+    a = _safe_text(left)
+    b = _safe_text(right)
+    return bool(a and b and (a == b or a in b or b in a))
+
+
+def _find_matrix_element(search_matrix: List[Dict[str, Any]], feature_name: str) -> Optional[Dict[str, Any]]:
+    for item in search_matrix:
+        if not isinstance(item, dict):
+            continue
+        if _feature_match_score(item.get("element_name"), feature_name):
+            return item
+    return None
+
+
+def _effect_keywords(effect_text: str) -> List[str]:
+    text = _safe_text(effect_text)
+    if not text:
+        return []
+    outputs = [text]
+    parts = re.split(r"[，,；;。、“”\"'（）()、/]+", text)
+    for part in parts:
+        keyword = _safe_text(part)
+        if len(keyword) < 2 or keyword in outputs:
+            continue
+        outputs.append(keyword)
+    return outputs
+
+
+def _effect_anchor_element(effect_text: str) -> Dict[str, Any]:
+    return {
+        "element_name": f"效果锚点：{_safe_text(effect_text) or '4分效果'}",
+        "keywords_zh": _effect_keywords(effect_text),
+        "keywords_en": [],
+        "ipc_cpc_ref": [],
+        "block_id": "E",
+        "notes": "由4分效果文本提取的关键词",
+    }
+
+
+def _collect_main_plan_elements(
+    search_matrix: List[Dict[str, Any]],
+    *,
+    block_id: str,
+    effect_cluster_ids: List[str],
+) -> List[Dict[str, Any]]:
+    effect_cluster_set = {value.upper() for value in effect_cluster_ids if value}
+    outputs: List[Dict[str, Any]] = []
+    for item in search_matrix:
+        if not isinstance(item, dict):
+            continue
+        item_block = _safe_text(item.get("block_id")).upper()
+        item_effects = set(_effect_cluster_ids(item))
+        include = False
+        if item_block == "A" or item_block == block_id:
+            include = True
+        elif item_block in {"C", "E"} and (not item_effects or not effect_cluster_set or item_effects.intersection(effect_cluster_set)):
+            include = True
+        if include:
+            mapped = _mapped_element(item)
+            if mapped:
+                outputs.append(mapped)
+    return _dedupe_elements(outputs)
+
+
+def _collect_follow_up_c_elements(main_elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        dict(item)
+        for item in main_elements
+        if _safe_text(item.get("block_id")).upper() == "C"
+    ]
+
+
+def _collect_follow_up_b_elements(
+    search_matrix: List[Dict[str, Any]],
+    feature_names: List[str],
+    *,
+    block_id: str,
+) -> List[Dict[str, Any]]:
+    outputs: List[Dict[str, Any]] = []
+    for feature_name in feature_names:
+        matrix_item = _find_matrix_element(search_matrix, feature_name)
+        if matrix_item:
+            mapped = _mapped_element(matrix_item, block_id_override=block_id, notes_suffix="来自4分效果关联特征")
+        else:
+            mapped = {
+                "element_name": _safe_text(feature_name),
+                "keywords_zh": [_safe_text(feature_name)] if _safe_text(feature_name) else [],
+                "keywords_en": [],
+                "ipc_cpc_ref": [],
+                "block_id": block_id,
+                "notes": "来自4分效果关联特征",
+            }
+        if mapped:
+            outputs.append(mapped)
+    return _dedupe_elements(outputs)
+
+
+def _query_terms_from_elements(elements: List[Dict[str, Any]], *, blocks: Optional[set[str]] = None) -> List[str]:
+    outputs: List[str] = []
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        block_id = _safe_text(item.get("block_id")).upper()
+        if blocks and block_id not in blocks:
+            continue
+        candidates = _string_list(item.get("keywords_zh")) + _string_list(item.get("keywords_en"))
+        if not candidates:
+            candidates = [_safe_text(item.get("element_name"))]
+        for candidate in candidates:
+            if candidate and candidate not in outputs:
+                outputs.append(candidate)
+    return outputs
+
+
+def _follow_up_blueprint_semantic_text(effect_text: str, b_elements: List[Dict[str, Any]], c_elements: List[Dict[str, Any]]) -> str:
+    parts = [_safe_text(effect_text)]
+    b_names = [_safe_text(item.get("element_name")) for item in b_elements if _safe_text(item.get("element_name"))]
+    c_names = [_safe_text(item.get("element_name")) for item in c_elements if _safe_text(item.get("element_name"))]
+    if b_names:
+        parts.append("关联特征：" + "、".join(b_names))
+    if c_names:
+        parts.append("保留限定：" + "、".join(c_names))
+    return "；".join(part for part in parts if part)
+
+
+def _effect_plan_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    search_matrix = _search_matrix_items(analysis_payload)
+    semantic_queries = _semantic_queries(analysis_payload)
+    technical_effects = _technical_effect_items(analysis_payload)
+    groups: List[Dict[str, Any]] = []
+    for index, query in enumerate(semantic_queries, start=1):
+        block_id = _safe_text(query.get("block_id") or f"B{index}").upper() or f"B{index}"
+        effect_cluster_ids = _effect_cluster_ids(query) or [f"E{index}"]
+        effect_text = _safe_text(query.get("effect") or query.get("goal") or query.get("content") or f"核心效果 {index}") or f"核心效果 {index}"
+        main_elements = _collect_main_plan_elements(
+            search_matrix,
+            block_id=block_id,
+            effect_cluster_ids=effect_cluster_ids,
+        )
+        main_b_features = [
+            _safe_text(item.get("element_name"))
+            for item in main_elements
+            if _safe_text(item.get("block_id")).upper() == block_id and _safe_text(item.get("element_name"))
+        ]
+        retained_c_elements = _collect_follow_up_c_elements(main_elements)
+        follow_up_effects: List[Dict[str, Any]] = []
+        for effect in technical_effects:
+            if effect.get("score") != 4:
+                continue
+            dependent_on = effect.get("dependent_on") or []
+            if not dependent_on or not any(
+                _feature_match_score(main_feature, dependent_feature)
+                for main_feature in main_b_features
+                for dependent_feature in dependent_on
+            ):
+                continue
+            b_elements = _collect_follow_up_b_elements(
+                search_matrix,
+                effect.get("contributing_features") or [],
+                block_id=block_id,
+            )
+            follow_up_elements = _dedupe_elements(
+                [
+                    *b_elements,
+                    *[dict(item) for item in retained_c_elements],
+                    _effect_anchor_element(_safe_text(effect.get("effect_text"))),
+                ]
+            )
+            follow_up_effects.append(
+                {
+                    **effect,
+                    "display_elements": follow_up_elements,
+                    "semantic_query_text": _follow_up_blueprint_semantic_text(
+                        _safe_text(effect.get("effect_text")),
+                        b_elements,
+                        retained_c_elements,
+                    ),
+                }
+            )
+        groups.append(
+            {
+                "index": index,
+                "block_id": block_id,
+                "effect_cluster_ids": effect_cluster_ids,
+                "effect_text": effect_text,
+                "semantic_query_text": _safe_text(query.get("content")),
+                "main_elements": main_elements,
+                "follow_up_effects": follow_up_effects,
+            }
+        )
+    return groups
 
 
 def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -134,76 +409,87 @@ def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_
 
 
 def build_analysis_sub_plans(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    search_matrix = _search_matrix_items(analysis_payload)
-    semantic_queries = _semantic_queries(analysis_payload)
-    global_a = [item for item in search_matrix if str(item.get("block_id") or "").strip().upper() == "A"]
-    global_c = [
-        item
-        for item in search_matrix
-        if str(item.get("block_id") or "").strip().upper() == "C" and not _string_list(item.get("effect_cluster_ids"))
-    ]
     sub_plans: List[Dict[str, Any]] = []
-    if semantic_queries:
-        for index, query in enumerate(semantic_queries, start=1):
-            block_id = str(query.get("block_id") or f"B{index}").strip().upper() or f"B{index}"
-            effect_cluster_ids = set(_string_list(query.get("effect_cluster_ids")))
-            query_elements: List[Dict[str, Any]] = []
-            for item in global_a:
-                mapped = _mapped_element(item)
-                if mapped:
-                    query_elements.append(mapped)
-            for item in search_matrix:
-                item_block = str(item.get("block_id") or "").strip().upper()
-                if item_block == block_id:
-                    mapped = _mapped_element(item)
-                    if mapped:
-                        query_elements.append(mapped)
-                elif item_block == "C":
-                    item_effects = set(_string_list(item.get("effect_cluster_ids")))
-                    if not item_effects or (effect_cluster_ids and item_effects.intersection(effect_cluster_ids)):
-                        mapped = _mapped_element(item)
-                        if mapped:
-                            query_elements.append(mapped)
-            for item in global_c:
-                mapped = _mapped_element(item)
-                if mapped and mapped not in query_elements:
-                    query_elements.append(mapped)
-            goal = str(query.get("effect") or query.get("goal") or query.get("content") or f"核心效果 {index}").strip() or f"核心效果 {index}"
+    effect_plan_groups = _effect_plan_groups(analysis_payload)
+    if effect_plan_groups:
+        for group in effect_plan_groups:
+            index = int(group.get("index") or len(sub_plans) + 1)
+            goal = _safe_text(group.get("effect_text")) or f"核心效果 {index}"
+            sub_plan_id = f"sub_plan_{index}"
+            main_batch_id = f"{sub_plan_id}_batch_1"
+            query_blueprints: List[Dict[str, Any]] = [
+                {
+                    "batch_id": main_batch_id,
+                    "goal": goal,
+                    "semantic_text": _safe_text(group.get("semantic_query_text")),
+                    "sub_plan_id": sub_plan_id,
+                    "effect_cluster_ids": list(group.get("effect_cluster_ids") or []),
+                    "display_search_elements": group.get("main_elements") or [],
+                }
+            ]
+            retrieval_steps: List[Dict[str, Any]] = [
+                {
+                    "step_id": f"{sub_plan_id}_step_1",
+                    "title": f"{goal} / 主检索",
+                    "purpose": f"围绕 5 分核心效果“{goal}”执行首轮宽召回，先验证核心语义与主特征是否能稳定召回对比文献。",
+                    "feature_combination": "保留 Block A，使用该核心效果的 Block B，并保留关联 Block C/E。",
+                    "language_strategy": "中文优先，必要时补英文同义表达。",
+                    "ipc_cpc_mode": "按需补充 IPC/CPC",
+                    "ipc_cpc_codes": [],
+                    "expected_recall": "拿到方向明确、便于继续收窄的首轮候选池。",
+                    "fallback_action": "结果过宽则补 Block C/E 或分类号；结果过窄则放宽同义词和语言组合。",
+                    "query_blueprint_refs": [main_batch_id],
+                    "phase_key": "execute_search",
+                }
+            ]
+            for follow_up_index, follow_up in enumerate(group.get("follow_up_effects") or [], start=2):
+                batch_id = f"{sub_plan_id}_batch_{follow_up_index}"
+                display_elements = follow_up.get("display_elements") or []
+                must_terms_zh = _query_terms_from_elements(display_elements, blocks={_safe_text(group.get("block_id")).upper()})
+                should_terms_zh = _query_terms_from_elements(display_elements, blocks={"C", "E"})
+                query_blueprints.append(
+                    {
+                        "batch_id": batch_id,
+                        "goal": _safe_text(follow_up.get("effect_text")),
+                        "semantic_text": _safe_text(follow_up.get("semantic_query_text")),
+                        "sub_plan_id": sub_plan_id,
+                        "effect_cluster_ids": list(group.get("effect_cluster_ids") or []),
+                        "display_search_elements": display_elements,
+                        "display_label": _safe_text(follow_up.get("effect_text")),
+                        "step_type": "follow_up_effect",
+                        "must_terms_zh": must_terms_zh,
+                        "should_terms_zh": should_terms_zh,
+                    }
+                )
+                retrieval_steps.append(
+                    {
+                        "step_id": f"{sub_plan_id}_step_{follow_up_index}",
+                        "title": f"{goal} / 进一步检索 / {_safe_text(follow_up.get('effect_text'))}",
+                        "purpose": f"当 5 分核心效果方向确认后，进一步围绕 4 分效果“{_safe_text(follow_up.get('effect_text'))}”补充检索，扩展关联证据。",
+                        "feature_combination": "不强绑 Block A；用该 4 分效果关联特征替换主方案的 Block B，保留原 Block C，并补入从 4 分效果文本提取的 Block E。",
+                        "language_strategy": "延续主检索语言策略，优先保留中文术语，并视召回情况补英文表达。",
+                        "ipc_cpc_mode": "沿用主方案；必要时再补充分类号。",
+                        "ipc_cpc_codes": [],
+                        "expected_recall": "在不偏离主方向的前提下，补回 5 分主检索未覆盖的关联技术实现。",
+                        "fallback_action": "若命中过少则减少 Block E 限定；若噪声过多则增强 4 分特征和效果锚点词。",
+                        "query_blueprint_refs": [batch_id],
+                        "phase_key": "execute_search",
+                    }
+                )
             sub_plans.append(
                 {
-                    "sub_plan_id": f"sub_plan_{index}",
+                    "sub_plan_id": sub_plan_id,
                     "title": goal,
                     "goal": goal,
-                    "semantic_query_text": str(query.get("content") or "").strip(),
-                    "search_elements": query_elements,
-                    "retrieval_steps": [
-                        {
-                            "step_id": f"sub_plan_{index}_step_1",
-                            "title": f"{goal} / 首轮宽召回",
-                            "purpose": f"围绕{goal}执行首轮宽召回，验证语言与特征组合是否有效。",
-                            "feature_combination": "基于当前子计划检索要素组合",
-                            "language_strategy": "中文优先，必要时补英文同义表达",
-                            "ipc_cpc_mode": "按需补充 IPC/CPC",
-                            "ipc_cpc_codes": [],
-                            "expected_recall": "首轮召回可用于判断噪声与方向性的候选文献",
-                            "fallback_action": "若结果过宽则补限定特征或分类号；若过窄则放宽同义词与语言组合",
-                            "query_blueprint_refs": [f"sub_plan_{index}_batch_1"],
-                            "phase_key": "execute_search",
-                        }
-                    ],
-                    "query_blueprints": [
-                        {
-                            "batch_id": f"sub_plan_{index}_batch_1",
-                            "goal": goal,
-                            "semantic_text": str(query.get("content") or "").strip(),
-                            "sub_plan_id": f"sub_plan_{index}",
-                            "effect_cluster_ids": list(effect_cluster_ids),
-                        }
-                    ],
+                    "semantic_query_text": _safe_text(group.get("semantic_query_text")),
+                    "search_elements": group.get("main_elements") or [],
+                    "retrieval_steps": retrieval_steps,
+                    "query_blueprints": query_blueprints,
                     "classification_hints": [],
                 }
             )
     else:
+        search_matrix = _search_matrix_items(analysis_payload)
         all_elements = [mapped for mapped in (_mapped_element(item) for item in search_matrix) if mapped]
         if all_elements:
             sub_plans.append(
@@ -288,17 +574,8 @@ def build_analysis_seed_user_message(
     report_core = analysis_payload.get("report_core") if isinstance(analysis_payload.get("report_core"), dict) else {}
     report = analysis_payload.get("report") if isinstance(analysis_payload.get("report"), dict) else {}
     metadata = analysis_payload.get("metadata") if isinstance(analysis_payload.get("metadata"), dict) else {}
-    technical_effects = report_core.get("technical_effects") if isinstance(report_core.get("technical_effects"), list) else []
-    if not technical_effects:
-        technical_effects = report.get("technical_effects") if isinstance(report.get("technical_effects"), list) else []
+    effect_plan_groups = _effect_plan_groups(analysis_payload)
     sub_plans = build_analysis_sub_plans(analysis_payload)
-    plan_lines: List[str] = []
-    for item in sub_plans:
-        title = str(item.get("title") or item.get("goal") or item.get("sub_plan_id") or "").strip()
-        semantic_text = str(item.get("semantic_query_text") or "").strip()
-        plan_lines.append(f"- {title}")
-        if semantic_text:
-            plan_lines.append(f"  语义检索文本：{semantic_text}")
     element_lines = []
     for item in seeded_search_elements.get("search_elements") or []:
         if not isinstance(item, dict):
@@ -306,7 +583,50 @@ def build_analysis_seed_user_message(
         block_id = str(item.get("block_id") or "").strip().upper()
         label = f"[Block {block_id}] " if block_id else ""
         element_lines.append(f"- {label}{str(item.get('element_name') or '').strip()}")
-    effect_lines = [f"- {str(item or '').strip()}" for item in technical_effects if str(item or "").strip()]
+    effect_lines: List[str] = []
+    if effect_plan_groups:
+        for group in effect_plan_groups:
+            effect_lines.append(f"### 核心效果{int(group.get('index') or 0) or 1}：{_safe_text(group.get('effect_text'))}")
+            effect_lines.append("#### 语义检索文本")
+            semantic_text = _safe_text(group.get("semantic_query_text"))
+            if semantic_text:
+                effect_lines.append("```text")
+                effect_lines.append(semantic_text)
+                effect_lines.append("```")
+            else:
+                effect_lines.append("> 未生成语义检索文本。")
+            effect_lines.append("#### 5分效果检索要素表")
+            effect_lines.extend(_render_elements_table(group.get("main_elements") or []))
+            effect_lines.append("#### 进一步检索")
+            follow_ups = group.get("follow_up_effects") or []
+            if follow_ups:
+                for follow_up_index, follow_up in enumerate(follow_ups, start=1):
+                    effect_lines.append(f"##### 4分效果{follow_up_index}：{_safe_text(follow_up.get('effect_text'))}")
+                    effect_lines.append(
+                        f"- 关联关系：从属于当前 5 分核心效果，基于 {_safe_text(group.get('block_id')).upper()} 的主检索命中后继续展开。"
+                    )
+                    if _safe_text(follow_up.get("rationale")):
+                        effect_lines.append(f"- 说明：{_safe_text(follow_up.get('rationale'))}")
+                    effect_lines.extend(_render_elements_table(follow_up.get("display_elements") or []))
+            else:
+                effect_lines.append("- 当前未识别到从属于该核心效果的 4 分效果。")
+            effect_lines.append("")
+    else:
+        technical_effects = _technical_effect_items(analysis_payload)
+        effect_lines = [f"- {_safe_text(item.get('effect_text'))}" for item in technical_effects if _safe_text(item.get("effect_text"))]
+
+    plan_lines: List[str] = []
+    for index, item in enumerate(sub_plans, start=1):
+        title = _safe_text(item.get("title") or item.get("goal") or item.get("sub_plan_id")) or f"子计划 {index}"
+        plan_lines.append(f"### 方案{index}：{title}")
+        plan_lines.append("- 主检索：围绕 5 分核心效果做首轮召回。")
+        follow_up_steps = [step for step in item.get("retrieval_steps") or [] if isinstance(step, dict)][1:]
+        if follow_up_steps:
+            for step_index, step in enumerate(follow_up_steps, start=1):
+                plan_lines.append(f"- 进一步检索 {step_index}：{_safe_text(step.get('title'))}")
+        else:
+            plan_lines.append("- 进一步检索：当前未拆出 4 分效果补检索步骤。")
+        plan_lines.append("")
     return "\n".join(
         [
             "以下是从 AI 分析带入的检索上下文，请基于这些信息生成一份可审核的检索计划。",

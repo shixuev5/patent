@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT, DEFAULT_SHORTLIST_LIMIT
+from agents.ai_search.src.state import PHASE_CLOSE_READ
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt
 from agents.ai_search.src.subagents.close_reader.workspace import (
@@ -126,20 +127,24 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     )
                 file_map = prepare_close_read_workspace(workspace_dir, details)
                 pending_ids = [str(item.get("document_id") or "").strip() for item in pending if str(item.get("document_id") or "").strip()]
-                context.update_todos(
-                    "close_read",
-                    "in_progress",
-                    current_task="close_read",
-                    resume_from="run_close_read_batch.commit",
-                    state_updates={
-                        "workspace_dir": str(workspace_dir),
-                        "pending_document_ids": pending_ids,
+                batch_id = uuid.uuid4().hex
+                run_id = context.active_run_id(version)
+                context.storage.create_ai_search_batch(
+                    {
+                        "batch_id": batch_id,
+                        "run_id": run_id,
+                        "task_id": context.task_id,
                         "plan_version": version,
-                        "workspace_manifest": str(workspace_manifest_path),
-                    },
+                        "batch_type": "close_read",
+                        "status": "loaded",
+                        "workspace_dir": str(workspace_dir),
+                    }
                 )
+                context.storage.replace_ai_search_batch_documents(batch_id, run_id, pending_ids)
+                context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=run_id, active_batch_id=batch_id)
                 return json.dumps(
                     {
+                        "batch_id": batch_id,
                         "plan_version": version,
                         "search_elements": context.current_search_elements(version),
                         "workspace_dir": str(workspace_dir),
@@ -163,14 +168,16 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             if not str(payload_json or "").strip():
                 raise ValueError("run_close_read_batch 在 commit 模式下必须提供 payload_json。")
             payload = extract_json_object(payload_json)
+            batch_id = str(payload.get("batch_id") or "").strip()
+            batch = context.storage.get_ai_search_batch(batch_id)
+            if not batch or str(batch.get("batch_type") or "") != "close_read":
+                raise ValueError("close_read commit 缺少有效 batch_id。")
+            if str(batch.get("status") or "") == "committed":
+                raise ValueError("close_read batch 已提交，不能重复提交。")
             selected_ids = {str(item).strip() for item in (payload.get("selected") or []) if str(item).strip()}
             rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
             current_records = context.storage.list_ai_search_documents(context.task_id, version)
-            pending_ids = {
-                str(item.get("document_id") or "").strip()
-                for item in current_records
-                if str(item.get("coarse_status") or "") == "kept" and str(item.get("close_read_status") or "pending") == "pending"
-            }
+            pending_ids = set(context.storage.list_ai_search_batch_documents(batch_id))
             overlap_ids = selected_ids & rejected_ids
             unresolved_ids = pending_ids - selected_ids - rejected_ids
             unknown_ids = (selected_ids | rejected_ids) - pending_ids
@@ -275,6 +282,20 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         close_read_reason="精读后纳入对比文件",
                         close_read_at=utc_now_z(),
                     )
+                    context.storage.create_ai_search_document_decision(
+                        {
+                            "decision_id": uuid.uuid4().hex,
+                            "run_id": str(batch.get("run_id") or ""),
+                            "batch_id": batch_id,
+                            "task_id": context.task_id,
+                            "plan_version": version,
+                            "document_id": document_id,
+                            "decision_stage": "close_read",
+                            "decision": "selected",
+                            "reason": "精读后纳入对比文件",
+                            "metadata": {"assessment": assessment or {}},
+                        }
+                    )
                     selected_count += 1
                 elif document_id in rejected_ids:
                     context.storage.update_ai_search_document(
@@ -291,24 +312,39 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         close_read_reason="精读后排除",
                         close_read_at=utc_now_z(),
                     )
-            context.update_todos(
-                "close_read",
-                "completed",
-                current_task="feature_comparison",
-                state_updates={"selected_count": selected_count, "document_assessments": assessments_by_doc},
-            )
-            context.storage.create_ai_search_message(
+                    context.storage.create_ai_search_document_decision(
+                        {
+                            "decision_id": uuid.uuid4().hex,
+                            "run_id": str(batch.get("run_id") or ""),
+                            "batch_id": batch_id,
+                            "task_id": context.task_id,
+                            "plan_version": version,
+                            "document_id": document_id,
+                            "decision_stage": "close_read",
+                            "decision": "rejected",
+                            "reason": "精读后排除",
+                            "metadata": {"assessment": assessment or {}},
+                        }
+                    )
+            context.storage.create_ai_search_close_read_result(
                 {
-                    "message_id": uuid.uuid4().hex,
+                    "result_id": uuid.uuid4().hex,
+                    "run_id": str(batch.get("run_id") or ""),
+                    "batch_id": batch_id,
                     "task_id": context.task_id,
-                    "plan_version": version or None,
-                    "role": "assistant",
-                    "kind": "close_read_result",
-                    "content": str(payload.get("coverage_summary") or payload.get("selection_summary") or "").strip() or None,
-                    "stream_status": "completed",
-                    "metadata": payload,
+                    "plan_version": version,
+                    "coverage_summary": payload.get("coverage_summary"),
+                    "selection_summary": payload.get("selection_summary"),
+                    "follow_up_hints": payload.get("follow_up_hints") or [],
+                    "document_assessments": payload.get("document_assessments") or [],
+                    "key_passages": payload.get("key_passages") or [],
+                    "claim_alignments": payload.get("claim_alignments") or [],
+                    "limitation_coverage": payload.get("limitation_coverage") or [],
+                    "limitation_gaps": payload.get("limitation_gaps") or [],
                 }
             )
+            context.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
+            context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
             context.notify_snapshot_changed(runtime, reason="selection")
             return json.dumps({"selected_count": selected_count}, ensure_ascii=False)
         except Exception as exc:

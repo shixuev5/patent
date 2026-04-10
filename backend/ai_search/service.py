@@ -119,6 +119,8 @@ class AiSearchService:
             title=str(task.title or "未命名 AI 检索会话"),
             status=task.status.value,
             phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
+            sourceTaskId=str(meta.get("source_task_id") or "").strip() or None,
+            sourceType=str(meta.get("source_type") or "").strip() or None,
             pinned=bool(meta.get("pinned")),
             activePlanVersion=meta.get("active_plan_version"),
             selectedDocumentCount=int(meta.get("selected_document_count") or 0),
@@ -134,6 +136,28 @@ class AiSearchService:
             if str(item.get("kind") or "") in visible_kinds
         ]
 
+    def _snapshot_phase(self, snapshot: AiSearchSnapshotResponse) -> str:
+        run = snapshot.run if isinstance(snapshot.run, dict) else {}
+        session = snapshot.session
+        return str(run.get("phase") or getattr(session, "phase", "") or PHASE_COLLECTING_REQUIREMENTS).strip() or PHASE_COLLECTING_REQUIREMENTS
+
+    def _snapshot_messages(self, snapshot: AiSearchSnapshotResponse) -> List[Dict[str, Any]]:
+        conversation = snapshot.conversation if isinstance(snapshot.conversation, dict) else {}
+        messages = conversation.get("messages")
+        return messages if isinstance(messages, list) else []
+
+    def _artifact_download_url(self, snapshot: AiSearchSnapshotResponse) -> Optional[str]:
+        artifacts = snapshot.artifacts if isinstance(snapshot.artifacts, dict) else {}
+        value = artifacts.get("downloadUrl")
+        return str(value).strip() if value else None
+
+    def _active_run(self, task: Any) -> Optional[Dict[str, Any]]:
+        meta = get_ai_search_meta(task)
+        active_plan_version = int(meta.get("active_plan_version") or 0)
+        if active_plan_version > 0:
+            return self.storage.get_ai_search_run(task.id, plan_version=active_plan_version)
+        return self.storage.get_ai_search_run(task.id)
+
     def _current_plan(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)
         active_plan_version = meta.get("active_plan_version")
@@ -143,28 +167,22 @@ class AiSearchService:
                 return plan
         return self.storage.get_ai_search_plan(task.id)
 
-    def _pending_question(self, task: Any, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        question_id = str(meta.get("pending_question_id") or "").strip()
-        if not question_id:
+    def _pending_action(self, task: Any, action_type: str) -> Optional[Dict[str, Any]]:
+        pending = self.storage.get_ai_search_pending_action(task.id, action_type, status="pending")
+        if not pending:
             return None
-        for item in reversed(messages):
-            if str(item.get("question_id") or "") == question_id:
-                metadata = item.get("metadata")
-                return metadata if isinstance(metadata, dict) else None
-        return None
-
-    def _pending_confirmation(self, task: Any, current_plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        pending_plan_version = int(meta.get("pending_confirmation_plan_version") or 0)
-        if pending_plan_version <= 0:
+        payload = pending.get("payload")
+        if not isinstance(payload, dict):
             return None
-        if current_plan and int(current_plan.get("planVersion") or 0) == pending_plan_version:
-            return {
-                "planVersion": pending_plan_version,
-                "confirmationLabel": "实施此计划",
-            }
-        return None
+        return {
+            **payload,
+            "actionId": str(pending.get("action_id") or "").strip() or None,
+            "runId": str(pending.get("run_id") or "").strip() or None,
+            "actionType": str(pending.get("action_type") or action_type or "").strip(),
+            "status": str(pending.get("status") or "pending").strip() or "pending",
+            "createdAt": pending.get("created_at"),
+            "updatedAt": pending.get("updated_at"),
+        }
 
     def _analysis_seed(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)
@@ -183,9 +201,10 @@ class AiSearchService:
         return isinstance(draft, dict) and bool(str(draft.get("draft_id") or "").strip())
 
     def _validate_drafting_outcome(self, task_id: str, snapshot: AiSearchSnapshotResponse) -> None:
-        if snapshot.phase != PHASE_DRAFTING_PLAN:
+        if self._snapshot_phase(snapshot) != PHASE_DRAFTING_PLAN:
             return
-        if snapshot.pendingQuestion or snapshot.pendingConfirmation:
+        pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
+        if isinstance(pending_action, dict):
             return
         task = self.storage.get_task(task_id)
         if self._has_planner_draft(task):
@@ -210,18 +229,16 @@ class AiSearchService:
         return AiSearchAgentContext(self.storage, task.id)._current_todos(task)
 
     def _documents_for_snapshot(self, task: Any) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        meta = get_ai_search_meta(task)
-        plan_version = int(meta.get("active_plan_version") or 0)
-        if plan_version <= 0:
+        run = self._active_run(task)
+        if not run:
             return [], []
-        documents = self.storage.list_ai_search_documents(task.id, plan_version)
+        documents = self.storage.list_ai_search_documents(task.id, str(run.get("run_id") or ""))
         selected = [item for item in documents if str(item.get("stage") or "") == "selected"]
         candidate = [item for item in documents if str(item.get("stage") or "") != "selected"]
         return candidate, selected
 
     def _resume_action(self, task: Any) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        phase = str(meta.get("current_phase") or "").strip()
+        phase = self._current_phase_value(task.id)
         current_todo = self._current_todo(task)
         if phase not in ACTIVE_EXECUTION_PHASES or not isinstance(current_todo, dict):
             return None
@@ -229,7 +246,7 @@ class AiSearchService:
             return None
         return {
             "available": True,
-            "currentTask": str(meta.get("current_task") or "").strip(),
+            "currentTask": str(current_todo.get("todo_id") or "").strip(),
             "taskTitle": str(current_todo.get("title") or "").strip(),
             "resumeFrom": str(current_todo.get("resume_from") or "").strip(),
             "attemptCount": int(current_todo.get("attempt_count") or 0),
@@ -237,19 +254,10 @@ class AiSearchService:
         }
 
     def _human_decision_action(self, task: Any) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        phase = str(meta.get("current_phase") or "").strip()
-        if phase != PHASE_AWAITING_HUMAN_DECISION:
+        payload = self._pending_action(task, "human_decision")
+        if not payload:
             return None
-        return {
-            "available": True,
-            "reason": str(meta.get("human_decision_reason") or "").strip(),
-            "summary": str(meta.get("human_decision_summary") or "").strip(),
-            "roundCount": int(meta.get("execution_round_count") or 0),
-            "noProgressRoundCount": int(meta.get("no_progress_round_count") or 0),
-            "selectedCount": int(meta.get("selected_document_count") or 0),
-            "recommendedActions": ["continue_search", "complete_current_results"],
-        }
+        return payload
 
     def _load_analysis_artifacts(self, task: Any) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         metadata = task.metadata if isinstance(task.metadata, dict) else {}
@@ -268,7 +276,7 @@ class AiSearchService:
                 patent_payload = load_json_bytes(r2_storage.get_bytes(str(output_files.get("patent_r2_key") or "").strip()))
 
         if not isinstance(analysis_payload, dict):
-            raise HTTPException(status_code=409, detail="AI 分析结果不存在，暂时无法生成检索草稿。")
+            raise HTTPException(status_code=409, detail="AI 分析结果不存在，暂时无法生成检索计划。")
         return analysis_payload, patent_payload if isinstance(patent_payload, dict) else None
 
     def _snapshot_download_url(self, task: Any) -> Optional[str]:
@@ -293,18 +301,17 @@ class AiSearchService:
     ) -> Optional[Dict[str, Any]]:
         if plan_version <= 0:
             return None
-        meta = get_ai_search_meta(task)
-        current_feature_comparison_id = str(meta.get("current_feature_comparison_id") or "").strip()
+        run = self._active_run(task)
+        current_feature_comparison_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
         if current_feature_comparison_id:
             table = self.storage.get_ai_search_feature_comparison(
                 task.id,
-                plan_version,
-                feature_comparison_id=current_feature_comparison_id,
+                str(run.get("run_id") or "") if isinstance(run, dict) else plan_version,
             )
             if table:
                 return table
         if fallback_latest:
-            return self.storage.get_ai_search_feature_comparison(task.id, plan_version)
+            return self.storage.get_ai_search_feature_comparison(task.id, str(run.get("run_id") or "") if isinstance(run, dict) else plan_version)
         return None
 
     def _finalize_terminal_artifacts(
@@ -367,25 +374,50 @@ class AiSearchService:
         messages = self.storage.list_ai_search_messages(task.id)
         current_plan = self._plan_payload(self._current_plan(task))
         candidate_documents, selected_documents = self._documents_for_snapshot(task)
-        feature_comparison = None
         meta = get_ai_search_meta(task)
-        active_plan_version = int(meta.get("active_plan_version") or 0)
+        active_run = self._active_run(task)
+        active_plan_version = int(meta.get("active_plan_version") or (active_run.get("plan_version") if active_run else 0) or 0)
         feature_comparison = self._current_feature_comparison(task, active_plan_version)
+        context = AiSearchAgentContext(self.storage, task.id)
+        gap_context = context.latest_gap_context(active_plan_version)
+        current_todo = context.current_todo()
+        pending_action = (
+            self._pending_action(task, "question")
+            or self._pending_action(task, "plan_confirmation")
+            or self._pending_action(task, "human_decision")
+        )
+        run_payload = {
+            "runId": str(active_run.get("run_id") or "").strip() if active_run else None,
+            "phase": str(active_run.get("phase") or meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS) if active_run else str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
+            "status": str(active_run.get("status") or task.status.value) if active_run else task.status.value,
+            "planVersion": int(active_run.get("plan_version") or active_plan_version or 0) if active_run else active_plan_version or None,
+            "activeRetrievalTodoId": str(active_run.get("active_retrieval_todo_id") or "").strip() or None if active_run else None,
+            "activeBatchId": str(active_run.get("active_batch_id") or "").strip() or None if active_run else None,
+            "selectedDocumentCount": int(active_run.get("selected_document_count") or meta.get("selected_document_count") or 0) if active_run else int(meta.get("selected_document_count") or 0),
+        }
         return AiSearchSnapshotResponse(
             session=self._session_summary(task),
-            phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
-            messages=self._display_messages(messages),
-            downloadUrl=self._snapshot_download_url(task),
+            run=run_payload,
+            conversation={
+                "messages": self._display_messages(messages),
+                "pendingAction": pending_action,
+            },
+            plan={"currentPlan": current_plan},
+            retrieval={
+                "todos": self._execution_todos(task),
+                "activeTodo": current_todo,
+                "documents": {
+                    "candidates": candidate_documents,
+                    "selected": selected_documents,
+                },
+            },
+            analysis={
+                "activeBatch": self.storage.get_ai_search_batch(str(active_run.get("active_batch_id") or "")) if active_run and str(active_run.get("active_batch_id") or "").strip() else None,
+                "latestCloseReadResult": gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
+                "latestFeatureCompareResult": feature_comparison,
+            },
+            artifacts={"downloadUrl": self._snapshot_download_url(task)},
             analysisSeed=self._analysis_seed(task),
-            humanDecisionAction=self._human_decision_action(task),
-            currentPlan=current_plan,
-            executionTodos=self._execution_todos(task),
-            candidateDocuments=candidate_documents,
-            selectedDocuments=selected_documents,
-            featureComparison=feature_comparison,
-            pendingQuestion=self._pending_question(task, messages),
-            pendingConfirmation=self._pending_confirmation(task, current_plan),
-            resumeAction=self._resume_action(task),
         )
 
     def _update_phase(self, task_id: str, phase: str, **meta_updates: Any) -> None:
@@ -398,6 +430,21 @@ class AiSearchService:
             progress=phase_progress(phase),
             current_step=phase_step(phase),
         )
+        active_plan_version = int(meta_updates.get("active_plan_version") or metadata.get("ai_search", {}).get("active_plan_version") or 0) if isinstance(metadata, dict) else int(meta_updates.get("active_plan_version") or 0)
+        if active_plan_version > 0:
+            run = self.storage.get_ai_search_run(task_id, plan_version=active_plan_version)
+            if run:
+                run_updates: Dict[str, Any] = {
+                    "phase": phase,
+                    "status": phase_to_task_status(phase),
+                }
+                if "selected_document_count" in meta_updates:
+                    run_updates["selected_document_count"] = int(meta_updates.get("selected_document_count") or 0)
+                if "current_task" in meta_updates:
+                    run_updates["active_retrieval_todo_id"] = meta_updates.get("current_task")
+                if "active_batch_id" in meta_updates:
+                    run_updates["active_batch_id"] = meta_updates.get("active_batch_id")
+                self.storage.update_ai_search_run(task_id, str(run.get("run_id") or ""), **run_updates)
 
     def _append_message(
         self,
@@ -433,17 +480,7 @@ class AiSearchService:
         return ""
 
     def _current_todo(self, task: Any) -> Optional[Dict[str, Any]]:
-        meta = get_ai_search_meta(task)
-        current_task = str(meta.get("current_task") or "").strip()
-        todos = meta.get("todos") if isinstance(meta.get("todos"), list) else []
-        if not current_task:
-            return None
-        for item in todos:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("todo_id") or "").strip() == current_task:
-                return item
-        return None
+        return AiSearchAgentContext(self.storage, task.id).current_todo()
 
     def _resolve_main_checkpoint_ns(self, thread_id: str) -> str:
         checkpoints = self.storage.list_ai_search_checkpoints(thread_id, limit=50)
@@ -518,9 +555,9 @@ class AiSearchService:
         )
 
     def _decision_termination_reason(self, task: Any) -> str:
-        meta = get_ai_search_meta(task)
-        reason = str(meta.get("human_decision_reason") or "").strip()
-        summary = str(meta.get("human_decision_summary") or "").strip()
+        decision = self._human_decision_action(task) or {}
+        reason = str(decision.get("reason") or "").strip()
+        summary = str(decision.get("summary") or "").strip()
         parts = ["人工决策后按当前结果完成"]
         if reason:
             parts.append(f"原因：{reason}")
@@ -552,8 +589,23 @@ class AiSearchService:
         )
         return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
 
-    def _prepare_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
-        _enforce_daily_quota(owner_id, task_type=TaskType.AI_SEARCH.value)
+    def _analysis_seed_response(
+        self,
+        task: Any,
+        *,
+        reused: bool = False,
+        source_task_id: Optional[str] = None,
+    ) -> AiSearchCreateSessionResponse:
+        meta = get_ai_search_meta(task)
+        return AiSearchCreateSessionResponse(
+            sessionId=task.id,
+            taskId=task.id,
+            threadId=str(meta.get("thread_id") or f"ai-search-{task.id}"),
+            reused=reused,
+            sourceTaskId=source_task_id or str(meta.get("source_task_id") or "").strip() or None,
+        )
+
+    def _get_completed_analysis_task(self, owner_id: str, analysis_task_id: str) -> Any:
         analysis_task = self.storage.get_task(str(analysis_task_id or "").strip())
         if (
             not analysis_task
@@ -562,7 +614,50 @@ class AiSearchService:
         ):
             raise HTTPException(status_code=404, detail="AI 分析任务不存在。")
         if str(getattr(analysis_task.status, "value", analysis_task.status) or "") != "completed":
-            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 分析任务生成检索草稿。")
+            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 分析任务生成检索计划。")
+        return analysis_task
+
+    def _find_existing_analysis_seed_session(self, owner_id: str, analysis_task_id: str) -> Optional[Any]:
+        target_analysis_task_id = str(analysis_task_id or "").strip()
+        if not target_analysis_task_id:
+            return None
+        batch_size = 200
+        offset = 0
+        while True:
+            tasks = task_manager.list_tasks(owner_id=owner_id, limit=batch_size, offset=offset)
+            if not tasks:
+                return None
+            for task in tasks:
+                if str(task.task_type or "") != TaskType.AI_SEARCH.value:
+                    continue
+                meta = get_ai_search_meta(task)
+                if str(meta.get("source_type") or "").strip() != "analysis":
+                    continue
+                if str(meta.get("source_task_id") or "").strip() != target_analysis_task_id:
+                    continue
+                return task
+            if len(tasks) < batch_size:
+                return None
+            offset += batch_size
+        return None
+
+    def _prepare_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
+        analysis_task = self._get_completed_analysis_task(owner_id, analysis_task_id)
+        existing_task = self._find_existing_analysis_seed_session(owner_id, analysis_task.id)
+        if existing_task:
+            emit_system_log(
+                category="task_execution",
+                event_name="ai_search_seed_reused",
+                owner_id=owner_id,
+                task_id=existing_task.id,
+                task_type=TaskType.AI_SEARCH.value,
+                success=True,
+                message="复用已存在的 AI 检索计划",
+                payload={"analysis_task_id": str(analysis_task.id), "analysis_pn": str(analysis_task.pn or "").strip() or None},
+            )
+            return self._analysis_seed_response(existing_task, reused=True, source_task_id=str(analysis_task.id))
+
+        _enforce_daily_quota(owner_id, task_type=TaskType.AI_SEARCH.value)
 
         emit_system_log(
             category="task_execution",
@@ -571,7 +666,7 @@ class AiSearchService:
             task_id=str(analysis_task.id),
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="请求从 AI 分析创建 AI 检索草稿",
+            message="请求从 AI 分析创建 AI 检索计划",
             payload={"analysis_task_id": str(analysis_task.id), "analysis_pn": str(analysis_task.pn or "").strip() or None},
         )
 
@@ -596,7 +691,7 @@ class AiSearchService:
         task = task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
-            title=f"AI 检索草稿 - {source_pn or source_title or analysis_task.id}",
+            title=f"AI 检索计划 - {source_pn or source_title or analysis_task.id}",
         )
         thread_id = f"ai-search-{task.id}"
         seed_meta = default_ai_search_meta(thread_id)
@@ -638,7 +733,7 @@ class AiSearchService:
             "chat",
             seed_user_message,
         )
-        return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
+        return self._analysis_seed_response(task, source_task_id=str(analysis_task.id))
 
     def _complete_analysis_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
         task = self._get_owned_session_task(session_id, owner_id)
@@ -671,7 +766,7 @@ class AiSearchService:
                 status=phase_to_task_status(PHASE_FAILED),
                 progress=phase_progress(PHASE_FAILED),
                 current_step=phase_step(PHASE_FAILED),
-                error_message=f"生成 AI 检索草稿失败：{exc}",
+                error_message=f"生成 AI 检索计划失败：{exc}",
             )
             emit_system_log(
                 category="task_execution",
@@ -680,7 +775,7 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=False,
-                message="从 AI 分析创建 AI 检索草稿失败",
+                message="从 AI 分析创建 AI 检索计划失败",
                 payload={"analysis_task_id": source_task_id or None, "error": str(exc)},
             )
             raise
@@ -697,14 +792,15 @@ class AiSearchService:
             task_id=task.id,
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="已从 AI 分析创建 AI 检索草稿",
+            message="已从 AI 分析创建 AI 检索计划",
             payload={
                 "analysis_task_id": source_task_id or None,
                 "analysis_pn": source_pn or None,
-                "phase": snapshot.phase,
+                "phase": self._snapshot_phase(snapshot),
             },
         )
-        if snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION:
+        if self._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
+            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             emit_system_log(
                 category="task_execution",
                 event_name="ai_search_seed_plan_ready",
@@ -712,10 +808,11 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="AI 检索草稿已进入计划确认阶段",
-                payload={"analysis_task_id": source_task_id or None, "plan_version": snapshot.pendingConfirmation.get("planVersion") if snapshot.pendingConfirmation else None},
+                message="AI 检索计划已进入计划确认阶段",
+                payload={"analysis_task_id": source_task_id or None, "plan_version": pending_action.get("plan_version") if isinstance(pending_action, dict) else None},
             )
-        if snapshot.phase == PHASE_AWAITING_USER_ANSWER:
+        if self._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
+            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             emit_system_log(
                 category="task_execution",
                 event_name="ai_search_seed_question_required",
@@ -723,8 +820,8 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="AI 检索草稿仍需用户补充信息",
-                payload={"analysis_task_id": source_task_id or None, "question": snapshot.pendingQuestion.get("prompt") if snapshot.pendingQuestion else None},
+                message="AI 检索计划仍需用户补充信息",
+                payload={"analysis_task_id": source_task_id or None, "question": pending_action.get("prompt") if isinstance(pending_action, dict) else None},
             )
         return snapshot
 
@@ -733,7 +830,10 @@ class AiSearchService:
 
     def create_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
         created = self._prepare_session_from_analysis(owner_id, analysis_task_id)
-        self._complete_analysis_seed(owner_id, created.sessionId)
+        task = self.storage.get_task(created.sessionId)
+        meta = get_ai_search_meta(task) if task else {}
+        if not created.reused or str(meta.get("analysis_seed_status") or "").strip() == "pending":
+            self._complete_analysis_seed(owner_id, created.sessionId)
         return created
 
     def list_sessions(self, owner_id: str) -> AiSearchSessionListResponse:
@@ -851,10 +951,11 @@ class AiSearchService:
     def _init_stream_state(self, snapshot: AiSearchSnapshotResponse, previous_assistant: str) -> Dict[str, Any]:
         known_message_ids = {
             str(item.get("message_id") or "").strip()
-            for item in snapshot.messages
+            for item in self._snapshot_messages(snapshot)
             if str(item.get("message_id") or "").strip()
         }
-        emitted_phases = {str(snapshot.phase or "").strip()} if str(snapshot.phase or "").strip() else set()
+        phase = self._snapshot_phase(snapshot)
+        emitted_phases = {phase} if phase else set()
         return {
             "assistant_buffer": "",
             "assistant_completed": False,
@@ -966,6 +1067,14 @@ class AiSearchService:
             "statusText": str(payload.get("statusText") or "").strip() or default_status,
         }
 
+    def _run_updated_payload(self, snapshot: AiSearchSnapshotResponse) -> Dict[str, Any]:
+        return {
+            "session": snapshot.session.model_dump(mode="python"),
+            "run": snapshot.run if isinstance(snapshot.run, dict) else {},
+            "plan": snapshot.plan.get("currentPlan") if isinstance(snapshot.plan, dict) else None,
+            "artifacts": snapshot.artifacts if isinstance(snapshot.artifacts, dict) else {},
+        }
+
     def _assistant_started_event(self, session_id: str, phase: str, stream_state: Dict[str, Any], message_id: Optional[str] = None) -> Optional[str]:
         if stream_state["assistant_started"]:
             return None
@@ -1021,18 +1130,21 @@ class AiSearchService:
         stream_state: Dict[str, Any],
     ) -> AsyncIterator[str]:
         session_id = current.session.sessionId
-        phase = current.phase
+        phase = self._snapshot_phase(current)
+        previous_phase = self._snapshot_phase(previous)
 
         if phase and phase not in stream_state["emitted_phases"]:
             stream_state["emitted_phases"].add(phase)
-            yield self._format_event("phase.changed", session_id, phase, {"phase": phase})
+        if current.run != previous.run or current.session != previous.session or current.plan != previous.plan or current.artifacts != previous.artifacts:
+            yield self._format_event("run.updated", session_id, phase, self._run_updated_payload(current))
 
-        for message in current.messages:
+        for message in self._snapshot_messages(current):
             message_id = str(message.get("message_id") or "").strip()
             if message_id and message_id in stream_state["known_message_ids"]:
                 continue
             if message_id:
                 stream_state["known_message_ids"].add(message_id)
+            yield self._format_event("message.created", session_id, phase, message)
             if str(message.get("role") or "").strip() == "assistant" and str(message.get("kind") or "").strip() == "chat":
                 for event in self._assistant_completed_events(
                     session_id,
@@ -1043,34 +1155,50 @@ class AiSearchService:
                 ):
                     yield event
 
-        if current.currentPlan != previous.currentPlan:
-            yield self._format_event("plan.updated", session_id, phase, current.currentPlan)
-        if current.executionTodos != previous.executionTodos:
-            yield self._format_event("todos.updated", session_id, phase, {"items": current.executionTodos})
-        if current.pendingQuestion != previous.pendingQuestion and current.pendingQuestion is not None:
-            yield self._format_event("question.required", session_id, phase, current.pendingQuestion)
-        if current.pendingConfirmation != previous.pendingConfirmation and current.pendingConfirmation is not None:
-            yield self._format_event("plan.awaiting_confirmation", session_id, phase, current.pendingConfirmation)
-        if current.candidateDocuments != previous.candidateDocuments:
+        current_todos = current.retrieval.get("todos") if isinstance(current.retrieval, dict) else []
+        previous_todos = previous.retrieval.get("todos") if isinstance(previous.retrieval, dict) else []
+        current_active_todo = current.retrieval.get("activeTodo") if isinstance(current.retrieval, dict) else None
+        previous_active_todo = previous.retrieval.get("activeTodo") if isinstance(previous.retrieval, dict) else None
+        if current_todos != previous_todos or current_active_todo != previous_active_todo:
+            yield self._format_event("todo.updated", session_id, phase, {"items": current_todos, "activeTodo": current_active_todo})
+        current_pending = current.conversation.get("pendingAction") if isinstance(current.conversation, dict) else None
+        previous_pending = previous.conversation.get("pendingAction") if isinstance(previous.conversation, dict) else None
+        if current_pending != previous_pending:
+            yield self._format_event("pending_action.updated", session_id, phase, current_pending)
+        current_candidates = ((current.retrieval.get("documents") or {}).get("candidates")) if isinstance(current.retrieval, dict) else []
+        previous_candidates = ((previous.retrieval.get("documents") or {}).get("candidates")) if isinstance(previous.retrieval, dict) else []
+        current_selected = ((current.retrieval.get("documents") or {}).get("selected")) if isinstance(current.retrieval, dict) else []
+        previous_selected = ((previous.retrieval.get("documents") or {}).get("selected")) if isinstance(previous.retrieval, dict) else []
+        if current_candidates != previous_candidates or current_selected != previous_selected:
             yield self._format_event(
                 "documents.updated",
                 session_id,
                 phase,
-                {"count": len(current.candidateDocuments), "items": current.candidateDocuments},
+                {
+                    "candidates": current_candidates or [],
+                    "selected": current_selected or [],
+                },
             )
-        if current.selectedDocuments != previous.selectedDocuments:
+        current_batch = current.analysis.get("activeBatch") if isinstance(current.analysis, dict) else None
+        previous_batch = previous.analysis.get("activeBatch") if isinstance(previous.analysis, dict) else None
+        if current_batch != previous_batch and current_batch:
+            if not previous_batch or str(previous_batch.get("batch_id") or previous_batch.get("batchId") or "").strip() != str(current_batch.get("batch_id") or current_batch.get("batchId") or "").strip():
+                yield self._format_event("batch.created", session_id, phase, current_batch)
+        current_feature = (current.analysis.get("latestFeatureCompareResult")) if isinstance(current.analysis, dict) else None
+        previous_feature = (previous.analysis.get("latestFeatureCompareResult")) if isinstance(previous.analysis, dict) else None
+        current_close_read = (current.analysis.get("latestCloseReadResult")) if isinstance(current.analysis, dict) else None
+        previous_close_read = (previous.analysis.get("latestCloseReadResult")) if isinstance(previous.analysis, dict) else None
+        if current_batch != previous_batch or current_feature != previous_feature or current_close_read != previous_close_read:
             yield self._format_event(
-                "selection.updated",
+                "batch.updated",
                 session_id,
                 phase,
-                {"count": len(current.selectedDocuments), "items": current.selectedDocuments},
+                {
+                    "activeBatch": current_batch,
+                    "latestCloseReadResult": current_close_read,
+                    "latestFeatureCompareResult": current_feature,
+                },
             )
-        if current.featureComparison != previous.featureComparison:
-            yield self._format_event("feature_comparison.updated", session_id, phase, current.featureComparison)
-        if current.downloadUrl != previous.downloadUrl:
-            yield self._format_event("artifacts.updated", session_id, phase, {"downloadUrl": current.downloadUrl})
-        if current.humanDecisionAction != previous.humanDecisionAction:
-            yield self._format_event("decision.updated", session_id, phase, current.humanDecisionAction)
 
     async def _consume_live_agent_stream(
         self,
@@ -1086,9 +1214,8 @@ class AiSearchService:
         config: Optional[Dict[str, Any]] = None,
         forward_model_text: bool = True,
     ) -> AsyncIterator[str]:
-        yield self._format_event("run.started", session_id, initial_snapshot.phase, {})
-        if previous_phase and previous_phase != initial_snapshot.phase:
-            yield self._format_event("phase.changed", session_id, initial_snapshot.phase, {"phase": initial_snapshot.phase})
+        initial_phase = self._snapshot_phase(initial_snapshot)
+        yield self._format_event("run.started", session_id, initial_phase, {})
 
         iterator = agent.astream(
             payload,
@@ -1116,13 +1243,8 @@ class AiSearchService:
                     stream_state["last_snapshot"] = snapshot
                     continue
 
-                current_phase = self._current_phase_value(task_id, stream_state["last_snapshot"].phase)
-                if event_type == "phase.changed":
-                    phase = str(event_payload.get("phase") or current_phase).strip() or current_phase
-                    if phase and phase not in stream_state["emitted_phases"]:
-                        stream_state["emitted_phases"].add(phase)
-                        yield self._format_event("phase.changed", session_id, phase, {"phase": phase})
-                elif event_type in {"subagent.started", "subagent.completed"}:
+                current_phase = self._current_phase_value(task_id, self._snapshot_phase(stream_state["last_snapshot"]))
+                if event_type in {"subagent.started", "subagent.completed"}:
                     yield self._format_event(
                         event_type,
                         session_id,
@@ -1146,7 +1268,7 @@ class AiSearchService:
             delta = self._extract_message_delta(raw_payload)
             if not delta:
                 continue
-            current_phase = self._current_phase_value(task_id, stream_state["last_snapshot"].phase)
+            current_phase = self._current_phase_value(task_id, self._snapshot_phase(stream_state["last_snapshot"]))
             started_event = self._assistant_started_event(session_id, current_phase, stream_state)
             if started_event:
                 yield started_event
@@ -1178,7 +1300,7 @@ class AiSearchService:
         if not content.strip():
             return
 
-        phase = self._current_phase_value(task_id, stream_state["last_snapshot"].phase)
+        phase = self._current_phase_value(task_id, self._snapshot_phase(stream_state["last_snapshot"]))
         message_id = str(stream_state.get("assistant_message_id") or uuid.uuid4().hex).strip()
         self._append_message(
             task_id,
@@ -1234,9 +1356,8 @@ class AiSearchService:
                 stream_state["final_values"] = state.values if state is not None else {}
                 stream_state["interrupted"] = bool(getattr(state, "interrupts", None)) if state is not None else False
             else:
-                yield self._format_event("run.started", task.id, initial_snapshot.phase, {})
-                if previous_phase and previous_phase != initial_snapshot.phase:
-                    yield self._format_event("phase.changed", task.id, initial_snapshot.phase, {"phase": initial_snapshot.phase})
+                initial_phase = self._snapshot_phase(initial_snapshot)
+                yield self._format_event("run.started", task.id, initial_phase, {})
                 result = await asyncio.to_thread(
                     self._run_main_agent,
                     task.id,
@@ -1271,14 +1392,14 @@ class AiSearchService:
             yield self._format_event(
                 "run.completed",
                 task.id,
-                self._current_phase_value(task.id, final_snapshot.phase),
+                self._current_phase_value(task.id, self._snapshot_phase(final_snapshot)),
                 {"interrupted": stream_state["interrupted"], **completion_payload},
             )
         except Exception as exc:
             yield self._format_event(
                 "run.error",
                 task.id,
-                self._current_phase_value(task.id, initial_snapshot.phase),
+                self._current_phase_value(task.id, self._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
             )
 
@@ -1319,10 +1440,9 @@ class AiSearchService:
                 ):
                     yield event
             else:
-                yield self._format_event("run.started", task.id, initial_snapshot.phase, {})
-                if previous_phase and previous_phase != initial_snapshot.phase:
-                    yield self._format_event("phase.changed", task.id, initial_snapshot.phase, {"phase": initial_snapshot.phase})
-                current_phase = self._current_phase_value(task.id, initial_snapshot.phase)
+                initial_phase = self._snapshot_phase(initial_snapshot)
+                yield self._format_event("run.started", task.id, initial_phase, {})
+                current_phase = self._current_phase_value(task.id, initial_phase)
                 yield self._format_event(
                     "subagent.started",
                     task.id,
@@ -1338,8 +1458,8 @@ class AiSearchService:
                 )
 
             refreshed_task = self.storage.get_task(task.id)
-            refreshed_meta = get_ai_search_meta(refreshed_task)
-            feature_comparison_id = str(refreshed_meta.get("current_feature_comparison_id") or "").strip()
+            latest_feature = self._current_feature_comparison(refreshed_task, plan_version, fallback_latest=True) or {}
+            feature_comparison_id = str(latest_feature.get("feature_comparison_id") or latest_feature.get("result_id") or "").strip()
             context = AiSearchAgentContext(self.storage, task.id)
             progress = context.evaluate_gap_progress_payload(plan_version)
             round_evaluation = context.commit_round_evaluation(plan_version)
@@ -1368,21 +1488,13 @@ class AiSearchService:
                 self._update_phase(
                     task.id,
                     final_phase,
-                    current_feature_comparison_id=feature_comparison_id or None,
                     selected_document_count=selected_count,
-                    current_task=None,
-                    human_decision_reason=str(round_evaluation.get("decision_reason") or "").strip() or None,
-                    human_decision_summary=summary,
                 )
             else:
                 self._update_phase(
                     task.id,
                     final_phase,
-                    current_feature_comparison_id=feature_comparison_id or None,
                     selected_document_count=selected_count,
-                    current_task=None if final_phase == PHASE_COMPLETED else "feature_comparison",
-                    human_decision_reason=None if final_phase == PHASE_COMPLETED else refreshed_meta.get("human_decision_reason"),
-                    human_decision_summary=None if final_phase == PHASE_COMPLETED else refreshed_meta.get("human_decision_summary"),
                 )
             if final_phase == PHASE_COMPLETED:
                 self._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
@@ -1402,7 +1514,7 @@ class AiSearchService:
             yield self._format_event(
                 "run.completed",
                 task.id,
-                self._current_phase_value(task.id, final_snapshot.phase),
+                self._current_phase_value(task.id, self._snapshot_phase(final_snapshot)),
                 {
                     "interrupted": False,
                     "featureComparisonId": feature_comparison_id or None,
@@ -1414,7 +1526,7 @@ class AiSearchService:
             yield self._format_event(
                 "run.error",
                 task.id,
-                self._current_phase_value(task.id, initial_snapshot.phase),
+                self._current_phase_value(task.id, self._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
             )
 
@@ -1429,7 +1541,7 @@ class AiSearchService:
             )
         if phase == PHASE_AWAITING_HUMAN_DECISION:
             self._raise_invalid_phase(phase, "当前处于人工决策状态，请使用继续检索或按当前结果完成。")
-        if phase == PHASE_AWAITING_USER_ANSWER and meta.get("pending_question_id"):
+        if phase == PHASE_AWAITING_USER_ANSWER and self.storage.get_ai_search_pending_action(task.id, "question", status="pending"):
             raise HTTPException(
                 status_code=409,
                 detail={"code": PENDING_QUESTION_EXISTS_CODE, "message": "请先回答当前追问。"},
@@ -1440,7 +1552,10 @@ class AiSearchService:
         if phase == PHASE_AWAITING_PLAN_CONFIRMATION and meta.get("active_plan_version"):
             active_plan_version = int(meta["active_plan_version"])
             self.storage.update_ai_search_plan(task.id, active_plan_version, status="superseded", superseded_at=utc_now_z())
-            self._update_phase(task.id, PHASE_DRAFTING_PLAN, pending_confirmation_plan_version=None)
+            pending = self.storage.get_ai_search_pending_action(task.id, "plan_confirmation", status="pending")
+            if pending:
+                self.storage.resolve_ai_search_pending_action(str(pending.get("action_id") or ""))
+            self._update_phase(task.id, PHASE_DRAFTING_PLAN)
 
         self._append_message(task.id, "user", "chat", content)
         self._update_phase(task.id, PHASE_DRAFTING_PLAN)
@@ -1471,7 +1586,9 @@ class AiSearchService:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
-        pending_question_id = str(meta.get("pending_question_id") or "").strip()
+        pending_action = self.storage.get_ai_search_pending_action(task.id, "question", status="pending")
+        pending_payload = pending_action.get("payload") if isinstance(pending_action, dict) else {}
+        pending_question_id = str(pending_payload.get("question_id") or "").strip()
         if phase != PHASE_AWAITING_USER_ANSWER or not pending_question_id:
             self._raise_invalid_phase(phase, "当前没有待回答的问题。")
         if pending_question_id != question_id:
@@ -1500,7 +1617,9 @@ class AiSearchService:
                 status_code=409,
                 detail={"code": PLAN_CONFIRMATION_REQUIRED_CODE, "message": "当前没有待确认的检索计划。"},
             )
-        pending_plan_version = int(meta.get("pending_confirmation_plan_version") or 0)
+        pending_action = self.storage.get_ai_search_pending_action(task.id, "plan_confirmation", status="pending")
+        pending_payload = pending_action.get("payload") if isinstance(pending_action, dict) else {}
+        pending_plan_version = int(pending_payload.get("plan_version") or 0)
         active_plan_version = int(meta.get("active_plan_version") or 0)
         if pending_plan_version != plan_version or active_plan_version != plan_version:
             raise HTTPException(
@@ -1532,9 +1651,9 @@ class AiSearchService:
         task = self._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         if str(meta.get("source_type") or "").strip() != "analysis":
-            raise HTTPException(status_code=409, detail="当前会话不是从 AI 分析创建的检索草稿。")
+            raise HTTPException(status_code=409, detail="当前会话不是从 AI 分析创建的检索计划。")
         if str(meta.get("analysis_seed_status") or "").strip() != "pending":
-            raise HTTPException(status_code=409, detail="当前检索草稿已生成，不能重复初始化。")
+            raise HTTPException(status_code=409, detail="当前检索计划已生成，不能重复初始化。")
         phase = str(meta.get("current_phase") or PHASE_DRAFTING_PLAN)
         seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
         if not seed_prompt:
@@ -1556,11 +1675,11 @@ class AiSearchService:
                     payload = {}
                 if str(payload.get("type") or "").strip() == "run.error":
                     maybe_error = payload.get("payload")
-                    run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索草稿失败。"}
+                    run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索计划失败。"}
             yield event
 
         if run_error is not None:
-            failure_message = str(run_error.get("message") or "生成 AI 检索草稿失败。").strip()
+            failure_message = str(run_error.get("message") or "生成 AI 检索计划失败。").strip()
             self.storage.update_task(
                 task.id,
                 metadata=merge_ai_search_meta(
@@ -1571,7 +1690,7 @@ class AiSearchService:
                 status=phase_to_task_status(PHASE_FAILED),
                 progress=phase_progress(PHASE_FAILED),
                 current_step=phase_step(PHASE_FAILED),
-                error_message=f"生成 AI 检索草稿失败：{failure_message}",
+                error_message=f"生成 AI 检索计划失败：{failure_message}",
             )
             emit_system_log(
                 category="task_execution",
@@ -1580,7 +1699,7 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=False,
-                message="从 AI 分析创建 AI 检索草稿失败",
+                message="从 AI 分析创建 AI 检索计划失败",
                 payload={"analysis_task_id": str(meta.get("source_task_id") or "").strip() or None, "error": failure_message},
             )
             return
@@ -1599,14 +1718,15 @@ class AiSearchService:
             task_id=task.id,
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="已从 AI 分析创建 AI 检索草稿",
+            message="已从 AI 分析创建 AI 检索计划",
             payload={
                 "analysis_task_id": source_task_id,
                 "analysis_pn": source_pn,
-                "phase": snapshot.phase,
+                "phase": self._snapshot_phase(snapshot),
             },
         )
-        if snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION:
+        if self._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
+            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             emit_system_log(
                 category="task_execution",
                 event_name="ai_search_seed_plan_ready",
@@ -1614,10 +1734,11 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="AI 检索草稿已进入计划确认阶段",
-                payload={"analysis_task_id": source_task_id, "plan_version": snapshot.pendingConfirmation.get("planVersion") if snapshot.pendingConfirmation else None},
+                message="AI 检索计划已进入计划确认阶段",
+                payload={"analysis_task_id": source_task_id, "plan_version": pending_action.get("plan_version") if isinstance(pending_action, dict) else None},
             )
-        if snapshot.phase == PHASE_AWAITING_USER_ANSWER:
+        if self._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
+            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             emit_system_log(
                 category="task_execution",
                 event_name="ai_search_seed_question_required",
@@ -1625,8 +1746,8 @@ class AiSearchService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="AI 检索草稿仍需用户补充信息",
-                payload={"analysis_task_id": source_task_id, "question": snapshot.pendingQuestion.get("prompt") if snapshot.pendingQuestion else None},
+                message="AI 检索计划仍需用户补充信息",
+                payload={"analysis_task_id": source_task_id, "question": pending_action.get("prompt") if isinstance(pending_action, dict) else None},
             )
 
     async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
@@ -1639,12 +1760,12 @@ class AiSearchService:
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         context = AiSearchAgentContext(self.storage, task.id)
         context.reset_execution_control(plan_version, clear_human_decision=True)
+        pending = self.storage.get_ai_search_pending_action(task.id, "human_decision", status="pending")
+        if pending:
+            self.storage.resolve_ai_search_pending_action(str(pending.get("action_id") or ""))
         self._update_phase(
             task.id,
             PHASE_DRAFTING_PLAN,
-            current_task=None,
-            human_decision_reason=None,
-            human_decision_summary=None,
         )
         prompt = self._build_decision_continue_prompt(task.id, decision_action)
         async for event in self._stream_main_agent_execution(
@@ -1674,7 +1795,6 @@ class AiSearchService:
                 task.id,
                 PHASE_FEATURE_COMPARISON,
                 active_plan_version=plan_version,
-                current_task="feature_comparison",
             )
             async for event in self._stream_feature_agent_execution(
                 task=self.storage.get_task(task.id),
@@ -1690,16 +1810,15 @@ class AiSearchService:
         previous_assistant = self._latest_assistant_chat(task.id)
         initial_snapshot = self.get_snapshot(task.id, owner_id)
         stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
-        yield self._format_event("run.started", task.id, initial_snapshot.phase, {})
+        yield self._format_event("run.started", task.id, self._snapshot_phase(initial_snapshot), {})
+        pending = self.storage.get_ai_search_pending_action(task.id, "human_decision", status="pending")
+        if pending:
+            self.storage.resolve_ai_search_pending_action(str(pending.get("action_id") or ""))
         self._update_phase(
             task.id,
             PHASE_COMPLETED,
             active_plan_version=plan_version,
-            current_feature_comparison_id=str(meta.get("current_feature_comparison_id") or "").strip() or None,
             selected_document_count=len(selected_documents),
-            current_task=None,
-            human_decision_reason=None,
-            human_decision_summary=None,
         )
         self._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
         final_snapshot = self.get_snapshot(task.id, owner_id)
@@ -1712,7 +1831,7 @@ class AiSearchService:
         yield self._format_event(
             "run.completed",
             task.id,
-            self._current_phase_value(task.id, final_snapshot.phase),
+            self._current_phase_value(task.id, self._snapshot_phase(final_snapshot)),
             {"interrupted": False, "completedFromTakeover": True},
         )
 
@@ -1763,12 +1882,16 @@ class AiSearchService:
             )
         selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
         next_phase = PHASE_FEATURE_COMPARISON if selected_count > 0 else PHASE_CLOSE_READ
+        context = AiSearchAgentContext(self.storage, task.id)
+        context.reset_execution_control(plan_version, clear_human_decision=True)
+        pending = self.storage.get_ai_search_pending_action(task.id, "human_decision", status="pending")
+        if pending:
+            self.storage.resolve_ai_search_pending_action(str(pending.get("action_id") or ""))
         self._update_phase(
             task.id,
             next_phase,
             selected_document_count=selected_count,
-            current_feature_comparison_id=None,
-            current_task="feature_comparison" if selected_count > 0 else "close_read",
+            active_batch_id=None,
         )
         return self.get_snapshot(task.id, owner_id)
 
@@ -1789,7 +1912,6 @@ class AiSearchService:
             task.id,
             PHASE_FEATURE_COMPARISON,
             active_plan_version=plan_version,
-            current_task="feature_comparison",
         )
         async for event in self._stream_feature_agent_execution(
             task=self.storage.get_task(task.id),

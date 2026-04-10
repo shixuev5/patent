@@ -340,7 +340,7 @@ def test_admin_usage_forbidden_for_non_admin(monkeypatch, tmp_path):
     assert exc_info.value.status_code == 403
 
 
-def test_admin_usage_respects_utc8_day_boundary_and_localizes_usage_time(monkeypatch, tmp_path):
+def test_admin_usage_respects_utc8_day_boundary_and_returns_utc_timestamps(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
     storage = _mount_storage(monkeypatch, tmp_path)
     _seed_users(storage)
@@ -382,8 +382,8 @@ def test_admin_usage_respects_utc8_day_boundary_and_localizes_usage_time(monkeyp
             current_user=admin_user,
         )
     )
-    assert dashboard.startAt == "2026-03-20T00:00:00"
-    assert dashboard.endAt == "2026-03-21T00:00:00"
+    assert dashboard.startAt == "2026-03-19T16:00:00Z"
+    assert dashboard.endAt == "2026-03-20T16:00:00Z"
     assert dashboard.overview.totalTasks == 2
 
     task_table = asyncio.run(
@@ -403,8 +403,8 @@ def test_admin_usage_respects_utc8_day_boundary_and_localizes_usage_time(monkeyp
         )
     )
     assert [item["taskId"] for item in task_table.items] == ["task-start", "task-end"]
-    assert task_table.items[0]["lastUsageAt"] == "2026-03-20T00:00:00"
-    assert task_table.items[1]["lastUsageAt"] == "2026-03-20T23:59:59"
+    assert task_table.items[0]["lastUsageAt"] == "2026-03-19T16:00:00Z"
+    assert task_table.items[1]["lastUsageAt"] == "2026-03-20T15:59:59Z"
 
 
 def test_admin_usage_resolve_time_window_uses_utc8_for_day_month_year():
@@ -412,19 +412,19 @@ def test_admin_usage_resolve_time_window_uses_utc8_for_day_month_year():
     assert day_anchor == "2026-03-20"
     assert day_start.isoformat() == "2026-03-20T00:00:00+08:00"
     assert day_end.isoformat() == "2026-03-21T00:00:00+08:00"
-    assert day_query_start == "2026-03-19T16:00:00"
-    assert day_query_end == "2026-03-20T16:00:00"
+    assert day_query_start == "2026-03-19T16:00:00.000000Z"
+    assert day_query_end == "2026-03-20T16:00:00.000000Z"
 
     month_anchor, month_start, month_end, month_query_start, month_query_end = admin_usage._resolve_time_window("month", "2026-03")
     assert month_anchor == "2026-03"
     assert month_start.isoformat() == "2026-03-01T00:00:00+08:00"
     assert month_end.isoformat() == "2026-04-01T00:00:00+08:00"
-    assert month_query_start == "2026-02-28T16:00:00"
-    assert month_query_end == "2026-03-31T16:00:00"
+    assert month_query_start == "2026-02-28T16:00:00.000000Z"
+    assert month_query_end == "2026-03-31T16:00:00.000000Z"
 
     year_anchor, year_start, year_end, year_query_start, year_query_end = admin_usage._resolve_time_window("year", "2026")
     assert year_anchor == "2026"
     assert year_start.isoformat() == "2026-01-01T00:00:00+08:00"
     assert year_end.isoformat() == "2027-01-01T00:00:00+08:00"
-    assert year_query_start == "2025-12-31T16:00:00"
-    assert year_query_end == "2026-12-31T16:00:00"
+    assert year_query_start == "2025-12-31T16:00:00.000000Z"
+    assert year_query_end == "2026-12-31T16:00:00.000000Z"

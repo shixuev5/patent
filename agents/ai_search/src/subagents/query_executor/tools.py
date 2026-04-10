@@ -53,15 +53,22 @@ def build_query_executor_tools(context: Any) -> List[Any]:
             payload.setdefault("sub_plan_id", str(current_todo.get("sub_plan_id") or "").strip())
             if not str(payload.get("todo_id") or "").strip():
                 raise ValueError("execution_step_summary 缺少 todo_id。")
-            context.storage.create_ai_search_message(
+            run_id = context.active_run_id(version)
+            context.storage.create_ai_search_execution_summary(
                 {
-                    "message_id": uuid.uuid4().hex,
+                    "summary_id": uuid.uuid4().hex,
+                    "run_id": run_id,
                     "task_id": context.task_id,
-                    "plan_version": version or None,
-                    "role": "assistant",
-                    "kind": "execution_step_summary",
-                    "content": json.dumps(payload, ensure_ascii=False),
-                    "stream_status": "completed",
+                    "plan_version": version,
+                    "todo_id": str(payload.get("todo_id") or "").strip(),
+                    "step_id": str(payload.get("step_id") or "").strip(),
+                    "sub_plan_id": str(payload.get("sub_plan_id") or "").strip(),
+                    "result_summary": str(payload.get("result_summary") or "").strip(),
+                    "adjustments": payload.get("adjustments") or [],
+                    "plan_change_assessment": payload.get("plan_change_assessment") or {},
+                    "next_recommendation": str(payload.get("next_recommendation") or "").strip(),
+                    "candidate_pool_size": int(payload.get("candidate_pool_size") or 0),
+                    "new_unique_candidates": int(payload.get("new_unique_candidates") or 0),
                     "metadata": payload,
                 }
             )

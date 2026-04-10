@@ -23,6 +23,7 @@ from agents.ai_search.src.state import (
     PHASE_EXECUTE_SEARCH,
     PHASE_FEATURE_COMPARISON,
     get_ai_search_meta,
+    merge_ai_search_meta,
 )
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 from backend.time_utils import utc_now_z
@@ -41,13 +42,12 @@ def build_main_agent_tools(context: Any) -> List[Any]:
 
     def read_todos() -> str:
         """读取当前任务清单。"""
-        task = context.storage.get_task(context.task_id)
-        meta = get_ai_search_meta(task)
-        todos = context._current_todos(task)
+        todos = context._current_todos()
+        current = context.current_todo()
         return json.dumps(
             {
                 "todos": todos,
-                "current_task": meta.get("current_task"),
+                "current_task": str(current.get("todo_id") or "").strip() if current else None,
             },
             ensure_ascii=False,
         )
@@ -67,12 +67,8 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             if not todo_id or not title:
                 continue
             todos.append(context._normalized_todo(item, existing=existing_by_id.get(todo_id)))
-        context.update_task_phase(
-            PHASE_DRAFTING_PLAN,
-            runtime=runtime,
-            todos=todos,
-            current_task=str(payload.get("current_task") or "").strip() or None,
-        )
+        context.replace_todos(todos, current_task=str(payload.get("current_task") or "").strip() or None, runtime=runtime)
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         return "todos updated"
 
     def get_search_elements(plan_version: int = 0) -> str:
@@ -100,13 +96,10 @@ def build_main_agent_tools(context: Any) -> List[Any]:
     def start_plan_drafting(runtime: ToolRuntime = None) -> str:
         """显式进入 draft plan 阶段。"""
         context.clear_planner_draft(runtime=runtime)
-        context.update_task_phase(
-            PHASE_DRAFTING_PLAN,
-            runtime=runtime,
-            current_task=None,
-            human_decision_reason=None,
-            human_decision_summary=None,
-        )
+        context.resolve_pending_action("question")
+        context.resolve_pending_action("plan_confirmation")
+        context.resolve_pending_action("human_decision")
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         return "phase switched to drafting_plan"
 
     def save_search_plan(
@@ -163,7 +156,6 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             PHASE_DRAFTING_PLAN,
             runtime=runtime,
             active_plan_version=plan_version,
-            pending_confirmation_plan_version=None,
         )
         context.clear_planner_draft(runtime=runtime)
         return json.dumps({"plan_version": plan_version}, ensure_ascii=False)
@@ -175,21 +167,12 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """创建追问并挂起。"""
-        task = context.storage.get_task(context.task_id)
-        meta = get_ai_search_meta(task)
-        question_id = str(meta.get("pending_question_id") or "").strip()
+        pending = context.storage.get_ai_search_pending_action(context.task_id, "question", status="pending")
         payload: Dict[str, Any]
-        if question_id:
-            existing = context.find_message_by_question_id(question_id)
-            metadata = existing.get("metadata") if existing else None
-            payload = metadata if isinstance(metadata, dict) else {}
-            if not payload:
-                payload = {
-                    "question_id": question_id,
-                    "prompt": prompt,
-                    "reason": reason,
-                    "expected_answer_shape": expected_answer_shape,
-                }
+        if pending and isinstance(pending.get("payload"), dict):
+            payload = dict(pending.get("payload") or {})
+            question_id = str(payload.get("question_id") or "").strip() or uuid.uuid4().hex[:12]
+            payload.setdefault("question_id", question_id)
         else:
             question_id = uuid.uuid4().hex[:12]
             payload = {
@@ -210,9 +193,11 @@ def build_main_agent_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
-            context.update_task_phase(PHASE_AWAITING_USER_ANSWER, runtime=runtime, pending_question_id=question_id)
+            context.create_pending_action("question", payload, run_id=context.active_run_id())
+            context.update_task_phase(PHASE_AWAITING_USER_ANSWER, runtime=runtime)
         answer = interrupt(payload)
-        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, pending_question_id=None)
+        context.resolve_pending_action("question")
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         return str(answer or "").strip()
 
     def request_plan_confirmation(
@@ -222,15 +207,14 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """请求用户确认计划。"""
-        task = context.storage.get_task(context.task_id)
-        meta = get_ai_search_meta(task)
-        pending_plan_version = meta.get("pending_confirmation_plan_version")
+        pending_action = context.storage.get_ai_search_pending_action(context.task_id, "plan_confirmation", status="pending")
         payload = {
             "plan_version": int(plan_version),
             "plan_summary": plan_summary,
             "confirmation_label": confirmation_label,
         }
-        if int(pending_plan_version or 0) != int(plan_version):
+        pending_payload = pending_action.get("payload") if isinstance(pending_action, dict) else None
+        if not isinstance(pending_payload, dict) or int(pending_payload.get("plan_version") or 0) != int(plan_version):
             context.storage.update_ai_search_plan(context.task_id, int(plan_version), status="awaiting_confirmation")
             context.storage.create_ai_search_message(
                 {
@@ -244,31 +228,25 @@ def build_main_agent_tools(context: Any) -> List[Any]:
                     "metadata": payload,
                 }
             )
-            context.update_task_phase(
-                PHASE_AWAITING_PLAN_CONFIRMATION,
-                runtime=runtime,
-                pending_confirmation_plan_version=int(plan_version),
-            )
+            context.create_pending_action("plan_confirmation", payload, run_id=context.active_run_id())
+            context.update_task_phase(PHASE_AWAITING_PLAN_CONFIRMATION, runtime=runtime)
         confirmation = interrupt(payload)
         confirmed = False
         if isinstance(confirmation, dict):
             confirmed = bool(confirmation.get("confirmed"))
         elif isinstance(confirmation, str):
             confirmed = confirmation.strip().lower() in {"true", "yes", "confirmed", "ok"}
+        context.resolve_pending_action("plan_confirmation")
         if confirmed:
             context.storage.update_ai_search_plan(context.task_id, int(plan_version), status="confirmed", confirmed_at=utc_now_z())
             plan = context.storage.get_ai_search_plan(context.task_id, int(plan_version)) or {}
             execution_spec = plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
             todos = context.execution_todos_from_plan(int(plan_version), execution_spec)
-            context.update_task_phase(
-                PHASE_DRAFTING_PLAN,
-                runtime=runtime,
-                pending_confirmation_plan_version=None,
-                current_task=None,
-                todos=todos,
-            )
+            task = context.storage.get_task(context.task_id)
+            context.storage.update_task(context.task_id, metadata=merge_ai_search_meta(task, draft_todos=todos))
+            context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         else:
-            context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, pending_confirmation_plan_version=None)
+            context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         return "confirmed" if confirmed else "not_confirmed"
 
     def begin_execution(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
@@ -276,12 +254,17 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         version = int(plan_version or context.active_plan_version() or 0)
         if version <= 0:
             return "missing_plan"
+        plan = context.storage.get_ai_search_plan(context.task_id, version) or {}
+        execution_spec = plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
+        run = context.ensure_run(version, phase=PHASE_EXECUTE_SEARCH)
+        if not context._current_todos():
+            context.replace_todos(context.execution_todos_from_plan(version, execution_spec), runtime=runtime)
         todo = context.first_pending_todo(phase_key=PHASE_EXECUTE_SEARCH) or context.first_pending_todo()
         if not todo:
             return "no_pending_todos"
         phase = _phase_from_todo(todo)
         todo_id = str(todo.get("todo_id") or "").strip()
-        context.update_task_phase(phase, runtime=runtime, active_plan_version=version, current_task=todo_id)
+        context.update_task_phase(phase, runtime=runtime, active_plan_version=version, run_id=str(run.get("run_id") or ""), current_task=todo_id)
         context.update_todo(
             todo_id,
             "in_progress",
@@ -302,7 +285,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             return "no_pending_todo"
         target_id = str(target.get("todo_id") or "").strip()
         phase = _phase_from_todo(target)
-        context.update_task_phase(phase, runtime=runtime, active_plan_version=version, current_task=target_id)
+        context.update_task_phase(phase, runtime=runtime, active_plan_version=version, run_id=context.active_run_id(version), current_task=target_id)
         context.update_todo(
             target_id,
             "in_progress",
@@ -383,7 +366,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         )
         if version > 0:
             context.storage.update_ai_search_plan(context.task_id, version, status="superseded", superseded_at=utc_now_z())
-        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, pending_confirmation_plan_version=None, current_task=None)
+        context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime, active_plan_version=version, run_id=context.active_run_id(version), current_task=None)
         return json.dumps({"todo_id": todo_id, "reason": str(reason or "").strip()}, ensure_ascii=False)
 
     def start_coarse_screen(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
@@ -392,7 +375,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         candidate_count = len(context.storage.list_ai_search_documents(context.task_id, version))
         if candidate_count <= 0:
             return "no_candidates_for_coarse_screen"
-        context.update_task_phase(PHASE_COARSE_SCREEN, runtime=runtime, active_plan_version=version, current_task=None)
+        context.update_task_phase(PHASE_COARSE_SCREEN, runtime=runtime, active_plan_version=version, run_id=context.active_run_id(version), current_task=None)
         return json.dumps({"plan_version": version, "candidate_count": candidate_count}, ensure_ascii=False)
 
     def start_close_read(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
@@ -401,7 +384,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
         shortlisted_count = len(context.storage.list_ai_search_documents(context.task_id, version, stages=["shortlisted"]))
         if shortlisted_count <= 0:
             return "no_shortlisted_documents"
-        context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, current_task=None)
+        context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=context.active_run_id(version), current_task=None)
         return json.dumps({"plan_version": version, "shortlisted_count": shortlisted_count}, ensure_ascii=False)
 
     def start_feature_comparison(plan_version: int = 0, runtime: ToolRuntime = None) -> str:
@@ -414,6 +397,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             PHASE_FEATURE_COMPARISON,
             runtime=runtime,
             active_plan_version=version,
+            run_id=context.active_run_id(version),
             current_task=None,
         )
         return json.dumps({"plan_version": version, "selected_count": selected_count}, ensure_ascii=False)
@@ -431,7 +415,7 @@ def build_main_agent_tools(context: Any) -> List[Any]:
                 "plan_version": version,
                 "phase": str(meta.get("current_phase") or ""),
                 "todos": todos,
-                "current_task": meta.get("current_task"),
+                "current_task": str(current_todo.get("todo_id") or "").strip() or None,
                 "recovery": {
                     "resume_from": current_todo.get("resume_from"),
                     "attempt_count": int(current_todo.get("attempt_count") or 0),
@@ -492,9 +476,8 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             PHASE_COMPLETED,
             runtime=runtime,
             active_plan_version=version or None,
+            run_id=context.active_run_id(version),
             selected_document_count=selected_count,
-            human_decision_reason=None if force_from_decision else None,
-            human_decision_summary=None if force_from_decision else None,
             current_task=None,
         )
         return json.dumps({"selected_count": selected_count}, ensure_ascii=False)

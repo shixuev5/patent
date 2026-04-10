@@ -50,7 +50,11 @@ sys.modules.setdefault("agents.common.retrieval", stub_retrieval_pkg)
 sys.modules.setdefault("agents.common.retrieval.local_evidence_retriever", stub_local_retriever)
 
 from backend.ai_search import service as ai_search_service_module
-from backend.ai_search.analysis_seed import seed_search_elements_from_analysis
+from backend.ai_search.analysis_seed import (
+    build_analysis_seed_user_message,
+    build_analysis_sub_plans,
+    seed_search_elements_from_analysis,
+)
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
     RESUME_NOT_AVAILABLE_CODE,
@@ -103,11 +107,42 @@ def _parse_data_events(items: list[str]) -> list[dict[str, Any]]:
 def _set_phase(storage: SQLiteTaskStorage, task_id: str, phase: str, **meta_updates):
     task = storage.get_task(task_id)
     assert task is not None
+    active_plan_version = int(meta_updates.get("active_plan_version") or ((task.metadata.get("ai_search") or {}).get("active_plan_version") if isinstance(task.metadata, dict) else 0) or 0)
     storage.update_task(
         task_id,
         status=TaskStatus.PAUSED.value if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_HUMAN_DECISION} else TaskStatus.PROCESSING.value,
         metadata=merge_ai_search_meta(task, current_phase=phase, **meta_updates),
     )
+    if active_plan_version > 0:
+        run = storage.get_ai_search_run(task_id, plan_version=active_plan_version)
+        if run:
+            run_updates = {
+                "phase": phase,
+                "status": TaskStatus.PAUSED.value if phase in {PHASE_AWAITING_USER_ANSWER, PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_HUMAN_DECISION} else TaskStatus.PROCESSING.value,
+            }
+            if "current_task" in meta_updates:
+                run_updates["active_retrieval_todo_id"] = meta_updates.get("current_task")
+            if "active_batch_id" in meta_updates:
+                run_updates["active_batch_id"] = meta_updates.get("active_batch_id")
+            if "selected_document_count" in meta_updates:
+                run_updates["selected_document_count"] = int(meta_updates.get("selected_document_count") or 0)
+            state_keys = {
+                "execution_round_count",
+                "no_progress_round_count",
+                "last_selected_count",
+                "last_readiness",
+                "last_gap_signature",
+                "processed_execution_summary_count",
+                "human_decision_reason",
+                "human_decision_summary",
+            }
+            if any(key in meta_updates for key in state_keys):
+                human_decision_state = dict(run.get("human_decision_state") or {})
+                for key in state_keys:
+                    if key in meta_updates:
+                        human_decision_state[key] = meta_updates.get(key)
+                run_updates["human_decision_state"] = human_decision_state
+            storage.update_ai_search_run(task_id, str(run.get("run_id") or ""), **run_updates)
 
 
 def _set_planner_draft(storage: SQLiteTaskStorage, task_id: str, *, review_markdown: str = "# 计划") -> None:
@@ -176,6 +211,86 @@ def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "draft", 
     }
 
 
+def _create_run(storage: SQLiteTaskStorage, task_id: str, *, plan_version: int = 1, phase: str = PHASE_DRAFTING_PLAN) -> str:
+    run_id = f"{task_id}-run-{plan_version}"
+    storage.create_ai_search_run(
+        {
+            "run_id": run_id,
+            "task_id": task_id,
+            "plan_version": plan_version,
+            "phase": phase,
+            "status": TaskStatus.PROCESSING.value,
+        }
+    )
+    return run_id
+
+
+def _create_batch(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    run_id: str,
+    *,
+    plan_version: int = 1,
+    batch_type: str = "feature_comparison",
+    batch_id: str | None = None,
+) -> str:
+    resolved_batch_id = batch_id or f"{run_id}-{batch_type}-batch"
+    storage.create_ai_search_batch(
+        {
+            "batch_id": resolved_batch_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "plan_version": plan_version,
+            "batch_type": batch_type,
+            "status": "loaded",
+        }
+    )
+    return resolved_batch_id
+
+
+def _seed_run_todos(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    *,
+    plan_version: int = 1,
+    phase: str = PHASE_EXECUTE_SEARCH,
+    active_todo_id: str | None = None,
+    todos: list[dict[str, Any]] | None = None,
+    run_updates: dict[str, Any] | None = None,
+) -> str:
+    run_id = _create_run(storage, task_id, plan_version=plan_version, phase=phase)
+    if todos:
+        storage.replace_ai_search_retrieval_todos(run_id, task_id, plan_version, todos)
+    if active_todo_id:
+        storage.update_ai_search_run(task_id, run_id, active_retrieval_todo_id=active_todo_id, **(run_updates or {}))
+    elif run_updates:
+        storage.update_ai_search_run(task_id, run_id, **run_updates)
+    _set_phase(storage, task_id, phase, active_plan_version=plan_version)
+    return run_id
+
+
+def _create_pending_action(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    action_type: str,
+    *,
+    run_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    action_id = f"{task_id}-{action_type}-action"
+    storage.create_ai_search_pending_action(
+        {
+            "action_id": action_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "action_type": action_type,
+            "status": "pending",
+            "payload": payload or {},
+        }
+    )
+    return action_id
+
+
 def test_create_session_and_snapshot(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
 
@@ -184,9 +299,9 @@ def test_create_session_and_snapshot(monkeypatch, tmp_path):
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert listed.total == 1
-    assert snapshot.phase == "collecting_requirements"
+    assert snapshot.run["phase"] == "collecting_requirements"
     assert snapshot.session.taskId == created.taskId
-    assert snapshot.messages[0]["content"] == "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。"
+    assert snapshot.conversation["messages"][0]["content"] == "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。"
     assert snapshot.session.pinned is False
 
 
@@ -280,12 +395,12 @@ def test_stream_message_keeps_unified_flow_without_structured_claim_source(monke
 def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(
+    _seed_run_todos(
         storage,
         created.sessionId,
-        PHASE_EXECUTE_SEARCH,
-        current_task="plan_1:sub_plan_1:step_1",
-        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step"}],
+        phase=PHASE_EXECUTE_SEARCH,
+        active_todo_id="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step"}],
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -297,12 +412,12 @@ def test_stream_message_rejects_when_execution_todo_failed(monkeypatch, tmp_path
 def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(
+    _seed_run_todos(
         storage,
         created.sessionId,
-        PHASE_EXECUTE_SEARCH,
-        current_task="plan_1:sub_plan_1:step_1",
-        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step", "last_error": "timeout"}],
+        phase=PHASE_EXECUTE_SEARCH,
+        active_todo_id="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "failed", "resume_from": "run_execution_step", "last_error": "timeout"}],
     )
 
     monkeypatch.setattr(
@@ -324,9 +439,9 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     events = asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.phase == PHASE_EXECUTE_SEARCH
-    assert snapshot.resumeAction is not None
-    assert snapshot.resumeAction["lastError"] == "timeout"
+    assert snapshot.run["phase"] == PHASE_EXECUTE_SEARCH
+    assert snapshot.retrieval["activeTodo"] is not None
+    assert snapshot.retrieval["activeTodo"]["last_error"] == "timeout"
     assert not any("assistant.message.completed" in item for item in events)
     assert any("run.completed" in item for item in events)
 
@@ -334,12 +449,12 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(
+    _seed_run_todos(
         storage,
         created.sessionId,
-        PHASE_EXECUTE_SEARCH,
-        current_task="plan_1:sub_plan_1:step_1",
-        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "phase_key": "execute_search", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "in_progress", "resume_from": "run_execution_step"}],
+        phase=PHASE_EXECUTE_SEARCH,
+        active_todo_id="plan_1:sub_plan_1:step_1",
+        todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "in_progress", "resume_from": "run_execution_step"}],
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -351,11 +466,12 @@ def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_pa
 def test_stream_message_rejects_when_question_pending(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    _set_phase(
+    _set_phase(storage, created.sessionId, PHASE_AWAITING_USER_ANSWER)
+    _create_pending_action(
         storage,
         created.sessionId,
-        PHASE_AWAITING_USER_ANSWER,
-        pending_question_id="q-1",
+        "question",
+        payload={"question_id": "q-1", "prompt": "请补充一个核心特征"},
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -373,12 +489,12 @@ def test_stream_plan_confirmation_rejects_stale_version(monkeypatch, tmp_path):
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=2, status="awaiting_confirmation", title="新计划")
     )
-    _set_phase(
+    _set_phase(storage, created.sessionId, PHASE_AWAITING_PLAN_CONFIRMATION, active_plan_version=2)
+    _create_pending_action(
         storage,
         created.sessionId,
-        PHASE_AWAITING_PLAN_CONFIRMATION,
-        active_plan_version=2,
-        pending_confirmation_plan_version=2,
+        "plan_confirmation",
+        payload={"plan_version": 2, "confirmationLabel": "实施此计划"},
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -393,12 +509,12 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="awaiting_confirmation", title="待确认计划")
     )
-    _set_phase(
+    _set_phase(storage, created.sessionId, PHASE_AWAITING_PLAN_CONFIRMATION, active_plan_version=1)
+    _create_pending_action(
         storage,
         created.sessionId,
-        PHASE_AWAITING_PLAN_CONFIRMATION,
-        active_plan_version=1,
-        pending_confirmation_plan_version=1,
+        "plan_confirmation",
+        payload={"plan_version": 1, "confirmationLabel": "实施此计划"},
     )
 
     monkeypatch.setattr(
@@ -421,9 +537,11 @@ def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_tab
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_COMPLETED)
     storage.upsert_ai_search_documents(
         [
             {
+                "run_id": run_id,
                 "document_id": "doc-1",
                 "task_id": created.sessionId,
                 "plan_version": 1,
@@ -438,12 +556,14 @@ def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_tab
             }
         ]
     )
+    batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison")
     storage.create_ai_search_feature_comparison(
         {
             "feature_comparison_id": "ft-1",
+            "run_id": run_id,
+            "batch_id": batch_id,
             "task_id": created.sessionId,
             "plan_version": 1,
-            "status": "completed",
             "table_json": [{"feature": "A"}],
             "summary_markdown": "旧特征表",
         }
@@ -454,12 +574,13 @@ def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_tab
         "completed",
         active_plan_version=1,
         current_feature_comparison_id="ft-1",
+        active_batch_id=batch_id,
     )
 
     snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, ["doc-1"], [])
 
-    assert snapshot.phase == PHASE_FEATURE_COMPARISON
-    assert snapshot.featureComparison is None
+    assert snapshot.run["phase"] == PHASE_FEATURE_COMPARISON
+    assert snapshot.analysis["latestFeatureCompareResult"] is None
 
 
 def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_empty(monkeypatch, tmp_path):
@@ -468,9 +589,11 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_FEATURE_COMPARISON)
     storage.upsert_ai_search_documents(
         [
             {
+                "run_id": run_id,
                 "document_id": "doc-1",
                 "task_id": created.sessionId,
                 "plan_version": 1,
@@ -495,8 +618,8 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
 
     snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])
 
-    assert snapshot.phase == PHASE_CLOSE_READ
-    assert snapshot.selectedDocuments == []
+    assert snapshot.run["phase"] == PHASE_CLOSE_READ
+    assert snapshot.retrieval["documents"]["selected"] == []
 
 
 def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
@@ -528,7 +651,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
 
     assert updated_plan is not None
     assert updated_plan["status"] == "superseded"
-    assert snapshot.phase == PHASE_DRAFTING_PLAN
+    assert snapshot.run["phase"] == PHASE_DRAFTING_PLAN
     assert any("run.completed" in item for item in events)
 
 
@@ -751,7 +874,8 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "开始处理")))
     parsed = _parse_data_events(events)
 
-    assert [event["type"] for event in parsed].count("phase.changed") == 1
+    assert [event["type"] for event in parsed].count("phase.changed") == 0
+    assert parsed[0]["type"] == "run.started"
     assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索要素整理" for event in parsed)
     assert any(event["type"] == "subagent.completed" and event["payload"]["label"] == "检索要素整理" for event in parsed)
 
@@ -766,9 +890,11 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     pdf_path = output_dir / "ai_search_report.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_FEATURE_COMPARISON)
     storage.upsert_ai_search_documents(
         [
             {
+                "run_id": run_id,
                 "document_id": "doc-1",
                 "task_id": created.sessionId,
                 "plan_version": 1,
@@ -813,44 +939,30 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     class _FakeFeatureAgent:
         def invoke(self, payload):
             assert "特征对比分析" in payload["messages"][0]["content"]
+            batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
             storage.create_ai_search_feature_comparison(
                 {
                     "feature_comparison_id": "ft-new",
+                    "run_id": run_id,
+                    "batch_id": batch_id,
                     "task_id": created.sessionId,
                     "plan_version": 1,
-                    "status": "completed",
                     "table_json": [{"feature": "A"}],
                     "summary_markdown": "新特征表",
+                    "overall_findings": "可以结束",
+                    "coverage_gaps": [],
+                    "follow_up_search_hints": [],
+                    "creativity_readiness": "ready",
+                    "readiness_rationale": "证据充分",
                 }
             )
-            storage.create_ai_search_message(
-                {
-                    "message_id": "msg-feature-result",
-                    "task_id": created.sessionId,
-                    "plan_version": 1,
-                    "role": "assistant",
-                    "kind": "feature_compare_result",
-                    "content": "可以结束",
-                    "metadata": {
-                        "table_rows": [{"feature": "A"}],
-                        "summary_markdown": "新特征表",
-                        "overall_findings": "可以结束",
-                        "coverage_gaps": [],
-                        "follow_up_search_hints": [],
-                        "creativity_readiness": "ready",
-                        "readiness_rationale": "证据充分",
-                    },
-                }
-            )
-            storage.update_task(
+            storage.update_ai_search_run(
                 created.sessionId,
-                metadata=merge_ai_search_meta(
-                    storage.get_task(created.sessionId),
-                    current_phase=PHASE_FEATURE_COMPARISON,
-                    active_plan_version=1,
-                    current_feature_comparison_id="ft-new",
-                    current_task="feature_comparison",
-                ),
+                run_id,
+                phase=PHASE_FEATURE_COMPARISON,
+                status=TaskStatus.PROCESSING.value,
+                active_batch_id=batch_id,
+                active_retrieval_todo_id="feature_comparison",
             )
             return {"messages": [{"role": "assistant", "content": "done"}]}
 
@@ -869,15 +981,15 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     documents = storage.list_ai_search_documents(created.sessionId, 1)
     task = storage.get_task(created.sessionId)
 
-    assert snapshot.phase == "completed"
-    assert snapshot.featureComparison is not None
-    assert snapshot.featureComparison["feature_comparison_id"] == "ft-new"
-    assert snapshot.downloadUrl == f"/api/tasks/{created.sessionId}/download"
+    assert snapshot.run["phase"] == "completed"
+    assert snapshot.analysis["latestFeatureCompareResult"] is not None
+    assert snapshot.analysis["latestFeatureCompareResult"]["feature_comparison_id"] == "ft-new"
+    assert snapshot.artifacts["downloadUrl"] == f"/api/tasks/{created.sessionId}/download"
     assert documents[0]["document_type"] == "X"
     assert documents[0]["report_row_order"] == 1
     assert task.metadata["output_files"]["bundle_zip"] == str(bundle_path)
-    assert any("feature_comparison.updated" in item for item in events)
-    assert any("artifacts.updated" in item for item in events)
+    assert any("batch.updated" in item for item in events)
+    assert any("run.updated" in item for item in events)
 
 
 def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_hits(monkeypatch, tmp_path):
@@ -893,9 +1005,11 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
         }
     )
     storage.create_ai_search_plan(plan)
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_FEATURE_COMPARISON)
     storage.upsert_ai_search_documents(
         [
             {
+                "run_id": run_id,
                 "document_id": "doc-1",
                 "task_id": created.sessionId,
                 "plan_version": 1,
@@ -907,21 +1021,17 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
             }
         ]
     )
-    storage.create_ai_search_message(
+    storage.create_ai_search_execution_summary(
         {
-            "message_id": "msg-step-summary",
+            "summary_id": f"{run_id}-summary-1",
+            "run_id": run_id,
             "task_id": created.sessionId,
             "plan_version": 1,
-            "role": "assistant",
-            "kind": "execution_step_summary",
-            "content": "{}",
-            "metadata": {
-                "todo_id": "plan_1:sub_plan_1:step_1",
-                "sub_plan_id": "sub_plan_1",
-                "step_id": "step_1",
-                "new_unique_candidates": 0,
-                "candidate_pool_size": 1,
-            },
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "sub_plan_id": "sub_plan_1",
+            "step_id": "step_1",
+            "new_unique_candidates": 0,
+            "candidate_pool_size": 1,
         }
     )
     _set_phase(
@@ -942,44 +1052,30 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
     class _FakeFeatureAgent:
         def invoke(self, payload):
             assert "特征对比分析" in payload["messages"][0]["content"]
+            batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-handoff-batch")
             storage.create_ai_search_feature_comparison(
                 {
                     "feature_comparison_id": "ft-handoff",
+                    "run_id": run_id,
+                    "batch_id": batch_id,
                     "task_id": created.sessionId,
                     "plan_version": 1,
-                    "status": "completed",
                     "table_json": [{"feature": "A"}],
                     "summary_markdown": "特征表",
+                    "overall_findings": "仍需继续检索",
+                    "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
+                    "follow_up_search_hints": ["补搜实现方式B"],
+                    "creativity_readiness": "needs_more_evidence",
+                    "readiness_rationale": "证据仍不足。",
                 }
             )
-            storage.create_ai_search_message(
-                {
-                    "message_id": "msg-feature-result",
-                    "task_id": created.sessionId,
-                    "plan_version": 1,
-                    "role": "assistant",
-                    "kind": "feature_compare_result",
-                    "content": "仍需继续检索",
-                    "metadata": {
-                        "table_rows": [{"feature": "A"}],
-                        "summary_markdown": "特征表",
-                        "overall_findings": "仍需继续检索",
-                        "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
-                        "follow_up_search_hints": ["补搜实现方式B"],
-                        "creativity_readiness": "needs_more_evidence",
-                        "readiness_rationale": "证据仍不足。",
-                    },
-                }
-            )
-            storage.update_task(
+            storage.update_ai_search_run(
                 created.sessionId,
-                metadata=merge_ai_search_meta(
-                    storage.get_task(created.sessionId),
-                    current_phase=PHASE_FEATURE_COMPARISON,
-                    active_plan_version=1,
-                    current_feature_comparison_id="ft-handoff",
-                    current_task="feature_comparison",
-                ),
+                run_id,
+                phase=PHASE_FEATURE_COMPARISON,
+                status=TaskStatus.PROCESSING.value,
+                active_batch_id=batch_id,
+                active_retrieval_todo_id="feature_comparison",
             )
             return {"messages": [{"role": "assistant", "content": "done"}]}
 
@@ -988,12 +1084,12 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
     events = asyncio.run(_collect_stream(service.stream_feature_comparison(created.sessionId, "guest_ai_search", 1)))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.phase == PHASE_AWAITING_HUMAN_DECISION
-    assert snapshot.downloadUrl is None
-    assert snapshot.humanDecisionAction is not None
-    assert snapshot.humanDecisionAction["available"] is True
-    assert snapshot.humanDecisionAction["selectedCount"] == 1
-    assert any("decision.updated" in item for item in events)
+    assert snapshot.run["phase"] == PHASE_AWAITING_HUMAN_DECISION
+    assert snapshot.artifacts["downloadUrl"] is None
+    assert snapshot.conversation["pendingAction"] is not None
+    assert snapshot.conversation["pendingAction"]["actionType"] == "human_decision"
+    assert snapshot.conversation["pendingAction"]["selectedCount"] == 1
+    assert any("pending_action.updated" in item for item in events)
 
 
 def test_stream_message_rejects_when_human_decision_pending(monkeypatch, tmp_path):
@@ -1019,6 +1115,22 @@ def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypa
     created = service.create_session("guest_ai_search")
     _set_planner_draft(storage, created.sessionId)
     storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_AWAITING_HUMAN_DECISION)
+    _create_pending_action(
+        storage,
+        created.sessionId,
+        "human_decision",
+        run_id=run_id,
+        payload={
+            "available": True,
+            "reason": "no_progress_limit_reached",
+            "summary": "需要人工决策",
+            "roundCount": 3,
+            "noProgressRoundCount": 2,
+            "selectedCount": 0,
+            "recommendedActions": ["continue_search", "complete_current_results"],
+        },
+    )
     _set_phase(
         storage,
         created.sessionId,
@@ -1043,10 +1155,12 @@ def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypa
 
     events = asyncio.run(_collect_stream(service.stream_decision_continue(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    run = storage.get_ai_search_run(created.sessionId, plan_version=1)
+    run_state = dict(run.get("human_decision_state") or {}) if run else {}
 
-    assert snapshot.phase == PHASE_DRAFTING_PLAN
-    assert snapshot.humanDecisionAction is None
-    assert (storage.get_task(created.sessionId).metadata["ai_search"]["execution_round_count"]) == 0
+    assert snapshot.run["phase"] == PHASE_DRAFTING_PLAN
+    assert snapshot.conversation["pendingAction"] is None or snapshot.conversation["pendingAction"]["actionType"] != "human_decision"
+    assert int(run_state.get("execution_round_count") or 0) == 0
     assert any("run.completed" in item for item in events)
 
 
@@ -1060,9 +1174,11 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
     pdf_path = output_dir / "ai_search_report.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标"))
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_AWAITING_HUMAN_DECISION)
     storage.upsert_ai_search_documents(
         [
             {
+                "run_id": run_id,
                 "document_id": "doc-1",
                 "task_id": created.sessionId,
                 "plan_version": 1,
@@ -1073,12 +1189,14 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
             }
         ]
     )
+    batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison")
     storage.create_ai_search_feature_comparison(
         {
             "feature_comparison_id": "ft-1",
+            "run_id": run_id,
+            "batch_id": batch_id,
             "task_id": created.sessionId,
             "plan_version": 1,
-            "status": "completed",
             "table_json": [{"feature": "A"}],
             "summary_markdown": "特征表",
         }
@@ -1089,8 +1207,24 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
         PHASE_AWAITING_HUMAN_DECISION,
         active_plan_version=1,
         current_feature_comparison_id="ft-1",
+        active_batch_id=batch_id,
         human_decision_reason="no_progress_limit_reached",
         human_decision_summary="需要人工决策",
+    )
+    _create_pending_action(
+        storage,
+        created.sessionId,
+        "human_decision",
+        run_id=run_id,
+        payload={
+            "available": True,
+            "reason": "no_progress_limit_reached",
+            "summary": "需要人工决策",
+            "roundCount": 0,
+            "noProgressRoundCount": 0,
+            "selectedCount": 1,
+            "recommendedActions": ["continue_search", "complete_current_results"],
+        },
     )
     monkeypatch.setattr(
         ai_search_service_module,
@@ -1114,9 +1248,9 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
     events = asyncio.run(_collect_stream(service.stream_decision_complete(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.phase == PHASE_COMPLETED
-    assert snapshot.downloadUrl == f"/api/tasks/{created.sessionId}/download"
-    assert snapshot.humanDecisionAction is None
+    assert snapshot.run["phase"] == PHASE_COMPLETED
+    assert snapshot.artifacts["downloadUrl"] == f"/api/tasks/{created.sessionId}/download"
+    assert snapshot.conversation["pendingAction"] is None or snapshot.conversation["pendingAction"]["actionType"] != "human_decision"
     assert any("run.completed" in item for item in events)
 
 
@@ -1204,6 +1338,90 @@ def _build_patent_payload(*, pn: str = "CN123456A", with_applicants: bool = True
     }
 
 
+def _build_analysis_payload_with_follow_up() -> dict:
+    return {
+        "metadata": {
+            "task_id": "analysis-task-1",
+            "resolved_pn": "CN123456A",
+        },
+        "report_core": {
+            "ai_title": "一种异常检测系统",
+            "technical_problem": "降低漏报率",
+            "technical_means": "结合时序特征和阈值校正",
+            "technical_effects": [
+                {
+                    "effect": "降低漏报率",
+                    "tcs_score": 5,
+                    "contributing_features": ["异常检测", "阈值校正"],
+                    "dependent_on": [],
+                },
+                {
+                    "effect": "提升复杂噪声场景下的检测稳定性",
+                    "tcs_score": 4,
+                    "contributing_features": ["时序特征融合"],
+                    "dependent_on": ["异常检测"],
+                    "rationale": "通过时序特征融合补强主检索命中的边缘场景。",
+                },
+            ],
+        },
+        "search_strategy": {
+            "search_matrix": [
+                {
+                    "element_name": "摄像机系统",
+                    "keywords_zh": ["摄像机系统"],
+                    "keywords_en": ["camera system"],
+                    "ipc_cpc_ref": ["H04N 7/18"],
+                    "block_id": "A",
+                    "effect_cluster_ids": [],
+                },
+                {
+                    "element_name": "异常检测",
+                    "keywords_zh": ["异常检测"],
+                    "keywords_en": ["anomaly detection"],
+                    "ipc_cpc_ref": ["G06V 10/44"],
+                    "block_id": "B1",
+                    "effect_cluster_ids": ["E1"],
+                },
+                {
+                    "element_name": "阈值校正",
+                    "keywords_zh": ["阈值校正"],
+                    "keywords_en": ["threshold calibration"],
+                    "ipc_cpc_ref": ["G06V 10/56"],
+                    "block_id": "B1",
+                    "effect_cluster_ids": ["E1"],
+                },
+                {
+                    "element_name": "时序特征融合",
+                    "keywords_zh": ["时序特征融合"],
+                    "keywords_en": ["temporal feature fusion"],
+                    "ipc_cpc_ref": ["G06N 3/08"],
+                    "block_id": "C",
+                    "effect_cluster_ids": ["E1"],
+                },
+                {
+                    "element_name": "降低漏报率",
+                    "keywords_zh": ["降低漏报率"],
+                    "keywords_en": ["reduce missed detection"],
+                    "ipc_cpc_ref": ["G06V 10/82"],
+                    "block_id": "E",
+                    "effect_cluster_ids": ["E1"],
+                },
+            ],
+            "semantic_strategy": {
+                "queries": [
+                    {
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
+                        "effect": "降低漏报率",
+                        "content": "围绕异常检测与阈值校正降低漏报率",
+                    }
+                ],
+            },
+        },
+        "report": {},
+    }
+
+
 def _create_completed_analysis_task(
     storage: SQLiteTaskStorage,
     *,
@@ -1266,6 +1484,45 @@ def test_seed_search_elements_from_analysis_keeps_optional_fields_missing():
     assert payload["priority_date"] is None
     assert "申请日或优先权日" in payload["missing_items"]
     assert "未提供申请人" in payload["clarification_summary"]
+
+
+def test_build_analysis_seed_user_message_renders_structured_effect_groups():
+    analysis_payload = _build_analysis_payload_with_follow_up()
+    patent_payload = _build_patent_payload()
+    seeded = seed_search_elements_from_analysis(analysis_payload, patent_payload)
+
+    message = build_analysis_seed_user_message(analysis_payload, patent_payload, seeded)
+
+    assert "### 核心效果1：降低漏报率" in message
+    assert "#### 语义检索文本" in message
+    assert "#### 5分效果检索要素表" in message
+    assert "##### 4分效果1：提升复杂噪声场景下的检测稳定性" in message
+    assert "| Block B1 | 异常检测 |" in message
+    assert "G06V 10/44" in message
+    assert "| Block E | 效果锚点：提升复杂噪声场景下的检测稳定性 |" in message
+    assert "{'effect':" not in message
+
+
+def test_build_analysis_sub_plans_adds_follow_up_steps_with_replaced_block_b():
+    sub_plans = build_analysis_sub_plans(_build_analysis_payload_with_follow_up())
+
+    assert len(sub_plans) == 1
+    sub_plan = sub_plans[0]
+    assert sub_plan["title"] == "降低漏报率"
+    assert len(sub_plan["retrieval_steps"]) == 2
+    assert sub_plan["retrieval_steps"][0]["title"] == "降低漏报率 / 主检索"
+    assert "进一步检索" in sub_plan["retrieval_steps"][1]["title"]
+
+    follow_up_blueprint = sub_plan["query_blueprints"][1]
+    display_elements = follow_up_blueprint["display_search_elements"]
+
+    assert follow_up_blueprint["display_label"] == "提升复杂噪声场景下的检测稳定性"
+    assert "时序特征融合" in follow_up_blueprint["must_terms_zh"]
+    assert any(item["block_id"] == "B1" and item["element_name"] == "时序特征融合" for item in display_elements)
+    assert any(item["block_id"] == "C" and item["element_name"] == "时序特征融合" for item in display_elements)
+    assert any(item["block_id"] == "C" and item["ipc_cpc_ref"] == ["G06N 3/08"] for item in display_elements)
+    assert any(item["block_id"] == "E" and "提升复杂噪声场景下的检测稳定性" in item["element_name"] for item in display_elements)
+    assert not any(item["block_id"] == "A" for item in display_elements)
 
 
 def test_load_source_patent_data_falls_back_to_r2_when_local_patent_json_missing(monkeypatch, tmp_path):
@@ -1402,21 +1659,43 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         return {"interrupted": True, "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索草稿已生成，请确认计划。")
+    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
     task = storage.get_task(created.sessionId)
-    visible_kinds = [message["kind"] for message in snapshot.messages]
+    visible_kinds = [message["kind"] for message in snapshot.conversation["messages"]]
 
-    assert snapshot.phase == PHASE_AWAITING_PLAN_CONFIRMATION
-    assert snapshot.pendingConfirmation is not None
-    assert snapshot.currentPlan is not None
-    assert snapshot.currentPlan["reviewMarkdown"].startswith("# 基于分析结果的检索计划")
-    assert snapshot.messages[0]["role"] == "user"
-    assert "请基于以上信息生成一份可审核的检索计划。" in snapshot.messages[0]["content"]
+    assert snapshot.run["phase"] == PHASE_AWAITING_PLAN_CONFIRMATION
+    assert snapshot.plan["currentPlan"] is not None
+    assert snapshot.plan["currentPlan"]["reviewMarkdown"].startswith("# 基于分析结果的检索计划")
+    assert snapshot.conversation["messages"][0]["role"] == "user"
+    assert "请基于以上信息生成一份可审核的检索计划。" in snapshot.conversation["messages"][0]["content"]
     assert visible_kinds == ["chat", "plan_confirmation"]
     assert (task.metadata.get("ai_search") or {}).get("seed_mode") == "analysis"
+
+
+def test_create_session_from_analysis_seed_reuses_existing_session(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(
+        storage,
+        owner_id="guest_ai_search",
+        tmp_path=tmp_path,
+    )
+
+    first = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+    second = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+    sessions = service.list_sessions("guest_ai_search")
+    linked_sessions = [
+        item for item in sessions.items
+        if item.sourceTaskId == analysis_task.id
+    ]
+
+    assert first.reused is False
+    assert second.reused is True
+    assert second.sessionId == first.sessionId
+    assert second.sourceTaskId == analysis_task.id
+    assert len(linked_sessions) == 1
 
 
 def test_create_session_from_analysis_can_pause_for_missing_information(monkeypatch, tmp_path):
@@ -1465,11 +1744,9 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
     task = storage.get_task(created.sessionId)
-    visible_kinds = [message["kind"] for message in snapshot.messages]
+    visible_kinds = [message["kind"] for message in snapshot.conversation["messages"]]
 
-    assert snapshot.phase == PHASE_AWAITING_USER_ANSWER
-    assert snapshot.pendingQuestion is not None
-    assert snapshot.pendingQuestion["question_id"] == "q-seed-1"
+    assert snapshot.run["phase"] == PHASE_AWAITING_USER_ANSWER
     assert AiSearchAgentContext(storage, created.sessionId).current_search_elements()["status"] == "needs_answer"
     assert visible_kinds == ["chat", "question"]
     assert (task.metadata.get("ai_search") or {}).get("seed_mode") == "analysis"
@@ -1530,15 +1807,26 @@ def test_stream_analysis_seed_advances_seeded_session(monkeypatch, tmp_path):
             ),
             status=TaskStatus.PAUSED.value,
         )
+        _create_pending_action(
+            storage,
+            task_id,
+            "plan_confirmation",
+            payload={
+                "plan_version": 1,
+                "plan_summary": _plan_record(task_id, plan_version=1, status="awaiting_confirmation", title="基于分析结果的检索计划")["review_markdown"],
+                "confirmation_label": "实施此计划",
+            },
+        )
         return {"interrupted": True, "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索草稿已生成，请确认计划。")
+    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
 
     events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert any("run.completed" in item for item in events)
-    assert snapshot.pendingConfirmation is not None
+    assert snapshot.conversation["pendingAction"] is not None
+    assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
     assert snapshot.analysisSeed is not None
     assert snapshot.analysisSeed["status"] == "completed"

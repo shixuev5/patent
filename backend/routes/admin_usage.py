@@ -58,7 +58,7 @@ def _resolve_time_window(
             day = now.date()
         start = datetime.combine(day, time.min, APP_TZ)
         end = start + timedelta(days=1)
-        return day.isoformat(), start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
+        return day.isoformat(), start, end, to_utc_z(start, naive_strategy="local", timespec="microseconds"), to_utc_z(end, naive_strategy="local", timespec="microseconds")
 
     if range_type == MONTH:
         if raw_anchor:
@@ -80,7 +80,7 @@ def _resolve_time_window(
             end = datetime(year + 1, 1, 1, tzinfo=APP_TZ)
         else:
             end = datetime(year, month + 1, 1, tzinfo=APP_TZ)
-        return f"{year:04d}-{month:02d}", start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
+        return f"{year:04d}-{month:02d}", start, end, to_utc_z(start, naive_strategy="local", timespec="microseconds"), to_utc_z(end, naive_strategy="local", timespec="microseconds")
 
     if raw_anchor:
         try:
@@ -91,7 +91,7 @@ def _resolve_time_window(
         target_year = now.year
     start = datetime(target_year, 1, 1, tzinfo=APP_TZ)
     end = datetime(target_year + 1, 1, 1, tzinfo=APP_TZ)
-    return str(target_year), start, end, to_utc_z(start, naive_strategy="local", timespec="seconds"), to_utc_z(end, naive_strategy="local", timespec="seconds")
+    return str(target_year), start, end, to_utc_z(start, naive_strategy="local", timespec="microseconds"), to_utc_z(end, naive_strategy="local", timespec="microseconds")
 
 
 def _load_rows(range_type: RangeType, anchor: Optional[str]) -> Tuple[str, datetime, datetime, List[Dict[str, Any]]]:

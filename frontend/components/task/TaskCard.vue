@@ -47,13 +47,19 @@
           v-if="canCreateSearchDraft"
           class="action-btn search"
           :disabled="creatingSearchDraft"
-          title="基于当前 AI 分析结果生成 AI 检索草稿"
+          :title="searchActionTitle"
           @click="openSearchDraft"
         >
           <svg v-if="creatingSearchDraft" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
+          <span v-else-if="!hasLinkedSearchSession" class="search-icon-create">
+            <MagnifyingGlassIcon class="h-4 w-4" />
+            <span class="search-icon-plus-badge">
+              <PlusIcon class="h-2.5 w-2.5" />
+            </span>
+          </span>
           <MagnifyingGlassIcon v-else class="h-4 w-4" />
         </button>
 
@@ -88,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   ArrowDownTrayIcon,
   ArrowPathIcon,
@@ -96,6 +102,7 @@ import {
   ClockIcon,
   ExclamationCircleIcon,
   MagnifyingGlassIcon,
+  PlusIcon,
   StopCircleIcon,
   TrashIcon,
   XCircleIcon,
@@ -156,6 +163,29 @@ const canCreateSearchDraft = computed(() => {
   )
 })
 
+const linkedSearchSession = computed(() => {
+  const analysisTaskId = String(props.task.backendId || '').trim()
+  if (!analysisTaskId) return null
+  return aiSearchStore.findSessionBySourceTaskId(analysisTaskId)
+})
+
+const hasLinkedSearchSession = computed(() => !!linkedSearchSession.value)
+
+const searchActionTitle = computed(() => {
+  return linkedSearchSession.value
+    ? '打开已创建的 AI 检索任务'
+    : '基于当前 AI 分析结果生成 AI 检索计划'
+})
+
+watch(
+  canCreateSearchDraft,
+  (value) => {
+    if (!value) return
+    void aiSearchStore.ensureSessionsLoaded()
+  },
+  { immediate: true },
+)
+
 const formatTime = (timestamp: number): string => {
   const now = Date.now()
   const diff = now - timestamp
@@ -174,16 +204,18 @@ const openSearchDraft = async () => {
   if (!analysisTaskId || creatingSearchDraft.value) return
   creatingSearchDraft.value = true
   try {
-    const sessionId = await aiSearchStore.createSessionFromAnalysis(analysisTaskId)
+    await aiSearchStore.ensureSessionsLoaded()
+    const linkedSessionId = String(linkedSearchSession.value?.sessionId || '').trim()
+    const sessionId = linkedSessionId || await aiSearchStore.createSessionFromAnalysis(analysisTaskId)
     if (!sessionId) {
-      throw new Error('AI 检索草稿创建成功，但未返回会话ID。')
+      throw new Error('AI 检索计划创建成功，但未返回会话ID。')
     }
     await router.push({
       path: '/search',
       query: { session: sessionId },
     })
   } catch (error) {
-    taskStore.showGlobalNotice('error', error instanceof Error ? error.message : '生成 AI 检索草稿失败，请稍后重试。')
+    taskStore.showGlobalNotice('error', error instanceof Error ? error.message : '生成 AI 检索计划失败，请稍后重试。')
   } finally {
     creatingSearchDraft.value = false
   }
@@ -271,6 +303,12 @@ const deleteTask = () => {
 }
 .action-btn.search {
   @apply text-cyan-700 hover:border-cyan-100 hover:bg-cyan-50;
+}
+.search-icon-create {
+  @apply relative inline-flex h-4 w-4 items-center justify-center;
+}
+.search-icon-plus-badge {
+  @apply absolute -right-1 -top-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-cyan-700 text-white;
 }
 .action-chip.info {
   @apply border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100/70;

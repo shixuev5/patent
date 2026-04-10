@@ -119,7 +119,7 @@ def test_generate_figures_analysis_no_paragraph_dependency(tmp_path: Path, monke
     ]
     assert captured["label"] == "图1"
     assert captured["caption"] == "结构示意图"
-    assert "标号 10 (壳体)" in captured["local_parts"]
+    assert "壳体(10)" in captured["local_parts"]
     assert "空间连接=位于底座上方" in captured["local_parts"]
     assert "运动状态=保持静止" in captured["local_parts"]
     assert "标号 10 (壳体)" in captured["related_parts_context"]

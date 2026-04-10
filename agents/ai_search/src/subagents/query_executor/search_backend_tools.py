@@ -102,6 +102,7 @@ def build_search_tools(context: Any) -> List[Any]:
     def _candidate_record(
         existing: Optional[Dict[str, Any]],
         *,
+        run_id: str,
         plan_version: int,
         batch_id: str,
         lane_type: str,
@@ -125,6 +126,7 @@ def build_search_tools(context: Any) -> List[Any]:
         if step_id and step_id not in source_steps:
             source_steps.append(step_id)
         return {
+            "run_id": run_id,
             "document_id": stable_ai_search_document_id(task_id, int(plan_version), pn),
             "task_id": task_id,
             "plan_version": int(plan_version),
@@ -167,6 +169,7 @@ def build_search_tools(context: Any) -> List[Any]:
         payload = raw_result if isinstance(raw_result, dict) else {}
         raw_items = payload.get("results") if isinstance(payload.get("results"), list) else []
         existing_by_pn = _existing_documents(plan_version)
+        run_id = context.active_run_id(plan_version)
         records: List[Dict[str, Any]] = []
         new_unique_candidates = 0
         deduped_hits = 0
@@ -183,6 +186,7 @@ def build_search_tools(context: Any) -> List[Any]:
                 new_unique_candidates += 1
             record = _candidate_record(
                 existing,
+                run_id=run_id,
                 plan_version=int(plan_version),
                 batch_id=batch_id,
                 lane_type=lane_type,

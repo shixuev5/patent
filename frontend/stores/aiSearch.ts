@@ -3,7 +3,9 @@ import { requestJson, requestRaw } from '~/utils/apiClient'
 import { useTaskStore } from '~/stores/task'
 import type {
   AiSearchActiveRun,
+  AiSearchBatchSummary,
   AiSearchCreateSessionResponse,
+  AiSearchPendingAction,
   AiSearchPendingAssistantMessage,
   AiSearchPhaseMarker,
   AiSearchSessionListResponse,
@@ -48,16 +50,16 @@ const parseErrorMessage = async (response: Response): Promise<string> => {
   if (contentType.includes('application/json')) {
     try {
       const data = await response.json() as any
-      return data?.detail?.message || data?.detail || data?.message || `请求失败（HTTP ${response.status}）`
+      return data?.detail?.message || data?.detail || data?.message || `请求失败(HTTP ${response.status})`
     } catch (_error) {
-      return `请求失败（HTTP ${response.status}）`
+      return `请求失败(HTTP ${response.status})`
     }
   }
   try {
     const text = await response.text()
-    return text || `请求失败（HTTP ${response.status}）`
+    return text || `请求失败(HTTP ${response.status})`
   } catch (_error) {
-    return `请求失败（HTTP ${response.status}）`
+    return `请求失败(HTTP ${response.status})`
   }
 }
 
@@ -71,6 +73,28 @@ const toMillis = (value?: string | null): number => {
 }
 
 const nowIso = (): string => new Date().toISOString()
+
+const pendingAction = (snapshot?: AiSearchSnapshot | null): AiSearchPendingAction | null => {
+  const value = snapshot?.conversation?.pendingAction
+  return value && typeof value === 'object' ? value as AiSearchPendingAction : null
+}
+
+const pendingActionType = (snapshot?: AiSearchSnapshot | null): string => String(pendingAction(snapshot)?.actionType || '').trim()
+
+const activePhase = (snapshot?: AiSearchSnapshot | null): string => String(snapshot?.run?.phase || snapshot?.session?.phase || '').trim()
+
+const resumeAction = (snapshot?: AiSearchSnapshot | null): Record<string, any> | null => {
+  const activeTodo = snapshot?.retrieval?.activeTodo
+  if (!activeTodo || String(activeTodo.status || '').trim() !== 'failed') return null
+  return {
+    available: true,
+    currentTask: String(activeTodo.todo_id || '').trim() || null,
+    taskTitle: String(activeTodo.title || '').trim() || null,
+    resumeFrom: String(activeTodo.resume_from || '').trim() || null,
+    attemptCount: Number(activeTodo.attempt_count || 0),
+    lastError: String(activeTodo.last_error || '').trim() || null,
+  }
+}
 
 const pendingAssistantFromId = (messageId: string, createdAt?: string): AiSearchPendingAssistantMessage => ({
   messageId,
@@ -89,6 +113,8 @@ const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   error: '',
 })
 
+let fetchSessionsPromise: Promise<void> | null = null
+
 const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapshot => ({
   session: {
     sessionId: String(summary.sessionId || '').trim(),
@@ -96,25 +122,47 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
     title: String(summary.title || 'AI 检索工作台'),
     status: String(summary.status || 'processing'),
     phase: String(summary.phase || 'collecting_requirements'),
+    sourceTaskId: String(summary.sourceTaskId || '').trim() || null,
+    sourceType: String(summary.sourceType || '').trim() || null,
     pinned: !!summary.pinned,
     activePlanVersion: summary.activePlanVersion ?? null,
     selectedDocumentCount: Number(summary.selectedDocumentCount || 0),
     createdAt: summary.createdAt || null,
     updatedAt: summary.updatedAt || null,
   },
-  phase: String(summary.phase || 'collecting_requirements'),
-  messages: [],
-  downloadUrl: null,
+  run: {
+    runId: null,
+    phase: String(summary.phase || 'collecting_requirements'),
+    status: String(summary.status || 'processing'),
+    planVersion: summary.activePlanVersion ?? null,
+    activeRetrievalTodoId: null,
+    activeBatchId: null,
+    selectedDocumentCount: Number(summary.selectedDocumentCount || 0),
+  },
+  conversation: {
+    messages: [],
+    pendingAction: null,
+  },
+  plan: {
+    currentPlan: null,
+  },
+  retrieval: {
+    todos: [],
+    activeTodo: null,
+    documents: {
+      candidates: [],
+      selected: [],
+    },
+  },
+  analysis: {
+    activeBatch: null,
+    latestCloseReadResult: null,
+    latestFeatureCompareResult: null,
+  },
+  artifacts: {
+    downloadUrl: null,
+  },
   analysisSeed: summary.analysisSeed || null,
-  humanDecisionAction: null,
-  currentPlan: null,
-  executionTodos: [],
-  candidateDocuments: [],
-  selectedDocuments: [],
-  featureComparison: null,
-  pendingQuestion: null,
-  pendingConfirmation: null,
-  resumeAction: null,
 })
 
 export const useAiSearchStore = defineStore('aiSearch', {
@@ -125,6 +173,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     sessionRuntimeById: {} as Record<string, AiSearchSessionRuntime>,
     sessionMutationBusyById: {} as Record<string, boolean>,
     loading: false,
+    sessionsHydrated: false,
   }),
 
   getters: {
@@ -136,7 +185,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     activeSummary: (state) => state.sessions.find((item) => item.sessionId === state.currentSessionId) || null,
 
     phase(): string {
-      return this.currentSession?.phase || ''
+      return activePhase(this.currentSession)
     },
 
     pendingAssistantMessage(): AiSearchPendingAssistantMessage | null {
@@ -165,12 +214,13 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     inputDisabled(): boolean {
-      const phase = this.currentSession?.phase || ''
+      const phase = activePhase(this.currentSession)
+      const action = pendingAction(this.currentSession)
       return this.streaming
         || isExecutionPhase(phase)
-        || !!this.currentSession?.pendingQuestion
-        || !!this.currentSession?.resumeAction?.available
-        || !!this.currentSession?.humanDecisionAction?.available
+        || pendingActionType(this.currentSession) === 'question'
+        || !!resumeAction(this.currentSession)?.available
+        || action?.actionType === 'human_decision'
     },
   },
 
@@ -226,6 +276,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
       return !!this.sessionMutationBusyById[String(sessionId || '').trim()]
     },
 
+    findSessionBySourceTaskId(sourceTaskId: string): Record<string, any> | null {
+      const targetSourceTaskId = String(sourceTaskId || '').trim()
+      if (!targetSourceTaskId) return null
+      return this.sessions.find((item) => String(item.sourceTaskId || '').trim() === targetSourceTaskId) || null
+    },
+
     _upsertSessionSummary(summary: Record<string, any>) {
       const sessionId = String(summary.sessionId || '').trim()
       if (!sessionId) return
@@ -274,7 +330,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
         ...this.sessionSnapshotsById,
         [sessionId]: {
           ...snapshot,
-          messages: normalizeMessages(snapshot.messages),
+          conversation: {
+            ...(snapshot.conversation || { messages: [], pendingAction: null }),
+            messages: normalizeMessages(snapshot.conversation?.messages),
+          },
         },
       }
       this._ensureRuntime(sessionId)
@@ -305,15 +364,17 @@ export const useAiSearchStore = defineStore('aiSearch', {
     _pushMessage(sessionId: string, message: Record<string, any>) {
       const snapshot = this._getSnapshot(sessionId)
       if (!snapshot) return
+      const messages = normalizeMessages(snapshot.conversation?.messages)
       const messageId = String(message.message_id || '').trim()
       if (messageId) {
-        const index = snapshot.messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
+        const index = messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
         if (index >= 0) {
-          snapshot.messages[index] = { ...snapshot.messages[index], ...message }
+          messages[index] = { ...messages[index], ...message }
+          snapshot.conversation.messages = [...messages]
           return
         }
       }
-      snapshot.messages.push(message)
+      snapshot.conversation.messages = [...messages, message]
     },
 
     _pushAssistantMessage(sessionId: string, content: string, messageId?: string) {
@@ -347,20 +408,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const runtime = this._ensureRuntime(sessionId)
       const normalizedPhase = String(phase || '').trim()
       if (!normalizedPhase) return
-      snapshot.phase = normalizedPhase
       snapshot.session.phase = normalizedPhase
       snapshot.session.status = phaseToTaskStatus(normalizedPhase)
-      if (normalizedPhase !== 'awaiting_user_answer') {
-        snapshot.pendingQuestion = null
+      snapshot.run = {
+        ...(snapshot.run || {}),
+        phase: normalizedPhase,
+        status: phaseToTaskStatus(normalizedPhase),
       }
-      if (normalizedPhase !== 'awaiting_plan_confirmation') {
-        snapshot.pendingConfirmation = null
-      }
-      if (normalizedPhase !== 'awaiting_human_decision') {
-        snapshot.humanDecisionAction = null
-      }
-      if (!isExecutionPhase(normalizedPhase)) {
-        snapshot.resumeAction = null
+      if (!['awaiting_user_answer', 'awaiting_plan_confirmation', 'awaiting_human_decision'].includes(normalizedPhase) && snapshot.conversation) {
+        snapshot.conversation.pendingAction = null
       }
       if (runtime.activeRun) {
         runtime.activeRun = { ...runtime.activeRun, phase: normalizedPhase }
@@ -394,7 +450,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const runtime = this._ensureRuntime(sessionId)
       const createdAt = forceNewRun ? nowIso() : (runtime.pendingAssistantMessage?.createdAt || nowIso())
       const messageId = forceNewRun ? `pending-${Date.now()}` : (runtime.pendingAssistantMessage?.messageId || `pending-${Date.now()}`)
-      const nextPhase = String(phaseHint || snapshot?.phase || '').trim()
+      const nextPhase = String(phaseHint || activePhase(snapshot) || '').trim()
       if (forceNewRun || !runtime.activeRun) {
         runtime.activeRun = {
           runKey: `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -441,22 +497,13 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const snapshot = this._getSnapshot(sessionId)
       const runtime = this._ensureRuntime(sessionId)
       const payload = event.payload || {}
-      const phase = String(event.phase || payload?.phase || snapshot?.phase || '').trim()
+      const phase = String(event.phase || payload?.run?.phase || payload?.phase || activePhase(snapshot) || '').trim()
 
       if (phase && snapshot) this._syncSessionPhase(sessionId, phase)
 
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
         this._startPendingAssistant(sessionId)
-        return
-      }
-
-      if (event.type === 'phase.changed') {
-        const nextPhase = String(payload?.phase || phase || '').trim()
-        if (nextPhase && snapshot) {
-          this._syncSessionPhase(sessionId, nextPhase)
-          this._ensurePhaseMarker(sessionId, nextPhase)
-        }
         return
       }
 
@@ -491,55 +538,77 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (!snapshot) return
 
-      if (event.type === 'question.required') {
-        snapshot.pendingQuestion = payload || null
+      if (event.type === 'message.created') {
+        this._pushMessage(sessionId, payload)
         return
       }
 
-      if (event.type === 'plan.updated') {
-        snapshot.currentPlan = payload || null
-        const planVersion = Number(payload?.planVersion || 0)
-        if (planVersion > 0) {
-          snapshot.session.activePlanVersion = planVersion
+      if (event.type === 'run.updated') {
+        if (payload?.session) {
+          snapshot.session = { ...(snapshot.session || {}), ...payload.session }
           this._upsertSessionSummary({ ...snapshot.session })
+        }
+        if (payload?.run) {
+          snapshot.run = { ...(snapshot.run || {}), ...payload.run }
+          const nextPhase = String(payload.run.phase || phase || '').trim()
+          if (nextPhase) {
+            this._syncSessionPhase(sessionId, nextPhase)
+            this._ensurePhaseMarker(sessionId, nextPhase)
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(payload || {}, 'plan')) {
+          snapshot.plan = { ...(snapshot.plan || {}), currentPlan: payload.plan || null }
+        }
+        if (payload?.artifacts) {
+          snapshot.artifacts = { ...(snapshot.artifacts || {}), ...payload.artifacts }
         }
         return
       }
 
-      if (event.type === 'todos.updated') {
-        snapshot.executionTodos = Array.isArray(payload?.items) ? payload.items : []
+      if (event.type === 'todo.updated') {
+        snapshot.retrieval = {
+          ...(snapshot.retrieval || {}),
+          todos: Array.isArray(payload?.items) ? payload.items : [],
+          activeTodo: payload?.activeTodo || null,
+        }
         return
       }
 
-      if (event.type === 'plan.awaiting_confirmation') {
-        snapshot.pendingConfirmation = payload || null
+      if (event.type === 'pending_action.updated') {
+        snapshot.conversation = {
+          ...(snapshot.conversation || {}),
+          pendingAction: payload || null,
+        }
         return
       }
 
       if (event.type === 'documents.updated') {
-        snapshot.candidateDocuments = Array.isArray(payload?.items) ? payload.items : []
-        return
-      }
-
-      if (event.type === 'selection.updated') {
-        snapshot.selectedDocuments = Array.isArray(payload?.items) ? payload.items : []
-        snapshot.session.selectedDocumentCount = snapshot.selectedDocuments.length
+        const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
+        const selected = Array.isArray(payload?.selected) ? payload.selected : []
+        snapshot.retrieval = {
+          ...(snapshot.retrieval || {}),
+          documents: {
+            ...((snapshot.retrieval?.documents as Record<string, any>) || {}),
+            candidates,
+            selected,
+          },
+        }
+        snapshot.session.selectedDocumentCount = selected.length
+        snapshot.run = { ...(snapshot.run || {}), selectedDocumentCount: selected.length }
         this._upsertSessionSummary({ ...snapshot.session })
         return
       }
 
-      if (event.type === 'feature_comparison.updated') {
-        snapshot.featureComparison = payload || null
-        return
-      }
-
-      if (event.type === 'artifacts.updated') {
-        snapshot.downloadUrl = payload?.downloadUrl || null
-        return
-      }
-
-      if (event.type === 'decision.updated') {
-        snapshot.humanDecisionAction = payload || null
+      if (event.type === 'batch.created' || event.type === 'batch.updated') {
+        const activeBatch = (event.type === 'batch.created'
+          ? (payload as AiSearchBatchSummary)
+          : payload?.activeBatch) || null
+        snapshot.analysis = {
+          ...(snapshot.analysis || {}),
+          activeBatch,
+          latestCloseReadResult: payload?.latestCloseReadResult || snapshot.analysis?.latestCloseReadResult || null,
+          latestFeatureCompareResult: payload?.latestFeatureCompareResult || snapshot.analysis?.latestFeatureCompareResult || null,
+        }
         return
       }
 
@@ -596,11 +665,22 @@ export const useAiSearchStore = defineStore('aiSearch', {
           token,
         })
         this.sessions = Array.isArray(data.items) ? data.items : []
+        this.sessionsHydrated = true
       } catch (error: any) {
         this._setRuntimeError(this.currentSessionId, error?.message || '获取会话失败')
       } finally {
         this.loading = false
       }
+    },
+
+    async ensureSessionsLoaded() {
+      if (this.sessionsHydrated) return
+      if (!fetchSessionsPromise) {
+        fetchSessionsPromise = this.fetchSessions().finally(() => {
+          fetchSessionsPromise = null
+        })
+      }
+      await fetchSessionsPromise
     },
 
     async createSession() {
@@ -642,28 +722,35 @@ export const useAiSearchStore = defineStore('aiSearch', {
         })
         const sessionId = String(data.sessionId || '').trim()
         if (sessionId) {
-          const createdAt = nowIso()
-          this._applySnapshot(
-            createPlaceholderSnapshot({
-              sessionId,
-              taskId: String(data.taskId || sessionId).trim(),
-              title: 'AI 检索草稿',
-              status: 'processing',
-              phase: 'drafting_plan',
-              createdAt,
-              updatedAt: createdAt,
-              analysisSeed: {
-                status: 'pending',
-                sourceTaskId: taskId,
-              },
-            }),
-            { activate: true },
-          )
-          void this.fetchSessions()
+          if (data.reused) {
+            await this.fetchSessions()
+            await this.loadSession(sessionId, { activate: true })
+          } else {
+            const createdAt = nowIso()
+            this._applySnapshot(
+              createPlaceholderSnapshot({
+                sessionId,
+                taskId: String(data.taskId || sessionId).trim(),
+                title: 'AI 检索计划',
+                status: 'processing',
+                phase: 'drafting_plan',
+                sourceTaskId: String(data.sourceTaskId || taskId).trim() || taskId,
+                sourceType: 'analysis',
+                createdAt,
+                updatedAt: createdAt,
+                analysisSeed: {
+                  status: 'pending',
+                  sourceTaskId: taskId,
+                },
+              }),
+              { activate: true },
+            )
+            void this.fetchSessions()
+          }
         }
         return sessionId
       } catch (error: any) {
-        const message = error?.message || '创建 AI 检索草稿失败'
+        const message = error?.message || '创建 AI 检索计划失败'
         this._setRuntimeError(this.currentSessionId, message)
         throw error instanceof Error ? error : new Error(message)
       } finally {
@@ -772,7 +859,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
       this._pushUserMessage(sessionId, text, 'chat')
-      snapshot.pendingConfirmation = null
+      snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
       this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
@@ -796,7 +883,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
       this._pushUserMessage(sessionId, text, 'answer', questionId)
-      snapshot.pendingQuestion = null
+      snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
       this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
@@ -818,7 +905,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      snapshot.pendingConfirmation = null
+      snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
       this._startPendingAssistant(sessionId, 'execute_search', true)
       try {
         await this._postStream(
@@ -891,7 +978,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, snapshot.phase, true)
+      this._startPendingAssistant(sessionId, activePhase(snapshot), true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/resume/stream`,
@@ -945,7 +1032,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
           {},
         )
       } catch (error: any) {
-        this._setRuntimeError(targetSessionId, error?.message || '生成 AI 检索草稿失败')
+        this._setRuntimeError(targetSessionId, error?.message || '生成 AI 检索计划失败')
         this._resetTransientRunState(targetSessionId)
       } finally {
         this._setStreaming(targetSessionId, false)
@@ -963,7 +1050,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, snapshot.phase, true)
+      this._startPendingAssistant(sessionId, activePhase(snapshot), true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/decision/complete`,
