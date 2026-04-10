@@ -1496,33 +1496,25 @@ def test_build_analysis_seed_user_message_renders_structured_effect_groups():
     assert "### 核心效果1：降低漏报率" in message
     assert "#### 语义检索文本" in message
     assert "#### 5分效果检索要素表" in message
-    assert "##### 4分效果1：提升复杂噪声场景下的检测稳定性" in message
     assert "| Block B1 | 异常检测 |" in message
     assert "G06V 10/44" in message
-    assert "| Block E | 效果锚点：提升复杂噪声场景下的检测稳定性 |" in message
+    assert "进一步检索" not in message
+    assert "4分效果" not in message
+    assert "效果锚点" not in message
     assert "{'effect':" not in message
 
 
-def test_build_analysis_sub_plans_adds_follow_up_steps_with_replaced_block_b():
+def test_build_analysis_sub_plans_only_keeps_main_retrieval_step():
     sub_plans = build_analysis_sub_plans(_build_analysis_payload_with_follow_up())
 
     assert len(sub_plans) == 1
     sub_plan = sub_plans[0]
     assert sub_plan["title"] == "降低漏报率"
-    assert len(sub_plan["retrieval_steps"]) == 2
+    assert len(sub_plan["retrieval_steps"]) == 1
+    assert len(sub_plan["query_blueprints"]) == 1
     assert sub_plan["retrieval_steps"][0]["title"] == "降低漏报率 / 主检索"
-    assert "进一步检索" in sub_plan["retrieval_steps"][1]["title"]
-
-    follow_up_blueprint = sub_plan["query_blueprints"][1]
-    display_elements = follow_up_blueprint["display_search_elements"]
-
-    assert follow_up_blueprint["display_label"] == "提升复杂噪声场景下的检测稳定性"
-    assert "时序特征融合" in follow_up_blueprint["must_terms_zh"]
-    assert any(item["block_id"] == "B1" and item["element_name"] == "时序特征融合" for item in display_elements)
-    assert any(item["block_id"] == "C" and item["element_name"] == "时序特征融合" for item in display_elements)
-    assert any(item["block_id"] == "C" and item["ipc_cpc_ref"] == ["G06N 3/08"] for item in display_elements)
-    assert any(item["block_id"] == "E" and "提升复杂噪声场景下的检测稳定性" in item["element_name"] for item in display_elements)
-    assert not any(item["block_id"] == "A" for item in display_elements)
+    assert sub_plan["query_blueprints"][0]["batch_id"] == "sub_plan_1_batch_1"
+    assert sub_plan["query_blueprints"][0]["goal"] == "降低漏报率"
 
 
 def test_load_source_patent_data_falls_back_to_r2_when_local_patent_json_missing(monkeypatch, tmp_path):

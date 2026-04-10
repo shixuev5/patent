@@ -5,7 +5,6 @@ Helpers for initializing AI search sessions from patent-analysis artifacts.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -185,46 +184,6 @@ def _render_elements_table(elements: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
-def _feature_match_score(left: str, right: str) -> bool:
-    a = _safe_text(left)
-    b = _safe_text(right)
-    return bool(a and b and (a == b or a in b or b in a))
-
-
-def _find_matrix_element(search_matrix: List[Dict[str, Any]], feature_name: str) -> Optional[Dict[str, Any]]:
-    for item in search_matrix:
-        if not isinstance(item, dict):
-            continue
-        if _feature_match_score(item.get("element_name"), feature_name):
-            return item
-    return None
-
-
-def _effect_keywords(effect_text: str) -> List[str]:
-    text = _safe_text(effect_text)
-    if not text:
-        return []
-    outputs = [text]
-    parts = re.split(r"[，,；;。、“”\"'（）()、/]+", text)
-    for part in parts:
-        keyword = _safe_text(part)
-        if len(keyword) < 2 or keyword in outputs:
-            continue
-        outputs.append(keyword)
-    return outputs
-
-
-def _effect_anchor_element(effect_text: str) -> Dict[str, Any]:
-    return {
-        "element_name": f"效果锚点：{_safe_text(effect_text) or '4分效果'}",
-        "keywords_zh": _effect_keywords(effect_text),
-        "keywords_en": [],
-        "ipc_cpc_ref": [],
-        "block_id": "E",
-        "notes": "由4分效果文本提取的关键词",
-    }
-
-
 def _collect_main_plan_elements(
     search_matrix: List[Dict[str, Any]],
     *,
@@ -250,71 +209,9 @@ def _collect_main_plan_elements(
     return _dedupe_elements(outputs)
 
 
-def _collect_follow_up_c_elements(main_elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        dict(item)
-        for item in main_elements
-        if _safe_text(item.get("block_id")).upper() == "C"
-    ]
-
-
-def _collect_follow_up_b_elements(
-    search_matrix: List[Dict[str, Any]],
-    feature_names: List[str],
-    *,
-    block_id: str,
-) -> List[Dict[str, Any]]:
-    outputs: List[Dict[str, Any]] = []
-    for feature_name in feature_names:
-        matrix_item = _find_matrix_element(search_matrix, feature_name)
-        if matrix_item:
-            mapped = _mapped_element(matrix_item, block_id_override=block_id, notes_suffix="来自4分效果关联特征")
-        else:
-            mapped = {
-                "element_name": _safe_text(feature_name),
-                "keywords_zh": [_safe_text(feature_name)] if _safe_text(feature_name) else [],
-                "keywords_en": [],
-                "ipc_cpc_ref": [],
-                "block_id": block_id,
-                "notes": "来自4分效果关联特征",
-            }
-        if mapped:
-            outputs.append(mapped)
-    return _dedupe_elements(outputs)
-
-
-def _query_terms_from_elements(elements: List[Dict[str, Any]], *, blocks: Optional[set[str]] = None) -> List[str]:
-    outputs: List[str] = []
-    for item in elements:
-        if not isinstance(item, dict):
-            continue
-        block_id = _safe_text(item.get("block_id")).upper()
-        if blocks and block_id not in blocks:
-            continue
-        candidates = _string_list(item.get("keywords_zh")) + _string_list(item.get("keywords_en"))
-        if not candidates:
-            candidates = [_safe_text(item.get("element_name"))]
-        for candidate in candidates:
-            if candidate and candidate not in outputs:
-                outputs.append(candidate)
-    return outputs
-
-
-def _follow_up_blueprint_semantic_text(effect_text: str, b_elements: List[Dict[str, Any]], c_elements: List[Dict[str, Any]]) -> str:
-    parts = [_safe_text(effect_text)]
-    b_names = [_safe_text(item.get("element_name")) for item in b_elements if _safe_text(item.get("element_name"))]
-    c_names = [_safe_text(item.get("element_name")) for item in c_elements if _safe_text(item.get("element_name"))]
-    if b_names:
-        parts.append("关联特征：" + "、".join(b_names))
-    if c_names:
-        parts.append("保留限定：" + "、".join(c_names))
-    return "；".join(part for part in parts if part)
-
-
 def _effect_plan_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     search_matrix = _search_matrix_items(analysis_payload)
     semantic_queries = _semantic_queries(analysis_payload)
-    technical_effects = _technical_effect_items(analysis_payload)
     groups: List[Dict[str, Any]] = []
     for index, query in enumerate(semantic_queries, start=1):
         block_id = _safe_text(query.get("block_id") or f"B{index}").upper() or f"B{index}"
@@ -325,46 +222,6 @@ def _effect_plan_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]
             block_id=block_id,
             effect_cluster_ids=effect_cluster_ids,
         )
-        main_b_features = [
-            _safe_text(item.get("element_name"))
-            for item in main_elements
-            if _safe_text(item.get("block_id")).upper() == block_id and _safe_text(item.get("element_name"))
-        ]
-        retained_c_elements = _collect_follow_up_c_elements(main_elements)
-        follow_up_effects: List[Dict[str, Any]] = []
-        for effect in technical_effects:
-            if effect.get("score") != 4:
-                continue
-            dependent_on = effect.get("dependent_on") or []
-            if not dependent_on or not any(
-                _feature_match_score(main_feature, dependent_feature)
-                for main_feature in main_b_features
-                for dependent_feature in dependent_on
-            ):
-                continue
-            b_elements = _collect_follow_up_b_elements(
-                search_matrix,
-                effect.get("contributing_features") or [],
-                block_id=block_id,
-            )
-            follow_up_elements = _dedupe_elements(
-                [
-                    *b_elements,
-                    *[dict(item) for item in retained_c_elements],
-                    _effect_anchor_element(_safe_text(effect.get("effect_text"))),
-                ]
-            )
-            follow_up_effects.append(
-                {
-                    **effect,
-                    "display_elements": follow_up_elements,
-                    "semantic_query_text": _follow_up_blueprint_semantic_text(
-                        _safe_text(effect.get("effect_text")),
-                        b_elements,
-                        retained_c_elements,
-                    ),
-                }
-            )
         groups.append(
             {
                 "index": index,
@@ -373,7 +230,6 @@ def _effect_plan_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]
                 "effect_text": effect_text,
                 "semantic_query_text": _safe_text(query.get("content")),
                 "main_elements": main_elements,
-                "follow_up_effects": follow_up_effects,
             }
         )
     return groups
@@ -442,40 +298,6 @@ def build_analysis_sub_plans(analysis_payload: Dict[str, Any]) -> List[Dict[str,
                     "phase_key": "execute_search",
                 }
             ]
-            for follow_up_index, follow_up in enumerate(group.get("follow_up_effects") or [], start=2):
-                batch_id = f"{sub_plan_id}_batch_{follow_up_index}"
-                display_elements = follow_up.get("display_elements") or []
-                must_terms_zh = _query_terms_from_elements(display_elements, blocks={_safe_text(group.get("block_id")).upper()})
-                should_terms_zh = _query_terms_from_elements(display_elements, blocks={"C", "E"})
-                query_blueprints.append(
-                    {
-                        "batch_id": batch_id,
-                        "goal": _safe_text(follow_up.get("effect_text")),
-                        "semantic_text": _safe_text(follow_up.get("semantic_query_text")),
-                        "sub_plan_id": sub_plan_id,
-                        "effect_cluster_ids": list(group.get("effect_cluster_ids") or []),
-                        "display_search_elements": display_elements,
-                        "display_label": _safe_text(follow_up.get("effect_text")),
-                        "step_type": "follow_up_effect",
-                        "must_terms_zh": must_terms_zh,
-                        "should_terms_zh": should_terms_zh,
-                    }
-                )
-                retrieval_steps.append(
-                    {
-                        "step_id": f"{sub_plan_id}_step_{follow_up_index}",
-                        "title": f"{goal} / 进一步检索 / {_safe_text(follow_up.get('effect_text'))}",
-                        "purpose": f"当 5 分核心效果方向确认后，进一步围绕 4 分效果“{_safe_text(follow_up.get('effect_text'))}”补充检索，扩展关联证据。",
-                        "feature_combination": "不强绑 Block A；用该 4 分效果关联特征替换主方案的 Block B，保留原 Block C，并补入从 4 分效果文本提取的 Block E。",
-                        "language_strategy": "延续主检索语言策略，优先保留中文术语，并视召回情况补英文表达。",
-                        "ipc_cpc_mode": "沿用主方案；必要时再补充分类号。",
-                        "ipc_cpc_codes": [],
-                        "expected_recall": "在不偏离主方向的前提下，补回 5 分主检索未覆盖的关联技术实现。",
-                        "fallback_action": "若命中过少则减少 Block E 限定；若噪声过多则增强 4 分特征和效果锚点词。",
-                        "query_blueprint_refs": [batch_id],
-                        "phase_key": "execute_search",
-                    }
-                )
             sub_plans.append(
                 {
                     "sub_plan_id": sub_plan_id,
@@ -597,19 +419,6 @@ def build_analysis_seed_user_message(
                 effect_lines.append("> 未生成语义检索文本。")
             effect_lines.append("#### 5分效果检索要素表")
             effect_lines.extend(_render_elements_table(group.get("main_elements") or []))
-            effect_lines.append("#### 进一步检索")
-            follow_ups = group.get("follow_up_effects") or []
-            if follow_ups:
-                for follow_up_index, follow_up in enumerate(follow_ups, start=1):
-                    effect_lines.append(f"##### 4分效果{follow_up_index}：{_safe_text(follow_up.get('effect_text'))}")
-                    effect_lines.append(
-                        f"- 关联关系：从属于当前 5 分核心效果，基于 {_safe_text(group.get('block_id')).upper()} 的主检索命中后继续展开。"
-                    )
-                    if _safe_text(follow_up.get("rationale")):
-                        effect_lines.append(f"- 说明：{_safe_text(follow_up.get('rationale'))}")
-                    effect_lines.extend(_render_elements_table(follow_up.get("display_elements") or []))
-            else:
-                effect_lines.append("- 当前未识别到从属于该核心效果的 4 分效果。")
             effect_lines.append("")
     else:
         technical_effects = _technical_effect_items(analysis_payload)
@@ -620,12 +429,6 @@ def build_analysis_seed_user_message(
         title = _safe_text(item.get("title") or item.get("goal") or item.get("sub_plan_id")) or f"子计划 {index}"
         plan_lines.append(f"### 方案{index}：{title}")
         plan_lines.append("- 主检索：围绕 5 分核心效果做首轮召回。")
-        follow_up_steps = [step for step in item.get("retrieval_steps") or [] if isinstance(step, dict)][1:]
-        if follow_up_steps:
-            for step_index, step in enumerate(follow_up_steps, start=1):
-                plan_lines.append(f"- 进一步检索 {step_index}：{_safe_text(step.get('title'))}")
-        else:
-            plan_lines.append("- 进一步检索：当前未拆出 4 分效果补检索步骤。")
         plan_lines.append("")
     return "\n".join(
         [
