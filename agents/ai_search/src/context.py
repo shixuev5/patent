@@ -9,9 +9,13 @@ from typing import Any, Dict, List, Optional
 
 from agents.ai_search.src.execution_state import (
     DEFAULT_EXECUTION_POLICY,
+    build_execution_todo,
     build_execution_todos,
+    extract_outcome_signals,
+    iter_plan_steps,
     normalize_execution_plan,
     resolve_plan_step,
+    step_is_activated_by,
 )
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
@@ -226,6 +230,20 @@ class AiSearchAgentContext:
                 updates["draft_current_task"] = current_task
             self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, **updates))
         self.notify_snapshot_changed(runtime, reason="todos")
+
+    def append_todos(self, todos: List[Dict[str, Any]], *, current_task: Any = _UNSET, runtime: Any | None = None) -> None:
+        existing = self._current_todos()
+        existing_ids = {str(item.get("todo_id") or "").strip() for item in existing}
+        merged = list(existing)
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            todo_id = str(item.get("todo_id") or "").strip()
+            if not todo_id or todo_id in existing_ids:
+                continue
+            existing_ids.add(todo_id)
+            merged.append(item)
+        self.replace_todos(merged, current_task=current_task, runtime=runtime)
 
     def update_todo(
         self,
@@ -500,6 +518,45 @@ class AiSearchAgentContext:
         if not run_id:
             return []
         return self.storage.list_ai_search_execution_summaries(run_id, sub_plan_id=sub_plan_id)
+
+    def latest_execution_summary_for_todo(self, plan_version: int, todo_id: str) -> Optional[Dict[str, Any]]:
+        target_todo_id = str(todo_id or "").strip()
+        if not target_todo_id:
+            return None
+        for item in reversed(self.list_execution_step_summaries(plan_version)):
+            if str(item.get("todo_id") or "").strip() == target_todo_id:
+                return item
+        return None
+
+    def conditional_todos_for_completed_step(self, plan_version: int, todo_id: str) -> List[Dict[str, Any]]:
+        target = self._todo_map().get(str(todo_id or "").strip())
+        if not target:
+            return []
+        execution_plan = self.execution_plan_json(plan_version)
+        if not execution_plan:
+            return []
+        normalized = normalize_execution_plan(execution_plan, self.current_search_elements(plan_version))
+        completed_step_ids = {
+            str(item.get("step_id") or "").strip()
+            for item in self._current_todos()
+            if str(item.get("status") or "").strip() == "completed"
+        }
+        completed_step_ids.add(str(target.get("step_id") or "").strip())
+        existing_todo_ids = {
+            str(item.get("todo_id") or "").strip()
+            for item in self._current_todos()
+            if str(item.get("todo_id") or "").strip()
+        }
+        outcome_signals = extract_outcome_signals(self.latest_execution_summary_for_todo(plan_version, todo_id))
+        todos: List[Dict[str, Any]] = []
+        for sub_plan, step in iter_plan_steps(normalized):
+            if not step_is_activated_by(step, completed_step_ids=completed_step_ids, outcome_signals=outcome_signals):
+                continue
+            todo = build_execution_todo(plan_version, sub_plan, step)
+            if str(todo.get("todo_id") or "").strip() in existing_todo_ids:
+                continue
+            todos.append(todo)
+        return todos
 
     def build_execution_step_directive(self, plan_version: int) -> Dict[str, Any]:
         plan = self.storage.get_ai_search_plan(self.task_id, int(plan_version)) or {}

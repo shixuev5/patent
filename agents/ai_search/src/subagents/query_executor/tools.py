@@ -51,6 +51,14 @@ def build_query_executor_tools(context: Any) -> List[Any]:
             payload.setdefault("todo_id", todo_id)
             payload.setdefault("step_id", str(current_todo.get("step_id") or "").strip())
             payload.setdefault("sub_plan_id", str(current_todo.get("sub_plan_id") or "").strip())
+            payload.setdefault(
+                "outcome_signals",
+                {
+                    "primary_goal_reached": False,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                },
+            )
             if not str(payload.get("todo_id") or "").strip():
                 raise ValueError("execution_step_summary 缺少 todo_id。")
             run_id = context.active_run_id(version)

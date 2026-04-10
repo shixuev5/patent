@@ -113,6 +113,8 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`draft_plan`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "query_blueprint_refs" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "conditional" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "outcome_signals" in MAIN_AGENT_SYSTEM_PROMPT
     assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
     assert "status=complete" in MAIN_AGENT_SYSTEM_PROMPT
     assert "不得因为缺少申请人" in MAIN_AGENT_SYSTEM_PROMPT
@@ -130,12 +132,16 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
 
     assert "`commit_plan_draft`" in PLANNER_SYSTEM_PROMPT
     assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
+    assert "activation_mode" in PLANNER_SYSTEM_PROMPT
+    assert "activation_conditions" in PLANNER_SYSTEM_PROMPT
 
     assert "`prepare_lane_queries`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "`fetch_patent_details`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "plan_change_assessment" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "next_recommendation" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "adjustments`: 数组" in QUERY_EXECUTOR_SYSTEM_PROMPT
+    assert "outcome_signals" in QUERY_EXECUTOR_SYSTEM_PROMPT
+    assert '"too_broad" | "balanced" | "too_narrow"' in QUERY_EXECUTOR_SYSTEM_PROMPT
 
     assert "`run_coarse_screen_batch`" in COARSE_SCREEN_SYSTEM_PROMPT
     assert "不能遗漏" in COARSE_SCREEN_SYSTEM_PROMPT

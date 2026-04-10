@@ -2678,6 +2678,8 @@ class SQLiteTaskStorage:
             return cursor.rowcount > 0
 
     def _row_to_ai_search_execution_summary(self, row: sqlite3.Row) -> Dict[str, Any]:
+        metadata = self._parse_metadata(row["metadata_json"])
+        outcome_signals = metadata.get("outcome_signals") if isinstance(metadata, dict) else {}
         return {
             "summary_id": row["summary_id"],
             "run_id": row["run_id"],
@@ -2692,7 +2694,8 @@ class SQLiteTaskStorage:
             "next_recommendation": row["next_recommendation"] or "",
             "candidate_pool_size": int(row["candidate_pool_size"] or 0),
             "new_unique_candidates": int(row["new_unique_candidates"] or 0),
-            "metadata": self._parse_metadata(row["metadata_json"]),
+            "metadata": metadata,
+            "outcome_signals": outcome_signals if isinstance(outcome_signals, dict) else {},
             "created_at": row["created_at"],
         }
 

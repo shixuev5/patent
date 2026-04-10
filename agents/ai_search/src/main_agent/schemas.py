@@ -39,6 +39,10 @@ class RetrievalStepInput(BaseModel):
     fallback_action: str = ""
     query_blueprint_refs: List[str] = Field(..., min_length=1)
     phase_key: str = "execute_search"
+    activation_mode: str = "immediate"
+    depends_on_step_ids: List[str] = Field(default_factory=list)
+    activation_conditions: Dict[str, Any] = Field(default_factory=dict)
+    activation_summary: str = ""
     probe_summary: Dict[str, Any] = Field(default_factory=dict)
 
 

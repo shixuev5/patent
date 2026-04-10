@@ -59,10 +59,10 @@ stateDiagram-v2
 
 ### 4. `execute_search` (检索执行)
 - **状态切换**：收到确认后，调用 `begin_execution`。
-- **Todo执行逻辑**：Todo 必须且只能由 `retrieval_steps` 展开。
+- **Todo执行逻辑**：Todo 必须且只能由 `retrieval_steps` 展开。`conditional` 步骤必须先留在计划骨架中，只有在前置 step 的 `outcome_signals` 命中触发条件时，才会被主控追加为新 Todo。
 - **调度循环**：调用 `start_execution_step` -> 调度 `query-executor` -> 获取 `execution_step_summary`。
 - **决策路由**：
-  - `[成功/继续]` -> 调用 `complete_execution_step`，推进下一个步骤。
+  - `[成功/继续]` -> 调用 `complete_execution_step`，由主控先判断是否需要激活条件步骤，再推进下一步。
   - `[本轮完毕]` -> 所有 Todo 完成，进入 `start_coarse_screen`。
   - `[方向性失败]` -> 调用 `pause_execution_for_replan`，退回 `drafting_plan` 阶段重构计划。
 

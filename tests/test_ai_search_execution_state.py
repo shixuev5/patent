@@ -11,7 +11,7 @@ def _plan() -> dict:
             {
                 "sub_plan_id": "sub_plan_1",
                 "goal": "异常检测",
-                "query_blueprints": [{"batch_id": "b1", "goal": "异常检测"}],
+                "query_blueprints": [{"batch_id": "b1", "goal": "异常检测"}, {"batch_id": "b2", "goal": "Block C 条件检索"}],
                 "retrieval_steps": [
                     {
                         "step_id": "step_1",
@@ -25,6 +25,29 @@ def _plan() -> dict:
                         "fallback_action": "结果过宽时补限定词",
                         "query_blueprint_refs": ["b1"],
                         "phase_key": "execute_search",
+                        "activation_mode": "immediate",
+                    },
+                    {
+                        "step_id": "step_2",
+                        "title": "Block C 条件分支",
+                        "purpose": "主检索命中后叠加 Block C",
+                        "feature_combination": "A+C",
+                        "language_strategy": "中文优先",
+                        "ipc_cpc_mode": "沿用并补充 IPC/CPC",
+                        "ipc_cpc_codes": ["G06N 3/08"],
+                        "expected_recall": "更聚焦的结果池",
+                        "fallback_action": "微调 Block C 同义词",
+                        "query_blueprint_refs": ["b2"],
+                        "phase_key": "execute_search",
+                        "activation_mode": "conditional",
+                        "depends_on_step_ids": ["step_1"],
+                        "activation_conditions": {
+                            "any_of": [
+                                {"signal": "primary_goal_reached", "equals": True},
+                                {"signal": "recall_quality", "equals": "too_broad"},
+                            ]
+                        },
+                        "activation_summary": "命中主目标或结果过宽时激活。",
                     }
                 ],
             }
@@ -93,6 +116,16 @@ def test_build_execution_todos_comes_from_retrieval_steps():
     assert [item["todo_id"] for item in todos] == ["plan_1:sub_plan_1:step_1"]
     assert todos[0]["description"].startswith("目的：验证召回方向")
     assert todos[0]["phase_key"] == "execute_search"
+
+
+def test_normalize_execution_plan_keeps_conditional_activation_fields():
+    normalized = normalize_execution_plan(_plan(), {"objective": "检索异常检测方案"})
+    conditional_step = normalized["sub_plans"][0]["retrieval_steps"][1]
+
+    assert conditional_step["activation_mode"] == "conditional"
+    assert conditional_step["depends_on_step_ids"] == ["step_1"]
+    assert conditional_step["activation_conditions"]["any_of"][0]["signal"] == "primary_goal_reached"
+    assert conditional_step["activation_summary"] == "命中主目标或结果过宽时激活。"
 
 
 def test_resolve_plan_step_returns_matching_sub_plan_and_step():

@@ -41,10 +41,15 @@ Commit 的 `payload_json` 必须对齐 `ExecutionStepSummary` 接口：
 - `candidate_pool_size`: 整数，当前候选池总数（来自系统反馈）。
 - `result_summary`: 字符串，描述执行结果（例如：“执行了 A AND B，召回 50 篇，其中 15 篇进入候选池”）。
 - `adjustments`: 数组 `[string]`，记录你在执行中做的微调（如：`["因命中过少，去掉了 IPC 限制"]`；若无调整填 `[]`）。
+- `outcome_signals`: 对象，用于驱动计划内的条件步骤激活。
 - `plan_change_assessment`: 对象，评估计划变更需求。
 - `next_recommendation`: 字符串，给出下一步明确动作。
 
 **路由决策核心字段说明：**
+- **`outcome_signals`**:
+  - `primary_goal_reached`: 布尔值。若你判断当前 step 已找到足以支撑“主目标 / Block B 已被击穿”的候选方向，则填 `true`。
+  - `recall_quality`: 枚举。只能填 `"too_broad" | "balanced" | "too_narrow"`。
+  - `triggered_by_adjustment`: 布尔值。若当前结论依赖你在本 step 内做过查询微调才得到，则填 `true`。
 - **`plan_change_assessment`**:
   - `requires_replan`: 布尔值。当前 Step 彻底失败且无法通过微调补救时为 `true`。
   - `reason`: 字符串。若 `true`，写明重规划原因。
@@ -57,4 +62,5 @@ Commit 的 `payload_json` 必须对齐 `ExecutionStepSummary` 接口：
 # 异常与边界处理规范 (Edge Cases)
 1. **零命中 / 纯噪声**：如果命中为 0 或去重后无新增，**必须**在 `result_summary` 中写明，并在 `adjustments` 中记录你尝试的放宽策略。如果多次尝试依然无效，必须设置 `requires_replan=true`。
 2. **工具调用失败**：如果搜索工具报错（如语法错误），必须自我纠正并重试。如重试依然失败，记录错误并在 `next_recommendation` 中返回 `request_replan`。
+3. **条件步骤边界**：你可以在当前 step 内调整扩展词、语言、IPC/CPC，但绝不能自行新增 Block C 或其他宏观步骤。条件步骤是否激活，由主控根据你提交的 `outcome_signals` 决定。
 """.strip()

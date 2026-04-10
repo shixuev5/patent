@@ -1496,25 +1496,57 @@ def test_build_analysis_seed_user_message_renders_structured_effect_groups():
     assert "### 核心效果1：降低漏报率" in message
     assert "#### 语义检索文本" in message
     assert "#### 5分效果检索要素表" in message
+    assert "#### Block C 条件分支要素表" in message
     assert "| Block B1 | 异常检测 |" in message
+    assert "| Block C | 时序特征融合 |" in message
     assert "G06V 10/44" in message
+    assert "Step 2（条件触发）" in message
+    assert "命中 Block B 或结果过宽时" in message
     assert "进一步检索" not in message
     assert "4分效果" not in message
     assert "效果锚点" not in message
     assert "{'effect':" not in message
 
 
-def test_build_analysis_sub_plans_only_keeps_main_retrieval_step():
+def test_build_analysis_sub_plans_adds_block_c_conditional_step():
     sub_plans = build_analysis_sub_plans(_build_analysis_payload_with_follow_up())
 
     assert len(sub_plans) == 1
     sub_plan = sub_plans[0]
     assert sub_plan["title"] == "降低漏报率"
-    assert len(sub_plan["retrieval_steps"]) == 1
-    assert len(sub_plan["query_blueprints"]) == 1
-    assert sub_plan["retrieval_steps"][0]["title"] == "降低漏报率 / 主检索"
+    assert len(sub_plan["retrieval_steps"]) == 2
+    assert len(sub_plan["query_blueprints"]) == 2
+    assert sub_plan["retrieval_steps"][0]["title"] == "降低漏报率 / 核心特征击穿"
+    assert sub_plan["retrieval_steps"][0]["activation_mode"] == "immediate"
+    assert sub_plan["retrieval_steps"][1]["activation_mode"] == "conditional"
+    assert sub_plan["retrieval_steps"][1]["depends_on_step_ids"] == ["sub_plan_1_step_1"]
+    assert sub_plan["retrieval_steps"][1]["activation_conditions"]["any_of"][0]["signal"] == "primary_goal_reached"
+    assert sub_plan["retrieval_steps"][1]["activation_summary"] == "命中 Block B 或结果过宽时，激活 Block C 条件分支做从权防守检索或降噪。"
     assert sub_plan["query_blueprints"][0]["batch_id"] == "sub_plan_1_batch_1"
     assert sub_plan["query_blueprints"][0]["goal"] == "降低漏报率"
+    assert sub_plan["query_blueprints"][1]["batch_id"] == "sub_plan_1_batch_2"
+    assert "时序特征融合" in sub_plan["query_blueprints"][1]["must_terms_zh"]
+
+
+def test_create_session_from_analysis_seed_embeds_conditional_block_c_strategy(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(
+        storage,
+        owner_id="guest_ai_search",
+        tmp_path=tmp_path,
+        analysis_payload=_build_analysis_payload_with_follow_up(),
+        patent_payload=_build_patent_payload(),
+    )
+
+    created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+    messages = storage.list_ai_search_messages(created.sessionId)
+    seed_message = next(item for item in messages if item["kind"] == "search_elements_update")
+    execution_spec_seed = seed_message["metadata"]["execution_spec_seed"]
+    retrieval_steps = execution_spec_seed["sub_plans"][0]["retrieval_steps"]
+
+    assert retrieval_steps[0]["activation_mode"] == "immediate"
+    assert retrieval_steps[1]["activation_mode"] == "conditional"
+    assert retrieval_steps[1]["activation_summary"].startswith("命中 Block B 或结果过宽时")
 
 
 def test_load_source_patent_data_falls_back_to_r2_when_local_patent_json_missing(monkeypatch, tmp_path):

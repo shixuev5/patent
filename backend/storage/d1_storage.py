@@ -2607,6 +2607,8 @@ class D1TaskStorage:
         return self._changed_rows(result) > 0
 
     def _row_to_ai_search_execution_summary(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = self._parse_metadata(row.get("metadata_json"))
+        outcome_signals = metadata.get("outcome_signals") if isinstance(metadata, dict) else {}
         return {
             "summary_id": row.get("summary_id"),
             "run_id": row.get("run_id"),
@@ -2621,7 +2623,8 @@ class D1TaskStorage:
             "next_recommendation": row.get("next_recommendation") or "",
             "candidate_pool_size": int(row.get("candidate_pool_size") or 0),
             "new_unique_candidates": int(row.get("new_unique_candidates") or 0),
-            "metadata": self._parse_metadata(row.get("metadata_json")),
+            "metadata": metadata,
+            "outcome_signals": outcome_signals if isinstance(outcome_signals, dict) else {},
             "created_at": row.get("created_at"),
         }
 

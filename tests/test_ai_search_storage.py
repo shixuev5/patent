@@ -167,6 +167,29 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert feature_comparison["table_json"][0]["feature"] == "A"
     assert feature_comparison["summary_markdown"] == "总结"
 
+    assert storage.create_ai_search_execution_summary(
+        {
+            "summary_id": "summary-1",
+            "run_id": "run-1",
+            "task_id": "task-ai-search",
+            "plan_version": 1,
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "step_id": "step_1",
+            "sub_plan_id": "sub_plan_1",
+            "result_summary": "首轮召回有效",
+            "metadata": {
+                "outcome_signals": {
+                    "primary_goal_reached": True,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                }
+            },
+        }
+    )
+    summaries = storage.list_ai_search_execution_summaries("run-1")
+    assert summaries[0]["outcome_signals"]["primary_goal_reached"] is True
+    assert summaries[0]["metadata"]["outcome_signals"]["recall_quality"] == "balanced"
+
     checkpoint_json = encode_typed_value(("json", b'{"id":"cp-1","channel_versions":{"messages":1}}'))
     metadata_json = encode_typed_value(("json", b'{"source":"test"}'))
     assert storage.put_ai_search_checkpoint(

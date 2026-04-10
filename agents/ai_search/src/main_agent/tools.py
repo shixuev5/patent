@@ -309,6 +309,10 @@ def build_main_agent_tools(context: Any) -> List[Any]:
             return "missing_current_todo"
         current_id = str(current.get("todo_id") or "").strip()
         context.update_todo(current_id, "completed", current_task=None)
+        activated_todos = context.conditional_todos_for_completed_step(version, current_id)
+        if activated_todos:
+            context.append_todos(activated_todos, current_task=None, runtime=runtime)
+            return start_execution_step(str(activated_todos[0].get("todo_id") or "").strip(), version, runtime)
         action = str(next_action or "").strip() or "start_next_step"
         if action == "enter_coarse_screen":
             return start_coarse_screen(version, runtime)

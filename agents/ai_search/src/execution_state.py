@@ -15,6 +15,7 @@ ALLOWED_STEP_PHASE_KEYS = {
     "close_read",
     "feature_comparison",
 }
+ALLOWED_ACTIVATION_MODES = {"immediate", "conditional"}
 
 DEFAULT_EXECUTION_POLICY = {
     "dynamic_replanning": True,
@@ -37,6 +38,13 @@ class ExecutionStepSummary(BaseModel):
     next_recommendation: str = ""
     candidate_pool_size: int = 0
     new_unique_candidates: int = 0
+    outcome_signals: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "primary_goal_reached": False,
+            "recall_quality": "balanced",
+            "triggered_by_adjustment": False,
+        }
+    )
 
 
 class PlanProbeFindings(BaseModel):
@@ -65,6 +73,23 @@ def _normalize_blueprint(batch: Dict[str, Any], sub_plan_id: str, index: int) ->
     }
 
 
+def _normalize_activation_conditions(value: Any) -> Dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    any_of = source.get("any_of") if isinstance(source.get("any_of"), list) else []
+    normalized_any_of: List[Dict[str, Any]] = []
+    for item in any_of:
+        if not isinstance(item, dict):
+            continue
+        signal = str(item.get("signal") or "").strip()
+        if not signal:
+            continue
+        normalized: Dict[str, Any] = {"signal": signal}
+        if "equals" in item:
+            normalized["equals"] = item.get("equals")
+        normalized_any_of.append(normalized)
+    return {"any_of": normalized_any_of}
+
+
 def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_ids: set[str], index: int) -> Dict[str, Any]:
     step_id = str(step.get("step_id") or f"{sub_plan_id}_step_{index}").strip() or f"{sub_plan_id}_step_{index}"
     query_blueprint_refs = _string_list(step.get("query_blueprint_refs"))
@@ -78,6 +103,9 @@ def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_
     phase_key = str(step.get("phase_key") or "execute_search").strip() or "execute_search"
     if phase_key not in ALLOWED_STEP_PHASE_KEYS:
         raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 使用了不支持的 phase_key `{phase_key}`。")
+    activation_mode = str(step.get("activation_mode") or "immediate").strip().lower() or "immediate"
+    if activation_mode not in ALLOWED_ACTIVATION_MODES:
+        raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 使用了不支持的 activation_mode `{activation_mode}`。")
     return {
         "step_id": step_id,
         "title": str(step.get("title") or f"{sub_plan_id} / step {index}").strip() or f"{sub_plan_id} / step {index}",
@@ -90,6 +118,10 @@ def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_
         "fallback_action": str(step.get("fallback_action") or "").strip(),
         "query_blueprint_refs": query_blueprint_refs,
         "phase_key": phase_key,
+        "activation_mode": activation_mode,
+        "depends_on_step_ids": _string_list(step.get("depends_on_step_ids")),
+        "activation_conditions": _normalize_activation_conditions(step.get("activation_conditions")),
+        "activation_summary": str(step.get("activation_summary") or "").strip(),
         "probe_summary": step.get("probe_summary") if isinstance(step.get("probe_summary"), dict) else {},
     }
 
@@ -194,6 +226,8 @@ def build_execution_todos(plan_version: int, execution_plan: Dict[str, Any]) -> 
         for step in sub_plan.get("retrieval_steps") or []:
             if not isinstance(step, dict):
                 continue
+            if str(step.get("activation_mode") or "immediate").strip().lower() == "conditional":
+                continue
             step_id = str(step.get("step_id") or "").strip()
             todo_id = build_execution_todo_id(plan_version, sub_plan_id, step_id)
             todos.append(
@@ -222,6 +256,34 @@ def build_execution_todos(plan_version: int, execution_plan: Dict[str, Any]) -> 
     return todos
 
 
+def build_execution_todo(plan_version: int, sub_plan: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
+    sub_plan_id = str(sub_plan.get("sub_plan_id") or "").strip()
+    step_id = str(step.get("step_id") or "").strip()
+    todo_id = build_execution_todo_id(plan_version, sub_plan_id, step_id)
+    return {
+        "todo_id": todo_id,
+        "sub_plan_id": sub_plan_id,
+        "step_id": step_id,
+        "phase_key": str(step.get("phase_key") or "execute_search").strip() or "execute_search",
+        "title": str(step.get("title") or "").strip(),
+        "description": build_execution_todo_description(step),
+        "status": "pending",
+        "attempt_count": 0,
+        "resume_from": "run_execution_step.load",
+        "last_error": "",
+        "started_at": None,
+        "completed_at": None,
+        "state": {
+            "plan_version": int(plan_version),
+            "sub_plan_id": sub_plan_id,
+            "step_id": step_id,
+            "phase_key": str(step.get("phase_key") or "execute_search").strip() or "execute_search",
+            "query_blueprint_refs": _string_list(step.get("query_blueprint_refs")),
+            "activation_mode": str(step.get("activation_mode") or "immediate").strip().lower() or "immediate",
+        },
+    }
+
+
 def iter_plan_steps(execution_plan: Dict[str, Any]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
     items: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for sub_plan in execution_plan.get("sub_plans") or []:
@@ -240,3 +302,45 @@ def resolve_plan_step(execution_plan: Dict[str, Any], sub_plan_id: str, step_id:
         if str(sub_plan.get("sub_plan_id") or "").strip() == target_sub_plan_id and str(step.get("step_id") or "").strip() == target_step_id:
             return sub_plan, step
     raise KeyError(f"未找到 execution step: {target_sub_plan_id}:{target_step_id}")
+
+
+def extract_outcome_signals(summary: Dict[str, Any] | None) -> Dict[str, Any]:
+    source = summary if isinstance(summary, dict) else {}
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    raw = source.get("outcome_signals") if isinstance(source.get("outcome_signals"), dict) else metadata.get("outcome_signals")
+    payload = raw if isinstance(raw, dict) else {}
+    recall_quality = str(payload.get("recall_quality") or "").strip().lower()
+    if recall_quality not in {"too_broad", "balanced", "too_narrow"}:
+        recall_quality = "balanced"
+    return {
+        "primary_goal_reached": bool(payload.get("primary_goal_reached")),
+        "recall_quality": recall_quality,
+        "triggered_by_adjustment": bool(payload.get("triggered_by_adjustment")),
+    }
+
+
+def step_is_activated_by(
+    step: Dict[str, Any],
+    *,
+    completed_step_ids: set[str],
+    outcome_signals: Dict[str, Any],
+) -> bool:
+    if str(step.get("activation_mode") or "immediate").strip().lower() != "conditional":
+        return False
+    depends_on = set(_string_list(step.get("depends_on_step_ids")))
+    if depends_on and not depends_on.issubset(completed_step_ids):
+        return False
+    conditions = step.get("activation_conditions") if isinstance(step.get("activation_conditions"), dict) else {}
+    any_of = conditions.get("any_of") if isinstance(conditions.get("any_of"), list) else []
+    if not any_of:
+        return True
+    for item in any_of:
+        if not isinstance(item, dict):
+            continue
+        signal = str(item.get("signal") or "").strip()
+        if not signal:
+            continue
+        expected = item.get("equals")
+        if outcome_signals.get(signal) == expected:
+            return True
+    return False

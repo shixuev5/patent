@@ -49,10 +49,15 @@ PLANNER_SYSTEM_PROMPT = """
 - `step_id`, `title`, `purpose`, `feature_combination`, `language_strategy`, `ipc_cpc_mode`, `expected_recall`, `fallback_action`, `phase_key`
 - `ipc_cpc_codes`: 数组 `[string]`。
 - **[致命关联] `query_blueprint_refs`**: 数组 `[string]`。**这里引用的 ID 必须 100% 存在于当前 `sub_plan.query_blueprints[*].batch_id` 中**。严禁引用不存在的 ID，严禁跨 `sub_plan` 引用！
+- `activation_mode`: `immediate | conditional`。首次计划中的主步骤通常为 `immediate`；条件分支步骤必须显式标为 `conditional`。
+- `depends_on_step_ids`: 数组 `[string]`。条件步骤依赖的前置步骤。
+- `activation_conditions`: 对象。第一版统一使用 `{"any_of":[{"signal":"primary_goal_reached","equals":true},{"signal":"recall_quality","equals":"too_broad"}]}` 这类结构。
+- `activation_summary`: 面向用户的简短说明，清楚解释“何时会激活该步骤”。
 
 # 规划原则与边界 (Planning Principles)
 1. **要素溯源**：`search_elements` 是硬性输入，不要随意更改名称或丢弃核心概念。
 2. **采纳预检**：如果存在 `plan_prober` 信号，必须将“建议修改”落实到 `query_blueprints` 和 `retrieval_steps` 的具体策略中，但不要将预检结果作为“已有检索结果”写进报告。
 3. **Gap 导向**：若是补检（存在 `gap_context`），必须将“弥补当前证据缺口”的方向明确体现在 `query_blueprint` 与 `retrieval_step` 的设计中。
 4. **防空转设计**：确保计划高度可执行。绝不允许出现空步骤、无查询表达式的 blueprint、或逻辑上必将导致 0 召回的矛盾条件组合。
+5. **计划骨架先行**：如果存在 Block C 等条件分支，必须在首次计划中显式写入 `retrieval_steps`，而不是留给执行器临时新增步骤。执行器只允许在 step 内微调查询，不允许改宏观路径。
 """.strip()

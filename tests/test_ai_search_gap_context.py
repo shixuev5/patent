@@ -8,7 +8,50 @@ from backend.storage import Task, TaskStatus, TaskType
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 
 
-def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "confirmed") -> dict:
+def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "confirmed", include_conditional: bool = False) -> dict:
+    retrieval_steps = [
+        {
+            "step_id": "step_1",
+            "title": "子计划 1 / 首轮宽召回",
+            "purpose": "执行首轮宽召回",
+            "feature_combination": "检索目标核心特征",
+            "language_strategy": "中文优先",
+            "ipc_cpc_mode": "按需补 IPC/CPC",
+            "ipc_cpc_codes": [],
+            "expected_recall": "获取候选池",
+            "fallback_action": "结果异常时调整同义词",
+            "query_blueprint_refs": ["b1"],
+            "phase_key": "execute_search",
+            "activation_mode": "immediate",
+        }
+    ]
+    query_blueprints = [{"batch_id": "b1", "goal": "检索目标", "sub_plan_id": "sub_plan_1"}]
+    if include_conditional:
+        retrieval_steps.append(
+            {
+                "step_id": "step_2",
+                "title": "子计划 1 / Block C 条件分支",
+                "purpose": "在命中主目标或结果过宽时追加 Block C 检索",
+                "feature_combination": "A+C",
+                "language_strategy": "中文优先",
+                "ipc_cpc_mode": "沿用并补 IPC/CPC",
+                "ipc_cpc_codes": ["G06N 3/08"],
+                "expected_recall": "获得更聚焦的候选池",
+                "fallback_action": "继续微调 Block C 条件",
+                "query_blueprint_refs": ["b2"],
+                "phase_key": "execute_search",
+                "activation_mode": "conditional",
+                "depends_on_step_ids": ["step_1"],
+                "activation_conditions": {
+                    "any_of": [
+                        {"signal": "primary_goal_reached", "equals": True},
+                        {"signal": "recall_quality", "equals": "too_broad"},
+                    ]
+                },
+                "activation_summary": "命中主目标或结果过宽时激活。",
+            }
+        )
+        query_blueprints.append({"batch_id": "b2", "goal": "Block C 条件检索", "sub_plan_id": "sub_plan_1"})
     return {
         "task_id": task_id,
         "plan_version": plan_version,
@@ -25,22 +68,8 @@ def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "confirme
                     "goal": "检索目标",
                     "semantic_query_text": "",
                     "search_elements": [],
-                    "retrieval_steps": [
-                        {
-                            "step_id": "step_1",
-                            "title": "子计划 1 / 首轮宽召回",
-                            "purpose": "执行首轮宽召回",
-                            "feature_combination": "检索目标核心特征",
-                            "language_strategy": "中文优先",
-                            "ipc_cpc_mode": "按需补 IPC/CPC",
-                            "ipc_cpc_codes": [],
-                            "expected_recall": "获取候选池",
-                            "fallback_action": "结果异常时调整同义词",
-                            "query_blueprint_refs": ["b1"],
-                            "phase_key": "execute_search",
-                        }
-                    ],
-                    "query_blueprints": [{"batch_id": "b1", "goal": "检索目标", "sub_plan_id": "sub_plan_1"}],
+                    "retrieval_steps": retrieval_steps,
+                    "query_blueprints": query_blueprints,
                     "classification_hints": [],
                 }
             ],
@@ -514,3 +543,193 @@ def test_run_execution_step_commit_persists_step_summary(tmp_path):
     assert result == "execution step summary saved"
     assert len(summaries) == 1
     assert summaries[0]["metadata"]["todo_id"] == "plan_1:sub_plan_1:step_1"
+    assert summaries[0]["outcome_signals"]["primary_goal_reached"] is False
+    assert summaries[0]["outcome_signals"]["recall_quality"] == "balanced"
+
+
+def test_conditional_todo_activates_when_primary_goal_reached(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_conditional_primary_goal.db")
+    _create_task(storage)
+    storage.create_ai_search_plan(_plan_record("task-gap", include_conditional=True))
+    run_id = _create_run(storage, "task-gap", plan_version=1, phase="execute_search")
+    storage.replace_ai_search_retrieval_todos(
+        run_id,
+        "task-gap",
+        1,
+        [
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "title": "执行步骤 1",
+                "description": "目的：执行首轮宽召回",
+                "status": "completed",
+            }
+        ],
+    )
+    storage.create_ai_search_execution_summary(
+        {
+            "summary_id": "summary-step-1",
+            "run_id": run_id,
+            "task_id": "task-gap",
+            "plan_version": 1,
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "sub_plan_id": "sub_plan_1",
+            "step_id": "step_1",
+            "metadata": {
+                "outcome_signals": {
+                    "primary_goal_reached": True,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                }
+            },
+        }
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+    activated = context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1")
+
+    assert [item["todo_id"] for item in activated] == ["plan_1:sub_plan_1:step_2"]
+
+
+def test_conditional_todo_activates_when_recall_quality_too_broad(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_conditional_too_broad.db")
+    _create_task(storage)
+    storage.create_ai_search_plan(_plan_record("task-gap", include_conditional=True))
+    run_id = _create_run(storage, "task-gap", plan_version=1, phase="execute_search")
+    storage.replace_ai_search_retrieval_todos(
+        run_id,
+        "task-gap",
+        1,
+        [
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "title": "执行步骤 1",
+                "description": "目的：执行首轮宽召回",
+                "status": "completed",
+            }
+        ],
+    )
+    storage.create_ai_search_execution_summary(
+        {
+            "summary_id": "summary-step-1",
+            "run_id": run_id,
+            "task_id": "task-gap",
+            "plan_version": 1,
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "sub_plan_id": "sub_plan_1",
+            "step_id": "step_1",
+            "metadata": {
+                "outcome_signals": {
+                    "primary_goal_reached": False,
+                    "recall_quality": "too_broad",
+                    "triggered_by_adjustment": True,
+                }
+            },
+        }
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+    activated = context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1")
+
+    assert [item["todo_id"] for item in activated] == ["plan_1:sub_plan_1:step_2"]
+
+
+def test_conditional_todo_stays_dormant_when_signals_do_not_match(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_conditional_no_match.db")
+    _create_task(storage)
+    storage.create_ai_search_plan(_plan_record("task-gap", include_conditional=True))
+    run_id = _create_run(storage, "task-gap", plan_version=1, phase="execute_search")
+    storage.replace_ai_search_retrieval_todos(
+        run_id,
+        "task-gap",
+        1,
+        [
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "title": "执行步骤 1",
+                "description": "目的：执行首轮宽召回",
+                "status": "completed",
+            }
+        ],
+    )
+    storage.create_ai_search_execution_summary(
+        {
+            "summary_id": "summary-step-1",
+            "run_id": run_id,
+            "task_id": "task-gap",
+            "plan_version": 1,
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "sub_plan_id": "sub_plan_1",
+            "step_id": "step_1",
+            "metadata": {
+                "outcome_signals": {
+                    "primary_goal_reached": False,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                }
+            },
+        }
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+
+    assert context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1") == []
+
+
+def test_complete_execution_step_materializes_and_starts_conditional_todo(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_conditional_complete.db")
+    _create_task(storage)
+    storage.create_ai_search_plan(_plan_record("task-gap", include_conditional=True))
+    run_id = _create_run(storage, "task-gap", plan_version=1, phase="execute_search")
+    storage.replace_ai_search_retrieval_todos(
+        run_id,
+        "task-gap",
+        1,
+        [
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "phase_key": "execute_search",
+                "title": "执行步骤 1",
+                "description": "目的：执行首轮宽召回",
+                "status": "in_progress",
+            }
+        ],
+    )
+    storage.update_ai_search_run("task-gap", run_id, active_retrieval_todo_id="plan_1:sub_plan_1:step_1")
+    storage.create_ai_search_execution_summary(
+        {
+            "summary_id": "summary-step-1",
+            "run_id": run_id,
+            "task_id": "task-gap",
+            "plan_version": 1,
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "sub_plan_id": "sub_plan_1",
+            "step_id": "step_1",
+            "metadata": {
+                "outcome_signals": {
+                    "primary_goal_reached": True,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                }
+            },
+        }
+    )
+
+    context = AiSearchAgentContext(storage, "task-gap")
+    complete_execution_step = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_execution_step"
+    )
+    payload = json.loads(complete_execution_step(plan_version=1))
+    todos = {item["todo_id"]: item for item in context._current_todos()}
+
+    assert payload["todo_id"] == "plan_1:sub_plan_1:step_2"
+    assert todos["plan_1:sub_plan_1:step_1"]["status"] == "completed"
+    assert todos["plan_1:sub_plan_1:step_2"]["status"] == "in_progress"
+    assert context.current_todo()["todo_id"] == "plan_1:sub_plan_1:step_2"
