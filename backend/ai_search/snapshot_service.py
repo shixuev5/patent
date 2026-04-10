@@ -35,7 +35,7 @@ class AiSearchSnapshotService:
         )
 
     def _display_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        visible_kinds = {"chat", "question", "answer", "plan_confirmation"}
+        visible_kinds = {"chat", "question", "answer", "plan_confirmation", "process"}
         return [item for item in messages if str(item.get("kind") or "") in visible_kinds]
 
     def _snapshot_phase(self, snapshot: AiSearchSnapshotResponse) -> str:

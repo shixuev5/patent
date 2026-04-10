@@ -902,6 +902,74 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
     assert any(event["type"] == "subagent.completed" and event["payload"]["label"] == "检索要素整理" for event in parsed)
 
 
+def test_stream_message_persists_process_messages_from_custom_events(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_planner_draft(storage, created.sessionId)
+
+    class _FakeState:
+        values = {"messages": []}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
+            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            yield (
+                (),
+                "custom",
+                {
+                    "type": "tool.started",
+                    "payload": {
+                        "eventId": "call-tool-1:running",
+                        "processType": "tool",
+                        "status": "running",
+                        "toolName": "get_planning_context",
+                        "toolLabel": "读取规划上下文",
+                        "summary": "读取规划上下文",
+                        "subagentName": "planner",
+                        "subagentLabel": "检索规划",
+                    },
+                },
+            )
+            yield (
+                (),
+                "custom",
+                {
+                    "type": "tool.completed",
+                    "payload": {
+                        "eventId": "call-tool-1:completed",
+                        "processType": "tool",
+                        "status": "completed",
+                        "toolName": "get_planning_context",
+                        "toolLabel": "读取规划上下文",
+                        "summary": "读取规划上下文",
+                        "subagentName": "planner",
+                        "subagentLabel": "检索规划",
+                    },
+                },
+            )
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "开始处理")))
+    parsed = _parse_data_events(events)
+    process_messages = [
+        event["payload"]
+        for event in parsed
+        if event["type"] == "message.created" and event["payload"].get("kind") == "process"
+    ]
+
+    assert any(item["content"] == "读取规划上下文" and item["metadata"]["processType"] == "tool" for item in process_messages)
+    assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索规划" for event in parsed)
+
+
 def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")

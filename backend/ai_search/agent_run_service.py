@@ -120,6 +120,26 @@ class AiSearchAgentRunService:
         }
         return f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
 
+    def _append_process_message(self, task_id: str, phase: str, payload: Dict[str, Any]) -> None:
+        summary = str(payload.get("summary") or payload.get("statusText") or payload.get("label") or payload.get("toolLabel") or "").strip()
+        if not summary:
+            return
+        self.storage.create_ai_search_message(
+            {
+                "message_id": uuid.uuid4().hex,
+                "task_id": task_id,
+                "plan_version": self._current_active_plan_version(task_id) or None,
+                "role": "assistant",
+                "kind": "process",
+                "content": summary,
+                "stream_status": "completed",
+                "metadata": {
+                    **payload,
+                    "phase": phase,
+                },
+            }
+        )
+
     def _stream_error_payload(self, exc: Exception) -> Dict[str, Any]:
         if isinstance(exc, HTTPException):
             detail = exc.detail
@@ -565,12 +585,17 @@ class AiSearchAgentRunService:
 
                 current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
                 if event_type in {"subagent.started", "subagent.completed"}:
+                    normalized_payload = self._normalize_subagent_payload(event_type, event_payload)
+                    self._append_process_message(task_id, current_phase, normalized_payload)
                     yield self._format_event(
                         event_type,
                         session_id,
                         current_phase,
-                        self._normalize_subagent_payload(event_type, event_payload),
+                        normalized_payload,
                     )
+                elif event_type in {"tool.started", "tool.completed", "tool.failed"} and isinstance(event_payload, dict):
+                    self._append_process_message(task_id, current_phase, event_payload)
+                    yield self._format_event(event_type, session_id, current_phase, event_payload)
 
                 snapshot = self.snapshots.get_snapshot(session_id, owner_id)
                 async for event in self._emit_snapshot_diff_events(

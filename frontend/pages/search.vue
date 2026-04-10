@@ -165,89 +165,114 @@
           </div>
         </div>
 
-        <div ref="messageListRef" class="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
-          <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
-            描述检索目标、技术方案、核心效果或约束条件。
-          </div>
+        <div class="relative min-h-0 flex-1">
+          <div ref="messageListRef" class="flex min-h-0 h-full flex-col overflow-y-auto px-4 py-4">
+            <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
+              描述检索目标、技术方案、核心效果或约束条件。
+            </div>
 
-          <div v-else class="space-y-4">
-            <template v-for="entry in conversationEntries" :key="entry.id">
-              <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
-                <span class="h-px flex-1 bg-slate-200/80" />
-                <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
-                  ------ {{ phaseLabel(entry.phase) }} ------
-                </p>
-                <span class="h-px flex-1 bg-slate-200/80" />
-              </article>
+            <div v-else class="space-y-4">
+              <template v-for="entry in conversationEntries" :key="entry.id">
+                <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
+                  <span class="h-px flex-1 bg-slate-200/80" />
+                  <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
+                    ------ {{ phaseLabel(entry.phase) }}<span v-if="phaseDurationText(entry)"> · {{ phaseDurationText(entry) }}</span> ------
+                  </p>
+                  <span class="h-px flex-1 bg-slate-200/80" />
+                </article>
 
-              <article
-                v-else
-                class="flex"
-                :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
-              >
-                <div
-                  class="max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
-                  :class="entry.role === 'user'
-                    ? 'bg-cyan-700 text-white shadow-cyan-100'
-                    : 'border border-slate-200 bg-slate-50 text-slate-700'"
+                <AiSearchProcessLine v-else-if="isProcessMessage(entry)" :entry="entry" />
+
+                <article
+                  v-else
+                  class="flex"
+                  :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
                 >
-                  <template v-if="entry.entryType === 'pending-assistant'">
-                    <div v-if="entry.content" class="text-slate-700">
-                      <AiSearchStructuredPlan
-                        v-if="structuredPlanExecutionSpec"
-                        :execution-spec="structuredPlanExecutionSpec"
-                      />
-                      <AiSearchMarkdown v-else :content="entry.content" />
-                    </div>
-                    <div v-else class="space-y-3">
-                      <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
-                        <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
-                        <span>思考中</span>
+                  <div
+                    class="max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
+                    :class="entry.role === 'user'
+                      ? 'bg-cyan-700 text-white shadow-cyan-100'
+                      : 'border border-slate-200 bg-slate-50 text-slate-700'"
+                  >
+                    <template v-if="entry.entryType === 'pending-assistant'">
+                      <div v-if="entry.content" class="text-slate-700">
+                        <AiSearchStructuredPlan
+                          v-if="structuredPlanExecutionSpec"
+                          :execution-spec="structuredPlanExecutionSpec"
+                        />
+                        <AiSearchExpandableContent
+                          v-else
+                          :content="entry.content"
+                          mode="markdown"
+                          fade-rgb="248,250,252"
+                        />
                       </div>
-                      <div class="space-y-2">
-                        <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
-                        <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                      <div v-else class="space-y-3">
+                        <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
+                          <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                          <span>思考中</span>
+                        </div>
+                        <div class="space-y-2">
+                          <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
+                          <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                        </div>
                       </div>
-                    </div>
-                  </template>
+                    </template>
 
-                  <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
-                    <div v-if="isLatestPlanMessage(entry)" class="space-y-4">
-                      <div class="flex items-center justify-between gap-3">
-                        <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
-                        <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                          v{{ planVersionOf(entry) || activePlanVersion || '?' }}
-                        </span>
+                    <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
+                      <div v-if="isLatestPlanMessage(entry)" class="space-y-4">
+                        <div class="flex items-center justify-between gap-3">
+                          <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
+                          <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                            v{{ planVersionOf(entry) || activePlanVersion || '?' }}
+                          </span>
+                        </div>
+                        <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                        <AiSearchPlanConfirmationCard
+                          v-if="isPendingPlanEntry(entry)"
+                          :confirm-disabled="streaming || !confirmationPlanVersion"
+                          :label="planConfirmationLabel"
+                          @confirm="confirmPlan"
+                        />
                       </div>
-                      <AiSearchMarkdown :content="entry.content" />
-                      <AiSearchPlanConfirmationCard
-                        v-if="isPendingPlanEntry(entry)"
-                        :confirm-disabled="streaming || !confirmationPlanVersion"
-                        :label="planConfirmationLabel"
-                        @confirm="confirmPlan"
-                      />
-                    </div>
-                    <details v-else class="group">
-                      <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                        <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
-                        <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
-                        <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
-                      </summary>
-                      <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
-                        <AiSearchMarkdown :content="entry.content" />
-                      </div>
-                    </details>
-                  </template>
+                      <details v-else class="group">
+                        <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                          <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
+                          <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
+                          <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
+                        </summary>
+                        <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
+                          <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                        </div>
+                      </details>
+                    </template>
 
-                  <template v-else-if="entry.role === 'assistant'">
-                    <AiSearchMarkdown :content="entry.content" />
-                  </template>
+                    <template v-else-if="entry.role === 'assistant'">
+                      <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                    </template>
 
-                  <p v-else class="whitespace-pre-wrap break-words">{{ entry.content }}</p>
-                </div>
-              </article>
-            </template>
+                    <AiSearchExpandableContent
+                      v-else
+                      :content="entry.content"
+                      mode="plaintext"
+                      fade-rgb="14,116,144"
+                    />
+                  </div>
+                </article>
+              </template>
+            </div>
           </div>
+
+          <button
+            v-if="showScrollToBottom"
+            type="button"
+            class="absolute bottom-4 right-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-600 shadow-lg shadow-slate-300/40 transition hover:bg-slate-50"
+            aria-label="滚动到最新消息"
+            title="滚动到最新消息"
+            @click="scrollToLatest"
+          >
+            <ArrowDownIcon class="h-5 w-5" />
+          </button>
         </div>
 
         <div v-if="showExecutionPanel" class="border-t border-slate-200">
@@ -289,16 +314,16 @@
               </ol>
             </div>
 
-            <div v-if="activeSubagentList.length" class="rounded-2xl border border-cyan-200 bg-cyan-50/70 px-3 py-3">
-              <p class="text-xs font-semibold text-cyan-900">当前执行中</p>
+            <div v-if="activeSubagentList.length" class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <p class="text-xs font-semibold text-slate-700">当前执行中</p>
               <div class="mt-2 space-y-2">
                 <div
                   v-for="item in activeSubagentList"
                   :key="item.name"
-                  class="flex items-center justify-between gap-3 rounded-xl border border-white/80 bg-white/80 px-3 py-2 text-[12px] text-slate-700"
+                  class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-600"
                 >
-                  <span class="font-medium text-slate-900">{{ item.label }}</span>
-                  <span class="text-slate-500">{{ item.statusText }}</span>
+                  <span class="font-medium text-slate-700">{{ item.label }}</span>
+                  <span class="text-slate-400">{{ item.statusText }}</span>
                 </div>
               </div>
             </div>
@@ -436,13 +461,14 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { ArrowDownIcon, ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
 import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
-import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
+import AiSearchProcessLine from '~/components/ai-search/AiSearchProcessLine.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
 import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
@@ -489,6 +515,10 @@ const messageListRef = ref<HTMLElement | null>(null)
 const sidebarCollapsed = ref(false)
 const mobileDrawerOpen = ref(false)
 const executionPanelOpen = ref(true)
+const isNearBottom = ref(true)
+const hasScrollableOverflow = ref(false)
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | null = null
 
 const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
@@ -575,6 +605,7 @@ const canSubmitHeaderRename = computed(() => {
   const currentTitle = String(currentSession.value?.session.title || '').trim()
   return !!currentSession.value && !!nextTitle && nextTitle !== currentTitle
 })
+const showScrollToBottom = computed(() => hasScrollableOverflow.value && !isNearBottom.value)
 
 const inputPlaceholder = computed(() => {
   if (!currentSession.value) return '正在准备会话...'
@@ -612,7 +643,7 @@ const downloadCurrentResult = async () => {
     document.body.removeChild(link)
   } catch (error) {
     console.error('下载 AI 检索结果失败：', error)
-    showMessage('下载失败，请稍后重试。', 'error')
+    showMessage('error', '下载失败，请稍后重试。')
     window.open(rawDownloadUrl, '_blank')
   }
 }
@@ -677,6 +708,7 @@ const conversationEntries = computed<Array<Record<string, any>>>(() => {
       id: marker.id,
       entryType: 'phase',
       phase: marker.phase,
+      endedAt: marker.endedAt || null,
       sortKey: toMillis(marker.createdAt),
       order: 1000 + index,
     })
@@ -727,6 +759,28 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
 }
 
 const phaseLabel = (phase: string): string => aiSearchPhaseLabel(phase)
+
+const isProcessMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'process'
+
+const formatDuration = (durationMs: number): string => {
+  const totalSeconds = Math.max(1, Math.floor(durationMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}小时${minutes}分`
+  if (minutes > 0) return `${minutes}分${seconds}秒`
+  return `${seconds}秒`
+}
+
+const phaseDurationText = (entry: Record<string, any>): string => {
+  const startedAt = toMillis(entry.createdAt)
+  if (!startedAt) return ''
+  const endedAt = toMillis(entry.endedAt)
+  if (endedAt > startedAt) return formatDuration(endedAt - startedAt)
+  const isLatestMarker = phaseMarkers.value[phaseMarkers.value.length - 1]?.id === entry.id
+  if (!isLatestMarker) return ''
+  return `进行中 · ${formatDuration(nowTick.value - startedAt)}`
+}
 
 const todoStatusLabel = (status?: string): string => {
   if (status === 'in_progress') return '进行中'
@@ -780,11 +834,24 @@ const toggleSidebar = () => {
   mobileDrawerOpen.value = !mobileDrawerOpen.value
 }
 
-const scrollMessagesToBottom = async () => {
+const syncMessageListState = () => {
+  const el = messageListRef.value
+  if (!el) return
+  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+  isNearBottom.value = remaining <= 160
+  hasScrollableOverflow.value = el.scrollHeight > el.clientHeight + 8
+}
+
+const scrollMessagesToBottom = async (behavior: ScrollBehavior = 'auto') => {
   await nextTick()
   const el = messageListRef.value
   if (!el) return
-  el.scrollTop = el.scrollHeight
+  el.scrollTo({ top: el.scrollHeight, behavior })
+  syncMessageListState()
+}
+
+const scrollToLatest = () => {
+  void scrollMessagesToBottom('smooth')
 }
 
 const createSession = async () => {
@@ -901,6 +968,16 @@ const completeCurrentResultsFromDecision = async () => {
   await aiSearchStore.completeCurrentResultsFromDecision()
 }
 
+const bindMessageListScroll = (element: HTMLElement | null, previous: HTMLElement | null = null) => {
+  if (previous) previous.removeEventListener('scroll', syncMessageListState)
+  if (element) {
+    element.addEventListener('scroll', syncMessageListState, { passive: true })
+    nextTick(() => {
+      syncMessageListState()
+    })
+  }
+}
+
 watch(
   () => currentSession.value?.session.sessionId || '',
   (sessionId) => {
@@ -920,6 +997,10 @@ watch(
   },
 )
 
+watch(messageListRef, (element, previous) => {
+  bindMessageListScroll(element, previous)
+})
+
 watch(
   () => currentSession.value?.session.title || '',
   () => {
@@ -937,9 +1018,19 @@ watch(
 )
 
 watch(
-  () => [conversationEntries.value.length, currentSession.value?.session.sessionId || ''].join(':'),
-  () => {
-    scrollMessagesToBottom()
+  [
+    () => currentSession.value?.session.sessionId || '',
+    () => conversationEntries.value.length,
+    () => pendingAssistantMessage.value?.content || '',
+  ],
+  ([sessionId], [previousSessionId]) => {
+    if (sessionId !== previousSessionId || isNearBottom.value) {
+      void scrollMessagesToBottom(sessionId !== previousSessionId ? 'auto' : 'auto')
+      return
+    }
+    nextTick(() => {
+      syncMessageListState()
+    })
   },
 )
 
@@ -968,6 +1059,9 @@ watch(
 )
 
 onMounted(async () => {
+  nowTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
     await adminUsageStore.fetchAccess(true)
@@ -985,6 +1079,13 @@ onMounted(async () => {
   const preferredSessionId = String(route.query.session || '').trim()
   await aiSearchStore.init(preferredSessionId)
   await scrollMessagesToBottom()
+})
+
+onBeforeUnmount(() => {
+  if (messageListRef.value) {
+    messageListRef.value.removeEventListener('scroll', syncMessageListState)
+  }
+  if (nowTimer) clearInterval(nowTimer)
 })
 </script>
 

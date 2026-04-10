@@ -40,6 +40,32 @@ SUBAGENT_DISPLAY_LABELS = {
     "feature-comparer": "特征对比",
 }
 
+ROLE_DISPLAY_LABELS = {
+    "main-agent": "主控代理",
+    **SUBAGENT_DISPLAY_LABELS,
+}
+
+TOOL_DISPLAY_LABELS = {
+    "get_session_context": "读取会话上下文",
+    "get_planning_context": "读取规划上下文",
+    "get_execution_context": "读取执行上下文",
+    "start_plan_drafting": "进入规划阶段",
+    "publish_planner_draft": "发布计划草案",
+    "request_user_question": "请求用户补充信息",
+    "request_plan_confirmation": "请求确认计划",
+    "advance_workflow": "推进工作流",
+    "complete_session": "完成当前检索",
+    "save_search_elements": "保存检索要素",
+    "commit_plan_draft": "提交计划草案",
+    "probe_search_semantic": "执行语义预检",
+    "probe_search_boolean": "执行布尔预检",
+    "probe_count_boolean": "统计布尔命中数",
+    "run_execution_step": "执行检索步骤",
+    "run_coarse_screen_batch": "执行候选粗筛",
+    "run_close_read_batch": "执行重点精读",
+    "run_feature_compare": "执行特征对比",
+}
+
 READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
 WRITE_FILESYSTEM_TOOLS = {"write_file", "edit_file"}
 EXECUTION_TOOLS = {"execute"}
@@ -177,6 +203,68 @@ def format_subagent_label(name: str) -> str:
     return SUBAGENT_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "子 agent")
 
 
+def format_role_label(role: str) -> str:
+    return ROLE_DISPLAY_LABELS.get(str(role or "").strip(), str(role or "").strip() or "代理")
+
+
+def format_tool_label(name: str) -> str:
+    return TOOL_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "工具")
+
+
+def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
+    name = str(tool_name or "").strip()
+    if name == "advance_workflow":
+        action = str(args.get("action") or "").strip()
+        return f"推进工作流{f'：{action}' if action else ''}"
+    if name == "run_execution_step":
+        operation = str(args.get("operation") or "load").strip().lower()
+        return "提交执行步骤摘要" if operation == "commit" else "加载当前执行步骤"
+    if name == "run_coarse_screen_batch":
+        operation = str(args.get("operation") or "load").strip().lower()
+        return "提交粗筛结果" if operation == "commit" else "加载粗筛批次"
+    if name == "run_close_read_batch":
+        operation = str(args.get("operation") or "load").strip().lower()
+        return "提交精读结果" if operation == "commit" else "加载精读批次"
+    if name == "run_feature_compare":
+        operation = str(args.get("operation") or "load").strip().lower()
+        return "提交特征对比结果" if operation == "commit" else "加载特征对比上下文"
+    return format_tool_label(name)
+
+
+def build_tool_event_payload(
+    *,
+    role: str,
+    tool_name: str,
+    tool_call_id: str,
+    args: Optional[Dict[str, Any]] = None,
+    status: str,
+    error_message: str = "",
+) -> Dict[str, Any]:
+    normalized_role = str(role or "").strip() or "main-agent"
+    normalized_tool_name = str(tool_name or "").strip()
+    normalized_args = args if isinstance(args, dict) else {}
+    summary = _tool_summary(normalized_tool_name, normalized_args)
+    subagent_name = normalized_role if normalized_role != "main-agent" else None
+    subagent_label = format_role_label(normalized_role) if subagent_name else None
+    status_text = summary
+    if status == "completed":
+        status_text = f"{summary}已完成"
+    elif status == "failed":
+        status_text = f"{summary}失败"
+    return {
+        "eventId": f"{tool_call_id or normalized_tool_name}:{status}",
+        "processType": "tool",
+        "status": status,
+        "toolName": normalized_tool_name,
+        "toolLabel": format_tool_label(normalized_tool_name),
+        "summary": summary,
+        "statusText": status_text,
+        "subagentName": subagent_name,
+        "subagentLabel": subagent_label,
+        "errorMessage": str(error_message or "").strip() or None,
+    }
+
+
 def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         return
@@ -200,9 +288,15 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
             {
                 "type": "subagent.started",
                 "payload": {
+                    "eventId": f"{self.role}:started",
+                    "processType": "subagent",
+                    "status": "running",
                     "name": self.role,
                     "label": label,
-                    "statusText": f"{label}执行中。",
+                    "summary": label,
+                    "statusText": f"{label}开始执行",
+                    "subagentName": self.role,
+                    "subagentLabel": label,
                 },
             },
         )
@@ -217,13 +311,131 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
             {
                 "type": "subagent.completed",
                 "payload": {
+                    "eventId": f"{self.role}:completed",
+                    "processType": "subagent",
+                    "status": "completed",
                     "name": self.role,
                     "label": label,
-                    "statusText": f"{label}已完成。",
+                    "summary": label,
+                    "statusText": f"{label}已完成",
+                    "subagentName": self.role,
+                    "subagentLabel": label,
                 },
             },
         )
         return None
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler,
+    ) -> ToolMessage | Command[Any]:
+        tool_name = str(request.tool_call.get("name") or "").strip()
+        if tool_name == "task":
+            return handler(request)
+        tool_call_id = str(request.tool_call.get("id") or tool_name or "tool").strip()
+        args = request.tool_call.get("args") if isinstance(request.tool_call.get("args"), dict) else {}
+        write_stream_event(
+            getattr(request.runtime, "stream_writer", None),
+            {
+                "type": "tool.started",
+                "payload": build_tool_event_payload(
+                    role=self.role,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    args=args,
+                    status="running",
+                ),
+            },
+        )
+        try:
+            result = handler(request)
+        except Exception as exc:
+            write_stream_event(
+                getattr(request.runtime, "stream_writer", None),
+                {
+                    "type": "tool.failed",
+                    "payload": build_tool_event_payload(
+                        role=self.role,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        args=args,
+                        status="failed",
+                        error_message=str(exc),
+                    ),
+                },
+            )
+            raise
+        write_stream_event(
+            getattr(request.runtime, "stream_writer", None),
+            {
+                "type": "tool.completed",
+                "payload": build_tool_event_payload(
+                    role=self.role,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    args=args,
+                    status="completed",
+                ),
+            },
+        )
+        return result
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler,
+    ) -> ToolMessage | Command[Any]:
+        tool_name = str(request.tool_call.get("name") or "").strip()
+        if tool_name == "task":
+            return await handler(request)
+        tool_call_id = str(request.tool_call.get("id") or tool_name or "tool").strip()
+        args = request.tool_call.get("args") if isinstance(request.tool_call.get("args"), dict) else {}
+        write_stream_event(
+            getattr(request.runtime, "stream_writer", None),
+            {
+                "type": "tool.started",
+                "payload": build_tool_event_payload(
+                    role=self.role,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    args=args,
+                    status="running",
+                ),
+            },
+        )
+        try:
+            result = await handler(request)
+        except Exception as exc:
+            write_stream_event(
+                getattr(request.runtime, "stream_writer", None),
+                {
+                    "type": "tool.failed",
+                    "payload": build_tool_event_payload(
+                        role=self.role,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        args=args,
+                        status="failed",
+                        error_message=str(exc),
+                    ),
+                },
+            )
+            raise
+        write_stream_event(
+            getattr(request.runtime, "stream_writer", None),
+            {
+                "type": "tool.completed",
+                "payload": build_tool_event_payload(
+                    role=self.role,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    args=args,
+                    status="completed",
+                ),
+            },
+        )
+        return result
 
 
 def build_streaming_middleware(role: str) -> AiSearchStreamingMiddleware:

@@ -429,19 +429,38 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     _ensurePhaseMarker(sessionId: string, phase: string) {
-      const normalizedPhase = String(phase || '').trim()
+        const normalizedPhase = String(phase || '').trim()
+        const runtime = this._ensureRuntime(sessionId)
+        const runKey = String(runtime.activeRun?.runKey || '').trim()
+        if (!normalizedPhase || !runKey) return
+        if (runtime.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
+        const createdAt = nowIso()
+        const previous = runtime.phaseMarkers[runtime.phaseMarkers.length - 1]
+        if (previous && !previous.endedAt) {
+          runtime.phaseMarkers = [
+            ...runtime.phaseMarkers.slice(0, -1),
+            { ...previous, endedAt: createdAt },
+          ]
+        }
+        runtime.phaseMarkers = [
+          ...runtime.phaseMarkers,
+          {
+            id: `phase-${runKey}-${normalizedPhase}`,
+            runKey,
+            phase: normalizedPhase,
+            createdAt,
+            endedAt: null,
+          },
+        ]
+    },
+
+    _closeLatestPhaseMarker(sessionId: string) {
       const runtime = this._ensureRuntime(sessionId)
-      const runKey = String(runtime.activeRun?.runKey || '').trim()
-      if (!normalizedPhase || !runKey) return
-      if (runtime.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
+      const previous = runtime.phaseMarkers[runtime.phaseMarkers.length - 1]
+      if (!previous || previous.endedAt) return
       runtime.phaseMarkers = [
-        ...runtime.phaseMarkers,
-        {
-          id: `phase-${runKey}-${normalizedPhase}`,
-          runKey,
-          phase: normalizedPhase,
-          createdAt: nowIso(),
-        },
+        ...runtime.phaseMarkers.slice(0, -1),
+        { ...previous, endedAt: nowIso() },
       ]
     },
 
@@ -504,6 +523,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
         this._startPendingAssistant(sessionId)
+        this._ensurePhaseMarker(sessionId, phase)
         return
       }
 
@@ -639,6 +659,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
 
       if (event.type === 'run.completed') {
+        this._closeLatestPhaseMarker(sessionId)
         runtime.activeRun = null
         runtime.pendingAssistantMessage = null
         runtime.activeSubagentStatuses = {}
@@ -647,6 +668,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
 
       if (event.type === 'run.error') {
+        this._closeLatestPhaseMarker(sessionId)
         runtime.error = String(payload?.message || '当前流式轮次执行失败。')
         runtime.streaming = false
         this._resetTransientRunState(sessionId)

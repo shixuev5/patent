@@ -120,6 +120,7 @@ export interface AiSearchPhaseMarker {
   runKey: string
   phase: string
   createdAt: string
+  endedAt?: string | null
 }
 
 export interface AiSearchSubagentStatus {
