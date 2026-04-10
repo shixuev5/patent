@@ -159,7 +159,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## 4. 基于上一轮审查意见的重组评述")
     lines.append("")
-    lines.append(_render_review_unit_blocks(review_units))
+    lines.append(_render_review_unit_blocks(review_units, _item_get(amendment_section, "substantive_amendments", []) or []))
     lines.append("")
 
     lines.append("## 5. 争论点总表与AI判断")
@@ -824,7 +824,7 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
 
     return (
         '<div class="oar-opinion-paragraph oar-opinion-paragraph-claims">'
-        f'<div class="oar-opinion-label">{_escape_text("权利要求文本：")}</div>'
+        f'<div class="oar-opinion-label">{_escape_text("权利要求：")}</div>'
         f'<div class="oar-claim-snapshot-list">{"".join(items)}</div>'
         "</div>"
     )
@@ -844,17 +844,105 @@ def _normalize_claim_id_list(value: Any) -> List[str]:
     return claim_ids
 
 
-def _render_review_unit_blocks(review_units: List[Any]) -> str:
+def _review_claim_title(display_claim_ids: List[str], fallback_title: str) -> str:
+    return "、".join(f"权利要求{claim_id}" for claim_id in display_claim_ids) or fallback_title
+
+
+def _build_amendment_map(substantive_amendments: List[Any]) -> Dict[str, Dict[str, Any]]:
+    amendment_map: Dict[str, Dict[str, Any]] = {}
+    for item in substantive_amendments or []:
+        amendment = _to_dict(item)
+        amendment_id = str(_item_get(amendment, "amendment_id", "")).strip()
+        if amendment_id:
+            amendment_map[amendment_id] = amendment
+    return amendment_map
+
+
+def _claim_label_text(claim_ids: List[str]) -> str:
+    normalized = [claim_id for claim_id in claim_ids if str(claim_id).strip()]
+    if not normalized:
+        return "相关权利要求"
+    if len(normalized) == 1:
+        return f"权利要求{normalized[0]}"
+    return "权利要求" + "、".join(normalized)
+
+
+def _review_scope_summary_text(unit_type: str, display_claim_ids: List[str]) -> str:
+    claim_label = _claim_label_text(display_claim_ids)
+    if unit_type == "supplemented_new":
+        return f"重组范围：围绕{claim_label}补成新的正式评述。"
+    if unit_type == "dependent_group_restructured":
+        return f"重组范围：围绕{claim_label}重组剩余从权评述。"
+    return f"重组范围：围绕{claim_label}重组独权评述。"
+
+
+def _review_handling_summary_text(unit_type: str, review_before_text: str) -> str:
+    if review_before_text:
+        return "评述处理：沿用上一轮审查意见骨架后完成补强。"
+    if unit_type == "supplemented_new":
+        return "评述处理：无可复用原评述，本轮补成正式评述。"
+    return "评述处理：缺少可复用原评述，本轮按现有素材重组正式评述。"
+
+
+def _review_summary_html(
+    unit_type: str,
+    display_claim_ids: List[str],
+    review_before_text: str,
+    source_summary: Dict[str, Any],
+    amendment_map: Dict[str, Dict[str, Any]],
+) -> str:
+    summary_lines: List[str] = []
+    summary_lines.append(_review_scope_summary_text(unit_type, display_claim_ids))
+
+    merged_source_claim_ids = _normalize_claim_id_list(source_summary.get("merged_source_claim_ids", []))
+    if merged_source_claim_ids:
+        summary_lines.append(f"并入来源：吸收{_claim_label_text(merged_source_claim_ids)}的旧权限定。")
+
+    amendment_feature_texts: List[str] = []
+    for amendment_id in source_summary.get("amendment_ids", []) or []:
+        amendment = amendment_map.get(str(amendment_id).strip(), {})
+        feature_text = str(_item_get(amendment, "feature_text", "")).strip()
+        if feature_text and feature_text not in amendment_feature_texts:
+            amendment_feature_texts.append(feature_text)
+        if len(amendment_feature_texts) >= 2:
+            break
+    if amendment_feature_texts:
+        summary_lines.append(f"新增限定：{'；'.join(amendment_feature_texts)}。")
+
+    summary_lines.append(_review_handling_summary_text(unit_type, review_before_text))
+
+    seen: List[str] = []
+    for line in summary_lines:
+        text = str(line or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+        if len(seen) >= 4:
+            break
+
+    if not seen:
+        seen.append("评述处理：本轮按现有素材整理正式评述。")
+
+    items = "".join(
+        (
+            '<div class="oar-review-summary-item">'
+            f'<span class="oar-review-summary-bullet">{_escape_text(str(index))}.</span>'
+            f'<span class="oar-review-summary-text">{_html_text(text, default="-")}</span>'
+            "</div>"
+        )
+        for index, text in enumerate(seen, start=1)
+    )
+    return f'<div class="oar-review-summary-list">{items}</div>'
+
+
+def _render_review_unit_blocks(review_units: List[Any], substantive_amendments: List[Any]) -> str:
     if not review_units:
         return '<div class="oar-opinion-empty">当前无可展示的重组评述。</div>'
 
+    amendment_map = _build_amendment_map(substantive_amendments)
     blocks: List[str] = []
     for item in review_units:
         visible_claim_ids = _normalize_claim_id_list(_item_get(item, "display_claim_ids", []))
-        title = (
-            "、".join(f"权利要求{claim_id}" for claim_id in visible_claim_ids)
-            or _text_or_default(_item_get(item, "title", ""), default="重组评述")
-        )
+        title = _review_claim_title(visible_claim_ids, _text_or_default(_item_get(item, "title", ""), default="重组评述"))
         unit_type = _review_unit_type_label(str(_item_get(item, "unit_type", "")).strip())
         claim_snapshots = [
             snapshot
@@ -864,17 +952,34 @@ def _render_review_unit_blocks(review_units: List[Any]) -> str:
         claim_text_html = _claim_snapshot_html(claim_snapshots)
         review_before_text = str(_item_get(item, "review_before_text", "")).strip()
         review_text = str(_item_get(item, "review_text", "")).strip()
-        review_diff_html, _ = _change_feature_diff_html(
-            review_before_text,
+        review_body_html = _html_text(
             review_text,
-            "当前未提取到可复用的审查评述。",
+            default="当前未提取到可复用的审查评述。",
+        )
+        review_summary_block_html = _review_summary_html(
+            unit_type=str(_item_get(item, "unit_type", "")).strip(),
+            display_claim_ids=visible_claim_ids,
+            review_before_text=review_before_text,
+            source_summary=_to_dict(_item_get(item, "source_summary", {}) or {}),
+            amendment_map=amendment_map,
         )
         blocks.extend(
             [
                 '<div class="oar-opinion-block">',
                 f'<div class="oar-opinion-title">{_html_text(f"{title}｜{unit_type}", default="")}</div>',
                 claim_text_html,
-                _argument_paragraph_html_with_body("重组评述：", review_diff_html),
+                _argument_paragraph_html_with_body(
+                    "正式评述：",
+                    review_body_html,
+                    paragraph_class="oar-opinion-paragraph-formal",
+                    body_class="oar-opinion-body-formal",
+                ),
+                _argument_paragraph_html_with_body(
+                    "修改摘要：",
+                    review_summary_block_html,
+                    paragraph_class="oar-opinion-paragraph-summary",
+                    body_class="oar-opinion-body-summary",
+                ),
                 "</div>",
             ]
         )
@@ -1069,10 +1174,21 @@ def _argument_paragraph_html(label: str, value: Any) -> str:
     return _argument_paragraph_html_with_body(label, _html_text(value, default="-"))
 
 
-def _argument_paragraph_html_with_body(label: str, body_html: str) -> str:
+def _argument_paragraph_html_with_body(
+    label: str,
+    body_html: str,
+    paragraph_class: str = "",
+    body_class: str = "",
+) -> str:
+    paragraph_classes = " ".join(
+        part for part in ["oar-opinion-paragraph", str(paragraph_class).strip()] if part
+    )
+    body_classes = " ".join(
+        part for part in ["oar-opinion-body", str(body_class).strip()] if part
+    )
     return (
-        '<div class="oar-opinion-paragraph">'
+        f'<div class="{paragraph_classes}">'
         f'<div class="oar-opinion-label">{_escape_text(label)}</div>'
-        f'<div class="oar-opinion-body">{body_html}</div>'
+        f'<div class="{body_classes}">{body_html}</div>'
         "</div>"
     )

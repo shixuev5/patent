@@ -33,6 +33,13 @@ def _sample_report() -> dict:
             "has_claim_amendment": True,
             "added_matter_risk": False,
             "added_matter_risk_summary": "",
+            "substantive_amendments": [
+                {
+                    "amendment_id": "A1",
+                    "target_claim_ids": ["1"],
+                    "feature_text": "星间激光通信模块用于星间组网 SUMMARY_FEATURE_END",
+                }
+            ],
             "substantive_change_groups": [
                 {
                     "claim_id": "1",
@@ -87,6 +94,10 @@ def _sample_report() -> dict:
                     "display_claim_ids": ["1"],
                     "anchor_claim_id": "1",
                     "title": "权利要求1",
+                    "source_summary": {
+                        "merged_source_claim_ids": ["3"],
+                        "amendment_ids": ["A1"],
+                    },
                     "review_before_text": "关于权利要求1，旧评述基线 REVIEW_BEFORE_ONLY",
                     "claim_snapshots": [
                         {
@@ -104,6 +115,7 @@ def _sample_report() -> dict:
                     "display_claim_ids": ["4", "5"],
                     "anchor_claim_id": "4",
                     "title": "权利要求4、权利要求5",
+                    "source_summary": {},
                     "review_before_text": "",
                     "claim_snapshots": [
                         {
@@ -262,18 +274,23 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
     assert "独权重组" in content
     assert "补充评述" in content
     assert "来源OA段落：" not in content
-    assert "权利要求文本：" in content
-    assert "重组评述：" in content
+    assert "权利要求：" in content
+    assert "正式评述：" in content
+    assert "修改摘要：" in content
     assert 'oar-change-del">CLAIM_BEFORE_ONLY' in content
     assert 'oar-change-add">CLAIM_AFTER_ONLY' in content
-    assert 'oar-change-del">REVIEW_BEFORE_ONLY' in content
-    assert 'oar-change-add">CLAIM_REVIEW_1_END' in content
     assert 'oar-change-add">根据权利要求1所述的一种装置' in content
+    assert "REVIEW_BEFORE_ONLY" not in content
+    assert "并入来源：吸收权利要求3的旧权限定。" in content
+    assert "新增限定：星间激光通信模块用于星间组网 SUMMARY_FEATURE_END。" in content
+    assert "评述处理：沿用上一轮审查意见骨架后完成补强。" in content
+    assert "评述处理：无可复用原评述，本轮补成正式评述。" in content
     assert "权利要求4" in content
     assert "5（从权）" in content
     assert 'class="oar-opinion-block"' in content
     assert 'class="oar-claim-snapshot-list"' in content
     assert 'class="oar-claim-snapshot-item"' in content
+    assert 'class="oar-review-summary-list"' in content
     assert 'class="oar-claim-snapshot-head">权利要求1</div>' not in content
     assert 'class="oar-claim-snapshot-head">权利要求4</div>' in content
     assert 'class="oar-claim-snapshot-head">权利要求5</div>' in content
@@ -343,6 +360,7 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert "CLAIM_BEFORE_ONLY" in html_doc
     assert "CLAIM_AFTER_ONLY" in html_doc
     assert "CLAIM_REVIEW_1_END" in html_doc
+    assert "修改摘要：" in html_doc
     assert "CHANGE_FINAL_END" in html_doc
     assert "<blockquote>" not in html_doc
 
@@ -405,6 +423,7 @@ def test_build_final_report_markdown_preserves_upstream_unique_claim_cards() -> 
     assert "权利要求2、权利要求3、权利要求4、权利要求5、权利要求6、权利要求7、权利要求9｜从权组重组" in content
     assert "权8文本。" in content
     assert "权9文本。" in content
+    assert "修改摘要：" in content
 
 
 def test_build_final_report_markdown_shows_non_ai_change_items_as_not_applicable() -> None:
@@ -585,3 +604,35 @@ def test_build_final_report_markdown_keeps_claim_cards_in_effective_claim_order(
     pos7 = content.index("权利要求7｜从权组重组")
     pos8 = content.index("权利要求8｜独权重组")
     assert pos1 < pos2 < pos7 < pos8
+
+
+def test_build_final_report_markdown_review_summary_falls_back_without_amendment_data() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {"substantive_amendments": []},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "U1",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["2", "3"],
+                    "title": "权利要求2、权利要求3",
+                    "source_summary": {},
+                    "claim_snapshots": [
+                        {"claim_id": "2", "claim_before_text": "旧权2。", "claim_text": "新权2。"},
+                        {"claim_id": "3", "claim_before_text": "旧权3。", "claim_text": "新权3。"},
+                    ],
+                    "review_before_text": "",
+                    "review_text": "从权组正式评述。",
+                }
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "重组范围：围绕权利要求2、3重组剩余从权评述。" in content
+    assert "评述处理：缺少可复用原评述，本轮按现有素材重组正式评述。" in content
+    assert "新增限定：" not in content
