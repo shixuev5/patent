@@ -16,7 +16,8 @@ from agents.ai_search.src.orchestration.action_runtime import (
     current_pending_action,
     resolve_pending_action,
 )
-from agents.ai_search.src.runtime import format_subagent_label
+from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation, enter_human_decision
+from agents.ai_search.src.runtime import extract_latest_ai_message, format_subagent_label
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
     PHASE_AWAITING_HUMAN_DECISION,
@@ -46,11 +47,14 @@ from .models import (
     AiSearchSnapshotResponse,
 )
 
-
 class AiSearchAgentRunService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
         self.storage = facade.storage
+        self.sessions = facade.sessions
+        self.snapshots = facade.snapshots
+        self.artifacts = facade.artifacts
+        self.analysis_seeds = facade.analysis_seeds
 
     def _resolve_main_checkpoint_ns(self, thread_id: str) -> str:
         checkpoints = self.storage.list_ai_search_checkpoints(thread_id, limit=50)
@@ -152,6 +156,92 @@ class AiSearchAgentRunService:
             return None
         return pending
 
+    def _resume_action(self, task: Any) -> Optional[Dict[str, Any]]:
+        phase = self._current_phase_value(task.id)
+        pending = current_pending_action(self.storage, task_id=task.id)
+        if phase not in ACTIVE_EXECUTION_PHASES or not isinstance(pending, dict):
+            return None
+        if str(pending.get("action_type") or "").strip() != "resume":
+            return None
+        payload = build_pending_action_view(pending, camel_case=True) or {}
+        current_todo = self.snapshots._current_todo(task)
+        if not isinstance(current_todo, dict):
+            return None
+        if str(current_todo.get("status") or "").strip() != "failed":
+            return None
+        if str(payload.get("todoId") or "").strip() and str(payload.get("todoId") or "").strip() != str(current_todo.get("todo_id") or "").strip():
+            return None
+        payload.update(
+            {
+                "available": True,
+                "currentTask": str(current_todo.get("todo_id") or "").strip(),
+                "taskTitle": str(current_todo.get("title") or "").strip(),
+                "resumeFrom": str(current_todo.get("resume_from") or payload.get("resume_from") or "").strip(),
+                "attemptCount": int(current_todo.get("attempt_count") or payload.get("attempt_count") or 0),
+                "lastError": str(current_todo.get("last_error") or payload.get("last_error") or "").strip(),
+            }
+        )
+        return payload
+
+    def _require_resume_action(self, task: Any) -> Dict[str, Any]:
+        resume_action = self._resume_action(task)
+        if resume_action is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "当前没有可恢复的失败执行步骤。"},
+            )
+        return resume_action
+
+    def _require_human_decision_action(self, task: Any) -> Dict[str, Any]:
+        pending_action = self.snapshots._pending_action(task, "human_decision")
+        if pending_action is None:
+            raise HTTPException(status_code=409, detail="当前不在人工决策状态。")
+        return pending_action
+
+    def _build_resume_prompt(self, resume_action: Dict[str, Any]) -> str:
+        payload = {
+            "current_task": resume_action.get("currentTask"),
+            "task_title": resume_action.get("taskTitle"),
+            "resume_from": resume_action.get("resumeFrom"),
+            "attempt_count": resume_action.get("attemptCount"),
+            "last_error": resume_action.get("lastError"),
+        }
+        return (
+            "继续当前失败的 AI 检索执行。"
+            "这不是新的用户需求，不要回到需求收集或计划确认。"
+            "先读取当前 todo、execution state、documents 与 gap context，"
+            "仅围绕当前失败步骤恢复并推进到下一个合法步骤或阶段。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _build_decision_continue_prompt(self, task_id: str, decision_action: Dict[str, Any]) -> str:
+        context = AiSearchAgentContext(self.storage, task_id)
+        payload = {
+            "decision_reason": decision_action.get("reason"),
+            "decision_summary": decision_action.get("summary"),
+            "round_count": decision_action.get("roundCount"),
+            "no_progress_round_count": decision_action.get("noProgressRoundCount"),
+            "selected_count": decision_action.get("selectedCount"),
+            "gap_context": context.latest_gap_context(),
+        }
+        return (
+            "继续当前 AI 检索，但这不是新的用户需求。"
+            "当前会话已进入人工决策态，请基于现有文献池、gap context 和决策摘要重新起草计划，"
+            "然后请求用户确认，不要直接恢复旧执行步骤。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _decision_termination_reason(self, task: Any) -> str:
+        decision = self._require_human_decision_action(task)
+        reason = str(decision.get("reason") or "").strip()
+        summary = str(decision.get("summary") or "").strip()
+        parts = ["人工决策后按当前结果完成"]
+        if reason:
+            parts.append(f"原因：{reason}")
+        if summary:
+            parts.append(summary)
+        return "；".join(parts)
+
     def _require_pending_action(
         self,
         task_id: str,
@@ -182,10 +272,10 @@ class AiSearchAgentRunService:
     def _init_stream_state(self, snapshot: AiSearchSnapshotResponse, previous_assistant: str) -> Dict[str, Any]:
         known_message_ids = {
             str(item.get("message_id") or "").strip()
-            for item in self.facade._snapshot_messages(snapshot)
+            for item in self.snapshots._snapshot_messages(snapshot)
             if str(item.get("message_id") or "").strip()
         }
-        phase = self.facade._snapshot_phase(snapshot)
+        phase = self.snapshots._snapshot_phase(snapshot)
         emitted_phases = {phase} if phase else set()
         return {
             "assistant_buffer": "",
@@ -361,14 +451,14 @@ class AiSearchAgentRunService:
         stream_state: Dict[str, Any],
     ) -> AsyncIterator[str]:
         session_id = current.session.sessionId
-        phase = self.facade._snapshot_phase(current)
+        phase = self.snapshots._snapshot_phase(current)
 
         if phase and phase not in stream_state["emitted_phases"]:
             stream_state["emitted_phases"].add(phase)
         if current.run != previous.run or current.session != previous.session or current.plan != previous.plan or current.artifacts != previous.artifacts:
             yield self._format_event("run.updated", session_id, phase, self._run_updated_payload(current))
 
-        for message in self.facade._snapshot_messages(current):
+        for message in self.snapshots._snapshot_messages(current):
             message_id = str(message.get("message_id") or "").strip()
             if message_id and message_id in stream_state["known_message_ids"]:
                 continue
@@ -444,7 +534,7 @@ class AiSearchAgentRunService:
         config: Optional[Dict[str, Any]] = None,
         forward_model_text: bool = True,
     ) -> AsyncIterator[str]:
-        initial_phase = self.facade._snapshot_phase(initial_snapshot)
+        initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
         yield self._format_event("run.started", session_id, initial_phase, {})
 
         iterator = agent.astream(
@@ -463,7 +553,7 @@ class AiSearchAgentRunService:
                 if not event_type:
                     continue
                 if event_type == "snapshot.changed":
-                    snapshot = self.facade.get_snapshot(session_id, owner_id)
+                    snapshot = self.snapshots.get_snapshot(session_id, owner_id)
                     async for event in self._emit_snapshot_diff_events(
                         stream_state["last_snapshot"],
                         snapshot,
@@ -473,7 +563,7 @@ class AiSearchAgentRunService:
                     stream_state["last_snapshot"] = snapshot
                     continue
 
-                current_phase = self._current_phase_value(task_id, self.facade._snapshot_phase(stream_state["last_snapshot"]))
+                current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
                 if event_type in {"subagent.started", "subagent.completed"}:
                     yield self._format_event(
                         event_type,
@@ -482,7 +572,7 @@ class AiSearchAgentRunService:
                         self._normalize_subagent_payload(event_type, event_payload),
                     )
 
-                snapshot = self.facade.get_snapshot(session_id, owner_id)
+                snapshot = self.snapshots.get_snapshot(session_id, owner_id)
                 async for event in self._emit_snapshot_diff_events(
                     stream_state["last_snapshot"],
                     snapshot,
@@ -498,7 +588,7 @@ class AiSearchAgentRunService:
             delta = self._extract_message_delta(raw_payload)
             if not delta:
                 continue
-            current_phase = self._current_phase_value(task_id, self.facade._snapshot_phase(stream_state["last_snapshot"]))
+            current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
             started_event = self._assistant_started_event(session_id, current_phase, stream_state)
             if started_event:
                 yield started_event
@@ -524,13 +614,13 @@ class AiSearchAgentRunService:
             return
         content = str(stream_state.get("assistant_buffer") or "")
         if allow_model_fallback and not content.strip() and stream_state.get("final_values"):
-            fallback = self.facade._extract_latest_ai_message(stream_state["final_values"])
+            fallback = extract_latest_ai_message(stream_state["final_values"])
             if fallback and fallback != stream_state.get("previous_assistant"):
                 content = fallback
         if not content.strip():
             return
 
-        phase = self._current_phase_value(task_id, self.facade._snapshot_phase(stream_state["last_snapshot"]))
+        phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
         message_id = str(stream_state.get("assistant_message_id") or uuid.uuid4().hex).strip()
         self.facade._append_message(
             task_id,
@@ -560,8 +650,8 @@ class AiSearchAgentRunService:
         for_resume: bool = False,
         post_run: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     ) -> AsyncIterator[str]:
-        previous_assistant = self.facade._latest_assistant_chat(task.id)
-        initial_snapshot = self.facade.get_snapshot(task.id, owner_id)
+        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
+        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
 
         try:
@@ -586,7 +676,7 @@ class AiSearchAgentRunService:
                 stream_state["final_values"] = state.values if state is not None else {}
                 stream_state["interrupted"] = bool(getattr(state, "interrupts", None)) if state is not None else False
             else:
-                initial_phase = self.facade._snapshot_phase(initial_snapshot)
+                initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
                 yield self._format_event("run.started", task.id, initial_phase, {})
                 result = await asyncio.to_thread(
                     self.facade._run_main_agent,
@@ -602,8 +692,8 @@ class AiSearchAgentRunService:
             if not isinstance(completion_payload, dict):
                 completion_payload = {}
 
-            final_snapshot = self.facade.get_snapshot(task.id, owner_id)
-            self.facade._validate_drafting_outcome(task.id, final_snapshot)
+            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            self.snapshots._validate_drafting_outcome(task.id, final_snapshot)
             async for event in self._emit_snapshot_diff_events(
                 stream_state["last_snapshot"],
                 final_snapshot,
@@ -622,14 +712,14 @@ class AiSearchAgentRunService:
             yield self._format_event(
                 "run.completed",
                 task.id,
-                self._current_phase_value(task.id, self.facade._snapshot_phase(final_snapshot)),
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
                 {"interrupted": stream_state["interrupted"], **completion_payload},
             )
         except Exception as exc:
             yield self._format_event(
                 "run.error",
                 task.id,
-                self._current_phase_value(task.id, self.facade._snapshot_phase(initial_snapshot)),
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
             )
 
@@ -643,8 +733,8 @@ class AiSearchAgentRunService:
         force_complete: bool = False,
         termination_reason: str = "",
     ) -> AsyncIterator[str]:
-        previous_assistant = self.facade._latest_assistant_chat(task.id)
-        initial_snapshot = self.facade.get_snapshot(task.id, owner_id)
+        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
+        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
         agent = self.facade._build_feature_comparer_agent(self.storage, task.id)
         prompt = {
@@ -670,7 +760,7 @@ class AiSearchAgentRunService:
                 ):
                     yield event
             else:
-                initial_phase = self.facade._snapshot_phase(initial_snapshot)
+                initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
                 yield self._format_event("run.started", task.id, initial_phase, {})
                 current_phase = self._current_phase_value(task.id, initial_phase)
                 yield self._format_event(
@@ -688,11 +778,11 @@ class AiSearchAgentRunService:
                 )
 
             refreshed_task = self.storage.get_task(task.id)
-            latest_feature = self.facade._current_feature_comparison(refreshed_task, plan_version, fallback_latest=True) or {}
+            latest_feature = self.artifacts._current_feature_comparison(refreshed_task, plan_version, fallback_latest=True) or {}
             feature_comparison_id = str(latest_feature.get("feature_comparison_id") or latest_feature.get("result_id") or "").strip()
             context = AiSearchAgentContext(self.storage, task.id)
             progress = context.evaluate_gap_progress_payload(plan_version)
-            round_evaluation = context.commit_round_evaluation(plan_version)
+            round_evaluation = commit_round_evaluation(context, plan_version)
             final_phase = PHASE_FEATURE_COMPARISON
             if force_complete:
                 final_phase = PHASE_COMPLETED
@@ -703,7 +793,8 @@ class AiSearchAgentRunService:
             selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
             if final_phase == PHASE_AWAITING_HUMAN_DECISION:
                 summary = str(round_evaluation.get("decision_summary") or "").strip() or "自动检索已停止，需要人工决策。"
-                context.enter_human_decision(
+                enter_human_decision(
+                    context,
                     reason=str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(),
                     summary=summary,
                 )
@@ -727,9 +818,9 @@ class AiSearchAgentRunService:
                     selected_document_count=selected_count,
                 )
             if final_phase == PHASE_COMPLETED:
-                self.facade._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+                self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
 
-            final_snapshot = self.facade.get_snapshot(task.id, owner_id)
+            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
                 stream_state["last_snapshot"],
                 final_snapshot,
@@ -744,7 +835,7 @@ class AiSearchAgentRunService:
             yield self._format_event(
                 "run.completed",
                 task.id,
-                self._current_phase_value(task.id, self.facade._snapshot_phase(final_snapshot)),
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
                 {
                     "interrupted": False,
                     "featureComparisonId": feature_comparison_id or None,
@@ -756,12 +847,12 @@ class AiSearchAgentRunService:
             yield self._format_event(
                 "run.error",
                 task.id,
-                self._current_phase_value(task.id, self.facade._snapshot_phase(initial_snapshot)),
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
             )
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
         if phase in ACTIVE_EXECUTION_PHASES:
@@ -770,14 +861,14 @@ class AiSearchAgentRunService:
                 detail={"code": SEARCH_IN_PROGRESS_CODE, "message": "检索执行阶段不支持发送普通消息；如需继续失败步骤，请调用 resume 接口。"},
             )
         if phase == PHASE_AWAITING_HUMAN_DECISION:
-            self.facade._raise_invalid_phase(phase, "当前处于人工决策状态，请使用继续检索或按当前结果完成。")
+            self.sessions._raise_invalid_phase(phase, "当前处于人工决策状态，请使用继续检索或按当前结果完成。")
         if phase == PHASE_AWAITING_USER_ANSWER and self._pending_action(task.id, expected_type="question"):
             raise HTTPException(
                 status_code=409,
                 detail={"code": PENDING_QUESTION_EXISTS_CODE, "message": "请先回答当前追问。"},
             )
         if phase not in self.facade.DEFAULT_MESSAGE_PHASES:
-            self.facade._raise_invalid_phase(phase, "当前阶段不允许发送普通消息。")
+            self.sessions._raise_invalid_phase(phase, "当前阶段不允许发送普通消息。")
 
         if phase == PHASE_AWAITING_PLAN_CONFIRMATION and meta.get("active_plan_version"):
             active_plan_version = int(meta["active_plan_version"])
@@ -804,10 +895,10 @@ class AiSearchAgentRunService:
             yield event
 
     async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-        resume_action = self.facade._require_resume_action(task)
+        resume_action = self._require_resume_action(task)
         pending_action = self._require_pending_action(
             task.id,
             expected_type="resume",
@@ -836,12 +927,12 @@ class AiSearchAgentRunService:
             task=task,
             owner_id=owner_id,
             thread_id=thread_id,
-            payload={"messages": [{"role": "user", "content": self.facade._build_resume_prompt(resume_action)}]},
+            payload={"messages": [{"role": "user", "content": self._build_resume_prompt(resume_action)}]},
         ):
             yield event
 
     async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
         pending_action = self._require_pending_action(
@@ -853,7 +944,7 @@ class AiSearchAgentRunService:
         pending_payload = pending_action.get("payload") if isinstance(pending_action, dict) else {}
         pending_question_id = str(pending_payload.get("question_id") or "").strip()
         if phase != PHASE_AWAITING_USER_ANSWER or not pending_question_id:
-            self.facade._raise_invalid_phase(phase, "当前没有待回答的问题。")
+            self.sessions._raise_invalid_phase(phase, "当前没有待回答的问题。")
         if pending_question_id != question_id:
             raise HTTPException(
                 status_code=409,
@@ -872,7 +963,7 @@ class AiSearchAgentRunService:
             yield event
 
     async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
         if phase != PHASE_AWAITING_PLAN_CONFIRMATION:
@@ -917,7 +1008,7 @@ class AiSearchAgentRunService:
             yield event
 
     async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         if str(meta.get("source_type") or "").strip() != "analysis":
             raise HTTPException(status_code=409, detail="当前会话不是从 AI 分析创建的检索计划。")
@@ -951,7 +1042,7 @@ class AiSearchAgentRunService:
                     run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索计划失败。"}
             yield event
 
-        reconciled_phase = self.facade._reconcile_analysis_seed_phase(task.id)
+        reconciled_phase = self.analysis_seeds._reconcile_analysis_seed_phase(task.id)
         if run_error is not None and reconciled_phase in {PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_USER_ANSWER}:
             run_error = None
         if run_error is not None:
@@ -984,8 +1075,8 @@ class AiSearchAgentRunService:
             task.id,
             metadata=merge_ai_search_meta(self.storage.get_task(task.id), analysis_seed_status="completed"),
         )
-        self.facade._reconcile_analysis_seed_phase(task.id)
-        snapshot = self.facade.get_snapshot(task.id, owner_id)
+        self.analysis_seeds._reconcile_analysis_seed_phase(task.id)
+        snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         source_task_id = str(meta.get("source_task_id") or "").strip() or None
         source_pn = str(meta.get("source_pn") or "").strip() or None
         self.facade._emit_system_log(
@@ -999,10 +1090,10 @@ class AiSearchAgentRunService:
             payload={
                 "analysis_task_id": source_task_id,
                 "analysis_pn": source_pn,
-                "phase": self.facade._snapshot_phase(snapshot),
+                "phase": self.snapshots._snapshot_phase(snapshot),
             },
         )
-        if self.facade._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
+        if self.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
             pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             self.facade._emit_system_log(
                 category="task_execution",
@@ -1014,7 +1105,7 @@ class AiSearchAgentRunService:
                 message="AI 检索计划已进入计划确认阶段",
                 payload={"analysis_task_id": source_task_id, "plan_version": pending_action.get("plan_version") if isinstance(pending_action, dict) else None},
             )
-        if self.facade._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
+        if self.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
             pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             self.facade._emit_system_log(
                 category="task_execution",
@@ -1027,7 +1118,7 @@ class AiSearchAgentRunService:
                 payload={"analysis_task_id": source_task_id, "question": pending_action.get("prompt") if isinstance(pending_action, dict) else None},
             )
         if not saw_run_completed:
-            final_phase = self.facade._snapshot_phase(snapshot)
+            final_phase = self.snapshots._snapshot_phase(snapshot)
             yield self._format_event(
                 "run.completed",
                 task.id,
@@ -1039,8 +1130,8 @@ class AiSearchAgentRunService:
             )
 
     async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
-        decision_action = self.facade._require_human_decision_action(task)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        decision_action = self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
@@ -1054,7 +1145,7 @@ class AiSearchAgentRunService:
             resolution={"decision": "continue_search"},
         )
         self.facade._update_phase(task.id, PHASE_DRAFTING_PLAN)
-        prompt = self.facade._build_decision_continue_prompt(task.id, decision_action)
+        prompt = self._build_decision_continue_prompt(task.id, decision_action)
         async for event in self._stream_main_agent_execution(
             task=self.storage.get_task(task.id),
             owner_id=owner_id,
@@ -1065,8 +1156,8 @@ class AiSearchAgentRunService:
             yield event
 
     async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
-        self.facade._require_human_decision_action(task)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
@@ -1075,8 +1166,8 @@ class AiSearchAgentRunService:
         if not selected_documents:
             raise HTTPException(status_code=409, detail="当前没有已选对比文献，无法按当前结果完成。")
 
-        termination_reason = self.facade._decision_termination_reason(task)
-        feature_comparison = self.facade._current_feature_comparison(task, plan_version)
+        termination_reason = self._decision_termination_reason(task)
+        feature_comparison = self.artifacts._current_feature_comparison(task, plan_version)
         if feature_comparison is None:
             self.facade._update_phase(
                 task.id,
@@ -1094,10 +1185,10 @@ class AiSearchAgentRunService:
                 yield event
             return
 
-        previous_assistant = self.facade._latest_assistant_chat(task.id)
-        initial_snapshot = self.facade.get_snapshot(task.id, owner_id)
+        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
+        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
-        yield self._format_event("run.started", task.id, self.facade._snapshot_phase(initial_snapshot), {})
+        yield self._format_event("run.started", task.id, self.snapshots._snapshot_phase(initial_snapshot), {})
         self._resolve_pending_action(
             task.id,
             expected_type="human_decision",
@@ -1109,8 +1200,8 @@ class AiSearchAgentRunService:
             active_plan_version=plan_version,
             selected_document_count=len(selected_documents),
         )
-        self.facade._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
-        final_snapshot = self.facade.get_snapshot(task.id, owner_id)
+        self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+        final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         async for event in self._emit_snapshot_diff_events(
             stream_state["last_snapshot"],
             final_snapshot,
@@ -1120,7 +1211,7 @@ class AiSearchAgentRunService:
         yield self._format_event(
             "run.completed",
             task.id,
-            self._current_phase_value(task.id, self.facade._snapshot_phase(final_snapshot)),
+            self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
             {"interrupted": False, "completedFromTakeover": True},
         )
 
@@ -1132,7 +1223,7 @@ class AiSearchAgentRunService:
         add_document_ids: Optional[List[str]],
         remove_document_ids: Optional[List[str]],
     ) -> AiSearchSnapshotResponse:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
         if active_plan_version != int(plan_version):
@@ -1142,7 +1233,7 @@ class AiSearchAgentRunService:
             )
         phase = str(meta.get("current_phase") or "")
         if phase not in {PHASE_CLOSE_READ, PHASE_FEATURE_COMPARISON, PHASE_AWAITING_HUMAN_DECISION, PHASE_COMPLETED}:
-            self.facade._raise_invalid_phase(phase, "当前阶段不允许调整对比文件。")
+            self.sessions._raise_invalid_phase(phase, "当前阶段不允许调整对比文件。")
         add_ids = [str(item).strip() for item in (add_document_ids or []) if str(item).strip()]
         remove_ids = [str(item).strip() for item in (remove_document_ids or []) if str(item).strip()]
         for document_id in add_ids:
@@ -1184,10 +1275,10 @@ class AiSearchAgentRunService:
             selected_document_count=selected_count,
             active_batch_id=None,
         )
-        return self.facade.get_snapshot(task.id, owner_id)
+        return self.snapshots.get_snapshot(task.id, owner_id)
 
     async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
         if active_plan_version != int(plan_version):
@@ -1197,7 +1288,7 @@ class AiSearchAgentRunService:
             )
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
-            self.facade._raise_invalid_phase(PHASE_FEATURE_COMPARISON, "当前没有已选对比文件。")
+            self.sessions._raise_invalid_phase(PHASE_FEATURE_COMPARISON, "当前没有已选对比文件。")
         previous_phase = str(meta.get("current_phase") or "")
         self.facade._update_phase(
             task.id,

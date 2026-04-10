@@ -17,13 +17,8 @@ from agents.ai_search.src.orchestration.action_runtime import (
     resolve_pending_action,
 )
 from agents.ai_search.src.orchestration.execution_runtime import (
-    build_conditional_todos_for_completed_step,
     build_gap_progress,
-    build_step_directive,
-    commit_round_evaluation,
     complete_session,
-    enter_human_decision,
-    evaluate_exhaustion_payload,
 )
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
@@ -590,12 +585,6 @@ class AiSearchAgentContext:
                 return item
         return None
 
-    def conditional_todos_for_completed_step(self, plan_version: int, todo_id: str) -> List[Dict[str, Any]]:
-        return build_conditional_todos_for_completed_step(self, plan_version, todo_id)
-
-    def build_execution_step_directive(self, plan_version: int) -> Dict[str, Any]:
-        return build_step_directive(self, plan_version)
-
     def execution_plan_json(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
         if version <= 0:
@@ -651,15 +640,6 @@ class AiSearchAgentContext:
             state["human_decision_summary"] = None
         self.storage.update_ai_search_run(self.task_id, str(run.get("run_id") or ""), human_decision_state=state)
         self.notify_snapshot_changed(runtime, reason="execution_control")
-
-    def evaluate_exhaustion_payload(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
-        return evaluate_exhaustion_payload(self, plan_version)
-
-    def commit_round_evaluation(self, plan_version: Optional[int] = None, *, runtime: Any | None = None) -> Dict[str, Any]:
-        return commit_round_evaluation(self, plan_version, runtime=runtime)
-
-    def enter_human_decision(self, *, reason: str, summary: str, runtime: Any | None = None) -> None:
-        enter_human_decision(self, reason=reason, summary=summary, runtime=runtime)
 
     def build_gap_strategy_seed_payload(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)

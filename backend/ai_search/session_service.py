@@ -85,7 +85,7 @@ class AiSearchSessionService:
             for task in self.facade.task_manager.list_tasks(owner_id=owner_id, limit=200)
             if str(task.task_type or "") == TaskType.AI_SEARCH.value
         ]
-        return AiSearchSessionListResponse(items=[self.facade._session_summary(task) for task in tasks], total=len(tasks))
+        return AiSearchSessionListResponse(items=[self.facade.snapshots._session_summary(task) for task in tasks], total=len(tasks))
 
     def update_session(
         self,
@@ -107,15 +107,15 @@ class AiSearchSessionService:
             updates["metadata"] = merge_ai_search_meta(task, pinned=bool(pinned))
 
         if not updates:
-            return self.facade._session_summary(task)
+            return self.facade.snapshots._session_summary(task)
 
         self.storage.update_task(session_id, **updates)
         updated = self._get_owned_session_task(session_id, owner_id)
-        return self.facade._session_summary(updated)
+        return self.facade.snapshots._session_summary(updated)
 
     def delete_session(self, session_id: str, owner_id: str) -> Dict[str, bool]:
         task = self._get_owned_session_task(session_id, owner_id)
-        phase = self.facade._current_phase_value(task.id, PHASE_COLLECTING_REQUIREMENTS)
+        phase = self.facade.agent_runs._current_phase_value(task.id, PHASE_COLLECTING_REQUIREMENTS)
         if phase in ACTIVE_EXECUTION_PHASES:
             raise HTTPException(status_code=409, detail="检索执行中，请稍后再删除会话。")
 

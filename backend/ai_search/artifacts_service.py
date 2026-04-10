@@ -34,7 +34,7 @@ class AiSearchArtifactsService:
     ) -> Optional[Dict[str, Any]]:
         if plan_version <= 0:
             return None
-        run = self.facade._active_run(task)
+        run = self.facade.snapshots._active_run(task)
         current_feature_comparison_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
         if current_feature_comparison_id:
             table = self.storage.get_ai_search_feature_comparison(
@@ -55,7 +55,7 @@ class AiSearchArtifactsService:
         termination_reason: str = "",
     ) -> Dict[str, Any]:
         task = self.storage.get_task(task_id)
-        current_plan = self.facade._plan_payload(self.storage.get_ai_search_plan(task_id, plan_version))
+        current_plan = self.facade.snapshots._plan_payload(self.storage.get_ai_search_plan(task_id, plan_version))
         documents = self.storage.list_ai_search_documents(task_id, plan_version)
         feature_comparison = self._current_feature_comparison(task, plan_version, fallback_latest=True)
         context = AiSearchAgentContext(self.storage, task_id)

@@ -8,6 +8,7 @@ from typing import Any, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.orchestration.execution_runtime import build_step_directive
 from agents.ai_search.src.runtime import extract_json_object
 
 
@@ -27,7 +28,7 @@ def build_query_executor_tools(context: Any) -> List[Any]:
             if op != "commit":
                 if version <= 0:
                     return json.dumps({"plan_version": 0, "directive": {}, "documents": []}, ensure_ascii=False)
-                directive = context.build_execution_step_directive(version)
+                directive = build_step_directive(context, version)
                 if todo_id:
                     context.update_todo(
                         todo_id,

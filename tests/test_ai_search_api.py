@@ -10,6 +10,7 @@ from backend.models import CurrentUser
 from backend.routes import ai_search as ai_search_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.ai_search import agent_run_service as ai_search_agent_run_service_module
 from backend.ai_search import service as ai_search_service_module
 from backend.ai_search.models import AiSearchCreateSessionResponse
 from agents.ai_search.src.state import merge_ai_search_meta
@@ -78,7 +79,7 @@ def test_stream_message_endpoint_completes_full_flow(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
     monkeypatch.setattr(
-        ai_search_service_module,
+        ai_search_agent_run_service_module,
         "extract_latest_ai_message",
         lambda values: values["messages"][-1]["content"],
     )

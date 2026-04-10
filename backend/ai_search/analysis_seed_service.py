@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException
 
 from agents.ai_search.src.orchestration.action_runtime import current_pending_action
+from agents.ai_search.src.runtime import extract_latest_ai_message
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_AWAITING_USER_ANSWER,
@@ -201,7 +202,7 @@ class AiSearchAnalysisSeedService:
         return self._analysis_seed_response(task, source_task_id=str(analysis_task.id))
 
     def _complete_analysis_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.facade.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
@@ -216,7 +217,7 @@ class AiSearchAnalysisSeedService:
                 thread_id,
                 {"messages": [{"role": "user", "content": seed_prompt}]},
             )
-            assistant_text = self.facade._extract_latest_ai_message(result["values"])
+            assistant_text = extract_latest_ai_message(result["values"])
             active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
             if assistant_text and not bool(result.get("interrupted")):
                 self.facade._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
@@ -250,7 +251,7 @@ class AiSearchAnalysisSeedService:
             metadata=merge_ai_search_meta(self.storage.get_task(task.id), analysis_seed_status="completed"),
         )
         self._reconcile_analysis_seed_phase(task.id)
-        snapshot = self.facade.get_snapshot(task.id, owner_id)
+        snapshot = self.facade.snapshots.get_snapshot(task.id, owner_id)
         self.facade._emit_system_log(
             category="task_execution",
             event_name="ai_search_seed_created",
@@ -262,10 +263,10 @@ class AiSearchAnalysisSeedService:
             payload={
                 "analysis_task_id": source_task_id or None,
                 "analysis_pn": source_pn or None,
-                "phase": self.facade._snapshot_phase(snapshot),
+                "phase": self.facade.snapshots._snapshot_phase(snapshot),
             },
         )
-        if self.facade._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
+        if self.facade.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
             pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             self.facade._emit_system_log(
                 category="task_execution",
@@ -277,7 +278,7 @@ class AiSearchAnalysisSeedService:
                 message="AI 检索计划已进入计划确认阶段",
                 payload={"analysis_task_id": source_task_id or None, "plan_version": pending_action.get("plan_version") if isinstance(pending_action, dict) else None},
             )
-        if self.facade._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
+        if self.facade.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
             pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
             self.facade._emit_system_log(
                 category="task_execution",

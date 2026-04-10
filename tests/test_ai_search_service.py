@@ -50,6 +50,8 @@ sys.modules.setdefault("agents.common.retrieval", stub_retrieval_pkg)
 sys.modules.setdefault("agents.common.retrieval.local_evidence_retriever", stub_local_retriever)
 
 from backend.ai_search import service as ai_search_service_module
+from backend.ai_search import agent_run_service as ai_search_agent_run_service_module
+from backend.ai_search import analysis_seed_service as ai_search_analysis_seed_service_module
 from backend.ai_search.analysis_seed import (
     build_analysis_seed_user_message,
     build_analysis_sub_plans,
@@ -57,6 +59,7 @@ from backend.ai_search.analysis_seed import (
 )
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
+    PLAN_CONFIRMATION_REQUIRED_CODE,
     RESUME_NOT_AVAILABLE_CODE,
     SEARCH_IN_PROGRESS_CODE,
     STALE_PLAN_CONFIRMATION_CODE,
@@ -450,7 +453,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
     monkeypatch.setattr(
-        ai_search_service_module,
+        ai_search_agent_run_service_module,
         "extract_latest_ai_message",
         lambda values: values["messages"][-1]["content"],
     )
@@ -546,7 +549,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     events = asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
 
     assert any("run.error" in item for item in events)
-    assert any(ai_search_service_module.PLAN_CONFIRMATION_REQUIRED_CODE in item for item in events)
+    assert any(PLAN_CONFIRMATION_REQUIRED_CODE in item for item in events)
     assert not any("run.completed" in item for item in events)
 
 
@@ -788,7 +791,7 @@ def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkey
         ]
     )
 
-    config = service._main_agent_config("ai-search-task-3", for_resume=True)
+    config = service.agent_runs._main_agent_config("ai-search-task-3", for_resume=True)
 
     assert config["configurable"]["checkpoint_ns"] == ""
     assert config["configurable"]["checkpoint_id"] == "0001"
@@ -1170,7 +1173,7 @@ def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypa
         ),
     )
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: values["messages"][-1]["content"])
+    monkeypatch.setattr(ai_search_agent_run_service_module, "extract_latest_ai_message", lambda values: values["messages"][-1]["content"])
 
     events = asyncio.run(_collect_stream(service.stream_decision_continue(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -1702,7 +1705,7 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
         return {"interrupted": True, "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
+    monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -1782,7 +1785,7 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
         return {"interrupted": True, "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "还需要你补充一个核心技术要素。")
+    monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "还需要你补充一个核心技术要素。")
 
     created = service.create_session_from_analysis("guest_ai_search", analysis_task.id)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -1863,7 +1866,7 @@ def test_stream_analysis_seed_advances_seeded_session(monkeypatch, tmp_path):
         return {"interrupted": True, "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
-    monkeypatch.setattr(ai_search_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
+    monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
 
     events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")

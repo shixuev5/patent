@@ -4,6 +4,11 @@ import json
 from datetime import datetime
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.orchestration.execution_runtime import (
+    build_conditional_todos_for_completed_step,
+    build_step_directive,
+    evaluate_exhaustion_payload,
+)
 from backend.storage import Task, TaskStatus, TaskType
 from backend.storage.sqlite_storage import SQLiteTaskStorage
 
@@ -232,7 +237,7 @@ def test_build_execution_step_directive_includes_gap_context(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    directive = context.build_execution_step_directive(1)
+    directive = build_step_directive(context, 1)
 
     assert directive["gap_context"]["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
     assert directive["gap_context"]["feature_compare_result"]["coverage_gaps"][0]["gap_type"] == "combination_gap"
@@ -365,7 +370,7 @@ def test_evaluate_exhaustion_payload_triggers_human_takeover_on_no_progress_limi
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    payload = context.evaluate_exhaustion_payload(1)
+    payload = evaluate_exhaustion_payload(context, 1)
 
     assert payload["is_no_progress"] is True
     assert payload["no_progress_round_count"] == 2
@@ -589,7 +594,7 @@ def test_conditional_todo_activates_when_primary_goal_reached(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    activated = context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1")
+    activated = build_conditional_todos_for_completed_step(context, 1, "plan_1:sub_plan_1:step_1")
 
     assert [item["todo_id"] for item in activated] == ["plan_1:sub_plan_1:step_2"]
 
@@ -634,7 +639,7 @@ def test_conditional_todo_activates_when_recall_quality_too_broad(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
-    activated = context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1")
+    activated = build_conditional_todos_for_completed_step(context, 1, "plan_1:sub_plan_1:step_1")
 
     assert [item["todo_id"] for item in activated] == ["plan_1:sub_plan_1:step_2"]
 
@@ -680,7 +685,7 @@ def test_conditional_todo_stays_dormant_when_signals_do_not_match(tmp_path):
 
     context = AiSearchAgentContext(storage, "task-gap")
 
-    assert context.conditional_todos_for_completed_step(1, "plan_1:sub_plan_1:step_1") == []
+    assert build_conditional_todos_for_completed_step(context, 1, "plan_1:sub_plan_1:step_1") == []
 
 
 def test_advance_workflow_step_completed_materializes_and_starts_conditional_todo(tmp_path):

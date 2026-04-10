@@ -141,14 +141,14 @@ class AiSearchSnapshotService:
         return AiSearchAgentContext(self.storage, task.id).current_todo()
 
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
-        task = self.facade._get_owned_session_task(session_id, owner_id)
+        task = self.facade.sessions._get_owned_session_task(session_id, owner_id)
         messages = self.storage.list_ai_search_messages(task.id)
         current_plan = self._plan_payload(self._current_plan(task))
         candidate_documents, selected_documents = self._documents_for_snapshot(task)
         meta = get_ai_search_meta(task)
         active_run = self._active_run(task)
         active_plan_version = int(meta.get("active_plan_version") or (active_run.get("plan_version") if active_run else 0) or 0)
-        feature_comparison = self.facade._current_feature_comparison(task, active_plan_version)
+        feature_comparison = self.facade.artifacts._current_feature_comparison(task, active_plan_version)
         context = AiSearchAgentContext(self.storage, task.id)
         gap_context = context.latest_gap_context(active_plan_version)
         current_todo = context.current_todo()
@@ -183,6 +183,6 @@ class AiSearchSnapshotService:
                 "latestCloseReadResult": gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
                 "latestFeatureCompareResult": feature_comparison,
             },
-            artifacts={"downloadUrl": self.facade._snapshot_download_url(task)},
+            artifacts={"downloadUrl": self.facade.artifacts._snapshot_download_url(task)},
             analysisSeed=self._analysis_seed(task),
         )
