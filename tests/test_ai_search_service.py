@@ -674,7 +674,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     assert updated_plan is not None
     assert updated_plan["status"] == "superseded"
     assert snapshot.run["phase"] == PHASE_DRAFTING_PLAN
-    assert any("run.completed" in item for item in events)
+    assert any("run.error" in item for item in events)
 
 
 def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_path):
@@ -797,7 +797,7 @@ def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkey
     assert config["configurable"]["checkpoint_id"] == "0001"
 
 
-def test_stream_message_ignores_main_agent_free_text_deltas(monkeypatch, tmp_path):
+def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     _set_planner_draft(_storage, created.sessionId)
@@ -827,6 +827,11 @@ def test_stream_message_ignores_main_agent_free_text_deltas(monkeypatch, tmp_pat
             return _FakeState()
 
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+    monkeypatch.setattr(
+        ai_search_agent_run_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
     parsed = _parse_data_events(events)
@@ -835,7 +840,7 @@ def test_stream_message_ignores_main_agent_free_text_deltas(monkeypatch, tmp_pat
     assert parsed[0]["type"] == "run.started"
     assert any(item.startswith(": keepalive") for item in events)
     assert not any(event["type"] == "assistant.message.delta" for event in parsed)
-    assert not any(event["type"] == "assistant.message.completed" for event in parsed)
+    assert any(event["type"] == "assistant.message.completed" for event in parsed)
     assert events[-1].startswith("data: ")
     assert "run.completed" in events[-1]
 

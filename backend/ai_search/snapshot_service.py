@@ -88,10 +88,26 @@ class AiSearchSnapshotService:
             payload["sourceTaskId"] = source_task_id
         return payload
 
-    def _has_planner_draft(self, task: Any) -> bool:
-        meta = get_ai_search_meta(task)
-        draft = meta.get("planner_draft")
-        return isinstance(draft, dict) and bool(str(draft.get("draft_id") or "").strip())
+    def _has_visible_plan_confirmation(self, snapshot: AiSearchSnapshotResponse) -> bool:
+        for item in reversed(self._snapshot_messages(snapshot)):
+            if str(item.get("role") or "").strip() != "assistant":
+                continue
+            if str(item.get("kind") or "").strip() != "plan_confirmation":
+                continue
+            if str(item.get("content") or "").strip():
+                return True
+        return False
+
+    def _has_latest_assistant_chat(self, snapshot: AiSearchSnapshotResponse) -> bool:
+        messages = self._snapshot_messages(snapshot)
+        if not messages:
+            return False
+        latest = messages[-1]
+        return (
+            str(latest.get("role") or "").strip() == "assistant"
+            and str(latest.get("kind") or "").strip() == "chat"
+            and bool(str(latest.get("content") or "").strip())
+        )
 
     def _validate_drafting_outcome(self, task_id: str, snapshot: AiSearchSnapshotResponse) -> None:
         if self._snapshot_phase(snapshot) != "drafting_plan":
@@ -99,10 +115,11 @@ class AiSearchSnapshotService:
         pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
         if isinstance(pending_action, dict):
             return
-        task = self.storage.get_task(task_id)
-        if self._has_planner_draft(task):
+        if self._has_visible_plan_confirmation(snapshot):
             return
-        raise RuntimeError("drafting_plan 结束时未产生 planner 草案、待追问或待确认状态。")
+        if self._has_latest_assistant_chat(snapshot):
+            return
+        raise RuntimeError("drafting_plan 结束时未产生待追问或待确认状态。")
 
     def _plan_payload(self, plan: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not isinstance(plan, dict):

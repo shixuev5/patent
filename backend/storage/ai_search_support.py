@@ -255,6 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_search_runs_task_updated ON ai_search_runs(tas
 CREATE INDEX IF NOT EXISTS idx_ai_search_runs_task_plan ON ai_search_runs(task_id, plan_version, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_retrieval_todos_run_status ON ai_search_retrieval_todos(run_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_execution_summaries_run_created ON ai_search_execution_summaries(run_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_search_documents_run_document ON ai_search_documents(run_id, document_id);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_run_stage ON ai_search_documents(run_id, stage, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_task_plan_stage ON ai_search_documents(task_id, plan_version, stage, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_run_pn ON ai_search_documents(run_id, pn);

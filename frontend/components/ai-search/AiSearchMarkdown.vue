@@ -15,7 +15,7 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 
 <style scoped>
 .ai-search-markdown {
-  @apply break-words text-sm leading-6 text-inherit;
+  @apply break-words text-[13px] leading-5 text-inherit;
 }
 
 .ai-search-markdown :deep(:first-child) {
@@ -27,24 +27,24 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 }
 
 .ai-search-markdown :deep(p) {
-  @apply my-2;
+  @apply my-1.5;
 }
 
 .ai-search-markdown :deep(ul),
 .ai-search-markdown :deep(ol) {
-  @apply my-2 pl-5;
+  @apply my-1.5 pl-4;
 }
 
 .ai-search-markdown :deep(li) {
-  @apply my-1;
+  @apply my-0.5;
 }
 
 .ai-search-markdown :deep(blockquote) {
-  @apply my-3 border-l-2 border-slate-300 pl-3 text-slate-600;
+  @apply my-2 border-l-2 border-slate-300 pl-2.5 text-slate-600;
 }
 
 .ai-search-markdown :deep(pre) {
-  @apply my-3 overflow-x-auto rounded-2xl bg-slate-900 px-3 py-3 text-[13px] leading-6 text-slate-100;
+  @apply my-2 overflow-x-auto rounded-2xl bg-slate-900 px-3 py-2.5 text-[12px] leading-5 text-slate-100;
 }
 
 .ai-search-markdown :deep(code) {
@@ -56,7 +56,7 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 }
 
 .ai-search-markdown :deep(table) {
-  @apply my-3 min-w-full divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200 text-left text-xs;
+  @apply my-2 min-w-full divide-y divide-slate-200 overflow-hidden rounded-2xl border border-slate-200 text-left text-xs;
 }
 
 .ai-search-markdown :deep(thead) {
@@ -64,11 +64,11 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 }
 
 .ai-search-markdown :deep(th) {
-  @apply whitespace-nowrap px-3 py-2 font-semibold;
+  @apply whitespace-nowrap px-3 py-1.5 font-semibold;
 }
 
 .ai-search-markdown :deep(td) {
-  @apply whitespace-pre-wrap px-3 py-2 align-top text-slate-700;
+  @apply whitespace-pre-wrap px-3 py-1.5 align-top text-slate-700;
 }
 
 .ai-search-markdown :deep(a) {
@@ -78,7 +78,7 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 .ai-search-markdown :deep(h1),
 .ai-search-markdown :deep(h2),
 .ai-search-markdown :deep(h3) {
-  @apply mt-4 text-slate-900;
+  @apply mt-3 text-slate-900;
 }
 
 .ai-search-markdown :deep(h1) {

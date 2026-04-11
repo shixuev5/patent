@@ -171,12 +171,12 @@
               描述检索目标、技术方案、核心效果或约束条件。
             </div>
 
-            <div v-else class="space-y-4">
+            <div v-else class="space-y-3">
               <template v-for="entry in conversationEntries" :key="entry.id">
                 <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
                   <span class="h-px flex-1 bg-slate-200/80" />
                   <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
-                    ------ {{ phaseLabel(entry.phase) }}<span v-if="phaseDurationText(entry)"> · {{ phaseDurationText(entry) }}</span> ------
+                    {{ phaseLabel(entry.phase) }}<span v-if="phaseDurationText(entry)"> · {{ phaseDurationText(entry) }}</span>
                   </p>
                   <span class="h-px flex-1 bg-slate-200/80" />
                 </article>
@@ -185,78 +185,94 @@
 
                 <article
                   v-else
-                  class="flex"
+                  class="group/message flex"
                   :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
                 >
-                  <div
-                    class="max-w-[92%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm"
-                    :class="entry.role === 'user'
-                      ? 'bg-cyan-700 text-white shadow-cyan-100'
-                      : 'border border-slate-200 bg-slate-50 text-slate-700'"
-                  >
-                    <template v-if="entry.entryType === 'pending-assistant'">
-                      <div v-if="entry.content" class="text-slate-700">
-                        <AiSearchStructuredPlan
-                          v-if="structuredPlanExecutionSpec"
-                          :execution-spec="structuredPlanExecutionSpec"
-                        />
-                        <AiSearchExpandableContent
-                          v-else
-                          :content="entry.content"
-                          mode="markdown"
-                          fade-rgb="248,250,252"
-                        />
-                      </div>
-                      <div v-else class="space-y-3">
-                        <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
-                          <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
-                          <span>思考中</span>
+                  <div class="max-w-[90%]">
+                    <div
+                      class="rounded-2xl px-3.5 py-2.5 text-[13px] leading-5 shadow-sm"
+                      :class="entry.role === 'user'
+                        ? 'bg-cyan-700 text-white shadow-cyan-100'
+                        : 'border border-slate-200 bg-slate-50 text-slate-700'"
+                    >
+                      <template v-if="entry.entryType === 'pending-assistant'">
+                        <div v-if="entry.content" class="text-slate-700">
+                          <AiSearchStructuredPlan
+                            v-if="structuredPlanExecutionSpec"
+                            :execution-spec="structuredPlanExecutionSpec"
+                          />
+                          <AiSearchExpandableContent
+                            v-else
+                            :content="entry.content"
+                            mode="markdown"
+                            fade-rgb="248,250,252"
+                          />
                         </div>
-                        <div class="space-y-2">
-                          <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
-                          <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                        <div v-else class="space-y-2.5">
+                          <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
+                            <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                            <span>思考中</span>
+                          </div>
+                          <div class="space-y-2">
+                            <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
+                            <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                          </div>
                         </div>
-                      </div>
-                    </template>
+                      </template>
 
-                    <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
-                      <div v-if="isLatestPlanMessage(entry)" class="space-y-4">
-                        <div class="flex items-center justify-between gap-3">
-                          <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
-                          <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                            v{{ planVersionOf(entry) || activePlanVersion || '?' }}
-                          </span>
-                        </div>
-                        <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                        <AiSearchPlanConfirmationCard
-                          v-if="isPendingPlanEntry(entry)"
-                          :confirm-disabled="streaming || !confirmationPlanVersion"
-                          :label="planConfirmationLabel"
-                          @confirm="confirmPlan"
-                        />
-                      </div>
-                      <details v-else class="group">
-                        <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                          <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
-                          <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
-                          <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
-                        </summary>
-                        <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
+                      <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
+                        <div v-if="isLatestPlanMessage(entry)" class="space-y-3">
+                          <div class="flex items-center justify-between gap-3">
+                            <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
+                            <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                              v{{ planVersionOf(entry) || activePlanVersion || '?' }}
+                            </span>
+                          </div>
                           <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                          <AiSearchPlanConfirmationCard
+                            v-if="isPendingPlanEntry(entry)"
+                            :confirm-disabled="streaming || !confirmationPlanVersion"
+                            :label="planConfirmationLabel"
+                            @confirm="confirmPlan"
+                          />
                         </div>
-                      </details>
-                    </template>
+                        <details v-else class="group">
+                          <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                            <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
+                            <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
+                            <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
+                          </summary>
+                          <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
+                            <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                          </div>
+                        </details>
+                      </template>
 
-                    <template v-else-if="entry.role === 'assistant'">
-                      <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                    </template>
+                      <template v-else-if="entry.role === 'assistant'">
+                        <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                      </template>
 
-                    <AiSearchExpandableContent
-                      v-else
-                      :content="entry.content"
-                      mode="plaintext"
-                      fade-rgb="14,116,144"
-                    />
+                      <AiSearchExpandableContent
+                        v-else
+                        :content="entry.content"
+                        mode="plaintext"
+                        fade-rgb="14,116,144"
+                      />
+                    </div>
+                    <div
+                      v-if="canCopyEntry(entry)"
+                      class="flex justify-end px-0.5 pt-1 opacity-100 transition md:pointer-events-none md:opacity-0 md:group-hover/message:pointer-events-auto md:group-hover/message:opacity-100 md:group-focus-within/message:pointer-events-auto md:group-focus-within/message:opacity-100"
+                    >
+                      <button
+                        type="button"
+                        class="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                        aria-label="复制消息内容"
+                        title="复制"
+                        @click="copyEntryContent(entry)"
+                      >
+                        <ClipboardDocumentIcon class="h-4 w-4" />
+                      </button>
+                    </div>
                   </div>
                 </article>
               </template>
@@ -266,7 +282,7 @@
           <button
             v-if="showScrollToBottom"
             type="button"
-            class="absolute bottom-4 right-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-slate-600 shadow-lg shadow-slate-300/40 transition hover:bg-slate-50"
+            class="absolute bottom-4 right-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-cyan-200/80 bg-cyan-50/95 text-cyan-700 shadow-lg shadow-cyan-200/40 transition hover:bg-cyan-100"
             aria-label="滚动到最新消息"
             title="滚动到最新消息"
             @click="scrollToLatest"
@@ -393,7 +409,7 @@
               </span>
               <button
                 type="button"
-                class="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                class="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 aria-label="发送消息"
                 :disabled="!canSubmitMessage"
                 @click="submitMessage"
@@ -461,7 +477,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownIcon, ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { ArrowDownIcon, ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ClipboardDocumentIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -966,6 +982,24 @@ const continueSearchFromDecision = async () => {
 const completeCurrentResultsFromDecision = async () => {
   if (!humanDecisionAction.value?.available) return
   await aiSearchStore.completeCurrentResultsFromDecision()
+}
+
+const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
+
+const canCopyEntry = (entry: Record<string, any>): boolean => {
+  if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
+  return !!entryCopyText(entry)
+}
+
+const copyEntryContent = async (entry: Record<string, any>) => {
+  const text = entryCopyText(entry)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showMessage('success', '已复制消息内容')
+  } catch (_error) {
+    showMessage('error', '复制失败，请稍后重试。')
+  }
 }
 
 const bindMessageListScroll = (element: HTMLElement | null, previous: HTMLElement | null = null) => {

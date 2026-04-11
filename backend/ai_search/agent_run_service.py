@@ -275,6 +275,94 @@ class AiSearchAgentRunService:
             raise HTTPException(status_code=409, detail={"code": error_code, "message": message})
         return pending
 
+    def _has_plan_confirmation_message(self, task_id: str, plan_version: int) -> bool:
+        target_plan_version = int(plan_version or 0)
+        for item in reversed(self.storage.list_ai_search_messages(task_id)):
+            if str(item.get("role") or "").strip() != "assistant":
+                continue
+            if str(item.get("kind") or "").strip() != "plan_confirmation":
+                continue
+            if target_plan_version > 0 and int(item.get("plan_version") or 0) != target_plan_version:
+                continue
+            if str(item.get("content") or "").strip():
+                return True
+        return False
+
+    def _reconcile_drafting_outcome(self, task_id: str) -> None:
+        if self._current_phase_value(task_id) != PHASE_DRAFTING_PLAN:
+            return
+
+        context = AiSearchAgentContext(self.storage, task_id)
+        pending = context.current_pending_action()
+        if isinstance(pending, dict):
+            action_type = str(pending.get("action_type") or "").strip()
+            active_plan_version = int(pending.get("plan_version") or context.active_plan_version() or 0) or None
+            run_id = str(pending.get("run_id") or "").strip() or None
+            if action_type == "question":
+                context.update_task_phase(
+                    PHASE_AWAITING_USER_ANSWER,
+                    active_plan_version=active_plan_version,
+                    run_id=run_id,
+                )
+                return
+            if action_type == "plan_confirmation":
+                context.update_task_phase(
+                    PHASE_AWAITING_PLAN_CONFIRMATION,
+                    active_plan_version=active_plan_version,
+                    run_id=run_id,
+                )
+                return
+
+        active_plan_version = context.active_plan_version()
+        if active_plan_version <= 0:
+            return
+        plan = self.storage.get_ai_search_plan(task_id, active_plan_version)
+        if not isinstance(plan, dict):
+            return
+        plan_status = str(plan.get("status") or "").strip()
+        if plan_status in {"confirmed", "superseded"}:
+            return
+
+        plan_summary = str(plan.get("review_markdown") or "").strip()
+        if not plan_summary:
+            return
+
+        if not self._has_plan_confirmation_message(task_id, active_plan_version):
+            self.storage.create_ai_search_message(
+                {
+                    "message_id": uuid.uuid4().hex,
+                    "task_id": task_id,
+                    "plan_version": active_plan_version,
+                    "role": "assistant",
+                    "kind": "plan_confirmation",
+                    "content": plan_summary,
+                    "stream_status": "completed",
+                    "metadata": {
+                        "plan_version": active_plan_version,
+                        "plan_summary": plan_summary,
+                        "confirmation_label": "实施此计划",
+                    },
+                }
+            )
+
+        self.storage.update_ai_search_plan(task_id, active_plan_version, status="awaiting_confirmation")
+        context.create_pending_action(
+            "plan_confirmation",
+            {
+                "plan_version": active_plan_version,
+                "plan_summary": plan_summary,
+                "confirmation_label": "实施此计划",
+            },
+            run_id=context.active_run_id(active_plan_version),
+            plan_version=active_plan_version,
+            source="plan_gate",
+        )
+        context.update_task_phase(
+            PHASE_AWAITING_PLAN_CONFIRMATION,
+            active_plan_version=active_plan_version,
+            run_id=context.active_run_id(active_plan_version),
+        )
+
     def _resolve_pending_action(
         self,
         task_id: str,
@@ -637,14 +725,9 @@ class AiSearchAgentRunService:
     ) -> AsyncIterator[str]:
         if stream_state["assistant_completed"]:
             return
-        content = str(stream_state.get("assistant_buffer") or "")
-        if allow_model_fallback and not content.strip() and stream_state.get("final_values"):
-            fallback = extract_latest_ai_message(stream_state["final_values"])
-            if fallback and fallback != stream_state.get("previous_assistant"):
-                content = fallback
+        content = self._final_assistant_content(stream_state, allow_model_fallback=allow_model_fallback)
         if not content.strip():
             return
-
         phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
         message_id = str(stream_state.get("assistant_message_id") or uuid.uuid4().hex).strip()
         self.facade._append_message(
@@ -664,6 +747,44 @@ class AiSearchAgentRunService:
         ):
             yield event
 
+    def _final_assistant_content(
+        self,
+        stream_state: Dict[str, Any],
+        *,
+        allow_model_fallback: bool = True,
+    ) -> str:
+        if stream_state["assistant_completed"]:
+            return ""
+        content = str(stream_state.get("assistant_buffer") or "")
+        if allow_model_fallback and not content.strip() and stream_state.get("final_values"):
+            fallback = extract_latest_ai_message(stream_state["final_values"])
+            if fallback and fallback != stream_state.get("previous_assistant"):
+                content = fallback
+        return str(content or "")
+
+    def _persist_final_assistant_if_needed(
+        self,
+        task_id: str,
+        stream_state: Dict[str, Any],
+        *,
+        allow_model_fallback: bool = True,
+    ) -> bool:
+        content = self._final_assistant_content(stream_state, allow_model_fallback=allow_model_fallback)
+        if not content.strip():
+            return False
+        message_id = str(stream_state.get("assistant_message_id") or uuid.uuid4().hex).strip()
+        self.facade._append_message(
+            task_id,
+            "assistant",
+            "chat",
+            content,
+            message_id=message_id,
+            plan_version=self._current_active_plan_version(task_id) or None,
+        )
+        stream_state["assistant_buffer"] = content
+        stream_state["assistant_message_id"] = message_id
+        return True
+
     async def _stream_main_agent_execution(
         self,
         *,
@@ -673,6 +794,7 @@ class AiSearchAgentRunService:
         payload: Any,
         previous_phase: str = "",
         for_resume: bool = False,
+        persist_fallback_assistant: bool = False,
         post_run: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     ) -> AsyncIterator[str]:
         previous_assistant = self.snapshots._latest_assistant_chat(task.id)
@@ -717,6 +839,13 @@ class AiSearchAgentRunService:
             if not isinstance(completion_payload, dict):
                 completion_payload = {}
 
+            self._reconcile_drafting_outcome(task.id)
+            if persist_fallback_assistant:
+                self._persist_final_assistant_if_needed(
+                    task.id,
+                    stream_state,
+                    allow_model_fallback=True,
+                )
             final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             self.snapshots._validate_drafting_outcome(task.id, final_snapshot)
             async for event in self._emit_snapshot_diff_events(
@@ -916,6 +1045,7 @@ class AiSearchAgentRunService:
             thread_id=thread_id,
             payload={"messages": [{"role": "user", "content": content}]},
             previous_phase=phase,
+            persist_fallback_assistant=True,
         ):
             yield event
 
@@ -984,6 +1114,7 @@ class AiSearchAgentRunService:
             payload=Command(resume=answer),
             previous_phase=phase,
             for_resume=True,
+            persist_fallback_assistant=True,
         ):
             yield event
 
@@ -1177,6 +1308,7 @@ class AiSearchAgentRunService:
             thread_id=thread_id,
             payload={"messages": [{"role": "user", "content": prompt}]},
             previous_phase=PHASE_AWAITING_HUMAN_DECISION,
+            persist_fallback_assistant=True,
         ):
             yield event
 

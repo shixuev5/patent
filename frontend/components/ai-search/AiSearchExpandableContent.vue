@@ -1,19 +1,8 @@
 <template>
   <div class="group relative">
-    <button
-      v-if="canCopy"
-      type="button"
-      class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200/80 bg-white/90 text-slate-500 shadow-sm transition md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
-      aria-label="复制消息内容"
-      title="复制"
-      @click="copyContent"
-    >
-      <ClipboardDocumentIcon class="h-4 w-4" />
-    </button>
-
     <div
       ref="contentWrapperRef"
-      class="relative overflow-hidden pr-10 transition-[max-height] duration-200 ease-out"
+      class="relative overflow-hidden transition-[max-height] duration-200 ease-out"
       :style="contentWrapperStyle"
     >
       <div ref="contentInnerRef">
@@ -40,7 +29,6 @@
 </template>
 
 <script setup lang="ts">
-import { ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AiSearchMarkdown from '~/components/ai-search/AiSearchMarkdown.vue'
 
@@ -49,16 +37,12 @@ const COLLAPSED_MAX_HEIGHT = 18 * 16
 const props = withDefaults(defineProps<{
   content?: string
   mode?: 'markdown' | 'plaintext'
-  canCopy?: boolean
   fadeRgb?: string
 }>(), {
   content: '',
   mode: 'markdown',
-  canCopy: true,
   fadeRgb: '248,250,252',
 })
-
-const { showMessage } = useGlobalMessage()
 
 const expanded = ref(false)
 const isOverflowing = ref(false)
@@ -81,17 +65,6 @@ const measureOverflow = async () => {
   }
   isOverflowing.value = inner.scrollHeight > COLLAPSED_MAX_HEIGHT + 8
   if (!isOverflowing.value) expanded.value = false
-}
-
-const copyContent = async () => {
-  const text = String(props.content || '')
-  if (!text.trim()) return
-  try {
-    await navigator.clipboard.writeText(text)
-    showMessage('success', '已复制消息内容')
-  } catch (_error) {
-    showMessage('error', '复制失败，请稍后重试。')
-  }
 }
 
 watch(() => props.content, () => {

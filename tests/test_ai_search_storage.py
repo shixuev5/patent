@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 
 from backend.storage import Task, TaskStatus, TaskType
@@ -233,3 +234,94 @@ def test_ai_search_storage_roundtrip(tmp_path):
     writes = storage.list_ai_search_checkpoint_writes("thread-1", "ai_search_main", "cp-1")
     assert len(writes) == 1
     assert writes[0]["task_id"] == "main-agent"
+
+
+def test_ai_search_storage_migrates_old_document_conflict_index(tmp_path):
+    db_path = tmp_path / "ai_search_storage_old_docs.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE ai_search_documents (
+            document_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            plan_version INTEGER NOT NULL,
+            pn TEXT,
+            title TEXT,
+            abstract TEXT,
+            publication_date TEXT,
+            application_date TEXT,
+            primary_ipc TEXT,
+            document_type TEXT,
+            claim_ids_json TEXT,
+            evidence_locations_json TEXT,
+            evidence_summary TEXT,
+            report_row_order INTEGER,
+            ipc_cpc_json TEXT,
+            source_batches_json TEXT,
+            source_lanes_json TEXT,
+            source_sub_plans_json TEXT,
+            source_steps_json TEXT,
+            stage TEXT NOT NULL,
+            score REAL,
+            agent_reason TEXT,
+            key_passages_json TEXT,
+            user_pinned INTEGER NOT NULL DEFAULT 0,
+            user_removed INTEGER NOT NULL DEFAULT 0,
+            coarse_status TEXT NOT NULL DEFAULT 'pending',
+            coarse_reason TEXT,
+            coarse_screened_at TEXT,
+            close_read_status TEXT NOT NULL DEFAULT 'pending',
+            close_read_reason TEXT,
+            close_read_at TEXT,
+            detail_fingerprint TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            run_id TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    storage = SQLiteTaskStorage(db_path)
+    now = datetime.now()
+    storage.create_task(
+        Task(
+            id="task-ai-search-migration",
+            owner_id="guest:search-user",
+            task_type=TaskType.AI_SEARCH.value,
+            status=TaskStatus.PROCESSING,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    storage.create_ai_search_run(
+        {
+            "run_id": "run-migration-1",
+            "task_id": "task-ai-search-migration",
+            "plan_version": 1,
+            "phase": "execute_search",
+            "status": "processing",
+        }
+    )
+
+    changed = storage.upsert_ai_search_documents(
+        [
+            {
+                "run_id": "run-migration-1",
+                "document_id": "doc-migration-1",
+                "task_id": "task-ai-search-migration",
+                "plan_version": 1,
+                "pn": "CN999999A",
+                "title": "旧库迁移文献",
+                "stage": "candidate",
+            }
+        ]
+    )
+
+    assert changed == 1
+
+    raw_conn = sqlite3.connect(db_path)
+    indexes = raw_conn.execute("PRAGMA index_list(ai_search_documents)").fetchall()
+    raw_conn.close()
+    assert any(row[1] == "idx_ai_search_documents_run_document" for row in indexes)

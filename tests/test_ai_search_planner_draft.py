@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
@@ -84,3 +85,30 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
 
     assert context.current_planner_draft() == {}
     assert json.loads(main_tools["get_planning_context"]())["planner_draft"] == {}
+
+
+@pytest.mark.parametrize("probe_findings", ["", "None", "{}", '{"signals":[{"type":"semantic_probe","count":2}]}'])
+def test_planner_draft_commit_normalizes_string_probe_findings(tmp_path, probe_findings):
+    context, storage, task_id = _mount_context(tmp_path)
+    tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
+    main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+
+    payload = json.loads(
+        tools["commit_plan_draft"](
+            review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+            execution_spec=_execution_spec(),
+            probe_findings=probe_findings,
+        )
+    )
+
+    draft = context.current_planner_draft()
+    assert payload["draft_id"] == draft["draft_id"]
+    if probe_findings.startswith("{\"signals\""):
+        assert draft["probe_findings"]["signals"][0]["count"] == 2
+    else:
+        assert draft["probe_findings"] is None
+
+    plan_version = json.loads(main_tools["publish_planner_draft"]())["plan_version"]
+    plan = storage.get_ai_search_plan(task_id, plan_version)
+    assert plan is not None
+    assert plan["review_markdown"].startswith("# 检索计划")
