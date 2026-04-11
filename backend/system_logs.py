@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -70,6 +70,28 @@ _ORIGINAL_SESSION_REQUEST = None
 _STORAGE_REF = None
 _DB_PERSISTENCE_READY = True
 _CLEANUP_TASK: Optional[asyncio.Task] = None
+
+
+class LazySystemLogStorageProxy:
+    """Resolve the storage backend only when DB persistence is actually used."""
+
+    def __init__(self, factory: Callable[[], Any]):
+        self._factory = factory
+
+    def _storage(self) -> Any:
+        return self._factory()
+
+    def insert_system_log(self, record: Dict[str, Any]) -> Any:
+        return self._storage().insert_system_log(record)
+
+    def cleanup_system_logs_before(self, cutoff_iso: str) -> Any:
+        return self._storage().cleanup_system_logs_before(cutoff_iso)
+
+    def cleanup_system_logs_by_policy(self) -> Any:
+        return self._storage().cleanup_system_logs_by_policy()
+
+    def list_system_log_payload_paths_for_policy_cleanup(self) -> Any:
+        return self._storage().list_system_log_payload_paths_for_policy_cleanup()
 
 
 def _json_default(value: Any) -> str:
@@ -612,8 +634,8 @@ def cleanup_system_logs_by_policy() -> Dict[str, int]:
 
 async def _cleanup_loop() -> None:
     while True:
-        await asyncio.sleep(max(60, SYSTEM_LOG_CLEANUP_INTERVAL_SECONDS))
         cleanup_expired_system_logs()
+        await asyncio.sleep(max(60, SYSTEM_LOG_CLEANUP_INTERVAL_SECONDS))
 
 
 def start_system_log_cleanup_loop() -> Optional[asyncio.Task]:

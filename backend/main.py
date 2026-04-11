@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from config import settings
 from backend.logging_setup import setup_logging_utc8
 from backend.system_logs import (
-    cleanup_expired_system_logs,
+    LazySystemLogStorageProxy,
     configure_system_log_storage,
     initialize_system_logging,
     request_logging_middleware,
@@ -42,10 +42,10 @@ async def lifespan(app: FastAPI):
     settings.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     from backend.storage import get_pipeline_manager
 
-    storage = get_pipeline_manager().storage
-    configure_system_log_storage(storage)
+    configure_system_log_storage(
+        LazySystemLogStorageProxy(lambda: get_pipeline_manager().storage)
+    )
     set_system_log_db_persistence_ready(True)
-    cleanup_expired_system_logs()
     start_system_log_cleanup_loop()
     yield
     # 关闭时的清理操作（如果需要）

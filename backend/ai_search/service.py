@@ -7,10 +7,6 @@ from __future__ import annotations
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from agents.ai_search.main import (
-    build_feature_comparer_agent,
-    build_main_agent,
-)
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
     PHASE_COLLECTING_REQUIREMENTS,
@@ -31,19 +27,12 @@ from backend.task_usage_tracking import (
     task_usage_collection,
 )
 from backend.usage import _enforce_daily_quota
-
-from .agent_run_service import AiSearchAgentRunService
-from .analysis_seed_service import AiSearchAnalysisSeedService
-from .artifacts_service import AiSearchArtifactsService
-from .reporting import build_ai_search_terminal_artifacts
 from .models import (
     AiSearchCreateSessionResponse,
     AiSearchSessionListResponse,
     AiSearchSessionSummary,
     AiSearchSnapshotResponse,
 )
-from .session_service import AiSearchSessionService
-from .snapshot_service import AiSearchSnapshotService
 
 
 task_manager = get_pipeline_manager()
@@ -58,8 +47,32 @@ DEFAULT_MESSAGE_PHASES = {
 }
 
 
+def build_main_agent(storage: Any, task_id: str) -> Any:
+    from agents.ai_search.main import build_main_agent as _build_main_agent
+
+    return _build_main_agent(storage, task_id)
+
+
+def build_feature_comparer_agent(storage: Any, task_id: str) -> Any:
+    from agents.ai_search.main import build_feature_comparer_agent as _build_feature_comparer_agent
+
+    return _build_feature_comparer_agent(storage, task_id)
+
+
+def build_ai_search_terminal_artifacts(**kwargs: Any) -> Dict[str, Any]:
+    from .reporting import build_ai_search_terminal_artifacts as _build_ai_search_terminal_artifacts
+
+    return _build_ai_search_terminal_artifacts(**kwargs)
+
+
 class AiSearchService:
     def __init__(self):
+        from .agent_run_service import AiSearchAgentRunService
+        from .analysis_seed_service import AiSearchAnalysisSeedService
+        from .artifacts_service import AiSearchArtifactsService
+        from .session_service import AiSearchSessionService
+        from .snapshot_service import AiSearchSnapshotService
+
         self.task_manager = task_manager
         self.MAIN_AGENT_CHECKPOINT_NS = MAIN_AGENT_CHECKPOINT_NS
         self.MAIN_AGENT_PROGRESS_POLL_SECONDS = MAIN_AGENT_PROGRESS_POLL_SECONDS
