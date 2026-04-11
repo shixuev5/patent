@@ -127,6 +127,23 @@ class Settings:
     AUTHING_APP_SECRET = os.getenv("AUTHING_APP_SECRET", "").strip()
     AUTHING_DOMAIN = os.getenv("AUTHING_DOMAIN", "").strip()
 
+    # --- Email notifications ---
+    EMAIL_NOTIFICATIONS_ENABLED = os.getenv("EMAIL_NOTIFICATIONS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "brevo").strip().lower() or "brevo"
+    BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+    BREVO_API_BASE_URL = os.getenv("BREVO_API_BASE_URL", "https://api.brevo.com/v3").strip()
+    BREVO_FROM_ADDRESS = os.getenv("BREVO_FROM_ADDRESS", "").strip()
+    BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", "").strip()
+    BREVO_TIMEOUT_SECONDS = int(os.getenv("BREVO_TIMEOUT_SECONDS", "30"))
+    SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_ADDRESS = os.getenv("SMTP_FROM_ADDRESS", "").strip()
+    SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "").strip()
+    SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "false").strip().lower() in {"1", "true", "yes", "on"}
+    SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
+
     @property
     def ZHIHUIYA_ACCOUNTS(self) -> List[Dict[str, str]]:
         return load_zhihuiya_accounts()

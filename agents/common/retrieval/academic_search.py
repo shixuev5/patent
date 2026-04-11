@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from html import unescape
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -126,6 +127,9 @@ def external_id_from_url(url: Any) -> str:
 
 
 class AcademicSearchClient:
+    _CROSSREF_MAX_RETRIES = 3
+    _RETRY_BACKOFF_SECONDS = 0.2
+
     def __init__(
         self,
         *,
@@ -399,17 +403,53 @@ class AcademicSearchClient:
             params["filter"] = ",".join(filters)
         if self.crossref_mailto:
             params["mailto"] = self.crossref_mailto
-        try:
-            response = self._request_get(
-                self.crossref_base_url,
-                params=params,
-                timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            return safe_json(response)
-        except Exception as ex:
-            logger.warning(f"Crossref 检索失败，query={query[:100]} error={ex}")
-            return {}
+        last_error: Exception | None = None
+        for attempt in range(self._CROSSREF_MAX_RETRIES):
+            try:
+                response = self._request_get(
+                    self.crossref_base_url,
+                    params=params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = safe_json(response)
+            except Exception as ex:
+                last_error = ex
+                if attempt < self._CROSSREF_MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Crossref 请求失败，准备重试 ({attempt + 1}/{self._CROSSREF_MAX_RETRIES})，"
+                        f"query={query[:100]} error={ex}"
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                logger.warning(f"Crossref 检索失败，query={query[:100]} error={ex}")
+                return {}
+
+            if self._is_crossref_retryable_error(status_code=status_code, data=data, response_text=response_text):
+                if attempt < self._CROSSREF_MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Crossref 瞬时失败，准备重试 ({attempt + 1}/{self._CROSSREF_MAX_RETRIES})，"
+                        f"status={status_code} query={query[:100]}"
+                    )
+                    time.sleep(self._RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                logger.warning(
+                    f"Crossref 检索失败（重试耗尽），status={status_code} query={query[:100]} body={response_text[:200]}"
+                )
+                return {}
+
+            if status_code >= 400:
+                logger.warning(
+                    f"Crossref 检索失败（非重试类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
+                )
+                return {}
+
+            return data
+
+        if last_error is not None:
+            logger.warning(f"Crossref 检索失败，query={query[:100]} error={last_error}")
+        return {}
 
     def _is_openalex_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
         if status_code == 429:
@@ -430,3 +470,13 @@ class AcademicSearchClient:
             if part
         )
         return any(keyword in message for keyword in ["rate limit", "quota", "exceed", "too many requests"])
+
+    def _is_crossref_retryable_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
+        if status_code == 429 or status_code >= 500:
+            return True
+        message = " ".join(
+            part.lower()
+            for part in [response_text, str(data.get("error", "")), str(data.get("message", "")), str(data.get("detail", ""))]
+            if part
+        )
+        return any(keyword in message for keyword in ["rate limit", "quota", "too many requests", "temporarily unavailable"])

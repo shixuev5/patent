@@ -525,6 +525,14 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
         "extract_latest_ai_message",
         lambda values: values["messages"][-1]["content"],
     )
+    notify_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service,
+        "notify_task_terminal_status",
+        lambda task_id, terminal_status, **kwargs: notify_calls.append(
+            {"task_id": task_id, "terminal_status": terminal_status, **kwargs}
+        ),
+    )
 
     events = asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -534,6 +542,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     assert snapshot.retrieval["activeTodo"]["last_error"] == "timeout"
     assert not any("assistant.message.completed" in item for item in events)
     assert any("run.completed" in item for item in events)
+    assert notify_calls == []
 
 
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
@@ -1138,6 +1147,14 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
             else (_ for _ in ()).throw(AssertionError("unexpected feature agent binding"))
         ),
     )
+    notify_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service,
+        "notify_task_terminal_status",
+        lambda task_id, terminal_status, **kwargs: notify_calls.append(
+            {"task_id": task_id, "terminal_status": terminal_status, **kwargs}
+        ),
+    )
 
     events = asyncio.run(_collect_stream(service.stream_feature_comparison(created.sessionId, "guest_ai_search", 1)))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -1153,6 +1170,12 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     assert task.metadata["output_files"]["bundle_zip"] == str(bundle_path)
     assert any("batch.updated" in item for item in events)
     assert any("run.updated" in item for item in events)
+    assert notify_calls == [
+        {
+            "task_id": created.sessionId,
+            "terminal_status": PHASE_COMPLETED,
+        }
+    ]
 
 
 def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_hits(monkeypatch, tmp_path):
@@ -2017,3 +2040,36 @@ def test_stream_analysis_seed_advances_seeded_session(monkeypatch, tmp_path):
     assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
     assert snapshot.analysisSeed is not None
     assert snapshot.analysisSeed["status"] == "completed"
+
+
+def test_stream_analysis_seed_failure_notifies_terminal_failure(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(storage, owner_id="guest_ai_search", tmp_path=tmp_path)
+    created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+
+    async def _fake_stream_main_agent_execution(*_args, **_kwargs):
+        yield 'data: {"type":"run.error","payload":{"message":"seed boom"}}'
+
+    notify_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(service.agent_runs, "_stream_main_agent_execution", _fake_stream_main_agent_execution)
+    monkeypatch.setattr(
+        service,
+        "notify_task_terminal_status",
+        lambda task_id, terminal_status, **kwargs: notify_calls.append(
+            {"task_id": task_id, "terminal_status": terminal_status, **kwargs}
+        ),
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
+    task = storage.get_task(created.sessionId)
+
+    assert any('"type":"run.error"' in item for item in events)
+    assert task is not None
+    assert task.status.value == "failed"
+    assert notify_calls == [
+        {
+            "task_id": created.sessionId,
+            "terminal_status": "failed",
+            "error_message": "生成 AI 检索计划失败：seed boom",
+        }
+    ]

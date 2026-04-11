@@ -15,7 +15,10 @@ from .models import AiSearchSessionSummary, AiSearchSnapshotResponse
 class AiSearchSnapshotService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
-        self.storage = facade.storage
+
+    @property
+    def storage(self):
+        return self.facade.storage
 
     def _session_summary(self, task: Any) -> AiSearchSessionSummary:
         meta = get_ai_search_meta(task)

@@ -50,11 +50,14 @@ from .models import (
 class AiSearchAgentRunService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
-        self.storage = facade.storage
         self.sessions = facade.sessions
         self.snapshots = facade.snapshots
         self.artifacts = facade.artifacts
         self.analysis_seeds = facade.analysis_seeds
+
+    @property
+    def storage(self):
+        return self.facade.storage
 
     def _resolve_main_checkpoint_ns(self, thread_id: str) -> str:
         checkpoints = self.storage.list_ai_search_checkpoints(thread_id, limit=50)
@@ -973,6 +976,7 @@ class AiSearchAgentRunService:
                 )
             if final_phase == PHASE_COMPLETED:
                 self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+                await asyncio.to_thread(self.facade.notify_task_terminal_status, task.id, PHASE_COMPLETED)
 
             final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
@@ -1225,6 +1229,12 @@ class AiSearchAgentRunService:
                 message="从 AI 分析创建 AI 检索计划失败",
                 payload={"analysis_task_id": str(meta.get("source_task_id") or "").strip() or None, "error": failure_message},
             )
+            await asyncio.to_thread(
+                self.facade.notify_task_terminal_status,
+                task.id,
+                PHASE_FAILED,
+                error_message=f"生成 AI 检索计划失败：{failure_message}",
+            )
             return
 
         self.storage.update_task(
@@ -1358,6 +1368,7 @@ class AiSearchAgentRunService:
             selected_document_count=len(selected_documents),
         )
         self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+        await asyncio.to_thread(self.facade.notify_task_terminal_status, task.id, PHASE_COMPLETED)
         final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         async for event in self._emit_snapshot_diff_events(
             stream_state["last_snapshot"],

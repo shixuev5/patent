@@ -72,6 +72,12 @@ def test_patent_analysis_fallback_sha256_from_downloaded_pdf(monkeypatch, tmp_pa
     monkeypatch.setattr(tasks_route, "emit_system_log", lambda **kwargs: None)
     monkeypatch.setattr(tasks_route, "_build_r2_storage", lambda: _DisabledR2Storage())
     monkeypatch.setattr(tasks_route.settings, "OUTPUT_DIR", tmp_path / "output")
+    notify_calls = []
+
+    async def _fake_notify(task_id: str, terminal_status: str, **kwargs):
+        notify_calls.append({"task_id": task_id, "terminal_status": terminal_status, **kwargs})
+
+    monkeypatch.setattr(tasks_route, "_notify_task_terminal_email", _fake_notify)
 
     task = manager.create_task(
         owner_id="authing:user-1",
@@ -95,3 +101,91 @@ def test_patent_analysis_fallback_sha256_from_downloaded_pdf(monkeypatch, tmp_pa
     analysis_json_path = Path(output_files.get("json", ""))
     payload = json.loads(analysis_json_path.read_text(encoding="utf-8"))
     assert payload["metadata"]["input_sha256"] == expected_sha256
+    assert notify_calls == [
+        {
+            "task_id": task.id,
+            "terminal_status": "completed",
+            "task_type": TaskType.PATENT_ANALYSIS.value,
+        }
+    ]
+
+
+def test_patent_analysis_cached_reuse_triggers_completed_email(monkeypatch, tmp_path):
+    manager = _mount_task_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(tasks_route, "emit_system_log", lambda **kwargs: None)
+    monkeypatch.setattr(tasks_route, "_get_cached_analysis_payload", lambda **kwargs: {"metadata": {"resolved_pn": "CN123456A"}})
+
+    class _FakeR2Storage:
+        enabled = True
+
+        def build_patent_pdf_key(self, patent_number: str) -> str:
+            return f"patent/{patent_number}/ai_analysis.pdf"
+
+        def build_analysis_json_key(self, patent_number: str) -> str:
+            return f"patent/{patent_number}/ai_analysis.json"
+
+        def key_exists(self, key: str) -> bool:
+            return key.endswith("/ai_analysis.pdf")
+
+    monkeypatch.setattr(tasks_route, "_build_r2_storage", lambda: _FakeR2Storage())
+    notify_calls = []
+
+    async def _fake_notify(task_id: str, terminal_status: str, **kwargs):
+        notify_calls.append({"task_id": task_id, "terminal_status": terminal_status, **kwargs})
+
+    monkeypatch.setattr(tasks_route, "_notify_task_terminal_email", _fake_notify)
+
+    task = manager.create_task(
+        owner_id="authing:user-1",
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        pn="CN123456A",
+        title="AI 分析任务 - 测试",
+    )
+
+    asyncio.run(tasks_route.run_patent_analysis_task(task.id, pn="CN123456A"))
+
+    latest = manager.get_task(task.id)
+    assert latest is not None
+    assert latest.status.value == "completed"
+    assert latest.metadata["output_files"]["r2_key"] == "patent/CN123456A/ai_analysis.pdf"
+    assert notify_calls == [
+        {
+            "task_id": task.id,
+            "terminal_status": "completed",
+            "task_type": TaskType.PATENT_ANALYSIS.value,
+        }
+    ]
+
+
+def test_patent_analysis_failed_workflow_triggers_failed_email(monkeypatch, tmp_path):
+    manager = _mount_task_manager(monkeypatch, tmp_path)
+    _mount_fake_workflow(monkeypatch, lambda _initial_state: {"status": "failed", "errors": [{"error_message": "boom"}]})
+    monkeypatch.setattr(tasks_route, "emit_system_log", lambda **kwargs: None)
+    monkeypatch.setattr(tasks_route, "_build_r2_storage", lambda: _DisabledR2Storage())
+    notify_calls = []
+
+    async def _fake_notify(task_id: str, terminal_status: str, **kwargs):
+        notify_calls.append({"task_id": task_id, "terminal_status": terminal_status, **kwargs})
+
+    monkeypatch.setattr(tasks_route, "_notify_task_terminal_email", _fake_notify)
+
+    task = manager.create_task(
+        owner_id="authing:user-1",
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        pn="CN123456A",
+        title="AI 分析任务 - 测试",
+    )
+
+    asyncio.run(tasks_route.run_patent_analysis_task(task.id, pn="CN123456A"))
+
+    latest = manager.get_task(task.id)
+    assert latest is not None
+    assert latest.status.value == "failed"
+    assert notify_calls == [
+        {
+            "task_id": task.id,
+            "terminal_status": "failed",
+            "task_type": TaskType.PATENT_ANALYSIS.value,
+            "error_message": "boom",
+        }
+    ]

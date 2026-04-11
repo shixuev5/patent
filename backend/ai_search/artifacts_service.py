@@ -10,7 +10,10 @@ from agents.ai_search.src.context import AiSearchAgentContext
 class AiSearchArtifactsService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
-        self.storage = facade.storage
+
+    @property
+    def storage(self):
+        return self.facade.storage
 
     def _snapshot_download_url(self, task: Any) -> Optional[str]:
         if str(getattr(task.status, "value", task.status) or "").strip().lower() != "completed":

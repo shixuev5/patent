@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import os
+import requests
 
 import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
@@ -322,6 +323,49 @@ def test_crossref_search_normalizes_jats_abstract(monkeypatch):
     assert results[0]["source_type"] == "crossref"
 
 
+def test_crossref_search_retries_retryable_errors(monkeypatch):
+    _clear_external_env(monkeypatch)
+    aggregator = ExternalEvidenceAggregator()
+    calls = []
+
+    def _fake_get(url, params=None, timeout=None):
+        calls.append(dict(params or {}))
+        if len(calls) < 3:
+            return _FakeResponse(
+                {"message": "temporarily unavailable"},
+                status_code=503,
+                text="temporarily unavailable",
+            )
+        return _FakeResponse(
+            {
+                "message": {
+                    "items": [
+                        {
+                            "title": ["Recovered Paper"],
+                            "abstract": "<jats:p>Recovered abstract</jats:p>",
+                            "URL": "https://doi.org/10.1000/test",
+                            "DOI": "10.1000/test",
+                            "issued": {"date-parts": [[2024, 1, 1]]},
+                        }
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
+
+    results = aggregator._search_crossref(
+        [make_query_spec("recovered query", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert len(calls) == 3
+    assert len(results) == 1
+    assert results[0]["title"] == "Recovered Paper"
+
+
 def test_tavily_search_uses_advanced_params(monkeypatch):
     aggregator = ExternalEvidenceAggregator()
     aggregator.tavily_api_keys = ["tvly-key"]
@@ -423,6 +467,54 @@ def test_external_rerank_service_uses_retrieval_gateway(monkeypatch):
     assert rows == [
         {"index": 1, "relevance_score": 0.91},
         {"index": 0, "relevance_score": 0.34},
+    ]
+
+
+def test_external_rerank_service_retries_transient_failure(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setenv("RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setattr(settings, "RETRIEVAL_API_KEY", "retrieval-key")
+    monkeypatch.setattr(settings, "RETRIEVAL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    service = ExternalEvidenceRerankService()
+    calls = []
+
+    class _RetryResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(f"http {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        calls.append({"url": url, "body": json, "timeout": timeout})
+        if len(calls) == 1:
+            return _RetryResponse(503, {"error": "temporary overload"})
+        return _RetryResponse(
+            200,
+            {
+                "data": [
+                    {"index": 0, "relevance_score": 0.73},
+                    {"index": 1, "relevance_score": 0.41},
+                ]
+            },
+        )
+
+    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
+    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.time.sleep", lambda *_args, **_kwargs: None)
+
+    rows = service.rerank("query-a", ["doc-a", "doc-b"])
+
+    assert len(calls) == 2
+    assert rows == [
+        {"index": 0, "relevance_score": 0.73},
+        {"index": 1, "relevance_score": 0.41},
     ]
 
 

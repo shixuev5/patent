@@ -22,6 +22,7 @@ from agents.ai_search.src.state import (
     phase_step,
     phase_to_task_status,
 )
+from backend.notifications import build_task_email_notification_service
 from backend.system_logs import emit_system_log
 from backend.storage import TaskType, get_pipeline_manager
 from backend.task_usage_tracking import (
@@ -59,7 +60,6 @@ DEFAULT_MESSAGE_PHASES = {
 
 class AiSearchService:
     def __init__(self):
-        self.storage = task_manager.storage
         self.task_manager = task_manager
         self.MAIN_AGENT_CHECKPOINT_NS = MAIN_AGENT_CHECKPOINT_NS
         self.MAIN_AGENT_PROGRESS_POLL_SECONDS = MAIN_AGENT_PROGRESS_POLL_SECONDS
@@ -69,6 +69,10 @@ class AiSearchService:
         self.artifacts = AiSearchArtifactsService(self)
         self.analysis_seeds = AiSearchAnalysisSeedService(self)
         self.agent_runs = AiSearchAgentRunService(self)
+
+    @property
+    def storage(self):
+        return self.task_manager.storage
 
     def _uses_default_run_main_agent(self) -> bool:
         runner = getattr(self, "_run_main_agent", None)
@@ -88,6 +92,24 @@ class AiSearchService:
 
     def _build_terminal_artifacts(self, **kwargs: Any) -> Dict[str, Any]:
         return build_ai_search_terminal_artifacts(**kwargs)
+
+    def notify_task_terminal_status(
+        self,
+        task_id: str,
+        terminal_status: str,
+        *,
+        error_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        service = build_task_email_notification_service(
+            storage=self.storage,
+            system_log_emitter=self._emit_system_log,
+        )
+        return service.notify_task_terminal_status(
+            task_id,
+            terminal_status=terminal_status,
+            task_type=TaskType.AI_SEARCH.value,
+            error_message=error_message,
+        )
 
     def _main_agent_progress_poll_seconds(self) -> float:
         return MAIN_AGENT_PROGRESS_POLL_SECONDS

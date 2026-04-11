@@ -39,7 +39,10 @@ from .models import AiSearchCreateSessionResponse, AiSearchSnapshotResponse
 class AiSearchAnalysisSeedService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
-        self.storage = facade.storage
+
+    @property
+    def storage(self):
+        return self.facade.storage
 
     def _load_analysis_artifacts(self, task: Any) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         metadata = task.metadata if isinstance(task.metadata, dict) else {}
@@ -243,6 +246,11 @@ class AiSearchAnalysisSeedService:
                 success=False,
                 message="从 AI 分析创建 AI 检索计划失败",
                 payload={"analysis_task_id": source_task_id or None, "error": str(exc)},
+            )
+            self.facade.notify_task_terminal_status(
+                task.id,
+                PHASE_FAILED,
+                error_message=f"生成 AI 检索计划失败：{exc}",
             )
             raise
 

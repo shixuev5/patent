@@ -3,6 +3,7 @@ Pipeline 适配器：将 TaskStorage 与 PatentPipeline 集成。
 """
 
 import json
+import threading
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -208,5 +209,33 @@ class PipelineTaskManager:
         return success
 
 
-def get_pipeline_manager(storage: Any = None) -> PipelineTaskManager:
-    return PipelineTaskManager(storage)
+class LazyPipelineTaskManager:
+    """Delay storage initialization until the manager is actually used."""
+
+    def __init__(self):
+        self._manager: Optional[PipelineTaskManager] = None
+        self._lock = threading.Lock()
+
+    def _get_manager(self) -> PipelineTaskManager:
+        if self._manager is not None:
+            return self._manager
+        with self._lock:
+            if self._manager is None:
+                self._manager = PipelineTaskManager()
+        return self._manager
+
+    @property
+    def storage(self):
+        return self._get_manager().storage
+
+    def __getattr__(self, name: str):
+        return getattr(self._get_manager(), name)
+
+
+_lazy_pipeline_manager = LazyPipelineTaskManager()
+
+
+def get_pipeline_manager(storage: Any = None) -> Any:
+    if storage is not None:
+        return PipelineTaskManager(storage)
+    return _lazy_pipeline_manager

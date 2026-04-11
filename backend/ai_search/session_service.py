@@ -28,7 +28,10 @@ from .models import (
 class AiSearchSessionService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
-        self.storage = facade.storage
+
+    @property
+    def storage(self):
+        return self.facade.storage
 
     def _raise_session_not_found(self) -> None:
         raise HTTPException(

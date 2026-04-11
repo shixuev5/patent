@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Sequence
 
 from openai import OpenAI
@@ -15,6 +16,8 @@ class ExternalEvidenceRerankError(RuntimeError):
 
 class ExternalEvidenceRerankService:
     _TIMEOUT_SECONDS = 20.0
+    _MAX_RETRIES = 3
+    _RETRY_BACKOFF_SECONDS = 0.2
 
     def __init__(self):
         api_key, base_url = require_retrieval_gateway("rerank")
@@ -30,27 +33,37 @@ class ExternalEvidenceRerankService:
         if not normalized_docs:
             return []
 
-        try:
-            response = requests.post(
-                f"{self._base_url}/reranks",
-                headers=self._build_headers(),
-                json={
-                    "model": self.model,
-                    "query": normalized_query,
-                    "documents": normalized_docs,
-                    "top_n": len(normalized_docs),
-                },
-                timeout=self._TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as ex:
-            raise ExternalEvidenceRerankError(str(ex)) from ex
+        last_error: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                response = requests.post(
+                    f"{self._base_url}/reranks",
+                    headers=self._build_headers(),
+                    json={
+                        "model": self.model,
+                        "query": normalized_query,
+                        "documents": normalized_docs,
+                        "top_n": len(normalized_docs),
+                    },
+                    timeout=self._TIMEOUT_SECONDS,
+                )
+                status_code = int(getattr(response, "status_code", 200))
+                if self._is_retryable_status(status_code):
+                    raise ExternalEvidenceRerankError(f"http {status_code}")
+                response.raise_for_status()
+                payload = response.json()
+                rows = self._parse_results(payload)
+                if not rows:
+                    raise ExternalEvidenceRerankError("rerank returned no usable results")
+                return rows
+            except Exception as ex:
+                last_error = ex
+                if attempt < self._MAX_RETRIES - 1 and self._should_retry(ex):
+                    time.sleep(self._RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                raise ExternalEvidenceRerankError(str(ex)) from ex
 
-        rows = self._parse_results(payload)
-        if not rows:
-            raise ExternalEvidenceRerankError("rerank returned no usable results")
-        return rows
+        raise ExternalEvidenceRerankError(str(last_error or "rerank failed"))
 
     def _build_headers(self) -> Dict[str, str]:
         headers: Dict[str, str] = {}
@@ -90,3 +103,12 @@ class ExternalEvidenceRerankService:
 
         rows.sort(key=lambda item: item["relevance_score"], reverse=True)
         return rows
+
+    def _is_retryable_status(self, status_code: int) -> bool:
+        return status_code == 429 or status_code >= 500
+
+    def _should_retry(self, ex: Exception) -> bool:
+        if isinstance(ex, ExternalEvidenceRerankError):
+            message = str(ex).lower()
+            return "http 429" in message or "http 5" in message or "no usable results" in message
+        return isinstance(ex, requests.RequestException)
