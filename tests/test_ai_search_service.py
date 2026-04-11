@@ -57,6 +57,7 @@ from backend.ai_search.analysis_seed import (
     build_analysis_sub_plans,
     seed_search_elements_from_analysis,
 )
+from backend import task_usage_tracking
 from backend.ai_search.models import (
     PENDING_QUESTION_EXISTS_CODE,
     PLAN_CONFIRMATION_REQUIRED_CODE,
@@ -334,6 +335,73 @@ def test_create_session_uses_unified_flow_metadata(monkeypatch, tmp_path):
     task = storage.get_task(created.sessionId)
 
     assert (task.metadata.get("ai_search") or {}).get("current_phase") == "collecting_requirements"
+
+
+def test_ai_search_usage_accumulates_across_multiple_stream_calls(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    async def _fake_stream_message(session_id: str, owner_id: str, content: str):
+        assert session_id == created.sessionId
+        assert owner_id == "guest_ai_search"
+        assert content == "你好"
+        task_usage_tracking.record_llm_usage(
+            model="qwen3.5-flash",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            reasoning_tokens=2,
+        )
+        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+
+    async def _fake_stream_plan_confirmation(session_id: str, owner_id: str, plan_version: int):
+        assert session_id == created.sessionId
+        assert owner_id == "guest_ai_search"
+        assert plan_version == 1
+        task_usage_tracking.record_llm_usage(
+            model="qwen3.5-plus",
+            prompt_tokens=20,
+            completion_tokens=10,
+            total_tokens=30,
+            reasoning_tokens=4,
+        )
+        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+
+    monkeypatch.setattr(service.agent_runs, "stream_message", _fake_stream_message)
+    monkeypatch.setattr(service.agent_runs, "stream_plan_confirmation", _fake_stream_plan_confirmation)
+
+    message_events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "你好")))
+    confirm_events = asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
+
+    assert any("run.completed" in item for item in message_events)
+    assert any("run.completed" in item for item in confirm_events)
+
+    usage_row = storage.get_task_llm_usage(created.sessionId)
+    assert usage_row is not None
+    assert usage_row["task_type"] == TaskType.AI_SEARCH.value
+    assert usage_row["prompt_tokens"] == 30
+    assert usage_row["completion_tokens"] == 15
+    assert usage_row["total_tokens"] == 45
+    assert usage_row["reasoning_tokens"] == 6
+    assert usage_row["llm_call_count"] == 2
+    assert set((usage_row["model_breakdown_json"] or {}).keys()) == {"qwen3.5-flash", "qwen3.5-plus"}
+
+
+def test_ai_search_usage_skips_empty_stream_without_existing_record(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    async def _fake_stream_complete(session_id: str, owner_id: str):
+        assert session_id == created.sessionId
+        assert owner_id == "guest_ai_search"
+        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+
+    monkeypatch.setattr(service.agent_runs, "stream_decision_complete", _fake_stream_complete)
+
+    events = asyncio.run(_collect_stream(service.stream_decision_complete(created.sessionId, "guest_ai_search")))
+
+    assert any("run.completed" in item for item in events)
+    assert storage.get_task_llm_usage(created.sessionId) is None
 
 
 def test_update_session_supports_rename_and_pin(monkeypatch, tmp_path):

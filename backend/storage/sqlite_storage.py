@@ -551,6 +551,14 @@ class SQLiteTaskStorage:
             "updated_at": row["updated_at"],
         }
 
+    def get_task_llm_usage(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM task_llm_usage WHERE task_id = ?",
+                (str(task_id or "").strip(),),
+            ).fetchone()
+        return self._row_to_task_llm_usage(row) if row else None
+
     def upsert_task_llm_usage(self, usage: Dict[str, Any]) -> bool:
         payload = {
             "task_id": str(usage.get("task_id", "")).strip(),

@@ -428,3 +428,56 @@ def test_admin_usage_resolve_time_window_uses_utc8_for_day_month_year():
     assert year_end.isoformat() == "2027-01-01T00:00:00+08:00"
     assert year_query_start == "2025-12-31T16:00:00.000000Z"
     assert year_query_end == "2026-12-31T16:00:00.000000Z"
+
+
+def test_admin_usage_table_includes_ai_search_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+
+    now_iso = datetime.now().isoformat()
+    storage.upsert_task_llm_usage(
+        {
+            "task_id": "search-task-1",
+            "owner_id": "authing:user-1",
+            "task_type": "ai_search",
+            "task_status": "processing",
+            "prompt_tokens": 300,
+            "completion_tokens": 120,
+            "total_tokens": 420,
+            "reasoning_tokens": 60,
+            "llm_call_count": 4,
+            "estimated_cost_cny": 1.23,
+            "price_missing": False,
+            "model_breakdown_json": {"qwen3.5-plus": {"totalTokens": 420}},
+            "first_usage_at": now_iso,
+            "last_usage_at": now_iso,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+    )
+
+    admin_user = CurrentUser(user_id="authing:admin-1")
+    anchor = datetime.now().date().isoformat()
+
+    table = asyncio.run(
+        admin_usage.get_admin_usage_table(
+            rangeType="day",
+            anchor=anchor,
+            scope="task",
+            q=None,
+            taskType="ai_search",
+            status=None,
+            model=None,
+            page=1,
+            pageSize=20,
+            sortBy="lastUsageAt",
+            sortOrder="desc",
+            current_user=admin_user,
+        )
+    )
+
+    assert table.total == 1
+    assert table.items[0]["taskId"] == "search-task-1"
+    assert table.items[0]["taskType"] == "ai_search"
+    assert table.items[0]["totalTokens"] == 420

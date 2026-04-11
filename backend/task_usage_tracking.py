@@ -63,6 +63,20 @@ class TaskUsageCollector:
         text = str(status or "").strip().lower()
         self.task_status = text or None
 
+    def has_usage(self) -> bool:
+        return any(
+            [
+                self.prompt_tokens > 0,
+                self.completion_tokens > 0,
+                self.total_tokens > 0,
+                self.reasoning_tokens > 0,
+                self.llm_call_count > 0,
+                bool(self.model_breakdown),
+                bool(self.first_usage_at),
+                bool(self.last_usage_at),
+            ]
+        )
+
     def record_usage(
         self,
         model: str,
@@ -186,15 +200,126 @@ def get_current_task_usage_context() -> Dict[str, Optional[str]]:
     }
 
 
-def persist_task_usage(storage, collector: Optional[TaskUsageCollector]) -> bool:
+def _merge_timestamp_min(*values: Any) -> Optional[str]:
+    items = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "null"}:
+            continue
+        items.append(text)
+    return min(items) if items else None
+
+
+def _merge_timestamp_max(*values: Any) -> Optional[str]:
+    items = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "null"}:
+            continue
+        items.append(text)
+    return max(items) if items else None
+
+
+def _merge_model_breakdown(
+    existing: Optional[Dict[str, Any]],
+    incoming: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    def _apply(source: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(source, dict):
+            return
+        for model_name, raw_item in source.items():
+            name = str(model_name or "").strip()
+            if not name:
+                continue
+            item = raw_item if isinstance(raw_item, dict) else {}
+            target = merged.setdefault(
+                name,
+                {
+                    "model": name,
+                    "promptTokens": 0,
+                    "completionTokens": 0,
+                    "totalTokens": 0,
+                    "reasoningTokens": 0,
+                    "llmCallCount": 0,
+                    "estimatedCostCny": 0.0,
+                    "priceMissing": False,
+                },
+            )
+            target["promptTokens"] += int(item.get("promptTokens") or 0)
+            target["completionTokens"] += int(item.get("completionTokens") or 0)
+            target["totalTokens"] += int(item.get("totalTokens") or 0)
+            target["reasoningTokens"] += int(item.get("reasoningTokens") or 0)
+            target["llmCallCount"] += int(item.get("llmCallCount") or 0)
+            target["estimatedCostCny"] += float(item.get("estimatedCostCny") or 0)
+            target["priceMissing"] = bool(target["priceMissing"]) or bool(item.get("priceMissing"))
+
+    _apply(existing)
+    _apply(incoming)
+    return merged
+
+
+def merge_task_usage_records(
+    existing: Optional[Dict[str, Any]],
+    incoming: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not existing:
+        return dict(incoming)
+
+    return {
+        "task_id": str(incoming.get("task_id") or existing.get("task_id") or "").strip(),
+        "owner_id": str(incoming.get("owner_id") or existing.get("owner_id") or "").strip(),
+        "task_type": str(incoming.get("task_type") or existing.get("task_type") or "").strip(),
+        "task_status": str(incoming.get("task_status") or existing.get("task_status") or "").strip(),
+        "prompt_tokens": int(existing.get("prompt_tokens") or 0) + int(incoming.get("prompt_tokens") or 0),
+        "completion_tokens": int(existing.get("completion_tokens") or 0) + int(incoming.get("completion_tokens") or 0),
+        "total_tokens": int(existing.get("total_tokens") or 0) + int(incoming.get("total_tokens") or 0),
+        "reasoning_tokens": int(existing.get("reasoning_tokens") or 0) + int(incoming.get("reasoning_tokens") or 0),
+        "llm_call_count": int(existing.get("llm_call_count") or 0) + int(incoming.get("llm_call_count") or 0),
+        "estimated_cost_cny": float(existing.get("estimated_cost_cny") or 0) + float(incoming.get("estimated_cost_cny") or 0),
+        "price_missing": bool(existing.get("price_missing")) or bool(incoming.get("price_missing")),
+        "model_breakdown_json": _merge_model_breakdown(
+            existing.get("model_breakdown_json"),
+            incoming.get("model_breakdown_json"),
+        ),
+        "first_usage_at": _merge_timestamp_min(existing.get("first_usage_at"), incoming.get("first_usage_at")),
+        "last_usage_at": _merge_timestamp_max(existing.get("last_usage_at"), incoming.get("last_usage_at")),
+        "currency": str(incoming.get("currency") or existing.get("currency") or TOKEN_PRICING_CURRENCY).strip() or TOKEN_PRICING_CURRENCY,
+        "created_at": str(existing.get("created_at") or incoming.get("created_at") or utc_now_z(timespec="seconds")).strip(),
+        "updated_at": str(incoming.get("updated_at") or existing.get("updated_at") or utc_now_z(timespec="seconds")).strip(),
+    }
+
+
+def persist_task_usage(storage, collector: Optional[TaskUsageCollector], *, merge: bool = False) -> bool:
     if collector is None:
         return False
     if not collector.task_id or not collector.owner_id:
         return False
     if not hasattr(storage, "upsert_task_llm_usage"):
         return False
+    existing_record = None
+    if merge and hasattr(storage, "get_task_llm_usage"):
+        try:
+            existing_record = storage.get_task_llm_usage(collector.task_id)
+        except Exception as exc:
+            logger.warning(f"读取任务 LLM 用量失败：{exc}")
+            existing_record = None
+    has_new_usage = collector.has_usage()
+    if merge and not has_new_usage and not existing_record:
+        return False
     try:
-        return bool(storage.upsert_task_llm_usage(collector.to_record()))
+        payload = collector.to_record()
+        if merge and not has_new_usage:
+            payload["first_usage_at"] = None
+            payload["last_usage_at"] = None
+        if merge:
+            payload = merge_task_usage_records(existing_record, payload)
+        return bool(storage.upsert_task_llm_usage(payload))
     except Exception as exc:
         logger.warning(f"持久化任务 LLM 用量失败：{exc}")
         return False

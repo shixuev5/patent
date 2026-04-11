@@ -7,6 +7,7 @@ from agents.ai_search.src.context import AiSearchAgentContext
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend import task_usage_tracking
 from backend.models import CurrentUser
 from backend.routes import ai_search as ai_search_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
@@ -275,6 +276,41 @@ def test_stream_message_endpoint_surfaces_direct_assistant_reply(monkeypatch, tm
     assert snapshot.session.phase == "drafting_plan"
     assert snapshot.conversation["messages"][-1]["role"] == "assistant"
     assert snapshot.conversation["messages"][-1]["content"] == "你好，请告诉我你的检索目标。"
+
+
+def test_stream_message_endpoint_persists_ai_search_usage(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    async def _fake_stream_message(session_id: str, owner_id: str, content: str):
+        assert owner_id == "guest_ai_search"
+        assert content == "你好"
+        task_usage_tracking.record_llm_usage(
+            model="qwen3.5-flash",
+            prompt_tokens=12,
+            completion_tokens=6,
+            total_tokens=18,
+            reasoning_tokens=1,
+        )
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+
+    monkeypatch.setattr(service.agent_runs, "stream_message", _fake_stream_message)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/ai-search/sessions")
+    session_id = created.json()["sessionId"]
+
+    response = client.post(
+        f"/api/ai-search/sessions/{session_id}/messages/stream",
+        json={"content": "你好"},
+    )
+
+    assert response.status_code == 200
+    usage_row = service.storage.get_task_llm_usage(session_id)
+    assert usage_row is not None
+    assert usage_row["task_type"] == "ai_search"
+    assert usage_row["prompt_tokens"] == 12
+    assert usage_row["completion_tokens"] == 6
+    assert usage_row["total_tokens"] == 18
 
 
 def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):

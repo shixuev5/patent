@@ -24,6 +24,11 @@ from agents.ai_search.src.state import (
 )
 from backend.system_logs import emit_system_log
 from backend.storage import TaskType, get_pipeline_manager
+from backend.task_usage_tracking import (
+    create_task_usage_collector,
+    persist_task_usage,
+    task_usage_collection,
+)
 from backend.usage import _enforce_daily_quota
 
 from .agent_run_service import AiSearchAgentRunService
@@ -86,6 +91,29 @@ class AiSearchService:
 
     def _main_agent_progress_poll_seconds(self) -> float:
         return MAIN_AGENT_PROGRESS_POLL_SECONDS
+
+    async def _stream_with_task_usage(
+        self,
+        session_id: str,
+        owner_id: str,
+        stream_factory,
+    ) -> AsyncIterator[str]:
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        usage_collector = create_task_usage_collector(
+            task_id=task.id,
+            owner_id=owner_id,
+            task_type=TaskType.AI_SEARCH.value,
+        )
+        try:
+            with task_usage_collection(usage_collector):
+                async for event in stream_factory():
+                    yield event
+        finally:
+            latest_task = self.storage.get_task(task.id)
+            if latest_task:
+                latest_status = getattr(latest_task.status, "value", latest_task.status)
+                usage_collector.mark_status(latest_status)
+            persist_task_usage(self.storage, usage_collector, merge=True)
 
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
         return self.snapshots.get_snapshot(session_id, owner_id)
@@ -176,31 +204,59 @@ class AiSearchService:
         return self.agent_runs._run_main_agent(task_id, thread_id, payload, for_resume=for_resume)
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_message(session_id, owner_id, content):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_message(session_id, owner_id, content),
+        ):
             yield event
 
     async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_resume(session_id, owner_id):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_resume(session_id, owner_id),
+        ):
             yield event
 
     async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_answer(session_id, owner_id, question_id, answer):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_answer(session_id, owner_id, question_id, answer),
+        ):
             yield event
 
     async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_plan_confirmation(session_id, owner_id, plan_version):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_plan_confirmation(session_id, owner_id, plan_version),
+        ):
             yield event
 
     async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_analysis_seed(session_id, owner_id):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_analysis_seed(session_id, owner_id),
+        ):
             yield event
 
     async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_decision_continue(session_id, owner_id):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_decision_continue(session_id, owner_id),
+        ):
             yield event
 
     async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_decision_complete(session_id, owner_id):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_decision_complete(session_id, owner_id),
+        ):
             yield event
 
     def patch_selected_documents(
@@ -214,5 +270,9 @@ class AiSearchService:
         return self.agent_runs.patch_selected_documents(session_id, owner_id, plan_version, add_document_ids, remove_document_ids)
 
     async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        async for event in self.agent_runs.stream_feature_comparison(session_id, owner_id, plan_version):
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_feature_comparison(session_id, owner_id, plan_version),
+        ):
             yield event
