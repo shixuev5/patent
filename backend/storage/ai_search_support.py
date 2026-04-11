@@ -94,9 +94,16 @@ CREATE TABLE IF NOT EXISTS ai_search_documents (
     document_id TEXT NOT NULL,
     task_id TEXT NOT NULL,
     plan_version INTEGER NOT NULL,
+    source_type TEXT,
+    external_id TEXT,
+    canonical_id TEXT,
     pn TEXT,
+    doi TEXT,
+    url TEXT,
     title TEXT,
     abstract TEXT,
+    venue TEXT,
+    language TEXT,
     publication_date TEXT,
     application_date TEXT,
     primary_ipc TEXT,
@@ -123,6 +130,7 @@ CREATE TABLE IF NOT EXISTS ai_search_documents (
     close_read_reason TEXT,
     close_read_at TEXT,
     detail_fingerprint TEXT,
+    detail_source TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (run_id, document_id)
@@ -259,6 +267,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_search_documents_run_document ON ai_sea
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_run_stage ON ai_search_documents(run_id, stage, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_task_plan_stage ON ai_search_documents(task_id, plan_version, stage, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_documents_run_pn ON ai_search_documents(run_id, pn);
+CREATE INDEX IF NOT EXISTS idx_ai_search_documents_run_canonical ON ai_search_documents(run_id, canonical_id);
 CREATE INDEX IF NOT EXISTS idx_ai_search_document_decisions_run_stage ON ai_search_document_decisions(run_id, decision_stage, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_batches_run_type ON ai_search_batches(run_id, batch_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_search_batch_documents_batch_ord ON ai_search_batch_documents(batch_id, ord);
@@ -270,14 +279,34 @@ CREATE INDEX IF NOT EXISTS idx_ai_search_checkpoint_writes_thread_checkpoint ON 
 """
 
 
+def build_ai_search_canonical_id(
+    *,
+    source_type: Optional[str],
+    external_id: Optional[str],
+    doi: Optional[str] = None,
+    pn: Optional[str] = None,
+) -> str:
+    normalized_doi = str(doi or "").strip().lower()
+    if normalized_doi:
+        return f"doi:{normalized_doi}"
+    normalized_pn = str(pn or "").strip().upper()
+    if normalized_pn:
+        return f"patent:{normalized_pn}"
+    normalized_source = str(source_type or "").strip().lower() or "document"
+    normalized_external_id = str(external_id or "").strip()
+    if normalized_external_id:
+        return f"{normalized_source}:{normalized_external_id}"
+    return normalized_source
+
+
 def stable_ai_search_document_id(
     task_id: str,
     plan_version: int,
-    pn: Optional[str],
+    canonical_id: Optional[str],
     *,
     fallback_seed: Optional[str] = None,
 ) -> str:
-    seed = f"{task_id}:{plan_version}:{(pn or fallback_seed or '').strip().upper()}"
+    seed = f"{task_id}:{plan_version}:{(canonical_id or fallback_seed or '').strip()}"
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()
 
 

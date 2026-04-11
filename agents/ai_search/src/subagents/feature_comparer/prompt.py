@@ -18,10 +18,15 @@ def build_feature_prompt(
     # 构建精简版的已选文献 Payload
     payload = []
     for item in selected_documents:
+        document_ref = str(item.get("pn") or item.get("doi") or item.get("canonical_id") or item["document_id"]).strip()
         payload.append(
             {
                 "document_id": item["document_id"],
-                "pn": item["pn"],
+                "source_type": str(item.get("source_type") or "").strip(),
+                "document_ref": document_ref,
+                "pn": item.get("pn") or "",
+                "doi": item.get("doi") or "",
+                "venue": item.get("venue") or "",
                 "title": item["title"],
                 "abstract": item["abstract"],
                 # 这里极其关键：只给大模型之前提取出的确凿证据段落

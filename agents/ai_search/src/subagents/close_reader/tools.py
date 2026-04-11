@@ -97,23 +97,29 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     except Exception:
                         cached_manifest = {}
                 for item in pending:
-                    pn = str(item.get("pn") or "").strip().upper()
-                    cached_detail = cached_manifest.get(pn) if isinstance(cached_manifest, dict) else None
+                    document_id = str(item.get("document_id") or "").strip()
+                    cached_detail = cached_manifest.get(document_id) if isinstance(cached_manifest, dict) else None
                     if isinstance(cached_detail, dict):
                         detail = {
-                            "pn": pn,
+                            "document_id": document_id,
+                            "source_type": str(cached_detail.get("source_type") or item.get("source_type") or "").strip(),
+                            "pn": str(cached_detail.get("pn") or item.get("pn") or "").strip().upper(),
                             "title": str(cached_detail.get("title") or item.get("title") or "").strip(),
                             "abstract": str(cached_detail.get("abstract") or item.get("abstract") or "").strip(),
                             "claims": str(cached_detail.get("claims") or "").strip(),
                             "description": str(cached_detail.get("description") or "").strip(),
                             "publication_date": str(cached_detail.get("publication_date") or item.get("publication_date") or "").strip(),
                             "application_date": str(cached_detail.get("application_date") or item.get("application_date") or "").strip(),
+                            "venue": str(cached_detail.get("venue") or item.get("venue") or "").strip(),
+                            "doi": str(cached_detail.get("doi") or item.get("doi") or "").strip(),
+                            "url": str(cached_detail.get("url") or item.get("url") or "").strip(),
                             "ipc": cached_detail.get("ipc") if isinstance(cached_detail.get("ipc"), list) else [],
                             "cpc": cached_detail.get("cpc") if isinstance(cached_detail.get("cpc"), list) else [],
                             "detail_fingerprint": cached_detail.get("detail_fingerprint"),
+                            "detail_source": str(cached_detail.get("detail_source") or item.get("detail_source") or "").strip(),
                         }
                     else:
-                        detail = load_document_details(pn)
+                        detail = load_document_details(item)
                     merged = {**item, **detail}
                     details.append(merged)
                     context.storage.update_ai_search_document(
@@ -124,6 +130,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         application_date=str(detail.get("application_date") or item.get("application_date") or "").strip() or None,
                         primary_ipc=_primary_ipc(detail, item.get("ipc_cpc_json") or []),
                         detail_fingerprint=detail.get("detail_fingerprint"),
+                        detail_source=str(detail.get("detail_source") or item.get("detail_source") or "").strip() or None,
                     )
                 file_map = prepare_close_read_workspace(workspace_dir, details)
                 pending_ids = [str(item.get("document_id") or "").strip() for item in pending if str(item.get("document_id") or "").strip()]
@@ -151,12 +158,17 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         "documents": [
                             {
                                 "document_id": item["document_id"],
-                                "pn": item["pn"],
+                                "source_type": item.get("source_type") or "",
+                                "pn": item.get("pn") or "",
+                                "doi": item.get("doi") or "",
+                                "venue": item.get("venue") or "",
+                                "url": item.get("url") or "",
                                 "title": item.get("title") or "",
                                 "abstract": item.get("abstract") or "",
                                 "claims": item.get("claims") or "",
                                 "description": item.get("description") or "",
-                                "fulltext_path": file_map.get(str(item.get("pn") or "").strip().upper()),
+                                "detail_source": item.get("detail_source") or "",
+                                "fulltext_path": file_map.get(str(item.get("document_id") or "").strip()),
                             }
                             for item in details
                         ],
@@ -251,7 +263,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     continue
                 passages = passages_by_doc.get(document_id)
                 if not passages:
-                    detail = load_document_details(str(item.get("pn") or "").strip().upper())
+                    detail = load_document_details(item)
                     passages = [
                         {**passage, "document_id": document_id}
                         for passage in fallback_passages(detail_to_text(detail), terms)[:DEFAULT_KEY_PASSAGES_LIMIT]

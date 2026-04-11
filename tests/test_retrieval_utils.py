@@ -32,6 +32,30 @@ def test_plan_engine_queries_returns_structured_specs():
                     "intent": "expansion",
                 },
             ],
+            "semanticscholar": [
+                {
+                    "text": "large language models patent claims",
+                    "mode": "boolean",
+                    "intent": "anchor",
+                },
+                {
+                    "text": "large language models patent drafting",
+                    "mode": "boolean",
+                    "intent": "expansion",
+                },
+            ],
+            "crossref": [
+                {
+                    "text": "large language models patent claims",
+                    "mode": "boolean",
+                    "intent": "anchor",
+                },
+                {
+                    "text": "large language models patent drafting review",
+                    "mode": "boolean",
+                    "intent": "expansion",
+                },
+            ],
             "zhihuiya": [
                 {
                     "text": "\"专利权利要求\" AND 生成 AND 撰写",
@@ -75,6 +99,9 @@ def test_plan_engine_queries_returns_structured_specs():
 
     assert queries["openalex"][0]["intent"] == "anchor"
     assert "large language models" in queries["openalex"][0]["text"]
+    assert queries["semanticscholar"][0]["intent"] == "anchor"
+    assert queries["semanticscholar"][0]["text"] == "large language models patent claims"
+    assert queries["crossref"][0]["intent"] == "anchor"
     assert queries["zhihuiya"][0]["mode"] == "lexical"
     assert queries["tavily"][0]["intent"] in {"reference", "technical"}
 
@@ -83,6 +110,8 @@ def test_plan_engine_queries_falls_back_when_llm_shape_invalid():
     llm = _FakeLLM({"openalex": ["bad-shape"]})
     fallback = {
         "openalex": [make_query_spec("\"large language models\" AND \"patent claims\"", "boolean", "anchor")],
+        "semanticscholar": [make_query_spec("large language models patent claims", "boolean", "anchor")],
+        "crossref": [make_query_spec("large language models patent claims review", "boolean", "anchor")],
         "zhihuiya": [make_query_spec("\"专利权利要求\" AND 生成", "lexical", "core_patent")],
         "tavily": [make_query_spec("专利权利要求 教材 手册 标准 PDF", "web", "reference")],
     }
@@ -97,9 +126,37 @@ def test_plan_engine_queries_falls_back_when_llm_shape_invalid():
 
     assert queries == {
         "openalex": normalize_query_specs(fallback["openalex"], engine="openalex", limit=2),
+        "semanticscholar": normalize_query_specs(fallback["semanticscholar"], engine="semanticscholar", limit=2),
+        "crossref": normalize_query_specs(fallback["crossref"], engine="crossref", limit=2),
         "zhihuiya": normalize_query_specs(fallback["zhihuiya"], engine="zhihuiya", limit=2),
         "tavily": normalize_query_specs(fallback["tavily"], engine="tavily", limit=2),
     }
+
+
+def test_plan_engine_queries_does_not_derive_missing_semanticscholar_and_crossref():
+    llm = _FakeLLM(
+        {
+            "openalex": [
+                {
+                    "text": "\"battery thermal management\" AND phase change material review",
+                    "mode": "boolean",
+                    "intent": "anchor",
+                }
+            ]
+        }
+    )
+
+    queries = plan_engine_queries(
+        llm_service=llm,
+        user_context={"feature_text": "x", "claim_text": "y"},
+        fallback_queries={},
+        scenario="补充检索核查",
+        per_engine_limit=2,
+    )
+
+    assert queries["openalex"][0]["text"] == "\"battery thermal management\" AND phase change material review"
+    assert queries["semanticscholar"] == []
+    assert queries["crossref"] == []
 
 
 def test_extract_must_keep_phrases_keeps_acronyms_and_quoted_phrases():

@@ -54,10 +54,18 @@ PLANNER_SYSTEM_PROMPT = """
 - `activation_conditions`: 对象。第一版统一使用 `{"any_of":[{"signal":"primary_goal_reached","equals":true},{"signal":"recall_quality","equals":"too_broad"}]}` 这类结构。
 - `activation_summary`: 面向用户的简短说明，清楚解释“何时会激活该步骤”。
 
+**`search_scope.databases` 约束**
+- 允许值仅有：`zhihuiya`、`openalex`、`semanticscholar`、`crossref`。
+- 若你判断本轮只需专利检索，输出 `["zhihuiya"]`。
+- 若你判断需要同时纳入非专文献，输出 `["zhihuiya", "openalex", "semanticscholar", "crossref"]`。
+- 不要输出任何其他数据库名，也不要依赖执行层帮你改写数据库集合。
+
 # 规划原则与边界 (Planning Principles)
 1. **要素溯源**：`search_elements` 是硬性输入，不要随意更改名称或丢弃核心概念。
 2. **采纳预检**：如果存在 `plan_prober` 信号，必须将“建议修改”落实到 `query_blueprints` 和 `retrieval_steps` 的具体策略中，但不要将预检结果作为“已有检索结果”写进报告。
 3. **Gap 导向**：若是补检（存在 `gap_context`），必须将“弥补当前证据缺口”的方向明确体现在 `query_blueprint` 与 `retrieval_step` 的设计中。
 4. **防空转设计**：确保计划高度可执行。绝不允许出现空步骤、无查询表达式的 blueprint、或逻辑上必将导致 0 召回的矛盾条件组合。
 5. **计划骨架先行**：如果存在 Block C 等条件分支，必须在首次计划中显式写入 `retrieval_steps`，而不是留给执行器临时新增步骤。执行器只允许在 step 内微调查询，不允许改宏观路径。
+6. **非专判断由你负责**：是否启用非专检索，必须由你结合上下文自行判断，不要等待规则触发。你能使用的稳定上下文只有已有字段，例如 `source_context.title` / `analysis_seed.source_title`、`search_elements.applicants`、`search_scope.objective` 与 `search_elements.search_elements`。
+7. **非专判断提示**：如果申请人看起来像高校、科研院所、医院、研究机构，通常更应考虑非专；如果标题明显像“某种方法/工艺/算法/模型/检测方法/控制方法”等，也通常更应考虑非专。但这些只是提示，不是硬规则，最终由你综合任务目标决定。
 """.strip()

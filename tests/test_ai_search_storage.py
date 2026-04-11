@@ -115,7 +115,25 @@ def test_ai_search_storage_roundtrip(tmp_path):
                 "source_sub_plans_json": ["sub_plan_1"],
                 "stage": "candidate",
                 "score": 0.9,
-            }
+            },
+            {
+                "run_id": "run-1",
+                "document_id": "doc-2",
+                "task_id": "task-ai-search",
+                "plan_version": 1,
+                "source_type": "openalex",
+                "external_id": "W123",
+                "canonical_id": "doi:10.1000/example",
+                "doi": "10.1000/example",
+                "url": "https://doi.org/10.1000/example",
+                "title": "A research paper",
+                "abstract": "paper abstract",
+                "venue": "Journal of Testing",
+                "language": "en",
+                "publication_date": "2023-10-02",
+                "stage": "candidate",
+                "detail_source": "abstract_only",
+            },
         ]
     ) >= 1
     assert storage.update_ai_search_document(
@@ -127,20 +145,27 @@ def test_ai_search_storage_roundtrip(tmp_path):
         key_passages_json=[{"passage": "关键段落"}],
     )
     documents = storage.list_ai_search_documents("task-ai-search", 1)
-    assert len(documents) == 1
-    assert documents[0]["stage"] == "selected"
-    assert documents[0]["user_pinned"] is True
-    assert documents[0]["source_sub_plans_json"] == ["sub_plan_1"]
-    assert documents[0]["source_steps_json"] == []
-    assert documents[0]["key_passages_json"][0]["passage"] == "关键段落"
-    assert documents[0]["publication_date"] == "20240102"
-    assert documents[0]["application_date"] == "20230102"
-    assert documents[0]["primary_ipc"] == "G06F 9/00"
-    assert documents[0]["document_type"] == "Y"
-    assert documents[0]["claim_ids_json"] == ["1", "3"]
-    assert documents[0]["evidence_locations_json"] == ["paragraph_0001", "figure_2"]
-    assert documents[0]["evidence_summary"] == "说明书第01段；figure_2"
-    assert documents[0]["report_row_order"] == 2
+    assert len(documents) == 2
+    patent_doc = next(item for item in documents if item["document_id"] == "doc-1")
+    assert patent_doc["stage"] == "selected"
+    assert patent_doc["user_pinned"] is True
+    assert patent_doc["source_sub_plans_json"] == ["sub_plan_1"]
+    assert patent_doc["source_steps_json"] == []
+    assert patent_doc["key_passages_json"][0]["passage"] == "关键段落"
+    assert patent_doc["publication_date"] == "20240102"
+    assert patent_doc["application_date"] == "20230102"
+    assert patent_doc["primary_ipc"] == "G06F 9/00"
+    assert patent_doc["document_type"] == "Y"
+    assert patent_doc["claim_ids_json"] == ["1", "3"]
+    assert patent_doc["evidence_locations_json"] == ["paragraph_0001", "figure_2"]
+    assert patent_doc["evidence_summary"] == "说明书第01段；figure_2"
+    assert patent_doc["report_row_order"] == 2
+    npl_doc = next(item for item in documents if item["document_id"] == "doc-2")
+    assert npl_doc["source_type"] == "openalex"
+    assert npl_doc["canonical_id"] == "doi:10.1000/example"
+    assert npl_doc["doi"] == "10.1000/example"
+    assert npl_doc["pn"] in {None, ""}
+    assert npl_doc["detail_source"] == "abstract_only"
 
     assert storage.create_ai_search_batch(
         {

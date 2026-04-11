@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from loguru import logger
 
+from agents.common.retrieval.academic_query_utils import (
+    to_crossref_bibliographic_query,
+    to_semantic_academic_query,
+)
 from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
@@ -323,30 +327,50 @@ class CommonKnowledgeVerificationNode:
         feature_text = str(dispute.get("feature_text", "")).strip()
         reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
         extra_fallback_queries = {
-                "openalex": normalize_query_specs(
-                    [
-                        make_query_spec(f"{feature_text} textbook manual fundamentals", "boolean", "anchor"),
-                        make_query_spec(f"{feature_text} conventional standard practice", "boolean", "expansion"),
-                    ],
-                    engine="openalex",
-                    limit=2,
-                ),
-                "zhihuiya": normalize_query_specs(
-                    [
-                        make_query_spec(f"\"{feature_text}\" AND 教材 AND 手册", "lexical", "core_patent"),
-                        make_query_spec(f"{feature_text} 常规技术手段 申请日前 公知常识", "semantic", "expansion"),
-                    ],
-                    engine="zhihuiya",
-                    limit=2,
-                ),
-                "tavily": normalize_query_specs(
-                    [
-                        make_query_spec(f"{feature_text} 教材 手册 标准 综述 PDF 高校 研究院", "web", "reference"),
-                        make_query_spec(f"{feature_text} 技术手段 常见做法 技术公开 论文", "web", "technical"),
-                    ],
-                    engine="tavily",
-                    limit=2,
-                ),
+            "openalex": normalize_query_specs(
+                [
+                    make_query_spec(f"{feature_text} textbook manual fundamentals", "boolean", "anchor"),
+                    make_query_spec(f"{feature_text} conventional standard practice", "boolean", "expansion"),
+                ],
+                engine="openalex",
+                limit=2,
+            ),
+            "semanticscholar": normalize_query_specs(
+                [
+                    make_query_spec(to_semantic_academic_query(feature_text), "boolean", "anchor"),
+                    make_query_spec(
+                        to_semantic_academic_query(f"{feature_text} conventional standard practice"),
+                        "boolean",
+                        "expansion",
+                    ),
+                ],
+                engine="semanticscholar",
+                limit=2,
+            ),
+            "crossref": normalize_query_specs(
+                [
+                    make_query_spec(to_crossref_bibliographic_query(feature_text), "boolean", "anchor"),
+                    make_query_spec(to_crossref_bibliographic_query(f"{feature_text} review"), "boolean", "expansion"),
+                ],
+                engine="crossref",
+                limit=2,
+            ),
+            "zhihuiya": normalize_query_specs(
+                [
+                    make_query_spec(f"\"{feature_text}\" AND 教材 AND 手册", "lexical", "core_patent"),
+                    make_query_spec(f"{feature_text} 常规技术手段 申请日前 公知常识", "semantic", "expansion"),
+                ],
+                engine="zhihuiya",
+                limit=2,
+            ),
+            "tavily": normalize_query_specs(
+                [
+                    make_query_spec(f"{feature_text} 教材 手册 标准 综述 PDF 高校 研究院", "web", "reference"),
+                    make_query_spec(f"{feature_text} 技术手段 常见做法 技术公开 论文", "web", "technical"),
+                ],
+                engine="tavily",
+                limit=2,
+            ),
         }
         fallback_queries = {
             engine: normalize_query_specs(
@@ -354,7 +378,7 @@ class CommonKnowledgeVerificationNode:
                 engine=engine,
                 limit=4,
             )
-            for engine in {"openalex", "zhihuiya", "tavily"}
+            for engine in {"openalex", "semanticscholar", "crossref", "zhihuiya", "tavily"}
         }
         user_context = {
             "priority_date": priority_date or "",
@@ -464,6 +488,14 @@ class CommonKnowledgeVerificationNode:
                 make_query_spec(f"{feature_text} review tutorial survey", "boolean", "anchor"),
                 make_query_spec(f"{feature_text} standard textbook background", "boolean", "expansion"),
             ], engine="openalex", limit=2),
+            "semanticscholar": normalize_query_specs([
+                make_query_spec(to_semantic_academic_query(feature_text), "boolean", "anchor"),
+                make_query_spec(to_semantic_academic_query(f"{feature_text} common practice"), "boolean", "expansion"),
+            ], engine="semanticscholar", limit=2),
+            "crossref": normalize_query_specs([
+                make_query_spec(to_crossref_bibliographic_query(feature_text), "boolean", "anchor"),
+                make_query_spec(to_crossref_bibliographic_query(f"{feature_text} review"), "boolean", "expansion"),
+            ], engine="crossref", limit=2),
             "zhihuiya": normalize_query_specs([
                 make_query_spec(f"\"{feature_text}\" AND 本领域公知常识", "lexical", "core_patent"),
                 make_query_spec(f"{feature_text} 技术手段 常见实现 {applicant_opinion.get('core_conflict', '')}", "semantic", "expansion"),
@@ -705,7 +737,7 @@ class CommonKnowledgeVerificationNode:
       "analysis": "该证据如何支持或反驳公知常识的认定",
       "source_url": "https://...",
       "source_title": "文献标题",
-      "source_type": "openalex 或 zhihuiya 或 tavily 或 model_knowledge"
+      "source_type": "openalex 或 semanticscholar 或 crossref 或 zhihuiya 或 tavily 或 model_knowledge"
     }
   ]
 }

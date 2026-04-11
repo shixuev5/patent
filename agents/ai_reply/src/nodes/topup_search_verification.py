@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Set, Tuple
 
 from loguru import logger
 
+from agents.common.retrieval.academic_query_utils import (
+    to_crossref_bibliographic_query,
+    to_semantic_academic_query,
+)
 from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
@@ -474,11 +478,20 @@ feature_text: {feature_text}
         feature_text: str,
         priority_date: str,
     ) -> Dict[str, List[QuerySpec]]:
+        openalex_fallback = normalize_query_specs([
+            make_query_spec(f"\"{feature_text}\" AND implementation", "boolean", "anchor"),
+            make_query_spec(f"\"{feature_text}\" AND architecture", "boolean", "expansion"),
+        ], engine="openalex", limit=2)
         fallback_queries = {
-            "openalex": normalize_query_specs([
-                make_query_spec(f"\"{feature_text}\" AND implementation", "boolean", "anchor"),
-                make_query_spec(f"\"{feature_text}\" AND architecture", "boolean", "expansion"),
-            ], engine="openalex", limit=2),
+            "openalex": openalex_fallback,
+            "semanticscholar": normalize_query_specs([
+                make_query_spec(to_semantic_academic_query(feature_text), "boolean", "anchor"),
+                make_query_spec(to_semantic_academic_query(f"{feature_text} implementation"), "boolean", "expansion"),
+            ], engine="semanticscholar", limit=2),
+            "crossref": normalize_query_specs([
+                make_query_spec(to_crossref_bibliographic_query(feature_text), "boolean", "anchor"),
+                make_query_spec(to_crossref_bibliographic_query(f"{feature_text} implementation"), "boolean", "expansion"),
+            ], engine="crossref", limit=2),
             "zhihuiya": normalize_query_specs([
                 make_query_spec(f"\"{feature_text}\" AND 专利 AND 技术公开", "lexical", "core_patent"),
                 make_query_spec(f"{feature_text} 专利技术公开 现有技术", "semantic", "expansion"),
@@ -515,31 +528,48 @@ feature_text: {feature_text}
         first_assessment: Dict[str, Any],
     ) -> Dict[str, List[QuerySpec]]:
         reasoning = str(self._to_dict(first_assessment).get("reasoning", "")).strip()
+        extra_openalex_fallback = normalize_query_specs(
+            [
+                make_query_spec(f"\"{feature_text}\" AND comparative study", "boolean", "anchor"),
+                make_query_spec(f"\"{feature_text}\" AND implementation design", "boolean", "expansion"),
+            ],
+            engine="openalex",
+            limit=2,
+        )
         extra_fallback_queries = {
-                "openalex": normalize_query_specs(
-                    [
-                        make_query_spec(f"\"{feature_text}\" AND comparative study", "boolean", "anchor"),
-                        make_query_spec(f"\"{feature_text}\" AND implementation design", "boolean", "expansion"),
-                    ],
-                    engine="openalex",
-                    limit=2,
-                ),
-                "zhihuiya": normalize_query_specs(
-                    [
-                        make_query_spec(f"\"{feature_text}\" AND 技术效果 AND 对比文件", "lexical", "core_patent"),
-                        make_query_spec(f"{feature_text} 区别特征 现有技术 技术效果", "semantic", "expansion"),
-                    ],
-                    engine="zhihuiya",
-                    limit=2,
-                ),
-                "tavily": normalize_query_specs(
-                    [
-                        make_query_spec(f"{feature_text} 技术启示 实现方案 白皮书 论文 产品文档", "web", "technical"),
-                        make_query_spec(f"{feature_text} 教材 手册 标准 PDF 高校", "web", "reference"),
-                    ],
-                    engine="tavily",
-                    limit=2,
-                ),
+            "openalex": extra_openalex_fallback,
+            "semanticscholar": normalize_query_specs(
+                [
+                    make_query_spec(to_semantic_academic_query(feature_text), "boolean", "anchor"),
+                    make_query_spec(to_semantic_academic_query(f"{feature_text} comparative study"), "boolean", "expansion"),
+                ],
+                engine="semanticscholar",
+                limit=2,
+            ),
+            "crossref": normalize_query_specs(
+                [
+                    make_query_spec(to_crossref_bibliographic_query(feature_text), "boolean", "anchor"),
+                    make_query_spec(to_crossref_bibliographic_query(f"{feature_text} comparative study"), "boolean", "expansion"),
+                ],
+                engine="crossref",
+                limit=2,
+            ),
+            "zhihuiya": normalize_query_specs(
+                [
+                    make_query_spec(f"\"{feature_text}\" AND 技术效果 AND 对比文件", "lexical", "core_patent"),
+                    make_query_spec(f"{feature_text} 区别特征 现有技术 技术效果", "semantic", "expansion"),
+                ],
+                engine="zhihuiya",
+                limit=2,
+            ),
+            "tavily": normalize_query_specs(
+                [
+                    make_query_spec(f"{feature_text} 技术启示 实现方案 白皮书 论文 产品文档", "web", "technical"),
+                    make_query_spec(f"{feature_text} 教材 手册 标准 PDF 高校", "web", "reference"),
+                ],
+                engine="tavily",
+                limit=2,
+            ),
         }
         fallback_queries = {
             engine: normalize_query_specs(
@@ -547,7 +577,7 @@ feature_text: {feature_text}
                 engine=engine,
                 limit=4,
             )
-            for engine in {"openalex", "zhihuiya", "tavily"}
+            for engine in {"openalex", "semanticscholar", "crossref", "zhihuiya", "tavily"}
         }
         user_context = {
             "priority_date": priority_date,

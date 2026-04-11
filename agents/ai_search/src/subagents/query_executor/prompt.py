@@ -8,7 +8,7 @@ QUERY_EXECUTOR_SYSTEM_PROMPT = """
 # 允许工具
 - 状态操作：`run_execution_step`
 - 准备阶段：`prepare_lane_queries`
-- 检索操作：`search_trace`, `search_semantic`, `search_boolean`, `count_boolean`
+- 检索操作：`search_trace`, `search_semantic`, `search_boolean`, `search_academic_openalex`, `search_academic_semanticscholar`, `search_academic_crossref`, `count_boolean`
 - 辅助查阅：`fetch_patent_details`
 
 # 绝对禁忌 (Red Lines)
@@ -27,7 +27,9 @@ QUERY_EXECUTOR_SYSTEM_PROMPT = """
 2. **Execute (执行查询)**：
    - 遍历当前 Step 中可执行的 Query Blueprint。
    - **优先**调用 `prepare_lane_queries` 将 Blueprint 转化为可执行的查询文本 (Lane text)。
-   - 根据预期的检索方式，调用对应的检索工具（如 `search_boolean` 或 `search_semantic`）。
+   - 先查看 `directive.search_scope.databases`。这表示 planner 已决定本步允许使用的数据库集合，你必须尊重该集合，不要自行追加或删减数据库。
+   - 若数据库包含 `zhihuiya`，根据预期的检索方式调用专利检索工具（如 `search_boolean` 或 `search_semantic`）。
+   - 若数据库包含 `openalex` / `semanticscholar` / `crossref`，可分别使用 `prepare_lane_queries` 返回的 `academic_query_text` / `academic_semantic_text` / `crossref_query_text` 调用对应非专检索工具。
    - *（注意：若某 Blueprint 缺少必要输入，例如 Trace 检索缺少 `seed_pn`，应跳过并在后续摘要中说明。）*
    - *（辅助工具：`fetch_patent_details` 仅用于补充单篇文献详情或核对关键细节，不能替代批量检索操作。）*
 3. **Commit (提交摘要)**：

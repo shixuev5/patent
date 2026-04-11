@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
+from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.subagents.query_executor import build_search_tools
+from backend.storage.pipeline_adapter import PipelineTaskManager
+from backend.storage.sqlite_storage import SQLiteTaskStorage
 
 
 class _StubStorage:
@@ -14,6 +17,22 @@ class _StubContext:
     def __init__(self):
         self.storage = _StubStorage()
         self.task_id = "task-search-tools"
+
+
+def _mount_context(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_search_tools.db")
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(owner_id="guest_ai_search", task_type="ai_search", title="AI 检索会话")
+    storage.create_ai_search_run(
+        {
+            "run_id": f"{task.id}-run-1",
+            "task_id": task.id,
+            "plan_version": 1,
+            "phase": "execute_search",
+            "status": "processing",
+        }
+    )
+    return AiSearchAgentContext(storage, task.id), storage
 
 
 def test_prepare_lane_queries_includes_gap_seed_fields():
@@ -47,3 +66,65 @@ def test_prepare_lane_queries_includes_gap_seed_fields():
     assert payload["pivot_terms"] == ["边缘端部署"]
     assert "参数窗口" in payload["query_text"]
     assert "目标限制：1 1-L2" in payload["semantic_text"]
+    assert payload["academic_query_text"]
+    assert payload["academic_semantic_text"]
+    assert payload["crossref_query_text"]
+
+
+def test_search_academic_openalex_persists_npl_and_dedupes_by_doi(tmp_path, monkeypatch):
+    context, storage = _mount_context(tmp_path)
+    tools = {getattr(tool, "__name__", ""): tool for tool in build_search_tools(context)}
+
+    class _FakeAggregator:
+        def search_openalex(self, **_kwargs):
+            return [
+                {
+                    "source_type": "openalex",
+                    "external_id": "W1",
+                    "doi": "10.1000/test-doi",
+                    "url": "https://example.com/paper-a",
+                    "title": "Paper A",
+                    "abstract": "test paper",
+                    "snippet": "test paper",
+                    "venue": "Nature",
+                    "publication_date": "2023-10-01",
+                    "published": "2023-10-01",
+                    "language": "en",
+                },
+                {
+                    "source_type": "openalex",
+                    "external_id": "W2",
+                    "doi": "10.1000/test-doi",
+                    "url": "https://example.com/paper-a-dup",
+                    "title": "Paper A duplicate",
+                    "abstract": "duplicate",
+                    "snippet": "duplicate",
+                    "venue": "Nature",
+                    "publication_date": "2023-10-02",
+                    "published": "2023-10-02",
+                    "language": "en",
+                },
+            ]
+
+    monkeypatch.setattr(
+        "agents.ai_search.src.subagents.query_executor.search_backend_tools._academic_aggregator",
+        lambda: _FakeAggregator(),
+    )
+
+    payload = json.loads(
+        tools["search_academic_openalex"](
+            plan_version=1,
+            batch_id="batch-openalex-1",
+            query_text="battery thermal management",
+            limit=5,
+        )
+    )
+    documents = storage.list_ai_search_documents(context.task_id, 1)
+
+    assert payload["new_unique_candidates"] == 1
+    assert len(documents) == 1
+    assert documents[0]["source_type"] == "openalex"
+    assert documents[0]["canonical_id"] == "doi:10.1000/test-doi"
+    assert documents[0]["doi"] == "10.1000/test-doi"
+    assert documents[0]["pn"] in {None, ""}
+    assert documents[0]["detail_source"] == "abstract_only"

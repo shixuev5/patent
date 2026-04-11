@@ -79,7 +79,10 @@ class EvidenceAssessmentQuote(BaseModel):
     analysis: str = Field(default="", description="证据与争议关系分析")
     source_url: Optional[str] = Field(None, description="证据来源链接")
     source_title: Optional[str] = Field(None, description="证据来源标题")
-    source_type: Optional[str] = Field(None, description="证据来源类型，如 google_scholar/google_patents/google_web/model_knowledge")
+    source_type: Optional[str] = Field(
+        None,
+        description="证据来源类型，如 openalex/semanticscholar/crossref/zhihuiya/tavily/model_knowledge",
+    )
 
 
 class RetrievalResultItem(BaseModel):
@@ -88,6 +91,9 @@ class RetrievalResultItem(BaseModel):
     title: str = Field(default="", description="标题")
     url: Optional[str] = Field(None, description="链接")
     published: Optional[str] = Field(None, description="公开日期")
+    venue: Optional[str] = Field(None, description="期刊或会议名称")
+    citation_count: Optional[int] = Field(None, description="引用次数")
+    influential_citation_count: Optional[int] = Field(None, description="高影响引用次数")
     relevance_score: float = Field(0.0, description="rerank 相关性分值")
 
 

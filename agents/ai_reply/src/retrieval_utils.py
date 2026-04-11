@@ -14,6 +14,10 @@ ENGINE_ALIASES = {
     "openalex": "openalex",
     "academic": "openalex",
     "scholar": "openalex",
+    "semanticscholar": "semanticscholar",
+    "semantic_scholar": "semanticscholar",
+    "s2": "semanticscholar",
+    "crossref": "crossref",
     "zhihuiya": "zhihuiya",
     "patent": "zhihuiya",
     "tavily": "tavily",
@@ -22,6 +26,14 @@ ENGINE_ALIASES = {
 
 _ENGINE_QUERY_RULES = {
     "openalex": {
+        "modes": {"boolean"},
+        "intents": {"anchor", "expansion"},
+    },
+    "semanticscholar": {
+        "modes": {"boolean"},
+        "intents": {"anchor", "expansion"},
+    },
+    "crossref": {
         "modes": {"boolean"},
         "intents": {"anchor", "expansion"},
     },
@@ -37,6 +49,8 @@ _ENGINE_QUERY_RULES = {
 
 ENGINE_HINTS = {
     "openalex": "academic paper / review / tutorial",
+    "semanticscholar": "academic paper / citation graph / semantic recall",
+    "crossref": "doi / citation metadata / journal article record",
     "zhihuiya": "patent query-search + semantic",
     "tavily": "web reference / technical pages",
 }
@@ -172,10 +186,9 @@ def plan_engine_queries(
     scenario: str,
     per_engine_limit: int = 2,
 ) -> Dict[str, List[QuerySpec]]:
-    
     # 使用 Markdown 结构化 Prompt，明确角色、任务、各引擎规则和输出要求
     system_prompt = f"""你是专业的专利与学术文献检索策略专家。当前所处业务场景：【{scenario}】。
-你的任务是根据用户提供的专利上下文（包含特征词、权利要求、必留词等），为三个不同的搜索引擎（OpenAlex, Zhihuiya, Tavily）精准规划检索 query。
+你的任务是根据用户提供的专利上下文（包含特征词、权利要求、必留词等），为五个不同的搜索引擎（OpenAlex, Semantic Scholar, Crossref, Zhihuiya, Tavily）分别精准规划检索 query。
 
 ### 核心输入提取指引
 请仔细阅读 User 提供的 JSON 格式 Context：
@@ -213,7 +226,40 @@ def plan_engine_queries(
   - `intent`: "expansion"
   - **规则**: 在 Anchor 的基础上，增加 1-2 个限定维度的学术词汇（如：特定的 evaluation metric, boundary condition, application scenario 等）做温和扩展。
 
-#### 2. Zhihuiya (专利数据库/中英文)
+#### 2. Semantic Scholar (学术文献/英文)
+- **语言**：必须且仅限使用【英文】。
+- **检索目标**：偏向高召回的学术主题检索，覆盖论文标题、摘要、关键词与 citation graph 相关语义。
+- **风格**：输出 3-8 个词的紧凑学术短语，保留核心技术对象与机制，允许比 OpenAlex 略宽一点，但绝对不要写成自然语言句子。
+- **规则差异**：
+  - 可以比 OpenAlex 少一点修饰词，突出实体、任务、机制、材料、现象。
+  - 不要加入 `review`, `tutorial`, `survey`, `background`, `standard` 这类低区分度尾词，除非它本身就是检索对象。
+- **Query 1 (Anchor)**:
+  - `mode`: "boolean"
+  - `intent`: "anchor"
+  - **规则**: 输出最核心的学术实体词组合，强调技术对象与关键机制。
+- **Query 2 (Expansion)** (如有):
+  - `mode`: "boolean"
+  - `intent`: "expansion"
+  - **规则**: 在 Anchor 基础上增加 1-2 个补充限定词，面向语义扩召回。
+
+#### 3. Crossref (文献元数据/英文)
+- **语言**：必须且仅限使用【英文】。
+- **检索目标**：适配 bibliographic metadata 检索，偏向标题级短语和刊录信息，不适合复杂表达。
+- **风格**：输出 2-6 个词的简洁文献主题短语，尽量像论文标题核心词，不要自然语言句子，不要复杂布尔结构。
+- **规则差异**：
+  - 优先保留最像 title terms 的名词短语。
+  - 可以保留 `review` / `survey` 这类文献体裁词，但仅在它确实能帮助定位记录时使用。
+  - 避免空泛词和专利工程腔。
+- **Query 1 (Anchor)**:
+  - `mode`: "boolean"
+  - `intent`: "anchor"
+  - **规则**: 输出最短、最像论文标题主题的 bibliographic query。
+- **Query 2 (Expansion)** (如有):
+  - `mode`: "boolean"
+  - `intent`: "expansion"
+  - **规则**: 在 Anchor 基础上增加一个辅助限定维度或文献体裁词。
+
+#### 4. Zhihuiya (专利数据库/中英文)
 - **词汇倾向**：偏向专利术语表达，保留工程结构词，切忌宽泛化。
 - **Query 1 (Core Patent)**:
   - `mode`: "lexical"
@@ -224,7 +270,7 @@ def plan_engine_queries(
   - `intent`: "expansion"
   - **规则**: 用于扩召回，可适当使用语义化表达或自然语言短语。
 
-#### 3. Tavily (网页通用检索/中文)
+#### 5. Tavily (网页通用检索/中文)
 - **语言**：主要使用中文。
 - **策略**：围绕 `feature_text` 和 `must_keep_phrases` 组织，面向搜索引擎的 query，不要机械生硬地堆砌词汇（如直接拼接“教材 手册”）。
 - **Query 1 (Reference)**:
@@ -241,6 +287,14 @@ def plan_engine_queries(
 严格遵循以下 JSON Schema：
 {{
   "openalex": [
+    {{"text": "...", "mode": "boolean", "intent": "anchor"}},
+    {{"text": "...", "mode": "boolean", "intent": "expansion"}}
+  ],
+  "semanticscholar": [
+    {{"text": "...", "mode": "boolean", "intent": "anchor"}},
+    {{"text": "...", "mode": "boolean", "intent": "expansion"}}
+  ],
+  "crossref": [
     {{"text": "...", "mode": "boolean", "intent": "anchor"}},
     {{"text": "...", "mode": "boolean", "intent": "expansion"}}
   ],
@@ -264,7 +318,6 @@ def plan_engine_queries(
             "content": json.dumps(user_context, ensure_ascii=False),
         },
     ]
-    
     try:
         response = llm_service.invoke_text_json(
             messages=messages,
@@ -272,20 +325,31 @@ def plan_engine_queries(
             temperature=0.1,  # 保持低温度以保证JSON格式和逻辑的稳定性
         )
         parsed = _to_dict(response)
-        normalized: Dict[str, List[QuerySpec]] = {"openalex": [], "zhihuiya": [], "tavily": []}
+        normalized: Dict[str, List[QuerySpec]] = {
+            "openalex": [],
+            "semanticscholar": [],
+            "crossref": [],
+            "zhihuiya": [],
+            "tavily": [],
+        }
         for key, value in parsed.items():
             engine = ENGINE_ALIASES.get(str(key).strip().lower())
             if engine and isinstance(value, list):
                 normalized[engine] = normalize_query_specs(value, engine=engine, limit=per_engine_limit)
-        
         # 校验：确保至少有一个引擎生成了有效的 query
         if any(normalized.values()):
             return normalized
-            
+
     except Exception as ex:
         logger.warning(f"LLM 生成检索条件失败，将使用规则兜底: {ex}")
 
-    normalized_fallback: Dict[str, List[QuerySpec]] = {"openalex": [], "zhihuiya": [], "tavily": []}
+    normalized_fallback: Dict[str, List[QuerySpec]] = {
+        "openalex": [],
+        "semanticscholar": [],
+        "crossref": [],
+        "zhihuiya": [],
+        "tavily": [],
+    }
     for key, value in (fallback_queries or {}).items():
         engine = ENGINE_ALIASES.get(str(key).strip().lower())
         if engine and isinstance(value, list):

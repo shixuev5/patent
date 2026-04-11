@@ -7,6 +7,7 @@ import os
 import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import make_query_spec
+from agents.common.retrieval.academic_query_utils import normalize_academic_query
 from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.search_clients.zhihuiya import ZhihuiyaClient
 from agents.common.retrieval.external_rerank_service import (
@@ -40,6 +41,8 @@ def _clear_external_env(monkeypatch):
         "OPENALEX_API_KEYS",
         "OPENALEX_API_KEY",
         "OPENALEX_EMAIL",
+        "SEMANTIC_SCHOLAR_API_KEYS",
+        "CROSSREF_MAILTO",
         "TAVILY_API_KEYS",
         "RETRIEVAL_API_KEY",
         "RETRIEVAL_BASE_URL",
@@ -171,21 +174,13 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
 
 
 def test_openalex_query_rewrite_removes_legal_scaffolding():
-    aggregator = ExternalEvidenceAggregator()
-
-    query = aggregator._normalize_openalex_query(
-        "\"locking structure\" AND handbook OR textbook"
-    )
+    query = normalize_academic_query("\"locking structure\" AND handbook OR textbook")
 
     assert query == "\"locking structure\" AND handbook OR textbook"
 
 
 def test_openalex_query_normalization_removes_filter_delimiters_only():
-    aggregator = ExternalEvidenceAggregator()
-
-    query = aggregator._normalize_openalex_query(
-        "\"large language model\", AND patent claim generation"
-    )
+    query = normalize_academic_query("\"large language model\", AND patent claim generation")
 
     assert query == "\"large language model\" AND patent claim generation"
 
@@ -240,6 +235,91 @@ def test_zhihuiya_search_executes_lexical_and_semantic_queries(monkeypatch):
     assert aggregator.zhihuiya_client.calls[0][0] == "lexical"
     assert aggregator.zhihuiya_client.calls[1][0] == "semantic"
     assert results[0]["pn"] == "US20240303416A1"
+
+
+def test_semanticscholar_search_uses_expected_fields(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    aggregator.semanticscholar_api_keys = ["s2-key"]
+    captured = {}
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = dict(params or {})
+        captured["headers"] = dict(headers or {})
+        return _FakeResponse(
+            {
+                "data": [
+                    {
+                        "title": "Graph neural network routing",
+                        "abstract": "A survey of graph neural network routing methods.",
+                        "url": "https://www.semanticscholar.org/paper/abc",
+                        "venue": "NeurIPS",
+                        "publicationDate": "2024-01-01",
+                        "citationCount": 123,
+                        "influentialCitationCount": 11,
+                        "openAccessPdf": {"url": "https://example.com/paper.pdf"},
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    results = aggregator._search_semanticscholar(
+        [make_query_spec("graph neural network routing", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert captured["params"]["fields"] == aggregator.semanticscholar_fields
+    assert captured["params"]["publicationDateOrYear"] == ":2024-12-31"
+    assert captured["headers"]["x-api-key"] == "s2-key"
+    assert len(results) == 1
+    assert results[0]["source_type"] == "semanticscholar"
+    assert results[0]["venue"] == "NeurIPS"
+    assert results[0]["citation_count"] == 123
+    assert results[0]["influential_citation_count"] == 11
+
+
+def test_crossref_search_normalizes_jats_abstract(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setenv("CROSSREF_MAILTO", "patent@example.com")
+    aggregator.crossref_mailto = "patent@example.com"
+    captured = {}
+
+    def _fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = dict(params or {})
+        return _FakeResponse(
+            {
+                "message": {
+                    "items": [
+                        {
+                            "title": ["Battery separator design"],
+                            "abstract": "<jats:p>Crossref abstract content.</jats:p>",
+                            "URL": "https://doi.org/10.1000/test",
+                            "DOI": "10.1000/test",
+                            "issued": {"date-parts": [[2023, 5, 4]]},
+                        }
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    results = aggregator._search_crossref(
+        [make_query_spec("battery separator design", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=3,
+    )
+
+    assert captured["params"]["query.bibliographic"] == "battery separator design"
+    assert captured["params"]["filter"] == "until-pub-date:2024-12-31"
+    assert captured["params"]["mailto"] == "patent@example.com"
+    assert len(results) == 1
+    assert results[0]["snippet"] == "Crossref abstract content."
+    assert results[0]["source_type"] == "crossref"
 
 
 def test_tavily_search_uses_advanced_params(monkeypatch):
@@ -385,6 +465,8 @@ def test_search_evidence_reranks_and_rebuilds_doc_ids(monkeypatch):
             },
         ],
     )
+    monkeypatch.setattr(aggregator, "_search_semanticscholar", lambda *args, **kwargs: [])
+    monkeypatch.setattr(aggregator, "_search_crossref", lambda *args, **kwargs: [])
 
     class _StubRerank:
         model = "qwen3-rerank"
@@ -414,6 +496,68 @@ def test_search_evidence_reranks_and_rebuilds_doc_ids(monkeypatch):
     assert meta["retrieval"]["openalex"]["queries"][0]["intent"] == "anchor"
 
 
+def test_semanticscholar_academic_signal_bonus_affects_rank_and_trace(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "doc-openalex",
+                "url": "https://example.com/openalex",
+                "snippet": "snippet-openalex",
+                "published": "2024-01-01",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "semanticscholar",
+                "title": "doc-s2",
+                "url": "https://example.com/s2",
+                "snippet": "snippet-s2",
+                "published": "2024-01-02",
+                "venue": "ICML",
+                "citation_count": 500,
+                "influential_citation_count": 100,
+            }
+        ],
+    )
+    monkeypatch.setattr(aggregator, "_search_crossref", lambda *args, **kwargs: [])
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            return [
+                {"index": 0, "relevance_score": 0.84},
+                {"index": 1, "relevance_score": 0.83},
+            ]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={
+            "openalex": [make_query_spec("query-a", "boolean", "anchor")],
+            "semanticscholar": [make_query_spec("query-a semanticscholar", "boolean", "anchor")],
+        },
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert engines == ["openalex", "semanticscholar"]
+    assert results[0]["source_type"] == "semanticscholar"
+    assert results[0]["venue"] == "ICML"
+    assert results[0]["citation_count"] == 500
+    assert results[0]["influential_citation_count"] == 100
+    assert meta["retrieval"]["semanticscholar"]["results"][0]["venue"] == "ICML"
+    assert meta["retrieval"]["semanticscholar"]["results"][0]["citation_count"] == 500
+
+
 def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
     _clear_external_env(monkeypatch)
     monkeypatch.setenv("RETRIEVAL_API_KEY", "retrieval-key")
@@ -439,6 +583,8 @@ def test_search_evidence_falls_back_when_rerank_fails(monkeypatch):
             },
         ],
     )
+    monkeypatch.setattr(aggregator, "_search_semanticscholar", lambda *args, **kwargs: [])
+    monkeypatch.setattr(aggregator, "_search_crossref", lambda *args, **kwargs: [])
 
     class _FailingRerank:
         model = "qwen3-rerank"
@@ -505,3 +651,278 @@ def test_search_evidence_collapses_duplicate_zhihuiya_variants(monkeypatch):
     assert len(results) == 1
     assert results[0]["url"].endswith("US20240303416A1")
     assert meta["retrieval"]["zhihuiya"]["result_count"] == 1
+
+
+def test_search_evidence_does_not_fan_out_openalex_queries_to_semanticscholar_and_crossref(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    captured = {"semanticscholar": [], "crossref": []}
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda queries, *args, **kwargs: captured["semanticscholar"].append(list(queries)) or [],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_crossref",
+        lambda queries, *args, **kwargs: captured["crossref"].append(list(queries)) or [],
+    )
+    monkeypatch.setattr(aggregator, "_rerank_results", lambda candidates, queries_by_engine: candidates)
+
+    _, _, meta = aggregator.search_evidence(
+        queries={"openalex": [make_query_spec("query-a", "boolean", "anchor")]},
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert captured["semanticscholar"] == []
+    assert captured["crossref"] == []
+    assert "semanticscholar" not in meta["retrieval"]
+    assert "crossref" not in meta["retrieval"]
+
+
+def test_search_evidence_limits_crossref_when_primary_academic_sources_exist(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "openalex-a",
+                "url": "https://example.com/openalex-a",
+                "snippet": "snippet-a",
+                "published": "2024-01-01",
+            },
+            {
+                "source_type": "openalex",
+                "title": "openalex-b",
+                "url": "https://example.com/openalex-b",
+                "snippet": "snippet-b",
+                "published": "2023-01-01",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "semanticscholar",
+                "title": "s2-a",
+                "url": "https://example.com/s2-a",
+                "snippet": "snippet-c",
+                "published": "2024-02-01",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_crossref",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "crossref",
+                "title": "crossref-a",
+                "url": "https://example.com/crossref-a",
+                "snippet": "snippet-d",
+                "published": "2024-03-01",
+            },
+            {
+                "source_type": "crossref",
+                "title": "crossref-b",
+                "url": "https://example.com/crossref-b",
+                "snippet": "snippet-e",
+                "published": "2024-04-01",
+            },
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            return [
+                {"index": 3, "relevance_score": 0.97},
+                {"index": 2, "relevance_score": 0.96},
+                {"index": 1, "relevance_score": 0.95},
+                {"index": 0, "relevance_score": 0.94},
+                {"index": 4, "relevance_score": 0.93},
+            ]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={
+            "openalex": [make_query_spec("query-a", "boolean", "anchor")],
+            "semanticscholar": [make_query_spec("query-a semanticscholar", "boolean", "anchor")],
+            "crossref": [make_query_spec("query-a crossref", "boolean", "anchor")],
+        },
+        priority_date="2024-12-31",
+        limit=4,
+    )
+
+    assert engines == ["openalex", "semanticscholar", "crossref"]
+    assert [item["source_type"] for item in results].count("crossref") == 0
+    assert [item["source_type"] for item in results][:3] == ["openalex", "semanticscholar", "openalex"]
+    assert meta["retrieval"]["crossref"]["raw_result_count"] == 2
+    assert meta["retrieval"]["crossref"]["result_count"] == 0
+
+
+def test_crossref_rank_prior_keeps_primary_academic_result_ahead(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "openalex-a",
+                "url": "https://example.com/openalex-a",
+                "snippet": "snippet-a",
+                "published": "2024-01-01",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_crossref",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "crossref",
+                "title": "crossref-a",
+                "url": "https://example.com/crossref-a",
+                "snippet": "snippet-b",
+                "published": "2024-02-01",
+            }
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            return [
+                {"index": 0, "relevance_score": 0.90},
+                {"index": 1, "relevance_score": 0.93},
+            ]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={
+            "openalex": [make_query_spec("query-a", "boolean", "anchor")],
+            "crossref": [make_query_spec("query-a crossref", "boolean", "anchor")],
+        },
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert engines == ["openalex", "crossref"]
+    assert [item["source_type"] for item in results] == ["openalex"]
+    assert meta["retrieval"]["crossref"]["raw_result_count"] == 1
+    assert meta["retrieval"]["crossref"]["result_count"] == 0
+
+
+def test_crossref_is_metadata_only_when_primary_academic_hits_exist(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "openalex",
+                "title": "openalex-a",
+                "url": "https://example.com/openalex-a",
+                "snippet": "snippet-a",
+                "published": "2024-01-01",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_crossref",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "crossref",
+                "title": "crossref-a",
+                "url": "https://example.com/crossref-a",
+                "snippet": "snippet-b",
+                "published": "2024-02-01",
+            }
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            assert len(documents) == 1
+            return [{"index": 0, "relevance_score": 0.90}]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={
+            "openalex": [make_query_spec("query-a", "boolean", "anchor")],
+            "crossref": [make_query_spec("query-a crossref", "boolean", "anchor")],
+        },
+        priority_date="2024-12-31",
+        limit=3,
+    )
+
+    assert engines == ["openalex", "crossref"]
+    assert [item["source_type"] for item in results] == ["openalex"]
+    assert meta["retrieval"]["crossref"]["raw_result_count"] == 1
+    assert meta["retrieval"]["crossref"]["result_count"] == 0
+
+
+def test_crossref_enters_candidate_pool_when_primary_academic_hits_absent(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    monkeypatch.setattr(aggregator, "_search_openalex", lambda *args, **kwargs: [])
+    monkeypatch.setattr(aggregator, "_search_semanticscholar", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        aggregator,
+        "_search_crossref",
+        lambda *args, **kwargs: [
+            {
+                "source_type": "crossref",
+                "title": "crossref-a",
+                "url": "https://example.com/crossref-a",
+                "snippet": "snippet-a",
+                "published": "2024-02-01",
+            }
+        ],
+    )
+
+    class _StubRerank:
+        model = "qwen3-rerank"
+
+        def rerank(self, query, documents):
+            assert len(documents) == 1
+            return [{"index": 0, "relevance_score": 0.93}]
+
+    monkeypatch.setattr(aggregator, "_get_rerank_service", lambda: _StubRerank())
+
+    results, engines, meta = aggregator.search_evidence(
+        queries={"crossref": [make_query_spec("query-a crossref", "boolean", "anchor")]},
+        priority_date="2024-12-31",
+        limit=3,
+    )
+
+    assert engines == ["crossref"]
+    assert [item["source_type"] for item in results] == ["crossref"]
+    assert meta["retrieval"]["crossref"]["result_count"] == 1

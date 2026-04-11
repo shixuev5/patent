@@ -208,3 +208,36 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
     assert documents[0]["claim_ids_json"] == ["1"]
     assert "paragraph_0003" in documents[0]["evidence_locations_json"]
     assert "paragraph_0005" in documents[0]["evidence_locations_json"]
+
+
+def test_close_read_load_supports_abstract_only_npl_documents(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_close_npl.db")
+    _create_task(storage, "task-close-npl", "close_read")
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-npl-1",
+                "task_id": "task-close-npl",
+                "plan_version": 1,
+                "source_type": "openalex",
+                "canonical_id": "doi:10.1000/npl",
+                "doi": "10.1000/npl",
+                "title": "A paper",
+                "abstract": "摘要级证据",
+                "venue": "Science",
+                "stage": "shortlisted",
+                "coarse_status": "kept",
+                "close_read_status": "pending",
+                "detail_source": "abstract_only",
+            }
+        ]
+    )
+
+    context = AiSearchAgentContext(storage, "task-close-npl")
+    tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
+
+    payload = json.loads(tool(operation="load", plan_version=1))
+
+    assert payload["documents"][0]["source_type"] == "openalex"
+    assert payload["documents"][0]["detail_source"] == "abstract_only"
+    assert payload["documents"][0]["fulltext_path"].endswith("doc-npl-1.txt")

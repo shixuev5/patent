@@ -87,6 +87,24 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     assert json.loads(main_tools["get_planning_context"]())["planner_draft"] == {}
 
 
+def test_publish_planner_draft_normalizes_database_names(tmp_path):
+    context, storage, task_id = _mount_context(tmp_path)
+    tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
+    main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+    spec = _execution_spec().model_copy(deep=True)
+    spec.search_scope["databases"] = ["zhihuiya", "openalex", "bad-db", "crossref", "openalex"]
+
+    tools["commit_plan_draft"](
+        review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+        execution_spec=spec,
+    )
+    plan_version = json.loads(main_tools["publish_planner_draft"]())["plan_version"]
+    plan = storage.get_ai_search_plan(task_id, plan_version)
+
+    assert plan is not None
+    assert plan["execution_spec_json"]["search_scope"]["databases"] == ["zhihuiya", "openalex", "crossref"]
+
+
 @pytest.mark.parametrize("probe_findings", ["", "None", "{}", '{"signals":[{"type":"semantic_probe","count":2}]}'])
 def test_planner_draft_commit_normalizes_string_probe_findings(tmp_path, probe_findings):
     context, storage, task_id = _mount_context(tmp_path)

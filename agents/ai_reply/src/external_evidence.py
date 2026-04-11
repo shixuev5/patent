@@ -1,6 +1,6 @@
 """
 外部证据聚合器
-统一接入 OpenAlex（学术）、智慧芽（专利）和 Tavily（网页）检索能力。
+统一接入 OpenAlex / Semantic Scholar / Crossref（学术），智慧芽（专利）和 Tavily（网页）检索能力。
 """
 
 from __future__ import annotations
@@ -20,6 +20,11 @@ from agents.ai_reply.src.retrieval_utils import (
     flatten_query_texts,
     normalize_query_specs,
 )
+from agents.common.retrieval.academic_search import (
+    AcademicSearchClient,
+    load_api_keys,
+    safe_json,
+)
 from agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
@@ -28,18 +33,21 @@ from agents.common.utils.concurrency import submit_with_current_context
 from config import settings
 
 
-class ExternalEvidenceAggregator:
+class ExternalEvidenceAggregator(AcademicSearchClient):
     """统一外部检索聚合器。"""
 
     _EXTERNAL_PER_QUERY = 8
     _MAX_RERANK_CANDIDATES = 24
+    _SOURCE_RANK_PRIORS = {
+        "openalex": 0.05,
+        "semanticscholar": 0.04,
+        "crossref": -0.08,
+        "zhihuiya": 0.0,
+        "tavily": 0.0,
+    }
 
     def __init__(self):
-        self.openalex_api_keys = self._load_api_keys("OPENALEX_API_KEYS")
-        self._openalex_key_cursor = 0
-        self.openalex_base_url = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org/works").strip()
-        self.openalex_email = os.getenv("OPENALEX_EMAIL", "").strip()
-
+        super().__init__(request_get=lambda *args, **kwargs: requests.get(*args, **kwargs))
         self.tavily_api_keys = self._load_api_keys("TAVILY_API_KEYS")
         self._tavily_key_cursor = 0
         self.tavily_base_url = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com/search").strip()
@@ -72,7 +80,13 @@ class ExternalEvidenceAggregator:
         Returns:
             (evidence_list, retrieval_engines, retrieval_meta)
         """
-        queries_by_engine: Dict[str, List[QuerySpec]] = {"openalex": [], "zhihuiya": [], "tavily": []}
+        queries_by_engine: Dict[str, List[QuerySpec]] = {
+            "openalex": [],
+            "semanticscholar": [],
+            "crossref": [],
+            "zhihuiya": [],
+            "tavily": [],
+        }
         for key, value in (queries or {}).items():
             engine = ENGINE_ALIASES.get(str(key).strip().lower())
             if engine and isinstance(value, list):
@@ -82,13 +96,29 @@ class ExternalEvidenceAggregator:
 
         engine_hits: Dict[str, List[Dict[str, Any]]] = {}
         engines: List[str] = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             future_map = {}
             if queries_by_engine.get("openalex"):
                 future_map["openalex"] = submit_with_current_context(
                     executor,
                     self._search_openalex,
                     queries_by_engine["openalex"],
+                    priority_date,
+                    self._EXTERNAL_PER_QUERY,
+                )
+            if queries_by_engine.get("semanticscholar"):
+                future_map["semanticscholar"] = submit_with_current_context(
+                    executor,
+                    self._search_semanticscholar,
+                    queries_by_engine["semanticscholar"],
+                    priority_date,
+                    self._EXTERNAL_PER_QUERY,
+                )
+            if queries_by_engine.get("crossref"):
+                future_map["crossref"] = submit_with_current_context(
+                    executor,
+                    self._search_crossref,
+                    queries_by_engine["crossref"],
                     priority_date,
                     self._EXTERNAL_PER_QUERY,
                 )
@@ -110,7 +140,7 @@ class ExternalEvidenceAggregator:
                     self._EXTERNAL_PER_QUERY,
                 )
 
-            for engine_name in ["openalex", "zhihuiya", "tavily"]:
+            for engine_name in ["openalex", "semanticscholar", "crossref", "zhihuiya", "tavily"]:
                 future = future_map.get(engine_name)
                 if not future:
                     continue
@@ -123,7 +153,7 @@ class ExternalEvidenceAggregator:
                     engine_hits[engine_name] = hits
                     engines.append(engine_name)
 
-        raw_candidates = [item for hits in engine_hits.values() for item in hits]
+        raw_candidates = self._collect_rank_candidates(engine_hits)
         deduped_candidates = self._interleave_by_source(
             self._dedupe_results(self._clean_results(raw_candidates))
         )[: self._MAX_RERANK_CANDIDATES]
@@ -145,7 +175,8 @@ class ExternalEvidenceAggregator:
 
         ranked_candidates = self._collapse_ranked_duplicates(ranked_candidates)
         merged = self._interleave_by_source(ranked_candidates)
-        final_results = [self._finalize_result(item) for item in merged[:limit]]
+        selected = self._limit_source_mix(merged, limit=limit)
+        final_results = [self._finalize_result(item) for item in selected[:limit]]
         for index, item in enumerate(final_results, start=1):
             item["doc_id"] = f"EXT{index}"
 
@@ -171,35 +202,53 @@ class ExternalEvidenceAggregator:
             query_text = " ".join(str((query or {}).get("text", "")).split())
             if not query_text:
                 continue
-            data = self._openalex_search_with_key_rotation(
+            rows = self.search_openalex(
                 query=query_text,
                 priority_date=priority_date,
                 per_query=per_query,
             )
-            if not data:
-                continue
-
-            for item in data.get("results", []) or []:
-                title = str(item.get("display_name", "")).strip()
-                primary_location = self._to_dict(item.get("primary_location", {}))
-                source = self._to_dict(primary_location.get("source", {}))
-                doi = str(item.get("doi", "")).strip()
-                url = str(primary_location.get("landing_page_url", "")).strip() or doi
-                snippet = self._extract_openalex_snippet(item)
-                published = str(item.get("publication_date", "")).strip() or str(item.get("publication_year", "")).strip()
-
+            for item in rows:
+                title = str(item.get("title", "")).strip()
+                url = str(item.get("url", "")).strip()
+                snippet = str(item.get("snippet", "")).strip()
+                published = str(item.get("published", "")).strip()
                 if not any([title, url, snippet]):
                     continue
                 if priority_date and published and not self._is_not_later_than(published, priority_date):
                     continue
 
-                results.append({
-                    "source_type": "openalex",
-                    "title": title or str(source.get("display_name", "")).strip(),
-                    "url": url,
-                    "snippet": snippet,
-                    "published": published,
-                })
+                results.append(item)
+
+        return results
+
+    def _search_semanticscholar(
+        self,
+        queries: List[QuerySpec],
+        priority_date: Optional[str],
+        per_query: int,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+
+        for query in queries:
+            query_text = " ".join(str((query or {}).get("text", "")).split())
+            if not query_text:
+                continue
+            rows = self.search_semanticscholar(
+                query=query_text,
+                priority_date=priority_date,
+                per_query=per_query,
+            )
+            for item in rows:
+                title = str(item.get("title", "")).strip()
+                abstract = str(item.get("abstract", "")).strip()
+                url = str(item.get("url", "")).strip()
+                published = str(item.get("published", "")).strip()
+                if priority_date and published and not self._is_not_later_than(published, priority_date):
+                    continue
+                if not any([title, abstract, url]):
+                    continue
+
+                results.append(item)
 
         return results
 
@@ -260,6 +309,36 @@ class ExternalEvidenceAggregator:
                     "published": published,
                     "pn": pn,
                 })
+
+        return results
+
+    def _search_crossref(
+        self,
+        queries: List[QuerySpec],
+        priority_date: Optional[str],
+        per_query: int,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+
+        for query in queries:
+            query_text = " ".join(str((query or {}).get("text", "")).split())
+            if not query_text:
+                continue
+            rows = self.search_crossref(
+                query=query_text,
+                priority_date=priority_date,
+                per_query=per_query,
+            )
+            for item in rows:
+                title = str(item.get("title", "")).strip()
+                snippet = str(item.get("snippet", "")).strip()
+                published = str(item.get("published", "")).strip()
+                if priority_date and published and not self._is_not_later_than(published, priority_date):
+                    continue
+                if not title or not snippet:
+                    continue
+
+                results.append(item)
 
         return results
 
@@ -324,6 +403,9 @@ class ExternalEvidenceAggregator:
                 "snippet": snippet[:800],
                 "published": str(row.get("published", "")).strip(),
                 "pn": str(row.get("pn", "")).strip(),
+                "venue": str(row.get("venue", "")).strip(),
+                "citation_count": self._safe_int(row.get("citation_count")),
+                "influential_citation_count": self._safe_int(row.get("influential_citation_count")),
             })
         return cleaned
 
@@ -350,11 +432,18 @@ class ExternalEvidenceAggregator:
         for index, item in enumerate(candidates):
             row = dict(item)
             row["relevance_score"] = round(best_scores[index], 6)
+            row["_ranking_score"] = round(
+                self._apply_source_rank_prior(
+                    source_type=str(row.get("source_type", "")).strip(),
+                    score=best_scores[index],
+                ) + self._apply_academic_signal_bonus(row),
+                6,
+            )
             row["_original_rank"] = index
             ranked.append(row)
         ranked.sort(
             key=lambda item: (
-                float(item.get("relevance_score", 0.0)),
+                float(item.get("_ranking_score", item.get("relevance_score", 0.0))),
                 self._normalize_date(item.get("published")) or "",
                 -int(item.get("_original_rank", 0)),
             ),
@@ -397,12 +486,19 @@ class ExternalEvidenceAggregator:
 
             row = dict(item)
             row["relevance_score"] = round(best_phrase * 1.0 + best_title_hits * 0.2 + best_coverage * 0.1, 6)
+            row["_ranking_score"] = round(
+                self._apply_source_rank_prior(
+                    source_type=str(row.get("source_type", "")).strip(),
+                    score=float(row.get("relevance_score", 0.0) or 0.0),
+                ) + self._apply_academic_signal_bonus(row),
+                6,
+            )
             row["_original_rank"] = index
             ranked.append(row)
 
         ranked.sort(
             key=lambda item: (
-                float(item.get("relevance_score", 0.0)),
+                float(item.get("_ranking_score", item.get("relevance_score", 0.0))),
                 self._normalize_date(item.get("published")) or "",
                 -int(item.get("_original_rank", 0)),
             ),
@@ -429,94 +525,14 @@ class ExternalEvidenceAggregator:
             "url": str(item.get("url", "")).strip(),
             "snippet": str(item.get("snippet", "")).strip(),
             "published": str(item.get("published", "")).strip(),
+            "venue": str(item.get("venue", "")).strip() or None,
+            "citation_count": self._safe_int(item.get("citation_count")),
+            "influential_citation_count": self._safe_int(item.get("influential_citation_count")),
             "relevance_score": round(self._safe_float(item.get("relevance_score"), 0.0), 6),
         }
 
     def _load_api_keys(self, *env_names: str) -> List[str]:
-        keys: List[str] = []
-
-        for env_name in env_names:
-            raw_value = os.getenv(env_name, "").strip()
-            if not raw_value:
-                continue
-            for key in re.split(r"[,\n;]+", raw_value):
-                value = key.strip()
-                if value and value not in keys:
-                    keys.append(value)
-
-        return keys
-
-    def _openalex_search_with_key_rotation(
-        self,
-        query: str,
-        priority_date: Optional[str],
-        per_query: int,
-    ) -> Dict[str, Any]:
-        normalized_query = self._normalize_openalex_query(query)
-        base_params: Dict[str, Any] = {"per-page": per_query}
-        filters: List[str] = []
-        if normalized_query:
-            filters.append(f"title_and_abstract.search:{normalized_query}")
-        filters.extend(["language:en", "has_abstract:true"])
-        if priority_date:
-            filters.append(f"to_publication_date:{priority_date}")
-        if filters:
-            base_params["filter"] = ",".join(filters)
-        if self.openalex_email:
-            base_params["mailto"] = self.openalex_email
-
-        if not self.openalex_api_keys:
-            try:
-                response = requests.get(
-                    self.openalex_base_url,
-                    params=base_params,
-                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                response.raise_for_status()
-                return self._safe_json(response)
-            except Exception as ex:
-                logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
-                return {}
-
-        total_keys = len(self.openalex_api_keys)
-        start_index = self._openalex_key_cursor
-        for offset in range(total_keys):
-            index = (start_index + offset) % total_keys
-            api_key = self.openalex_api_keys[index]
-            params = dict(base_params)
-            params["api_key"] = api_key
-            try:
-                response = requests.get(
-                    self.openalex_base_url,
-                    params=params,
-                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                status_code = int(response.status_code)
-                response_text = str(response.text or "")
-                data = self._safe_json(response)
-            except Exception as ex:
-                logger.warning(f"OpenAlex 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
-                self._openalex_key_cursor = (index + 1) % total_keys
-                continue
-
-            if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
-                logger.warning(
-                    f"OpenAlex key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}"
-                )
-                self._openalex_key_cursor = (index + 1) % total_keys
-                continue
-
-            if status_code >= 400:
-                logger.warning(
-                    f"OpenAlex 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
-                )
-                return {}
-
-            self._openalex_key_cursor = index
-            return data
-
-        logger.warning(f"OpenAlex 所有 key 均不可用，query={query[:100]}")
-        return {}
+        return load_api_keys(*env_names)
 
     def _tavily_search_with_key_rotation(
         self,
@@ -551,7 +567,7 @@ class ExternalEvidenceAggregator:
                 )
                 status_code = int(response.status_code)
                 response_text = str(response.text or "")
-                data = self._safe_json(response)
+                data = safe_json(response)
             except Exception as ex:
                 logger.warning(f"Tavily 请求失败，尝试下一个 key，query={query[:80]} error={ex}")
                 self._tavily_key_cursor = (index + 1) % total_keys
@@ -597,57 +613,6 @@ class ExternalEvidenceAggregator:
         ]
         return any(keyword in message for keyword in limit_keywords)
 
-    def _is_openalex_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
-        if status_code == 429:
-            return True
-        message_parts = [
-            response_text,
-            str(data.get("error", "")),
-            str(data.get("message", "")),
-            str(data.get("detail", "")),
-        ]
-        message = " ".join(part.lower() for part in message_parts if part)
-        limit_keywords = [
-            "rate limit",
-            "quota",
-            "exceed",
-            "limit reached",
-            "too many requests",
-        ]
-        return any(keyword in message for keyword in limit_keywords)
-
-    def _safe_json(self, response: requests.Response) -> Dict[str, Any]:
-        try:
-            data = response.json()
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
-        return {}
-
-    def _extract_openalex_snippet(self, item: Dict[str, Any]) -> str:
-        abstract_index = self._to_dict(item.get("abstract_inverted_index", {}))
-        if not abstract_index:
-            return ""
-        return self._recover_inverted_index_text(abstract_index)[:800]
-
-    def _recover_inverted_index_text(self, inverted_index: Dict[str, Any]) -> str:
-        positions: Dict[int, str] = {}
-        for token, token_positions in inverted_index.items():
-            if not isinstance(token_positions, list):
-                continue
-            for position in token_positions:
-                try:
-                    idx = int(position)
-                except Exception:
-                    continue
-                positions[idx] = token
-        if not positions:
-            return ""
-        max_index = max(positions.keys())
-        words = [positions.get(i, "") for i in range(max_index + 1)]
-        return " ".join(word for word in words if word)
-
     def _dedupe_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         deduped: List[Dict[str, Any]] = []
         seen: Set[str] = set()
@@ -691,7 +656,20 @@ class ExternalEvidenceAggregator:
             source_type = str(item.get("source_type", "")).strip() or "unknown"
             buckets.setdefault(source_type, []).append(item)
 
-        ordered_source_types = [key for key in ["openalex", "zhihuiya", "tavily"] if key in buckets]
+        academic_sources = [
+            key for key in ["openalex", "semanticscholar"] if key in buckets
+        ]
+        academic_sources.sort(
+            key=lambda key: float(
+                self._to_dict(buckets.get(key, [{}])[0]).get("_ranking_score")
+                or self._to_dict(buckets.get(key, [{}])[0]).get("relevance_score")
+                or 0.0
+            ),
+            reverse=True,
+        )
+        ordered_source_types = academic_sources + [
+            key for key in ["zhihuiya", "tavily", "crossref"] if key in buckets and key not in academic_sources
+        ]
         for source_type in buckets:
             if source_type not in ordered_source_types:
                 ordered_source_types.append(source_type)
@@ -708,6 +686,40 @@ class ExternalEvidenceAggregator:
             if not added:
                 break
         return merged
+
+    def _collect_rank_candidates(self, engine_hits: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        has_primary_academic_hits = any(engine_hits.get(engine) for engine in {"openalex", "semanticscholar"})
+        raw_candidates: List[Dict[str, Any]] = []
+        for engine_name in ["openalex", "semanticscholar", "zhihuiya", "tavily"]:
+            raw_candidates.extend(engine_hits.get(engine_name, []))
+        if not has_primary_academic_hits:
+            raw_candidates.extend(engine_hits.get("crossref", []))
+        return raw_candidates
+
+    def _limit_source_mix(self, results: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+
+        has_primary_academic = any(
+            str(item.get("source_type", "")).strip() in {"openalex", "semanticscholar"}
+            for item in results
+        )
+        source_caps: Dict[str, int] = {}
+        if has_primary_academic:
+            source_caps["crossref"] = 1
+
+        selected: List[Dict[str, Any]] = []
+        source_counts: Dict[str, int] = {}
+        for item in results:
+            source_type = str(item.get("source_type", "")).strip() or "unknown"
+            cap = source_caps.get(source_type)
+            if cap is not None and source_counts.get(source_type, 0) >= cap:
+                continue
+            selected.append(item)
+            source_counts[source_type] = source_counts.get(source_type, 0) + 1
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _build_retrieval_meta(
         self,
@@ -729,6 +741,14 @@ class ExternalEvidenceAggregator:
                 filters["language"] = "en"
                 filters["has_abstract"] = True
                 filters["search_field"] = "title_and_abstract.search"
+            if engine == "semanticscholar":
+                filters["fields"] = self.semanticscholar_fields
+                filters["search_field"] = "query"
+            if engine == "crossref":
+                filters["search_field"] = "query.bibliographic"
+                filters["select"] = self.crossref_select
+                if self.crossref_mailto:
+                    filters["mailto"] = self.crossref_mailto
             if engine == "zhihuiya":
                 filters["min_similarity_score"] = self.zhihuiya_min_similarity_score
             if engine == "tavily":
@@ -768,25 +788,39 @@ class ExternalEvidenceAggregator:
                 "title": str(item.get("title", "")).strip(),
                 "url": str(item.get("url", "")).strip() or None,
                 "published": str(item.get("published", "")).strip() or None,
+                "venue": str(item.get("venue", "")).strip() or None,
+                "citation_count": self._safe_int(item.get("citation_count")),
+                "influential_citation_count": self._safe_int(item.get("influential_citation_count")),
                 "relevance_score": round(self._safe_float(item.get("relevance_score"), 0.0), 6),
             })
         return {"retrieval": retrieval}
 
     def _source_to_engine(self, source_type: str) -> str:
-        if source_type in {"openalex", "zhihuiya", "tavily"}:
+        if source_type in {"openalex", "semanticscholar", "crossref", "zhihuiya", "tavily"}:
             return source_type
         return ""
+
+    def _apply_source_rank_prior(self, source_type: str, score: float) -> float:
+        prior = float(self._SOURCE_RANK_PRIORS.get(source_type, 0.0))
+        return max(0.0, min(1.0, float(score) + prior))
+
+    def _apply_academic_signal_bonus(self, item: Dict[str, Any]) -> float:
+        source_type = str(item.get("source_type", "")).strip()
+        if source_type != "semanticscholar":
+            return 0.0
+        citation_count = max(0, self._safe_int(item.get("citation_count"), 0) or 0)
+        influential_citation_count = max(0, self._safe_int(item.get("influential_citation_count"), 0) or 0)
+        venue = str(item.get("venue", "")).strip()
+        citation_bonus = min(citation_count, 500) / 500.0 * 0.02
+        influential_bonus = min(influential_citation_count, 100) / 100.0 * 0.03
+        venue_bonus = 0.005 if venue else 0.0
+        return round(citation_bonus + influential_bonus + venue_bonus, 6)
 
     def _normalize_search_text(self, value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
     def _tokenize_search_text(self, value: str) -> List[str]:
         return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", value)
-
-    def _normalize_openalex_query(self, query: Any) -> str:
-        text = " ".join(str(query or "").split())
-        text = text.replace(",", " ").replace("，", " ")
-        return re.sub(r"\s+", " ", text).strip()
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
@@ -795,6 +829,18 @@ class ExternalEvidenceAggregator:
             return float(value)
         except Exception:
             return float(default)
+
+    def _safe_int(self, value: Any, default: int | None = None) -> int | None:
+        try:
+            if value is None or value == "":
+                return default
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    return default
+            return int(float(value))
+        except Exception:
+            return default
 
     def _normalize_date(self, value: Any) -> Optional[str]:
         text = str(value or "").strip()

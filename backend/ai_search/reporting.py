@@ -161,8 +161,13 @@ def _sort_key(document: Dict[str, Any]) -> tuple[Any, ...]:
     return (
         _type_rank(str(document.get("document_type") or "").strip().upper()),
         -(int(publication_date.replace("-", "")) if publication_date.replace("-", "").isdigit() else 0),
-        str(document.get("pn") or ""),
+        str(document.get("pn") or document.get("doi") or document.get("title") or ""),
     )
+
+
+def _is_patent_document(document: Dict[str, Any]) -> bool:
+    source_type = str(document.get("source_type") or "").strip().lower()
+    return source_type in {"", "patent"} or bool(str(document.get("pn") or "").strip())
 
 
 def _extract_document_role_map(feature_compare_result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -244,7 +249,7 @@ def _to_html_table(headers: List[str], rows: List[List[str]], *, table_class: st
     return f'<table class="{table_class}"><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>'
 
 
-def _build_doc_rows(documents: List[Dict[str, Any]]) -> List[List[str]]:
+def _build_patent_doc_rows(documents: List[Dict[str, Any]]) -> List[List[str]]:
     rows: List[List[str]] = []
     for item in documents:
         rows.append(
@@ -260,20 +265,51 @@ def _build_doc_rows(documents: List[Dict[str, Any]]) -> List[List[str]]:
     return rows
 
 
+def _build_npl_doc_rows(documents: List[Dict[str, Any]]) -> List[List[str]]:
+    rows: List[List[str]] = []
+    for item in documents:
+        source_label = {
+            "openalex": "OpenAlex",
+            "semanticscholar": "Semantic Scholar",
+            "crossref": "Crossref",
+        }.get(str(item.get("source_type") or "").strip().lower(), str(item.get("source_type") or "").strip() or "非专")
+        doc_ref = str(item.get("doi") or item.get("url") or item.get("title") or "").strip() or "-"
+        venue = str(item.get("venue") or "").strip() or "-"
+        publisher = " / ".join(
+            part
+            for part in [source_label, venue]
+            if str(part or "").strip() and str(part or "").strip() != "-"
+        ) or "-"
+        rows.append(
+            [
+                f'<div class="center">{_escape(item.get("document_type") or "")}</div>',
+                _escape(str(item.get("title") or "").strip() or "-"),
+                f'<div class="center">{_escape(_normalize_date(item.get("publication_date")) or "-")}</div>',
+                _escape(publisher),
+                _escape(doc_ref),
+                f'<div class="center">{_escape(_compress_claim_ids(item.get("claim_ids_json") or []) or "-")}</div>',
+            ]
+        )
+    return rows
+
+
 def _build_search_record_lines(documents: List[Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
     for item in documents:
-        pn = str(item.get("pn") or "").strip()
+        doc_ref = str(item.get("pn") or item.get("doi") or item.get("title") or item.get("document_id") or "").strip()
         lanes = ",".join(_unique_strings(item.get("source_lanes_json") or []))
         batches = ",".join(_unique_strings(item.get("source_batches_json") or []))
         terms = []
+        source_type = str(item.get("source_type") or "").strip()
+        if source_type:
+            terms.append(f"来源类型={source_type}")
         if lanes:
             terms.append(f"来源={lanes}")
         if batches:
             terms.append(f"批次={batches}")
         summary = "；".join(terms) if terms else "已入选对比文献"
-        if pn:
-            lines.append(f"{pn}: {summary}")
+        if doc_ref:
+            lines.append(f"{doc_ref}: {summary}")
     return lines or ["当前轮未记录结构化检索轨迹摘要。"]
 
 
@@ -295,8 +331,15 @@ def build_ai_search_report_markdown(
     claim_count = len(claims)
     paragraph_count = len(patent_data.get("description_paragraphs")) if isinstance(patent_data.get("description_paragraphs"), list) else 0
     selected_documents = [item for item in documents if str(item.get("stage") or "").strip() == "selected"]
+    patent_documents = [item for item in selected_documents if _is_patent_document(item)]
+    non_patent_documents = [item for item in selected_documents if not _is_patent_document(item)]
     search_record_lines = _build_search_record_lines(selected_documents)
-    plan_scope = current_plan.get("executionSpec", {}).get("search_scope", {}) if isinstance(current_plan, dict) else {}
+    plan_scope = {}
+    if isinstance(current_plan, dict):
+        if isinstance(current_plan.get("executionSpec"), dict):
+            plan_scope = current_plan.get("executionSpec", {}).get("search_scope", {}) or {}
+        elif isinstance(current_plan.get("execution_spec"), dict):
+            plan_scope = current_plan.get("execution_spec", {}).get("search_scope", {}) or {}
     objective = str(plan_scope.get("objective") or "").strip()
     notes = []
     readiness_rationale = str((feature_compare_result or {}).get("readiness_rationale") or "").strip()
@@ -346,7 +389,7 @@ def build_ai_search_report_markdown(
     )
     patent_table = _to_html_table(
         ["类型", "国别以及代码[11]给出的文献号", "代码[43]或[45]给出的日期", "IPC分类号", "相关的段落和/或图号", "涉及的权利要求"],
-        _build_doc_rows(selected_documents) or [[
+        _build_patent_doc_rows(patent_documents) or [[
             '<div class="center">-</div>',
             '<div class="center">-</div>',
             '<div class="center">-</div>',
@@ -357,8 +400,15 @@ def build_ai_search_report_markdown(
         table_class="ai-search-doc-table",
     )
     non_patent_table = _to_html_table(
-        ["类型", "书名（包括版本号和卷号）", "出版日期", "作者姓名和出版者名称", "相关页数", "涉及的权利要求"],
-        [["", "", "", "", "", ""]],
+        ["类型", "题名", "出版日期", "来源", "DOI / URL", "涉及的权利要求"],
+        _build_npl_doc_rows(non_patent_documents) or [[
+            '<div class="center">-</div>',
+            "-",
+            '<div class="center">-</div>',
+            "-",
+            "-",
+            '<div class="center">-</div>',
+        ]],
         table_class="ai-search-empty-table",
     )
     note_block = ""

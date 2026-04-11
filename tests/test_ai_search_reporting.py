@@ -80,6 +80,36 @@ def test_build_ai_search_report_markdown_contains_required_document_columns() ->
     assert "1-2" in markdown
 
 
+def test_build_ai_search_report_markdown_renders_non_patent_documents() -> None:
+    task = SimpleNamespace(pn="CN202600001A")
+    markdown = build_ai_search_report_markdown(
+        task=task,
+        current_plan={"execution_spec": {"search_scope": {"objective": "测试目标"}}},
+        documents=[
+            {
+                "document_id": "doc-npl-1",
+                "stage": "selected",
+                "document_type": "Y",
+                "source_type": "openalex",
+                "title": "Academic Paper",
+                "doi": "10.1000/example",
+                "venue": "Nature",
+                "publication_date": "2023-09-01",
+                "claim_ids_json": ["1"],
+            }
+        ],
+        feature_comparison=None,
+        close_read_result={},
+        feature_compare_result={},
+        source_patent_data={"bibliographic_data": {}},
+    )
+
+    assert "相关非专利文献" in markdown
+    assert "Academic Paper" in markdown
+    assert "10.1000/example" in markdown
+    assert "OpenAlex / Nature" in markdown
+
+
 def test_build_ai_search_bundle_excludes_json_and_markdown(tmp_path, monkeypatch) -> None:
     report_pdf = tmp_path / "ai_search_report.pdf"
     report_pdf.write_bytes(b"%PDF-1.4")

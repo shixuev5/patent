@@ -1,0 +1,432 @@
+"""Common academic retrieval client for OpenAlex / Semantic Scholar / Crossref."""
+
+from __future__ import annotations
+
+import os
+import re
+from html import unescape
+from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
+
+import requests
+from loguru import logger
+
+from agents.common.retrieval.academic_query_utils import normalize_academic_query
+from config import settings
+
+
+def load_api_keys(*env_names: str) -> List[str]:
+    keys: List[str] = []
+    for env_name in env_names:
+        raw_value = os.getenv(env_name, "").strip()
+        if not raw_value:
+            continue
+        for key in re.split(r"[,\n;]+", raw_value):
+            value = key.strip()
+            if value and value not in keys:
+                keys.append(value)
+    return keys
+
+
+def safe_json(response: requests.Response) -> Dict[str, Any]:
+    try:
+        data = response.json()
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def safe_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def recover_inverted_index_text(inverted_index: Dict[str, Any]) -> str:
+    positions: Dict[int, str] = {}
+    for token, token_positions in inverted_index.items():
+        if not isinstance(token_positions, list):
+            continue
+        for position in token_positions:
+            try:
+                idx = int(position)
+            except Exception:
+                continue
+            positions[idx] = str(token or "")
+    if not positions:
+        return ""
+    max_index = max(positions.keys())
+    words = [positions.get(i, "") for i in range(max_index + 1)]
+    return " ".join(word for word in words if word)
+
+
+def extract_openalex_abstract(item: Dict[str, Any]) -> str:
+    abstract_index = item.get("abstract_inverted_index")
+    if not isinstance(abstract_index, dict):
+        return ""
+    return normalize_academic_query(recover_inverted_index_text(abstract_index))
+
+
+def first_text(value: Any) -> str:
+    if isinstance(value, list):
+        for item in value:
+            text = normalize_academic_query(item)
+            if text:
+                return text
+        return ""
+    return normalize_academic_query(value)
+
+
+def normalize_crossref_abstract(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"</?(jats:)?[^>]+>", " ", text)
+    text = unescape(text)
+    return normalize_academic_query(text)
+
+
+def extract_crossref_published(item: Dict[str, Any]) -> str:
+    for key in ("published-print", "published-online", "issued"):
+        row = item.get(key)
+        if not isinstance(row, dict):
+            continue
+        date_parts = row.get("date-parts")
+        if not isinstance(date_parts, list) or not date_parts or not isinstance(date_parts[0], list):
+            continue
+        first = date_parts[0]
+        if not first:
+            continue
+        try:
+            year = str(int(first[0])).zfill(4)
+        except Exception:
+            continue
+        month = "01"
+        day = "01"
+        if len(first) >= 2:
+            try:
+                month = str(int(first[1])).zfill(2)
+            except Exception:
+                month = "01"
+        if len(first) >= 3:
+            try:
+                day = str(int(first[2])).zfill(2)
+            except Exception:
+                day = "01"
+        return f"{year}-{month}-{day}"
+    return ""
+
+
+def external_id_from_url(url: Any) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if not parsed.path:
+        return ""
+    return parsed.path.rstrip("/").split("/")[-1].strip()
+
+
+class AcademicSearchClient:
+    def __init__(
+        self,
+        *,
+        request_get: Callable[..., requests.Response] | None = None,
+    ) -> None:
+        self._request_get = request_get or requests.get
+        self.openalex_api_keys = load_api_keys("OPENALEX_API_KEYS")
+        self._openalex_key_cursor = 0
+        self.openalex_base_url = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org/works").strip()
+        self.openalex_email = os.getenv("OPENALEX_EMAIL", "").strip()
+
+        self.semanticscholar_api_keys = load_api_keys("SEMANTIC_SCHOLAR_API_KEYS")
+        self._semanticscholar_key_cursor = 0
+        self.semanticscholar_base_url = os.getenv(
+            "SEMANTIC_SCHOLAR_BASE_URL",
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+        ).strip()
+        self.semanticscholar_fields = ",".join(
+            [
+                "paperId",
+                "externalIds",
+                "title",
+                "abstract",
+                "url",
+                "venue",
+                "language",
+                "year",
+                "publicationDate",
+                "citationCount",
+                "influentialCitationCount",
+                "openAccessPdf",
+            ]
+        )
+
+        self.crossref_base_url = os.getenv("CROSSREF_BASE_URL", "https://api.crossref.org/works").strip()
+        self.crossref_mailto = os.getenv("CROSSREF_MAILTO", "").strip() or self.openalex_email
+        self.crossref_select = ",".join(
+            [
+                "DOI",
+                "URL",
+                "title",
+                "abstract",
+                "container-title",
+                "language",
+                "published-print",
+                "published-online",
+                "issued",
+                "score",
+            ]
+        )
+
+    def search_openalex(self, query: str, priority_date: Optional[str], per_query: int) -> List[Dict[str, Any]]:
+        data = self.openalex_search_raw(query, priority_date, per_query)
+        results: List[Dict[str, Any]] = []
+        for item in data.get("results", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            primary_location = item.get("primary_location") if isinstance(item.get("primary_location"), dict) else {}
+            source = primary_location.get("source") if isinstance(primary_location.get("source"), dict) else {}
+            doi = normalize_academic_query(item.get("doi"))
+            normalized_doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
+            abstract = extract_openalex_abstract(item)
+            published = normalize_academic_query(item.get("publication_date") or item.get("publication_year"))
+            results.append(
+                {
+                    "source_type": "openalex",
+                    "external_id": external_id_from_url(item.get("id")),
+                    "doi": normalized_doi,
+                    "url": normalize_academic_query(primary_location.get("landing_page_url")) or doi,
+                    "title": normalize_academic_query(item.get("display_name")),
+                    "abstract": abstract,
+                    "snippet": abstract[:800],
+                    "venue": normalize_academic_query(source.get("display_name")),
+                    "publication_date": published,
+                    "published": published,
+                    "language": normalize_academic_query(item.get("language")),
+                }
+            )
+        return results
+
+    def search_semanticscholar(self, query: str, priority_date: Optional[str], per_query: int) -> List[Dict[str, Any]]:
+        data = self.semanticscholar_search_raw(query, priority_date, per_query)
+        results: List[Dict[str, Any]] = []
+        for item in data.get("data", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            open_access_pdf = item.get("openAccessPdf") if isinstance(item.get("openAccessPdf"), dict) else {}
+            external_ids = item.get("externalIds") if isinstance(item.get("externalIds"), dict) else {}
+            abstract = normalize_academic_query(item.get("abstract"))
+            published = normalize_academic_query(item.get("publicationDate") or item.get("year"))
+            results.append(
+                {
+                    "source_type": "semanticscholar",
+                    "external_id": normalize_academic_query(item.get("paperId"))
+                    or normalize_academic_query(external_ids.get("CorpusId"))
+                    or external_id_from_url(item.get("url")),
+                    "doi": normalize_academic_query(external_ids.get("DOI")),
+                    "url": normalize_academic_query(item.get("url")) or normalize_academic_query(open_access_pdf.get("url")),
+                    "title": normalize_academic_query(item.get("title")),
+                    "abstract": abstract,
+                    "snippet": abstract[:800],
+                    "venue": normalize_academic_query(item.get("venue")),
+                    "publication_date": published,
+                    "published": published,
+                    "language": normalize_academic_query(item.get("language")),
+                    "citation_count": safe_int(item.get("citationCount")),
+                    "influential_citation_count": safe_int(item.get("influentialCitationCount")),
+                }
+            )
+        return results
+
+    def search_crossref(self, query: str, priority_date: Optional[str], per_query: int) -> List[Dict[str, Any]]:
+        data = self.crossref_search_raw(query, priority_date, per_query)
+        message = data.get("message") if isinstance(data.get("message"), dict) else {}
+        results: List[Dict[str, Any]] = []
+        for item in message.get("items", []) if isinstance(message, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            doi = normalize_academic_query(item.get("DOI"))
+            abstract = normalize_crossref_abstract(item.get("abstract"))
+            published = extract_crossref_published(item)
+            results.append(
+                {
+                    "source_type": "crossref",
+                    "external_id": doi or external_id_from_url(item.get("URL")),
+                    "doi": doi,
+                    "url": normalize_academic_query(item.get("URL")) or (f"https://doi.org/{doi}" if doi else ""),
+                    "title": first_text(item.get("title")),
+                    "abstract": abstract,
+                    "snippet": abstract[:800],
+                    "venue": first_text(item.get("container-title")),
+                    "publication_date": published,
+                    "published": published,
+                    "language": normalize_academic_query(item.get("language")),
+                    "score": item.get("score"),
+                }
+            )
+        return results
+
+    def openalex_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        normalized_query = normalize_academic_query(query)
+        base_params: Dict[str, Any] = {"per-page": per_query}
+        filters: List[str] = []
+        if normalized_query:
+            filters.append(f"title_and_abstract.search:{normalized_query}")
+        filters.extend(["language:en", "has_abstract:true"])
+        if priority_date:
+            filters.append(f"to_publication_date:{priority_date}")
+        if filters:
+            base_params["filter"] = ",".join(filters)
+        if self.openalex_email:
+            base_params["mailto"] = self.openalex_email
+
+        if not self.openalex_api_keys:
+            try:
+                response = self._request_get(
+                    self.openalex_base_url,
+                    params=base_params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                return safe_json(response)
+            except Exception as ex:
+                logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
+                return {}
+
+        total_keys = len(self.openalex_api_keys)
+        start_index = self._openalex_key_cursor
+        for offset in range(total_keys):
+            index = (start_index + offset) % total_keys
+            params = dict(base_params)
+            params["api_key"] = self.openalex_api_keys[index]
+            try:
+                response = self._request_get(
+                    self.openalex_base_url,
+                    params=params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = safe_json(response)
+            except Exception as ex:
+                logger.warning(f"OpenAlex 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+
+            if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
+                logger.warning(f"OpenAlex key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}")
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+            if status_code >= 400:
+                logger.warning(
+                    f"OpenAlex 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
+                )
+                return {}
+            self._openalex_key_cursor = index
+            return data
+
+        logger.warning(f"OpenAlex 所有 key 均不可用，query={query[:100]}")
+        return {}
+
+    def semanticscholar_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "query": normalize_academic_query(query),
+            "limit": per_query,
+            "fields": self.semanticscholar_fields,
+        }
+        if priority_date:
+            params["publicationDateOrYear"] = f":{priority_date}"
+
+        if not self.semanticscholar_api_keys:
+            try:
+                response = self._request_get(
+                    self.semanticscholar_base_url,
+                    params=params,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                return safe_json(response)
+            except Exception as ex:
+                logger.warning(f"Semantic Scholar 检索失败，query={query[:100]} error={ex}")
+                return {}
+
+        total_keys = len(self.semanticscholar_api_keys)
+        start_index = self._semanticscholar_key_cursor
+        for offset in range(total_keys):
+            index = (start_index + offset) % total_keys
+            headers = {"x-api-key": self.semanticscholar_api_keys[index]}
+            try:
+                response = self._request_get(
+                    self.semanticscholar_base_url,
+                    params=params,
+                    headers=headers,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = safe_json(response)
+            except Exception as ex:
+                logger.warning(f"Semantic Scholar 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
+                self._semanticscholar_key_cursor = (index + 1) % total_keys
+                continue
+
+            if self._is_semanticscholar_limit_error(status_code=status_code, data=data, response_text=response_text):
+                logger.warning(
+                    f"Semantic Scholar key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}"
+                )
+                self._semanticscholar_key_cursor = (index + 1) % total_keys
+                continue
+            if status_code >= 400:
+                logger.warning(
+                    f"Semantic Scholar 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
+                )
+                return {}
+            self._semanticscholar_key_cursor = index
+            return data
+
+        logger.warning(f"Semantic Scholar 所有 key 均不可用，query={query[:100]}")
+        return {}
+
+    def crossref_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "query.bibliographic": normalize_academic_query(query),
+            "rows": per_query,
+            "select": self.crossref_select,
+        }
+        filters: List[str] = []
+        if priority_date:
+            filters.append(f"until-pub-date:{priority_date}")
+        if filters:
+            params["filter"] = ",".join(filters)
+        if self.crossref_mailto:
+            params["mailto"] = self.crossref_mailto
+        try:
+            response = self._request_get(
+                self.crossref_base_url,
+                params=params,
+                timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return safe_json(response)
+        except Exception as ex:
+            logger.warning(f"Crossref 检索失败，query={query[:100]} error={ex}")
+            return {}
+
+    def _is_openalex_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
+        if status_code == 429:
+            return True
+        message = " ".join(
+            part.lower()
+            for part in [response_text, str(data.get("error", "")), str(data.get("message", "")), str(data.get("detail", ""))]
+            if part
+        )
+        return any(keyword in message for keyword in ["rate limit", "quota", "exceed", "limit reached", "too many requests"])
+
+    def _is_semanticscholar_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:
+        if status_code == 429:
+            return True
+        message = " ".join(
+            part.lower()
+            for part in [response_text, str(data.get("error", "")), str(data.get("message", "")), str(data.get("detail", ""))]
+            if part
+        )
+        return any(keyword in message for keyword in ["rate limit", "quota", "exceed", "too many requests"])

@@ -20,16 +20,22 @@ def build_close_reader_prompt(
     
     payload = []
     for item in documents:
+        document_id = str(item.get("document_id") or "").strip()
         pn = str(item.get("pn") or "").strip().upper()
         payload.append(
             {
-                "document_id": item["document_id"],
+                "document_id": document_id,
+                "source_type": str(item.get("source_type") or "").strip(),
                 "pn": pn,
+                "doi": str(item.get("doi") or "").strip(),
+                "venue": str(item.get("venue") or "").strip(),
+                "url": str(item.get("url") or "").strip(),
                 "title": item["title"],
                 "abstract": item["abstract"],
                 "claims_preview": item.get("claims", "")[:2000],  # 防超长截断
                 "description_preview": item.get("description", "")[:2000],
-                "fulltext_path": file_map.get(pn, "FILE_NOT_FOUND"),
+                "detail_source": str(item.get("detail_source") or "").strip() or "abstract_only",
+                "fulltext_path": file_map.get(document_id, "FILE_NOT_FOUND"),
                 "target_terms": target_terms[:12],
             }
         )
@@ -37,7 +43,8 @@ def build_close_reader_prompt(
     return (
         "【任务输入】\n"
         "请根据以下给定的『检索要素』与『检索边界』，对本批次 (Shortlist) 文献进行深度阅读。\n"
-        "核心要求：必须优先在 `fulltext_path` 指向的文件中使用 `grep`/`read_file` 定位实体证据段落。所有的判定必须基于原文证据，严禁主观臆断。\n\n"
+        "核心要求：若 `detail_source` 不是 `abstract_only`，必须优先在 `fulltext_path` 指向的文件中使用 `grep`/`read_file` 定位实体证据段落。"
+        "若 `detail_source=abstract_only`，允许基于摘要与元数据做降级判断，并在 `evidence_sufficiency` 中明确写明“摘要级阅读”。所有判定都必须基于输入证据，严禁主观臆断。\n\n"
         "最终请提交包含 `selected` / `rejected` / `key_passages` / `claim_alignments` / `limitation_coverage` / `limitation_gaps` / `document_assessments` 的结构化结果。\n\n"
         f"检索边界 (Constraints):\n{json.dumps(constraints, ensure_ascii=False)}\n\n"
         f"检索要素 (Search Elements):\n{json.dumps(search_elements, ensure_ascii=False)}\n\n"
@@ -67,8 +74,9 @@ CLOSE_READER_SYSTEM_PROMPT = """
 # 必走执行序列 (Execution Sequence)
 1. **Load (加载任务)**：调用 `run_close_read_batch(operation="load")` 获取工作目录与待办文献的关联上下文。
 2. **Investigation (取证调查)**：
-   - 根据输入中的 `fulltext_path` 和 `target_terms`，使用 `grep` 工具在工作区快速定位包含技术特征的原文行。
-   - 使用 `read_file` 读取证据前后的上下文（通常 20-50 行即可），确认其准确语义。
+   - 若 `detail_source` 不是 `abstract_only`，根据输入中的 `fulltext_path` 和 `target_terms`，使用 `grep` 工具在工作区快速定位包含技术特征的原文行。
+   - 若存在全文路径，再使用 `read_file` 读取证据前后的上下文（通常 20-50 行即可），确认其准确语义。
+   - 若 `detail_source=abstract_only`，允许基于摘要、期刊/会议信息和标题做摘要级阅读，但必须在 `document_assessments[*].evidence_sufficiency` 里明确写明“摘要级阅读”。
    - 结合摘要、说明书和权利要求，形成判定结论。
 3. **Commit (裁决回写)**：调用 `run_close_read_batch(operation="commit", payload_json=...)` 提交结构化裁决结果。
 
@@ -95,5 +103,6 @@ Commit 的 payload_json 非常复杂，必须严格包含以下根节点：
 
 # 异常与边界处理规范 (Edge Cases)
 1. **文件缺失/报错**：如果 `grep` 或 `read_file` 找不到指定文件，转而依赖传入的 `claims_preview` 和 `description_preview` 进行降级判断。并在 `evidence_sufficiency` 中注明“全文丢失，基于摘要/权利要求判断”。
-2. **证据不足强制否决**：如果文献整体相关，但就是**找不到任何明确的证据段落**支撑核心要素，必须将其放入 `rejected`，并在 `limitation_gaps` 和 `document_assessments` 中说明原因：“缺乏直接公开证据”。
+2. **摘要级文献**：如果 `detail_source=abstract_only`，允许直接基于摘要和元数据判定，但若摘要仍不足以支撑核心公开，应放入 `rejected`，并注明“仅有摘要级证据”。
+3. **证据不足强制否决**：如果文献整体相关，但就是**找不到任何明确的证据段落**支撑核心要素，必须将其放入 `rejected`，并在 `limitation_gaps` 和 `document_assessments` 中说明原因：“缺乏直接公开证据”。
 """.strip()
