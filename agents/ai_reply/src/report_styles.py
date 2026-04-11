@@ -548,13 +548,14 @@ th, td {
 }
 
 .oar-opinion-body-formal {
-    text-indent: 0;
+    text-indent: 2em;
     line-height: 1.82;
 }
 
 .oar-opinion-body-summary {
     text-indent: 0;
-    line-height: 1.65;
+    line-height: 1.72;
+    color: var(--oar-muted);
 }
 
 .oar-claim-snapshot-list {
@@ -589,31 +590,37 @@ th, td {
 }
 
 .oar-review-summary-list {
-    display: grid;
-    gap: 8px;
+    display: block;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
 }
 
 .oar-review-summary-item {
-    display: grid;
-    grid-template-columns: 18px minmax(0, 1fr);
-    gap: 6px;
-    align-items: start;
-    padding: 8px 10px;
-    border: 1px solid var(--oar-border-soft);
-    border-radius: 8px;
-    background: var(--oar-surface-soft);
+    display: block;
+    padding: 0;
+}
+
+.oar-review-summary-item + .oar-review-summary-item {
+    margin-top: 4px;
+    border-top: none;
 }
 
 .oar-review-summary-bullet {
-    font-size: 12px;
-    font-weight: 800;
-    color: var(--oar-accent-strong);
-    line-height: 1.55;
+    display: inline;
+    margin-right: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--oar-subtle);
+    line-height: 1.72;
 }
 
 .oar-review-summary-text {
-    color: var(--oar-ink);
-    line-height: 1.65;
+    display: inline;
+    color: var(--oar-muted);
+    line-height: 1.72;
+    font-size: 14px;
     word-break: break-word;
 }
 
