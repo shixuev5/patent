@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -386,6 +389,39 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     assert disconnected.bindingStatus == 'unbound'
 
 
+def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
+    user = CurrentUser(user_id='authing:wechat-refresh-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='wechat-refresh-user',
+            name='刷新二维码用户',
+            email='wechat-refresh@example.com',
+        )
+    )
+
+    first = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+    second = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+
+    assert first.bindSessionId != second.bindSessionId
+    assert first.qrPayload != second.qrPayload
+    cancelled = storage.get_wechat_bind_session(first.bindSessionId)
+    assert cancelled is not None
+    assert cancelled.status == 'cancelled'
+    assert second.status == 'pending'
+
+
+def test_account_wechat_bind_qr_svg_depends_on_payload():
+    first = account._render_bind_qr_svg('wechat-bind:wbs-001:ABCDEF12')
+    second = account._render_bind_qr_svg('wechat-bind:wbs-002:ABCDEF12')
+
+    assert first.startswith('<svg')
+    assert '<path' in first
+    assert first != second
+
+
 def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
@@ -415,6 +451,80 @@ def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
     assert completed['binding']['wechatPeerName'] == '扫码微信'
     integrated = asyncio.run(account.get_account_wechat_integration(current_user=user))
     assert integrated.bindingStatus == 'bound'
+
+
+def _load_im_gateway_main():
+    module_path = Path(__file__).resolve().parents[1] / 'im-gateway' / 'main.py'
+    module_name = 'test_im_gateway_main_module'
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(module_path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    return module
+
+
+def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.setattr(im_gateway_main, 'LOGIN_RETRY_SECONDS', 1)
+
+    events: list[str] = []
+
+    class FakeBackend:
+        async def close(self):
+            events.append('backend:close')
+
+    class FakeBot:
+        def __init__(self, *, login_error: Exception | None = None, start_error: BaseException | None = None):
+            self.login_error = login_error
+            self.start_error = start_error
+
+        def on_message(self, _handler):
+            events.append('handler:registered')
+
+        async def login(self):
+            events.append('bot:login')
+            if self.login_error is not None:
+                raise self.login_error
+
+        async def start(self):
+            events.append('bot:start')
+            if self.start_error is not None:
+                raise self.start_error
+
+        async def stop(self):
+            events.append('bot:stop')
+
+    bots = [
+        FakeBot(login_error=RuntimeError('QR code expired 3 times — login aborted')),
+        FakeBot(start_error=asyncio.CancelledError()),
+    ]
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    def fake_build_bot():
+        return bots.pop(0)
+
+    async def fake_poll_delivery_jobs():
+        await asyncio.Event().wait()
+
+    async def fake_sleep(seconds: int):
+        events.append(f'sleep:{seconds}')
+
+    monkeypatch.setattr(gateway, '_build_bot', fake_build_bot)
+    monkeypatch.setattr(gateway, '_poll_delivery_jobs', fake_poll_delivery_jobs)
+    monkeypatch.setattr(im_gateway_main.asyncio, 'sleep', fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway.run())
+
+    assert events.count('bot:login') == 2
+    assert 'sleep:1' in events
+    assert events.count('bot:stop') == 2
+    assert events[-1] == 'backend:close'
 
 
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):

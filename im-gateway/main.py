@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import os
 import re
 from pathlib import Path
@@ -20,6 +22,7 @@ DEFAULT_BACKEND_PORT = str(os.getenv("PORT", "7860") or "7860").strip() or "7860
 API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}")
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
+LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
 DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(Path(__file__).resolve().parent / "tmp")))
 BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
@@ -27,7 +30,7 @@ BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 class WeChatGateway:
     def __init__(self, *, backend: BackendClient) -> None:
         self.backend = backend
-        self.bot = self._build_bot()
+        self.bot: Any = None
 
     def _build_bot(self) -> Any:
         try:
@@ -45,14 +48,45 @@ class WeChatGateway:
 
     async def run(self) -> None:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        self._register_handlers()
         poller = asyncio.create_task(self._poll_delivery_jobs())
         try:
-            await self.bot.login()
-            await self.bot.start()
+            while True:
+                self.bot = self._build_bot()
+                self._register_handlers()
+                try:
+                    print("[im-gateway] waiting for login")
+                    await self.bot.login()
+                    print("[im-gateway] login succeeded")
+                    await self.bot.start()
+                    print("[im-gateway] bot session ended, restarting login flow")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[im-gateway] login loop failed: {exc}. retrying in {LOGIN_RETRY_SECONDS}s")
+                finally:
+                    await self._close_bot()
+                await asyncio.sleep(LOGIN_RETRY_SECONDS)
         finally:
             poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
             await self.backend.close()
+
+    async def _close_bot(self) -> None:
+        bot, self.bot = self.bot, None
+        if bot is None:
+            return
+        for method_name in ("stop", "close", "aclose"):
+            method = getattr(bot, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                pass
+            return
 
     def _register_handlers(self) -> None:
         async def _on_message(msg: Any) -> None:  # pragma: no cover - depends on optional sdk

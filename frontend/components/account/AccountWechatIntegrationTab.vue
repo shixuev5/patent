@@ -13,7 +13,7 @@
           :disabled="startingBindSession"
           @click="emit('startBindSession')"
         >
-          {{ startingBindSession ? '生成中...' : '生成绑定二维码' }}
+          {{ bindButtonLabel }}
         </button>
       </div>
 
@@ -101,12 +101,29 @@
         </div>
 
         <div class="wechat-bind-grid">
-          <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
+          <div class="wechat-qr-stage">
+            <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
+            <div class="wechat-qr-code-card">
+              <p class="wechat-qr-code-label">备用绑定码</p>
+              <p class="wechat-qr-code-value">{{ bindSession.bindCode }}</p>
+              <p class="wechat-copy-text">如果当前不方便扫码，可以直接把这串绑定码发给接入微信号。</p>
+            </div>
+          </div>
+
           <div class="wechat-bind-copy">
-            <p class="wechat-copy-title">绑定说明</p>
-            <p class="wechat-copy-text">1. 使用接入微信号扫描二维码或录入绑定码。</p>
-            <p class="wechat-copy-text">2. 成功后当前账号会立即与该微信私聊身份绑定。</p>
-            <p class="wechat-copy-text">3. 绑定完成后，后续任务结果会自动推送到微信。</p>
+            <p class="wechat-copy-title">绑定流程预览</p>
+            <p class="wechat-copy-text">左侧二维码用于接入微信号扫码，右侧展示扫码后在微信里会看到的对话效果。</p>
+            <div class="wechat-phone-preview">
+              <div class="wechat-phone-header">
+                <span class="wechat-phone-dot" />
+                <span>微信私聊</span>
+              </div>
+              <div class="wechat-phone-body">
+                <div class="wechat-bubble is-system">请扫描左侧二维码，或直接发送绑定码完成绑定。</div>
+                <div class="wechat-bubble is-user">{{ bindSession.bindCode }}</div>
+                <div class="wechat-bubble is-system">绑定成功，后续任务结果和补问提醒都会回推到这里。</div>
+              </div>
+            </div>
             <p v-if="bindSession.errorMessage" class="wechat-error-inline">{{ bindSession.errorMessage }}</p>
           </div>
         </div>
@@ -114,14 +131,30 @@
 
       <section v-else class="wechat-panel wechat-empty">
         <p class="wechat-copy-title">尚未绑定微信</p>
-        <p class="wechat-copy-text">点击上方按钮生成绑定二维码。v1 仅支持认证用户绑定一个微信私聊身份。</p>
+        <p class="wechat-copy-text">点击上方按钮生成绑定二维码。当前仅支持一个网页账号绑定一个微信私聊身份。</p>
       </section>
 
       <section class="wechat-panel">
-        <p class="wechat-copy-title">微信中可直接使用</p>
-        <p class="wechat-copy-text">支持自然语言直接发起检索、分析、审查、答复；斜杠命令只是兜底入口。</p>
-        <div class="wechat-command-list">
-          <code v-for="item in availableCommands" :key="item" class="wechat-command">{{ item }}</code>
+        <div class="wechat-usage-header">
+          <div>
+            <p class="wechat-copy-title">微信里可以直接这样用</p>
+            <p class="wechat-copy-text">自然语言优先，斜杠命令只是兜底入口。下面这些都是用户真正会发出的对话示例。</p>
+          </div>
+          <p v-if="fallbackCommandsText" class="wechat-usage-hint">兜底命令：{{ fallbackCommandsText }}</p>
+        </div>
+
+        <div class="wechat-usage-grid">
+          <article
+            v-for="scene in usageScenes"
+            :key="scene.title"
+            class="wechat-scene-card"
+          >
+            <p class="wechat-scene-title">{{ scene.title }}</p>
+            <div class="wechat-scene-chat">
+              <div class="wechat-bubble is-user">{{ scene.user }}</div>
+              <div class="wechat-bubble is-system">{{ scene.reply }}</div>
+            </div>
+          </article>
         </div>
       </section>
     </article>
@@ -166,6 +199,35 @@ const expiresText = computed(() => {
   return `${remainingMinutes} 分钟后过期`
 })
 
+const bindButtonLabel = computed(() => {
+  if (props.startingBindSession) return '生成中...'
+  return props.bindSession ? '刷新绑定二维码' : '生成绑定二维码'
+})
+
+const fallbackCommandsText = computed(() => {
+  return props.availableCommands
+    .filter(item => item.startsWith('/'))
+    .join(' · ')
+})
+
+const usageScenes = [
+  {
+    title: '自然语言检索',
+    user: '帮我检索固态电池隔膜相关专利',
+    reply: '我会先整理检索计划，再把结果、补问和确认动作直接发回这个聊天窗口。',
+  },
+  {
+    title: '专利分析',
+    user: '分析专利 CN202410009999.9',
+    reply: '收到后会立即创建分析任务，完成时把摘要和结果文件回推到微信。',
+  },
+  {
+    title: '审查 / 答复',
+    user: '我要答复审查意见',
+    reply: '我会按步骤收材料。过程中你可以继续上传文件，必要时随时发送 /cancel 取消。',
+  },
+] as const
+
 const formatTime = (value?: string | null) => {
   const text = String(value || '').trim()
   if (!text) return '-'
@@ -186,13 +248,16 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 .wechat-card {
   border: 1px solid #e2e8f0;
   border-radius: 1.25rem;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  background:
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.14), transparent 28%),
+    linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   padding: 1rem;
 }
 
 .wechat-header,
 .wechat-panel-header,
-.wechat-actions {
+.wechat-actions,
+.wechat-usage-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -203,7 +268,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   margin-top: 1rem;
   border: 1px solid #e2e8f0;
   border-radius: 1rem;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.94);
   padding: 1rem;
 }
 
@@ -236,7 +301,8 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 .wechat-meta,
-.wechat-copy-text {
+.wechat-copy-text,
+.wechat-usage-hint {
   margin: 0.35rem 0 0;
   font-size: 0.8rem;
   color: #64748b;
@@ -260,7 +326,8 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 .wechat-toggle-title,
-.wechat-copy-title {
+.wechat-copy-title,
+.wechat-scene-title {
   display: block;
   font-size: 0.85rem;
   font-weight: 600;
@@ -291,8 +358,9 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
 .wechat-primary-btn {
   border: 1px solid #0891b2;
-  background: #06b6d4;
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
   color: #ecfeff;
+  box-shadow: 0 10px 24px rgba(8, 145, 178, 0.2);
 }
 
 .wechat-secondary-btn {
@@ -307,19 +375,25 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   opacity: 0.55;
 }
 
-.wechat-bind-grid {
+.wechat-bind-grid,
+.wechat-usage-grid {
   display: grid;
   gap: 1rem;
   margin-top: 1rem;
+}
+
+.wechat-qr-stage {
+  display: grid;
+  gap: 0.9rem;
 }
 
 .wechat-qr-box {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e2e8f0;
-  border-radius: 1rem;
-  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 1.1rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   padding: 1rem;
 }
 
@@ -328,19 +402,85 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   height: 15rem;
 }
 
-.wechat-command-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  margin-top: 0.75rem;
+.wechat-qr-code-card,
+.wechat-scene-card {
+  border: 1px solid #dbeafe;
+  border-radius: 1rem;
+  background: #f8fbff;
+  padding: 0.9rem;
 }
 
-.wechat-command {
+.wechat-qr-code-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #0f766e;
+  text-transform: uppercase;
+}
+
+.wechat-qr-code-value {
+  margin-top: 0.35rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #0f172a;
+}
+
+.wechat-phone-preview {
+  margin-top: 0.9rem;
+  overflow: hidden;
+  border: 1px solid #dbeafe;
+  border-radius: 1.2rem;
+  background: linear-gradient(180deg, #f0fdfd 0%, #e2f6f7 100%);
+}
+
+.wechat-phone-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.wechat-phone-dot {
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 9999px;
-  background: #0f172a;
-  padding: 0.35rem 0.7rem;
-  font-size: 0.75rem;
-  color: #f8fafc;
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12);
+}
+
+.wechat-phone-body,
+.wechat-scene-chat {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem;
+}
+
+.wechat-bubble {
+  max-width: 85%;
+  border-radius: 1rem;
+  padding: 0.75rem 0.85rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.wechat-bubble.is-user {
+  justify-self: end;
+  border-bottom-right-radius: 0.35rem;
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  color: #f0fdfa;
+}
+
+.wechat-bubble.is-system {
+  justify-self: start;
+  border-bottom-left-radius: 0.35rem;
+  background: #ffffff;
+  color: #334155;
+  box-shadow: 0 10px 24px rgba(148, 163, 184, 0.12);
 }
 
 .wechat-error,
@@ -359,8 +499,12 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
 @media (min-width: 768px) {
   .wechat-bind-grid {
-    grid-template-columns: 16rem minmax(0, 1fr);
-    align-items: center;
+    grid-template-columns: 17rem minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .wechat-usage-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 </style>

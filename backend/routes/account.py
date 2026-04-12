@@ -5,12 +5,14 @@ import io
 import mimetypes
 import re
 import uuid
-from html import escape
 from datetime import date, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
+import qrcode
+from qrcode.image.svg import SvgPathImage
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
@@ -159,21 +161,18 @@ def _mask_wechat_peer_id(value: str | None) -> str | None:
     return f"{text[:2]}***{text[-2:]}"
 
 
-def _render_bind_qr_svg(bind_code: str) -> str:
-    safe_code = escape(str(bind_code or "").strip() or "-")
-    return f"""
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 280" role="img" aria-label="wechat bind code">
-  <rect width="280" height="280" rx="24" fill="#0f172a"/>
-  <rect x="24" y="24" width="232" height="232" rx="18" fill="#ffffff"/>
-  <rect x="48" y="48" width="52" height="52" rx="10" fill="#0f172a"/>
-  <rect x="180" y="48" width="52" height="52" rx="10" fill="#0f172a"/>
-  <rect x="48" y="180" width="52" height="52" rx="10" fill="#0f172a"/>
-  <rect x="122" y="122" width="36" height="36" rx="8" fill="#06b6d4"/>
-  <rect x="168" y="122" width="24" height="24" rx="6" fill="#0f172a"/>
-  <rect x="122" y="168" width="24" height="24" rx="6" fill="#0f172a"/>
-  <text x="140" y="250" text-anchor="middle" font-family="Menlo, monospace" font-size="18" fill="#0f172a">{safe_code}</text>
-</svg>
-""".strip()
+def _render_bind_qr_svg(qr_payload: str) -> str:
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(str(qr_payload or "").strip())
+    qr.make(fit=True)
+    svg_buffer = BytesIO()
+    qr.make_image(image_factory=SvgPathImage).save(svg_buffer)
+    return svg_buffer.getvalue().decode("utf-8").replace("<?xml version='1.0' encoding='UTF-8'?>", "", 1).strip()
 
 
 def _build_wechat_binding_response(binding: WeChatBinding) -> AccountWeChatBindingResponse:
@@ -563,9 +562,16 @@ async def post_account_wechat_bind_session(
 ):
     _ensure_wechat_integration_enabled()
     user = _ensure_authing_user_or_403(current_user)
+    existing_binding = task_manager.storage.get_wechat_binding_by_owner(user.owner_id)
+    if existing_binding and str(existing_binding.status or "").strip() == "active":
+        raise HTTPException(status_code=409, detail="当前账号已绑定微信，如需重新绑定请先解绑。")
     current = _expire_bind_session_if_needed(task_manager.storage.get_current_wechat_bind_session(user.owner_id))
     if current and current.status in {"pending", "scanned"}:
-        return _build_wechat_bind_session_response(current)
+        task_manager.storage.update_wechat_bind_session(
+            current.bind_session_id,
+            status="cancelled",
+            updated_at=utc_now(),
+        )
 
     bind_session_id = f"wbs-{uuid.uuid4().hex[:12]}"
     bind_code = uuid.uuid4().hex[:8].upper()
@@ -578,7 +584,7 @@ async def post_account_wechat_bind_session(
             status="pending",
             bind_code=bind_code,
             qr_payload=qr_payload,
-            qr_svg=_render_bind_qr_svg(bind_code),
+            qr_svg=_render_bind_qr_svg(qr_payload),
             expires_at=now_dt + timedelta(seconds=int(getattr(settings, "WECHAT_BIND_SESSION_TTL_SECONDS", 600) or 600)),
             created_at=now_dt,
             updated_at=now_dt,

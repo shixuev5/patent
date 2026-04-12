@@ -26,4 +26,5 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "uvicorn>=0.40.0",
     "wechatbot-sdk",
+    "qrcode>=8.2",
 ]
