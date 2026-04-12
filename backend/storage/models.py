@@ -36,6 +36,9 @@ class User:
     email: Optional[str] = None
     phone: Optional[str] = None
     picture: Optional[str] = None
+    notification_email_enabled: bool = False
+    work_notification_email: Optional[str] = None
+    personal_notification_email: Optional[str] = None
     raw_profile: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -51,6 +54,9 @@ class User:
             "email": self.email,
             "phone": self.phone,
             "picture": self.picture,
+            "notification_email_enabled": self.notification_email_enabled,
+            "work_notification_email": self.work_notification_email,
+            "personal_notification_email": self.personal_notification_email,
             "raw_profile": self.raw_profile,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),

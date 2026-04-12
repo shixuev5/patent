@@ -58,6 +58,9 @@ class SQLiteTaskStorage:
             ("email", "email TEXT"),
             ("phone", "phone TEXT"),
             ("picture", "picture TEXT"),
+            ("notification_email_enabled", "notification_email_enabled INTEGER NOT NULL DEFAULT 0"),
+            ("work_notification_email", "work_notification_email TEXT"),
+            ("personal_notification_email", "personal_notification_email TEXT"),
             ("raw_profile", "raw_profile TEXT"),
             ("created_at", "created_at TEXT NOT NULL"),
             ("updated_at", "updated_at TEXT NOT NULL"),
@@ -196,6 +199,9 @@ class SQLiteTaskStorage:
         email TEXT,
         phone TEXT,
         picture TEXT,
+        notification_email_enabled INTEGER NOT NULL DEFAULT 0,
+        work_notification_email TEXT,
+        personal_notification_email TEXT,
         raw_profile TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -392,6 +398,9 @@ class SQLiteTaskStorage:
             email=row["email"],
             phone=row["phone"],
             picture=row["picture"],
+            notification_email_enabled=bool(row["notification_email_enabled"]) if "notification_email_enabled" in row.keys() else False,
+            work_notification_email=row["work_notification_email"] if "work_notification_email" in row.keys() else None,
+            personal_notification_email=row["personal_notification_email"] if "personal_notification_email" in row.keys() else None,
             raw_profile=self._parse_metadata(row["raw_profile"]),
             created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
@@ -1900,8 +1909,9 @@ class SQLiteTaskStorage:
                 """
                 INSERT INTO users (
                     owner_id, authing_sub, role, name, nickname, email, phone, picture,
+                    notification_email_enabled, work_notification_email, personal_notification_email,
                     raw_profile, created_at, updated_at, last_login_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(owner_id) DO UPDATE SET
                 authing_sub = excluded.authing_sub,
                 role = CASE
@@ -1922,6 +1932,15 @@ class SQLiteTaskStorage:
                     WHEN users.picture IS NULL OR TRIM(users.picture) = '' THEN excluded.picture
                     ELSE users.picture
                 END,
+                notification_email_enabled = users.notification_email_enabled,
+                work_notification_email = CASE
+                    WHEN users.work_notification_email IS NULL OR TRIM(users.work_notification_email) = '' THEN excluded.work_notification_email
+                    ELSE users.work_notification_email
+                END,
+                personal_notification_email = CASE
+                    WHEN users.personal_notification_email IS NULL OR TRIM(users.personal_notification_email) = '' THEN excluded.personal_notification_email
+                    ELSE users.personal_notification_email
+                END,
                 raw_profile = excluded.raw_profile,
                     updated_at = excluded.updated_at,
                     last_login_at = excluded.last_login_at
@@ -1935,6 +1954,9 @@ class SQLiteTaskStorage:
                     user.email,
                     user.phone,
                     user.picture,
+                    1 if user.notification_email_enabled else 0,
+                    user.work_notification_email,
+                    user.personal_notification_email,
                     raw_profile,
                     created_at_iso,
                     now_iso,
@@ -2062,6 +2084,39 @@ class SQLiteTaskStorage:
                 WHERE owner_id = ?
                 """,
                 (name, picture, now_iso, owner_id),
+            )
+            conn.commit()
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM users WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+        return self._row_to_user(row) if row else None
+
+    def update_user_notification_settings(
+        self,
+        owner_id: str,
+        notification_email_enabled: bool,
+        work_notification_email: Optional[str],
+        personal_notification_email: Optional[str],
+    ) -> Optional[User]:
+        now_iso = utc_now_z()
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET notification_email_enabled = ?, work_notification_email = ?,
+                    personal_notification_email = ?, updated_at = ?
+                WHERE owner_id = ?
+                """,
+                (
+                    1 if notification_email_enabled else 0,
+                    work_notification_email,
+                    personal_notification_email,
+                    now_iso,
+                    owner_id,
+                ),
             )
             conn.commit()
             if cursor.rowcount <= 0:

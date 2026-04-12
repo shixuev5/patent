@@ -169,9 +169,20 @@
       <div class="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
         <button
           type="button"
-          class="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 shadow-sm"
+          class="account-tab-btn"
+          :class="activeTab === 'overview' ? 'is-active' : ''"
+          @click="activeTab = 'overview'"
         >
           概览
+        </button>
+        <button
+          v-if="hasNotificationTab"
+          type="button"
+          class="account-tab-btn"
+          :class="activeTab === 'notifications' ? 'is-active' : ''"
+          @click="activeTab = 'notifications'"
+        >
+          邮件通知
         </button>
       </div>
 
@@ -179,220 +190,71 @@
         {{ errorMessage }}
       </div>
 
-      <div v-else class="mt-4 space-y-4">
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <article class="metric-card">
-            <p class="metric-label">最近一个工作周</p>
-            <p class="metric-value">{{ dashboard?.workWeek.totalCount ?? 0 }}</p>
-            <p class="metric-desc">分析 {{ dashboard?.workWeek.analysisCount ?? 0 }} · 审查 {{ dashboard?.workWeek.reviewCount ?? 0 }} · 答复 {{ dashboard?.workWeek.replyCount ?? 0 }}</p>
-          </article>
+      <AccountOverviewTab
+        v-else-if="activeTab === 'overview'"
+        class="mt-4"
+        :dashboard="dashboard"
+        :refreshing="refreshing"
+        :delta-tone-class="deltaToneClass"
+        :actual-progress-label="actualProgressLabel"
+        :expected-progress-label="expectedProgressLabel"
+        :month-total-created="monthTotalCreated"
+        :month-target="monthTarget"
+        :progress-delta-label="progressDeltaLabel"
+        :dashboard-title="dashboardTitle"
+        :smart-summary="smartSummary"
+        :chart-render-key="chartRenderKey"
+        :chart-width="CHART_WIDTH"
+        :chart-height="CHART_HEIGHT"
+        :padding="PADDING"
+        :y-ticks="yTicks"
+        :week-separators="weekSeparators"
+        :actual-area-path="actualAreaPath"
+        :actual-line-path="actualLinePath"
+        :expected-line-path="expectedLinePath"
+        :hovered-point="hoveredPoint"
+        :hovered-tooltip-x="hoveredTooltipX"
+        :hovered-week-label="hoveredWeekLabel"
+        :actual-points="actualPoints"
+        :week-labels="weekLabels"
+        :weekly-breakdown="weeklyBreakdown"
+        :format-percent="formatPercent"
+        :daily-bar-height="dailyBarHeight"
+        :clear-hovered-day="clearHoveredDay"
+        :set-hovered-day="setHoveredDay"
+      />
 
-          <article class="metric-card">
-            <p class="metric-label">最近一个工作月</p>
-            <p class="metric-value">{{ dashboard?.workMonth.totalCount ?? 0 }}</p>
-            <p class="metric-desc">分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} · 审查 {{ dashboard?.workMonth.reviewCount ?? 0 }} · 答复 {{ dashboard?.workMonth.replyCount ?? 0 }}</p>
-          </article>
-
-          <article class="metric-card" :class="deltaToneClass">
-            <p class="metric-label">当前进度</p>
-            <p class="metric-value">{{ actualProgressLabel }}</p>
-            <p class="metric-desc">{{ monthTotalCreated }} / {{ monthTarget }} 个（目标）</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">预期进度</p>
-            <p class="metric-value">{{ expectedProgressLabel }}</p>
-            <p class="metric-desc">差异 {{ progressDeltaLabel }}</p>
-          </article>
-        </div>
-
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="text-base font-semibold text-slate-900">{{ dashboardTitle }}</h2>
-              <p class="text-xs text-slate-500">横轴为自然日（仅显示第1-4周标签），纵轴为累计任务数</p>
-            </div>
-            <div class="flex items-center gap-2">
-              <p
-                v-if="refreshing"
-                class="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-xs text-cyan-700"
-              >
-                更新中...
-              </p>
-            </div>
-          </div>
-
-          <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_16rem] lg:items-start">
-            <div class="space-y-2">
-              <div class="rounded-xl border border-slate-200 bg-cyan-50/70 px-3 py-2">
-                <p class="m-0 text-sm text-slate-700">{{ smartSummary }}</p>
-              </div>
-
-              <div class="chart-wrap" @mouseleave="clearHoveredDay">
-              <svg
-                :key="chartRenderKey"
-                :viewBox="`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`"
-                preserveAspectRatio="xMidYMid meet"
-                class="h-[22rem] w-full"
-              >
-                <g>
-                  <line
-                    v-for="tick in yTicks"
-                    :key="`line-${tick.value}`"
-                    :x1="PADDING.left"
-                    :x2="CHART_WIDTH - PADDING.right"
-                    :y1="tick.y"
-                    :y2="tick.y"
-                    stroke="#e2e8f0"
-                    stroke-dasharray="2 3"
-                  />
-
-                  <line
-                    v-for="line in weekSeparators"
-                    :key="`week-sep-${line.label}`"
-                    :x1="line.x"
-                    :x2="line.x"
-                    :y1="PADDING.top"
-                    :y2="CHART_HEIGHT - PADDING.bottom"
-                    stroke="#cbd5e1"
-                    stroke-dasharray="4 4"
-                  />
-
-                  <text
-                    v-for="tick in yTicks"
-                    :key="`label-${tick.value}`"
-                    :x="PADDING.left - 8"
-                    :y="tick.y + 4"
-                    text-anchor="end"
-                    font-size="10"
-                    fill="#64748b"
-                  >
-                    {{ tick.value }}
-                  </text>
-
-                  <path v-if="actualAreaPath" :d="actualAreaPath" class="chart-area" />
-                  <path v-if="actualLinePath" :d="actualLinePath" class="chart-line" />
-                  <path v-if="expectedLinePath" :d="expectedLinePath" class="chart-expected-line" />
-
-                  <line
-                    v-if="hoveredPoint"
-                    :x1="hoveredPoint.x"
-                    :x2="hoveredPoint.x"
-                    :y1="PADDING.top"
-                    :y2="CHART_HEIGHT - PADDING.bottom"
-                    stroke="#0891b2"
-                    stroke-width="1.2"
-                    stroke-dasharray="3 3"
-                  />
-
-                  <circle
-                    v-for="point in actualPoints"
-                    :key="`point-${point.day}`"
-                    :cx="point.x"
-                    :cy="point.y"
-                    r="3.5"
-                    fill="#ffffff"
-                    stroke="#0891b2"
-                    stroke-width="2"
-                    class="chart-point"
-                  />
-
-                  <circle
-                    v-for="point in actualPoints"
-                    :key="`hit-${point.day}`"
-                    :cx="point.x"
-                    :cy="point.y"
-                    r="8"
-                    fill="transparent"
-                    class="day-hit"
-                    @mouseenter="setHoveredDay(point.day)"
-                  />
-
-                  <circle
-                    v-if="hoveredPoint"
-                    :cx="hoveredPoint.x"
-                    :cy="hoveredPoint.y"
-                    r="5"
-                    fill="#0891b2"
-                    opacity="0.16"
-                  />
-
-                  <g v-if="hoveredPoint" :transform="`translate(${hoveredTooltipX}, ${PADDING.top + 6})`">
-                    <rect width="128" height="46" rx="8" fill="#0f172a" opacity="0.88" />
-                    <text x="8" y="17" font-size="10" fill="#dbeafe">{{ hoveredPoint.date }}</text>
-                    <text x="8" y="31" font-size="10" fill="#e2e8f0">{{ hoveredWeekLabel }}</text>
-                    <text x="8" y="43" font-size="11" fill="#f8fafc">累计 {{ hoveredPoint.value }} 个</text>
-                  </g>
-
-                  <text
-                    v-for="label in weekLabels"
-                    :key="`x-label-${label.label}`"
-                    :x="label.x"
-                    :y="CHART_HEIGHT - 10"
-                    text-anchor="middle"
-                    font-size="10"
-                    fill="#64748b"
-                  >
-                    {{ label.label }}
-                  </text>
-                </g>
-              </svg>
-              </div>
-            </div>
-
-            <div class="space-y-1.5 rounded-2xl border border-slate-200 bg-slate-50 p-2.5">
-              <div
-                v-for="item in weeklyBreakdown"
-                :key="item.week"
-                class="week-card"
-                :class="{ 'week-card-pending': !item.reached }"
-              >
-                <div class="flex items-center justify-between text-xs text-slate-500">
-                  <span>{{ item.week }}</span>
-                  <span>{{ formatPercent(item.percent) }}</span>
-                </div>
-                <p class="mt-1 text-sm font-semibold text-slate-900">{{ item.totalCreated }} 个</p>
-                <div class="mt-1 h-1.5 rounded-full bg-slate-200">
-                  <div class="h-1.5 rounded-full bg-cyan-500 transition-all duration-500" :style="{ width: `${item.progressBarWidth}%` }" />
-                </div>
-                <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 审查 {{ item.reviewCreated ?? 0 }} · 答复 {{ item.replyCreated }}</p>
-              </div>
-            </div>
-          </div>
-        </article>
-
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <div class="mb-2 flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-slate-900">最近一个月每日创建</h3>
-            <p class="text-xs text-slate-500">按当前月份自然日展示</p>
-          </div>
-
-          <div class="daily-strip custom-scrollbar">
-            <div
-              v-for="item in dashboard?.dailySeries ?? []"
-              :key="item.date"
-              class="daily-col"
-            >
-              <div class="daily-bar-wrap">
-                <div class="daily-bar" :style="{ height: `${dailyBarHeight(item.totalCreated)}%` }" />
-              </div>
-              <p class="daily-day">{{ Number(item.date.slice(8, 10)) }}</p>
-            </div>
-          </div>
-        </article>
-      </div>
+      <AccountNotificationTab
+        v-else
+        :notification-email-enabled="notificationEmailEnabledInput"
+        :work-notification-email="workNotificationEmailInput"
+        :personal-notification-email="personalNotificationEmailInput"
+        :work-notification-email-invalid="workNotificationEmailInvalid"
+        :personal-notification-email-invalid="personalNotificationEmailInvalid"
+        :saving-notification-settings="savingNotificationSettings"
+        :notification-form-invalid="notificationFormInvalid"
+        :notification-settings-error-message="notificationSettingsErrorMessage"
+        @update:notification-email-enabled="notificationEmailEnabledInput = $event"
+        @update:work-notification-email="workNotificationEmailInput = $event"
+        @update:personal-notification-email="personalNotificationEmailInput = $event"
+        @save="saveNotificationSettings"
+      />
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import AccountNotificationTab from '~/components/account/AccountNotificationTab.vue'
+import AccountOverviewTab from '~/components/account/AccountOverviewTab.vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import { cachedGetJson, invalidateQueries, requestRaw, setCachedQueryData } from '~/utils/apiClient'
 import type {
   AccountAvatarUploadResponse,
   AccountDashboard,
+  AccountNotificationSettings,
+  AccountNotificationSettingsUpdateRequest,
   AccountProfile,
   AccountProfileUpdateRequest,
   WeeklyActivityPoint,
@@ -413,18 +275,22 @@ const authStore = useAuthStore()
 const taskStore = useTaskStore()
 const usageNowTs = ref(Date.now())
 let usageCountdownTimer: ReturnType<typeof setInterval> | null = null
+const EMAIL_PATTERN = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$/i
 
 const now = new Date()
 const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+const activeTab = ref<'overview' | 'notifications'>('overview')
 const loading = ref(false)
 const refreshing = ref(false)
 const savingTarget = ref(false)
 const savingDisplayName = ref(false)
 const savingAvatar = ref(false)
+const savingNotificationSettings = ref(false)
 const pageReady = ref(false)
 const errorMessage = ref('')
 const targetErrorMessage = ref('')
 const profileSaveErrorMessage = ref('')
+const notificationSettingsErrorMessage = ref('')
 const monthTargetInput = ref('0')
 const hoveredDay = ref<number | null>(null)
 const profile = ref<AccountProfile | null>(null)
@@ -434,6 +300,9 @@ const profileAvatarFileInput = ref<HTMLInputElement>()
 const displayNameEditorRef = ref<HTMLElement>()
 const displayNameDraft = ref('')
 const discardDisplayNameOnBlur = ref(false)
+const notificationEmailEnabledInput = ref(false)
+const workNotificationEmailInput = ref('')
+const personalNotificationEmailInput = ref('')
 
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -462,6 +331,7 @@ const parsedYearMonth = computed(() => {
 const monthDisplayLabel = computed(() => `${parsedYearMonth.value.year}年${parsedYearMonth.value.month}月`)
 const canMoveNextMonth = computed(() => selectedMonth.value < currentMonthKey)
 const isCurrentMonthSelection = computed(() => selectedMonth.value === currentMonthKey)
+const hasNotificationTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
 
 const monthDays = computed(() => new Date(parsedYearMonth.value.year, parsedYearMonth.value.month, 0).getDate())
 const visibleDayCount = computed(() => {
@@ -501,6 +371,23 @@ const usageInfoLine = computed(() => {
 const usageInfoToneClass = computed(() => {
   if (!usageHasLimit.value || (dailyUsage.value?.remainingPoints || 0) <= 0) return 'text-amber-500'
   return 'text-slate-400'
+})
+const normalizedWorkNotificationEmail = computed(() => String(workNotificationEmailInput.value || '').trim())
+const normalizedPersonalNotificationEmail = computed(() => String(personalNotificationEmailInput.value || '').trim())
+const workNotificationEmailInvalid = computed(() => {
+  if (!normalizedWorkNotificationEmail.value) return false
+  return !EMAIL_PATTERN.test(normalizedWorkNotificationEmail.value)
+})
+const personalNotificationEmailInvalid = computed(() => {
+  if (!normalizedPersonalNotificationEmail.value) return false
+  return !EMAIL_PATTERN.test(normalizedPersonalNotificationEmail.value)
+})
+const notificationFormInvalid = computed(() => {
+  if (!notificationEmailEnabledInput.value) {
+    return workNotificationEmailInvalid.value || personalNotificationEmailInvalid.value
+  }
+  if (!normalizedWorkNotificationEmail.value && !normalizedPersonalNotificationEmail.value) return true
+  return workNotificationEmailInvalid.value || personalNotificationEmailInvalid.value
 })
 const showUsageLoginPrompt = computed(() => {
   return !!dailyUsage.value
@@ -890,6 +777,7 @@ const getAuthToken = async (): Promise<string> => {
 
 const getAuthScopeKey = (): string => `${taskStore.authMode}:${taskStore.userId || 'anonymous'}`
 const getAccountProfileQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'profile']
+const getAccountNotificationSettingsQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'notification-settings']
 const getAccountDashboardQueryKey = (year: number, month: number): readonly unknown[] => [
   'api',
   getAuthScopeKey(),
@@ -922,6 +810,12 @@ const isSupportedAvatarFile = (file: File): boolean => {
 
 const resetDisplayNameDraft = () => {
   displayNameDraft.value = String(profile.value?.name || displayName.value || '').trim()
+}
+
+const syncNotificationSettingsForm = (nextSettings: AccountNotificationSettings | null) => {
+  notificationEmailEnabledInput.value = !!nextSettings?.notificationEmailEnabled
+  workNotificationEmailInput.value = String(nextSettings?.workNotificationEmail || '')
+  personalNotificationEmailInput.value = String(nextSettings?.personalNotificationEmail || '')
 }
 
 const syncDisplayNameEditor = () => {
@@ -1083,6 +977,18 @@ const fetchProfile = async (token: string) => {
   if (!editingDisplayName.value) resetDisplayNameDraft()
 }
 
+const fetchNotificationSettings = async (token: string) => {
+  const nextSettings = await cachedGetJson<AccountNotificationSettings>({
+    baseUrl: config.public.apiBaseUrl,
+    path: '/api/account/notification-settings',
+    token,
+    queryKey: getAccountNotificationSettingsQueryKey(),
+    staleTime: 30 * 1000,
+    gcTime: 24 * 60 * 60 * 1000,
+  })
+  syncNotificationSettingsForm(nextSettings)
+}
+
 const fetchDashboard = async (token: string) => {
   const { year, month } = parsedYearMonth.value
   const nextDashboard = await cachedGetJson<AccountDashboard>({
@@ -1111,6 +1017,55 @@ const fetchUsage = async (token: string) => {
     if ((taskStore.dailyUsage?.remainingPoints || 0) > 0) taskStore.clearPointLimitNotice()
   } catch (error) {
     console.error('加载积分信息失败：', error)
+  }
+}
+
+const saveNotificationSettings = async () => {
+  notificationSettingsErrorMessage.value = ''
+  if (!hasNotificationTab.value) return
+
+  const payload: AccountNotificationSettingsUpdateRequest = {
+    notificationEmailEnabled: notificationEmailEnabledInput.value,
+    workNotificationEmail: normalizedWorkNotificationEmail.value || null,
+    personalNotificationEmail: normalizedPersonalNotificationEmail.value || null,
+  }
+
+  if (notificationEmailEnabledInput.value && !payload.workNotificationEmail && !payload.personalNotificationEmail) {
+    notificationSettingsErrorMessage.value = '开启邮件通知后，工作邮箱和个人邮箱至少填写一个。'
+    return
+  }
+  if (workNotificationEmailInvalid.value) {
+    notificationSettingsErrorMessage.value = '工作邮箱格式无效，请检查后重试。'
+    return
+  }
+  if (personalNotificationEmailInvalid.value) {
+    notificationSettingsErrorMessage.value = '个人邮箱格式无效，请检查后重试。'
+    return
+  }
+
+  savingNotificationSettings.value = true
+  try {
+    const token = await getAuthToken()
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/notification-settings',
+      method: 'PUT',
+      token,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    const nextSettings = await response.json() as AccountNotificationSettings
+    syncNotificationSettingsForm(nextSettings)
+    setCachedQueryData(getAccountNotificationSettingsQueryKey(), nextSettings)
+    await invalidateQueries(['api', getAuthScopeKey(), 'account'])
+    taskStore.showGlobalNotice('success', '邮件通知设置已更新。')
+  } catch (error) {
+    notificationSettingsErrorMessage.value = error instanceof Error ? error.message : '保存邮件通知设置失败。'
+  } finally {
+    savingNotificationSettings.value = false
   }
 }
 
@@ -1204,11 +1159,20 @@ const loadData = async (loadProfile: boolean) => {
   else refreshing.value = true
 
   errorMessage.value = ''
+  notificationSettingsErrorMessage.value = ''
 
   try {
     const token = await getAuthToken()
+    if (loadProfile || !profile.value) {
+      await fetchProfile(token)
+    }
     const jobs = [fetchDashboard(token), fetchUsage(token)]
-    if (loadProfile || !profile.value) jobs.push(fetchProfile(token))
+    if (hasNotificationTab.value) {
+      jobs.push(fetchNotificationSettings(token))
+    } else {
+      syncNotificationSettingsForm(null)
+      activeTab.value = 'overview'
+    }
     await Promise.all(jobs)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载个人空间数据失败。'
@@ -1230,6 +1194,12 @@ watch(() => authStore.isLoggedIn, async () => {
   await loadData(true)
 })
 
+watch(hasNotificationTab, (value) => {
+  if (value) return
+  activeTab.value = 'overview'
+  syncNotificationSettingsForm(null)
+})
+
 onMounted(async () => {
   usageCountdownTimer = setInterval(() => {
     usageNowTs.value = Date.now()
@@ -1247,41 +1217,19 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.metric-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 1rem;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  padding: 0.9rem;
-}
-
-.metric-card-good {
-  border-color: #86efac;
-  background: linear-gradient(180deg, #f0fdf4 0%, #ecfdf3 100%);
-}
-
-.metric-card-warn {
-  border-color: #fed7aa;
-  background: linear-gradient(180deg, #fffbeb 0%, #fff7ed 100%);
-}
-
-.metric-label {
-  font-size: 0.72rem;
+.account-tab-btn {
+  border-radius: 0.85rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  color: #64748b;
-}
-
-.metric-value {
-  margin-top: 0.2rem;
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.metric-desc {
-  margin-top: 0.2rem;
-  font-size: 0.75rem;
   color: #475569;
+  transition: all 0.18s ease;
+}
+
+.account-tab-btn.is-active {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 
 .account-top-row {
@@ -1749,105 +1697,4 @@ onUnmounted(() => {
   color: #e11d48;
 }
 
-.chart-wrap {
-  overflow: hidden;
-  border-radius: 1rem;
-  border: 1px solid #e2e8f0;
-  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
-  padding: 0.4rem;
-}
-
-.chart-area {
-  fill: rgba(8, 145, 178, 0.12);
-  animation: fade-in 400ms ease-out;
-}
-
-.chart-line {
-  fill: none;
-  stroke: #0891b2;
-  stroke-width: 2.5;
-  stroke-dasharray: 1200;
-  stroke-dashoffset: 1200;
-  animation: draw-line 800ms ease-out forwards;
-}
-
-.chart-expected-line {
-  fill: none;
-  stroke: #f59e0b;
-  stroke-width: 2;
-  stroke-dasharray: 6 4;
-  opacity: 0;
-  animation: fade-in 550ms ease-out 120ms forwards;
-}
-
-.chart-point {
-  opacity: 0;
-  animation: fade-in 450ms ease-out 220ms forwards;
-}
-
-.day-hit {
-  cursor: pointer;
-}
-
-.week-card {
-  border-radius: 0.8rem;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  padding: 0.45rem 0.55rem;
-  transition: all 0.2s ease;
-}
-
-.week-card-pending {
-  background: #f8fafc;
-  border-color: #e2e8f0;
-  opacity: 0.5;
-}
-
-.daily-strip {
-  display: grid;
-  grid-template-columns: repeat(31, minmax(1rem, 1fr));
-  gap: 0.35rem;
-  overflow-x: auto;
-  padding-bottom: 0.3rem;
-}
-
-.daily-col {
-  min-width: 1rem;
-}
-
-.daily-bar-wrap {
-  display: flex;
-  height: 4rem;
-  align-items: flex-end;
-}
-
-.daily-bar {
-  width: 100%;
-  border-radius: 0.4rem 0.4rem 0.25rem 0.25rem;
-  background: linear-gradient(180deg, #22d3ee 0%, #0891b2 100%);
-}
-
-.daily-day {
-  margin-top: 0.18rem;
-  text-align: center;
-  font-size: 0.65rem;
-  color: #64748b;
-}
-
-@keyframes draw-line {
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 </style>

@@ -77,6 +77,18 @@ class AccountAvatarUploadResponse(BaseModel):
     url: str
 
 
+class AccountNotificationSettingsResponse(BaseModel):
+    notificationEmailEnabled: bool
+    workNotificationEmail: Optional[str] = None
+    personalNotificationEmail: Optional[str] = None
+
+
+class AccountNotificationSettingsUpdateRequest(BaseModel):
+    notificationEmailEnabled: bool
+    workNotificationEmail: Optional[str] = None
+    personalNotificationEmail: Optional[str] = None
+
+
 class WeeklyActivityPoint(BaseModel):
     week: str
     analysisCreated: int

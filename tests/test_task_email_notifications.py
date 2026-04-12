@@ -55,13 +55,24 @@ def _mount_storage(tmp_path: Path) -> tuple[SQLiteTaskStorage, PipelineTaskManag
     return storage, manager
 
 
-def _create_user(storage: SQLiteTaskStorage, owner_id: str, email: str) -> None:
+def _create_user(
+    storage: SQLiteTaskStorage,
+    owner_id: str,
+    email: str,
+    *,
+    notification_email_enabled: bool = True,
+    work_notification_email: str | None = None,
+    personal_notification_email: str | None = None,
+) -> None:
     storage.upsert_authing_user(
         User(
             owner_id=owner_id,
             authing_sub=owner_id.removeprefix("authing:") or owner_id,
             email=email,
             name="tester",
+            notification_email_enabled=notification_email_enabled,
+            work_notification_email=work_notification_email,
+            personal_notification_email=personal_notification_email,
         )
     )
 
@@ -69,7 +80,13 @@ def _create_user(storage: SQLiteTaskStorage, owner_id: str, email: str) -> None:
 def test_task_email_notification_sends_completed_pdf_and_dedupes(monkeypatch, tmp_path):
     _configure_email_settings(monkeypatch)
     storage, manager = _mount_storage(tmp_path)
-    _create_user(storage, "authing:user-1", "user-1@example.com")
+    _create_user(
+        storage,
+        "authing:user-1",
+        "user-1@example.com",
+        work_notification_email="work-1@example.com",
+        personal_notification_email="home-1@example.com",
+    )
 
     pdf_path = tmp_path / "completed.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%completed\n")
@@ -96,7 +113,7 @@ def test_task_email_notification_sends_completed_pdf_and_dedupes(monkeypatch, tm
     assert first["status"] == "sent"
     assert second["status"] == "duplicate"
     assert len(sender.messages) == 1
-    assert sender.messages[0]["To"] == "user-1@example.com"
+    assert sender.messages[0]["To"] == "work-1@example.com, home-1@example.com"
     assert "任务完成通知" in str(sender.messages[0]["Subject"])
     attachments = list(sender.messages[0].iter_attachments())
     assert len(attachments) == 1
@@ -106,6 +123,10 @@ def test_task_email_notification_sends_completed_pdf_and_dedupes(monkeypatch, tm
     assert latest.metadata["notifications"]["email"]["completed"]["status"] == "sent"
     assert latest.metadata["notifications"]["email"]["completed"]["provider"] == "fake"
     assert latest.metadata["notifications"]["email"]["completed"]["provider_message_id"] == "fake-message-id"
+    assert latest.metadata["notifications"]["email"]["completed"]["recipients"] == [
+        "work-1@example.com",
+        "home-1@example.com",
+    ]
     assert logs[-1]["event_name"] == "task_email_sent"
 
 
@@ -130,10 +151,43 @@ def test_task_email_notification_skips_when_owner_email_missing(monkeypatch, tmp
     assert latest.metadata["notifications"]["email"]["failed"]["reason"] == "recipient_email_missing"
 
 
+def test_task_email_notification_skips_when_notification_disabled(monkeypatch, tmp_path):
+    _configure_email_settings(monkeypatch)
+    storage, manager = _mount_storage(tmp_path)
+    _create_user(
+        storage,
+        "authing:user-disabled",
+        "login-disabled@example.com",
+        notification_email_enabled=False,
+        work_notification_email="work-disabled@example.com",
+    )
+    task = manager.create_task(
+        owner_id="authing:user-disabled",
+        task_type=TaskType.AI_REPLY.value,
+        title="AI 答复任务 - 禁用",
+    )
+    manager.fail_task(task.id, "boom")
+
+    sender = _FakeEmailSender()
+    service = build_task_email_notification_service(storage=storage, email_sender=sender)
+    result = service.notify_task_terminal_status(task.id, terminal_status="failed")
+
+    latest = storage.get_task(task.id)
+    assert result["status"] == "skipped"
+    assert len(sender.messages) == 0
+    assert latest is not None
+    assert latest.metadata["notifications"]["email"]["failed"]["reason"] == "recipient_email_missing"
+
+
 def test_task_email_notification_sends_failed_email_without_attachment(monkeypatch, tmp_path):
     _configure_email_settings(monkeypatch)
     storage, manager = _mount_storage(tmp_path)
-    _create_user(storage, "authing:user-2", "user-2@example.com")
+    _create_user(
+        storage,
+        "authing:user-2",
+        "user-2@example.com",
+        work_notification_email="work-2@example.com",
+    )
     task = manager.create_task(
         owner_id="authing:user-2",
         task_type=TaskType.AI_SEARCH.value,
@@ -148,6 +202,7 @@ def test_task_email_notification_sends_failed_email_without_attachment(monkeypat
 
     assert result["status"] == "sent"
     assert len(sender.messages) == 1
+    assert sender.messages[0]["To"] == "work-2@example.com"
     assert list(sender.messages[0].iter_attachments()) == []
     assert "失败原因：执行失败" in sender.messages[0].get_body(preferencelist=("plain",)).get_content()
 
@@ -155,7 +210,12 @@ def test_task_email_notification_sends_failed_email_without_attachment(monkeypat
 def test_task_email_notification_reads_pdf_attachment_from_r2(monkeypatch, tmp_path):
     _configure_email_settings(monkeypatch)
     storage, manager = _mount_storage(tmp_path)
-    _create_user(storage, "authing:user-3", "user-3@example.com")
+    _create_user(
+        storage,
+        "authing:user-3",
+        "user-3@example.com",
+        work_notification_email="work-3@example.com",
+    )
     task = manager.create_task(
         owner_id="authing:user-3",
         task_type=TaskType.PATENT_ANALYSIS.value,
@@ -189,7 +249,12 @@ def test_task_email_notification_records_failure_when_brevo_config_invalid(monke
     _configure_email_settings(monkeypatch)
     monkeypatch.setattr(settings, "BREVO_API_KEY", "")
     storage, manager = _mount_storage(tmp_path)
-    _create_user(storage, "authing:user-4", "user-4@example.com")
+    _create_user(
+        storage,
+        "authing:user-4",
+        "user-4@example.com",
+        work_notification_email="work-4@example.com",
+    )
 
     pdf_path = tmp_path / "completed.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%completed\n")
@@ -213,7 +278,13 @@ def test_task_email_notification_records_failure_when_brevo_config_invalid(monke
 def test_task_email_notification_uses_brevo_api_payload(monkeypatch, tmp_path):
     _configure_email_settings(monkeypatch)
     storage, manager = _mount_storage(tmp_path)
-    _create_user(storage, "authing:user-5", "user-5@example.com")
+    _create_user(
+        storage,
+        "authing:user-5",
+        "user-5@example.com",
+        work_notification_email="work-5@example.com",
+        personal_notification_email="home-5@example.com",
+    )
 
     pdf_path = tmp_path / "completed.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n%completed\n")
@@ -255,9 +326,43 @@ def test_task_email_notification_uses_brevo_api_payload(monkeypatch, tmp_path):
     assert captured["url"] == "https://api.brevo.com/v3/smtp/email"
     assert captured["headers"]["api-key"] == "brevo-key"
     assert captured["json"]["sender"]["email"] == "noreply@example.com"
-    assert captured["json"]["to"] == [{"email": "user-5@example.com"}]
+    assert captured["json"]["to"] == [{"email": "work-5@example.com"}, {"email": "home-5@example.com"}]
     assert captured["json"]["attachment"][0]["name"] == "completed.pdf"
     assert f"task_id:{task.id}" in captured["json"]["tags"]
     assert latest is not None
-    assert latest.metadata["notifications"]["email"]["completed"]["provider"] == "brevo"
-    assert latest.metadata["notifications"]["email"]["completed"]["provider_message_id"] == "brevo-message-id"
+    assert latest.metadata["notifications"]["email"]["completed"]["recipients"] == [
+        "work-5@example.com",
+        "home-5@example.com",
+    ]
+
+
+def test_task_email_notification_dedupes_same_work_and_personal_address(monkeypatch, tmp_path):
+    _configure_email_settings(monkeypatch)
+    storage, manager = _mount_storage(tmp_path)
+    _create_user(
+        storage,
+        "authing:user-6",
+        "user-6@example.com",
+        work_notification_email="same@example.com",
+        personal_notification_email="same@example.com",
+    )
+
+    pdf_path = tmp_path / "completed.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%completed\n")
+    task = manager.create_task(
+        owner_id="authing:user-6",
+        task_type=TaskType.AI_SEARCH.value,
+        title="AI 检索会话 - 去重",
+    )
+    manager.complete_task(task.id, output_files={"pdf": str(pdf_path)})
+
+    sender = _FakeEmailSender()
+    service = build_task_email_notification_service(storage=storage, email_sender=sender)
+    result = service.notify_task_terminal_status(task.id, terminal_status="completed")
+
+    latest = storage.get_task(task.id)
+    assert result["status"] == "sent"
+    assert len(sender.messages) == 1
+    assert sender.messages[0]["To"] == "same@example.com"
+    assert latest is not None
+    assert latest.metadata["notifications"]["email"]["completed"]["recipients"] == ["same@example.com"]

@@ -17,6 +17,18 @@ export interface AccountAvatarUploadResponse {
   url: string
 }
 
+export interface AccountNotificationSettings {
+  notificationEmailEnabled: boolean
+  workNotificationEmail?: string
+  personalNotificationEmail?: string
+}
+
+export interface AccountNotificationSettingsUpdateRequest {
+  notificationEmailEnabled: boolean
+  workNotificationEmail: string | null
+  personalNotificationEmail: string | null
+}
+
 export interface WeeklyActivityPoint {
   week: string
   analysisCreated: number

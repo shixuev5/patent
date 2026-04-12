@@ -7,6 +7,7 @@ import smtplib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from email.message import EmailMessage
+from email.utils import getaddresses
 from typing import Any, Dict, Optional
 
 import requests
@@ -124,11 +125,16 @@ class BrevoEmailSender(EmailSender):
         )
 
     def _build_payload(self, message: EmailMessage, *, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        to_entries = [
+            {"email": address}
+            for _name, address in getaddresses(message.get_all("To", []))
+            if str(address or "").strip()
+        ]
         payload: Dict[str, Any] = {
             "sender": {
                 "email": self.config.from_address,
             },
-            "to": [{"email": str(message.get("To") or "").strip()}],
+            "to": to_entries,
             "subject": str(message.get("Subject") or "").strip(),
             "textContent": self._extract_text_content(message),
         }

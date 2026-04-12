@@ -20,6 +20,8 @@ from backend.models import (
     AccountDashboardResponse,
     AccountMonthTargetResponse,
     AccountMonthTargetUpsertRequest,
+    AccountNotificationSettingsResponse,
+    AccountNotificationSettingsUpdateRequest,
     AccountProfileResponse,
     AccountProfileUpdateRequest,
     CurrentUser,
@@ -39,6 +41,7 @@ AVATAR_MAX_BYTES = 2 * 1024 * 1024
 AVATAR_ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 AVATAR_LOCAL_DIR = settings.UPLOAD_DIR / "avatars"
 SAFE_AVATAR_FILE_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+EMAIL_PATTERN = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$", re.IGNORECASE)
 AVATAR_READ_PREFIX = "/api/account/profile/avatar/"
 AVATAR_REF_R2_PREFIX = "r2/"
 AVATAR_REF_LOCAL_PREFIX = "local/"
@@ -105,6 +108,32 @@ def _ensure_auth_user_or_404(owner_id: str):
     if not user:
         raise HTTPException(status_code=404, detail="未找到认证账号档案。")
     return user
+
+
+def _ensure_authing_user_or_403(current_user: CurrentUser):
+    owner_id = str(current_user.user_id or "").strip()
+    if not owner_id or owner_id.startswith("guest"):
+        raise HTTPException(status_code=403, detail="仅认证用户可配置邮件通知。")
+    return _ensure_auth_user_or_404(owner_id)
+
+
+def _normalize_notification_email(value) -> str | None:
+    text = _sanitize_profile_text(value)
+    if text is None:
+        return None
+    if len(text) > 254:
+        raise HTTPException(status_code=400, detail="邮箱长度不能超过 254 个字符。")
+    if not EMAIL_PATTERN.match(text):
+        raise HTTPException(status_code=400, detail="邮箱格式无效，请检查后重试。")
+    return text
+
+
+def _build_notification_settings_response(user) -> AccountNotificationSettingsResponse:
+    return AccountNotificationSettingsResponse(
+        notificationEmailEnabled=bool(getattr(user, "notification_email_enabled", False)),
+        workNotificationEmail=_sanitize_profile_text(getattr(user, "work_notification_email", None)),
+        personalNotificationEmail=_sanitize_profile_text(getattr(user, "personal_notification_email", None)),
+    )
 
 
 def _build_avatar_filename(owner_id: str, suffix: str) -> str:
@@ -360,6 +389,37 @@ async def put_account_profile(
         phone=_sanitize_profile_text(saved.phone),
         picture=_sanitize_profile_text(saved.picture),
     )
+
+
+@router.get("/api/account/notification-settings", response_model=AccountNotificationSettingsResponse)
+async def get_account_notification_settings(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    user = _ensure_authing_user_or_403(current_user)
+    return _build_notification_settings_response(user)
+
+
+@router.put("/api/account/notification-settings", response_model=AccountNotificationSettingsResponse)
+async def put_account_notification_settings(
+    payload: AccountNotificationSettingsUpdateRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_authing_user_or_403(current_user)
+    enabled = bool(payload.notificationEmailEnabled)
+    work_email = _normalize_notification_email(payload.workNotificationEmail)
+    personal_email = _normalize_notification_email(payload.personalNotificationEmail)
+    if enabled and not work_email and not personal_email:
+        raise HTTPException(status_code=400, detail="开启邮件通知后，工作邮箱和个人邮箱至少填写一个。")
+
+    saved = task_manager.storage.update_user_notification_settings(
+        current_user.user_id,
+        notification_email_enabled=enabled,
+        work_notification_email=work_email,
+        personal_notification_email=personal_email,
+    )
+    if not saved:
+        raise HTTPException(status_code=404, detail="未找到可更新的认证账号档案。")
+    return _build_notification_settings_response(saved)
 
 
 @router.get("/api/account/month-target", response_model=AccountMonthTargetResponse)

@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.models import AccountMonthTargetUpsertRequest, AccountProfileUpdateRequest, CurrentUser
+from backend.models import (
+    AccountMonthTargetUpsertRequest,
+    AccountNotificationSettingsUpdateRequest,
+    AccountProfileUpdateRequest,
+    CurrentUser,
+)
 from backend.routes import account
 from backend.storage import User
 from backend.storage.sqlite_storage import SQLiteTaskStorage
@@ -181,3 +186,128 @@ def test_put_account_profile_rejects_duplicate_name(monkeypatch, tmp_path):
             )
         )
     assert exc_info.value.status_code == 409
+
+
+def test_get_account_notification_settings_requires_authing_user(monkeypatch, tmp_path):
+    _mount_storage(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(account.get_account_notification_settings(current_user=CurrentUser(user_id='guest-user')))
+
+    assert exc_info.value.status_code == 403
+
+
+def test_account_notification_settings_roundtrip(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='authing:notify-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='notify-user',
+            name='通知用户',
+            email='login@example.com',
+        )
+    )
+
+    initial = asyncio.run(account.get_account_notification_settings(current_user=user))
+    assert initial.notificationEmailEnabled is False
+    assert initial.workNotificationEmail is None
+    assert initial.personalNotificationEmail is None
+
+    saved = asyncio.run(
+        account.put_account_notification_settings(
+            payload=AccountNotificationSettingsUpdateRequest(
+                notificationEmailEnabled=True,
+                workNotificationEmail='worker@example.com',
+                personalNotificationEmail='home@example.com',
+            ),
+            current_user=user,
+        )
+    )
+    assert saved.notificationEmailEnabled is True
+    assert saved.workNotificationEmail == 'worker@example.com'
+    assert saved.personalNotificationEmail == 'home@example.com'
+
+    fetched = storage.get_user_by_owner_id(user.user_id)
+    assert fetched is not None
+    assert fetched.notification_email_enabled is True
+    assert fetched.work_notification_email == 'worker@example.com'
+    assert fetched.personal_notification_email == 'home@example.com'
+
+
+def test_account_notification_settings_require_at_least_one_email_when_enabled(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='authing:no-email-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='no-email-user',
+            name='无邮箱用户',
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            account.put_account_notification_settings(
+                payload=AccountNotificationSettingsUpdateRequest(
+                    notificationEmailEnabled=True,
+                    workNotificationEmail='',
+                    personalNotificationEmail='',
+                ),
+                current_user=user,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_account_notification_settings_reject_invalid_email(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='authing:bad-email-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='bad-email-user',
+            name='坏邮箱用户',
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            account.put_account_notification_settings(
+                payload=AccountNotificationSettingsUpdateRequest(
+                    notificationEmailEnabled=True,
+                    workNotificationEmail='not-an-email',
+                    personalNotificationEmail='',
+                ),
+                current_user=user,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+def test_account_notification_settings_allow_duplicate_addresses(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='authing:dup-email-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='dup-email-user',
+            name='重复邮箱用户',
+        )
+    )
+
+    saved = asyncio.run(
+        account.put_account_notification_settings(
+            payload=AccountNotificationSettingsUpdateRequest(
+                notificationEmailEnabled=True,
+                workNotificationEmail='same@example.com',
+                personalNotificationEmail='same@example.com',
+            ),
+            current_user=user,
+        )
+    )
+
+    assert saved.workNotificationEmail == 'same@example.com'
+    assert saved.personalNotificationEmail == 'same@example.com'

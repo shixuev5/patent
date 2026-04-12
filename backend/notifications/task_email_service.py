@@ -94,8 +94,8 @@ class TaskEmailNotificationService:
             self._emit_delivery_log("task_email_skipped", task, normalized_status, record)
             return record
 
-        recipient = self._resolve_recipient(task)
-        if not recipient:
+        recipients = self._resolve_recipients(task)
+        if not recipients:
             record = self._save_delivery_record(
                 task_id,
                 normalized_status,
@@ -116,7 +116,7 @@ class TaskEmailNotificationService:
                 delivery_status="failed",
                 reason="attachment_missing_for_completed_task",
                 task=task,
-                recipient=recipient,
+                recipients=recipients,
                 subject=subject,
             )
             self._emit_delivery_log("task_email_failed", task, normalized_status, record)
@@ -126,7 +126,7 @@ class TaskEmailNotificationService:
             sender = self.email_sender or self._build_sender()
             message = self._build_message(
                 task=task,
-                recipient=recipient,
+                recipients=recipients,
                 terminal_status=normalized_status,
                 subject=subject,
                 error_message=resolved_error,
@@ -149,7 +149,7 @@ class TaskEmailNotificationService:
                 delivery_status="failed",
                 reason=str(exc),
                 task=task,
-                recipient=recipient,
+                recipients=recipients,
                 subject=subject,
                 attachment=attachment,
             )
@@ -162,7 +162,7 @@ class TaskEmailNotificationService:
             delivery_status="sent",
             reason="",
             task=task,
-            recipient=recipient,
+            recipients=recipients,
             subject=subject,
             attachment=attachment,
             send_result=send_result,
@@ -201,14 +201,29 @@ class TaskEmailNotificationService:
             )
         )
 
-    def _resolve_recipient(self, task: Any) -> str:
+    def _resolve_recipients(self, task: Any) -> list[str]:
         owner_id = str(getattr(task, "owner_id", "") or "").strip()
         if not owner_id or owner_id.startswith("guest"):
-            return ""
+            return []
         if not hasattr(self.storage, "get_user_by_owner_id"):
-            return ""
+            return []
         user = self.storage.get_user_by_owner_id(owner_id)
-        return str(getattr(user, "email", "") or "").strip()
+        if not user or not bool(getattr(user, "notification_email_enabled", False)):
+            return []
+
+        candidates = [
+            str(getattr(user, "work_notification_email", "") or "").strip(),
+            str(getattr(user, "personal_notification_email", "") or "").strip(),
+        ]
+        recipients: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            key = item.lower()
+            if not item or key in seen:
+                continue
+            recipients.append(item)
+            seen.add(key)
+        return recipients
 
     def _build_subject(self, task: Any, terminal_status: str, *, task_type: Optional[str] = None) -> str:
         prefix = "任务完成通知" if terminal_status == TERMINAL_COMPLETED else "任务失败通知"
@@ -221,7 +236,7 @@ class TaskEmailNotificationService:
         self,
         *,
         task: Any,
-        recipient: str,
+        recipients: list[str],
         terminal_status: str,
         subject: str,
         error_message: str,
@@ -233,7 +248,7 @@ class TaskEmailNotificationService:
         from_name = str(getattr(settings, "SMTP_FROM_NAME", "") or "").strip()
         message["Subject"] = subject
         message["From"] = formataddr((from_name, from_address)) if from_name else from_address
-        message["To"] = recipient
+        message["To"] = ", ".join(recipients)
         message.set_content(
             self._build_body(
                 task=task,
@@ -375,7 +390,7 @@ class TaskEmailNotificationService:
         delivery_status: str,
         reason: str,
         task: Any,
-        recipient: str = "",
+        recipients: Optional[list[str]] = None,
         subject: str = "",
         attachment: Optional[AttachmentPayload] = None,
         send_result: Optional[EmailSendResult] = None,
@@ -384,9 +399,10 @@ class TaskEmailNotificationService:
         metadata = deepcopy(getattr(latest_task, "metadata", {}) if isinstance(getattr(latest_task, "metadata", {}), dict) else {})
         notifications = metadata.get("notifications") if isinstance(metadata.get("notifications"), dict) else {}
         email_meta = notifications.get("email") if isinstance(notifications.get("email"), dict) else {}
+        recipient_list = [item for item in (recipients or []) if str(item or "").strip()]
         record = {
             "status": delivery_status,
-            "recipient": recipient or None,
+            "recipients": recipient_list or None,
             "subject": subject or None,
             "reason": reason or None,
             "attachment_name": attachment.filename if attachment is not None else None,
@@ -411,7 +427,7 @@ class TaskEmailNotificationService:
             message=f"任务终态邮件{record.get('status') or 'unknown'}",
             payload={
                 "terminal_status": terminal_status,
-                "recipient": record.get("recipient"),
+                "recipients": record.get("recipients"),
                 "reason": record.get("reason"),
                 "attachment_name": record.get("attachment_name"),
                 "provider": record.get("provider"),
