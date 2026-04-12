@@ -110,6 +110,11 @@ class AccountWeChatBindSessionResponse(BaseModel):
     bindCode: str
     qrPayload: str
     qrSvg: str
+    qrUrl: Optional[str] = None
+    qrScene: Literal["gateway_login", "bind_payload"] = "bind_payload"
+    gatewayStatus: Optional[str] = None
+    gatewayErrorMessage: Optional[str] = None
+    gatewayUpdatedAt: Optional[str] = None
     expiresAt: str
     botAccountId: Optional[str] = None
     wechatPeerName: Optional[str] = None
@@ -143,6 +148,12 @@ class InternalWeChatBindCodeCompleteRequest(BaseModel):
     botAccountId: str
     wechatPeerId: str
     wechatPeerName: Optional[str] = None
+
+
+class InternalWeChatGatewayLoginStateUpdateRequest(BaseModel):
+    status: str
+    qrUrl: Optional[str] = None
+    errorMessage: Optional[str] = None
 
 
 class InternalWeChatDeliveryJobClaimRequest(BaseModel):

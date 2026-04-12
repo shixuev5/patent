@@ -104,26 +104,43 @@
           <div class="wechat-qr-stage">
             <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
             <div class="wechat-qr-code-card">
-              <p class="wechat-qr-code-label">备用绑定码</p>
+              <p class="wechat-qr-code-label">{{ bindSession.qrScene === 'gateway_login' ? '第二步发送绑定码' : '备用绑定码' }}</p>
               <p class="wechat-qr-code-value">{{ bindSession.bindCode }}</p>
-              <p class="wechat-copy-text">如果当前不方便扫码，可以直接把这串绑定码发给接入微信号。</p>
+              <p class="wechat-copy-text">{{ bindCodeHelperText }}</p>
             </div>
           </div>
 
           <div class="wechat-bind-copy">
-            <p class="wechat-copy-title">绑定流程预览</p>
-            <p class="wechat-copy-text">左侧二维码用于接入微信号扫码，右侧展示扫码后在微信里会看到的对话效果。</p>
+            <p class="wechat-copy-title">三步完成绑定并开始第一次对话</p>
+            <p class="wechat-copy-text">{{ stepIntroText }}</p>
+            <div class="wechat-steps">
+              <div
+                v-for="step in bindSteps"
+                :key="step.title"
+                class="wechat-step-card"
+              >
+                <div class="wechat-step-index">{{ step.index }}</div>
+                <div class="wechat-step-content">
+                  <p class="wechat-step-title">{{ step.title }}</p>
+                  <p class="wechat-copy-text">{{ step.description }}</p>
+                </div>
+              </div>
+            </div>
             <div class="wechat-phone-preview">
               <div class="wechat-phone-header">
                 <span class="wechat-phone-dot" />
-                <span>微信私聊</span>
+                <span>首次对话示例</span>
               </div>
               <div class="wechat-phone-body">
-                <div class="wechat-bubble is-system">请扫描左侧二维码，或直接发送绑定码完成绑定。</div>
+                <div class="wechat-bubble is-system">欢迎使用专利审查助手。请发送绑定码完成网页账号绑定。</div>
                 <div class="wechat-bubble is-user">{{ bindSession.bindCode }}</div>
-                <div class="wechat-bubble is-system">绑定成功，后续任务结果和补问提醒都会回推到这里。</div>
+                <div class="wechat-bubble is-system">绑定成功。现在可以直接发任务，例如“帮我检索固态电池隔膜相关专利”。</div>
+                <div class="wechat-bubble is-user">帮我检索固态电池隔膜相关专利</div>
+                <div class="wechat-bubble is-system">收到，我会先整理检索计划，确认后继续执行。</div>
               </div>
             </div>
+            <p v-if="bindSession.gatewayStatus === 'expired'" class="wechat-inline-tip">接入微信二维码刚刚过期，网关会自动刷新，页面轮询后会显示新二维码。</p>
+            <p v-else-if="bindSession.gatewayStatus === 'error'" class="wechat-inline-tip">接入微信号正在重连：{{ bindSession.gatewayErrorMessage || '请稍后重试。' }}</p>
             <p v-if="bindSession.errorMessage" class="wechat-error-inline">{{ bindSession.errorMessage }}</p>
           </div>
         </div>
@@ -208,6 +225,43 @@ const fallbackCommandsText = computed(() => {
   return props.availableCommands
     .filter(item => item.startsWith('/'))
     .join(' · ')
+})
+
+const bindCodeHelperText = computed(() => {
+  if (props.bindSession?.qrScene === 'gateway_login') {
+    return '扫码进入接入微信号后，把这串绑定码发送到聊天窗口，网页账号就会和当前微信私聊身份绑定。'
+  }
+  return '如果当前不方便扫码，可以直接把这串绑定码发给接入微信号。'
+})
+
+const stepIntroText = computed(() => {
+  if (props.bindSession?.qrScene === 'gateway_login') {
+    return '左侧二维码会把你带到接入微信号；进入聊天后发送绑定码，再发第一条任务消息即可。'
+  }
+  return '当前左侧仍是绑定载荷二维码，建议优先使用接入微信二维码进入聊天，再发送绑定码。'
+})
+
+const bindSteps = computed(() => {
+  const usesGatewayQr = props.bindSession?.qrScene === 'gateway_login'
+  return [
+    {
+      index: '1',
+      title: usesGatewayQr ? '微信扫码进入接入号' : '进入接入微信号',
+      description: usesGatewayQr
+        ? '用微信扫一扫左侧二维码，手机里会打开接入微信号的入口。'
+        : '请先用微信打开接入微信号的入口，再进行下面两步。',
+    },
+    {
+      index: '2',
+      title: '发送绑定码',
+      description: `把“${props.bindSession?.bindCode || ''}”发送到聊天窗口，完成网页账号绑定。`,
+    },
+    {
+      index: '3',
+      title: '发送第一条任务消息',
+      description: '绑定成功后，直接发自然语言任务，例如“帮我检索固态电池隔膜相关专利”。',
+    },
+  ]
 })
 
 const usageScenes = [
@@ -445,6 +499,42 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   color: #0f172a;
 }
 
+.wechat-steps {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.wechat-step-card {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  border: 1px solid #dbeafe;
+  border-radius: 1rem;
+  background: #f8fbff;
+  padding: 0.85rem;
+}
+
+.wechat-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #f0fdfa;
+}
+
+.wechat-step-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
 .wechat-phone-dot {
   width: 0.5rem;
   height: 0.5rem;
@@ -495,6 +585,12 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
 .wechat-error-inline {
   border: 1px solid #fecdd3;
+}
+
+.wechat-inline-tip {
+  margin-top: 0.8rem;
+  font-size: 0.8rem;
+  color: #0f766e;
 }
 
 @media (min-width: 768px) {

@@ -94,6 +94,24 @@ class BackendClient:
         )
         return await self._parse_json(response)
 
+    async def update_gateway_login_state(
+        self,
+        *,
+        status: str,
+        qr_url: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        response = await self._client.post(
+            f"{self.api_base_url}/api/internal/wechat/gateway/login-state",
+            headers=self._headers,
+            json={
+                "status": status,
+                "qrUrl": qr_url,
+                "errorMessage": error_message,
+            },
+        )
+        return await self._parse_json(response)
+
     async def complete_delivery_job(self, delivery_job_id: str) -> None:
         response = await self._client.post(
             f"{self.api_base_url}/api/internal/wechat/delivery-jobs/{delivery_job_id}/complete",

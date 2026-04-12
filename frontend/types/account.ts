@@ -50,6 +50,11 @@ export interface AccountWeChatBindSession {
   bindCode: string
   qrPayload: string
   qrSvg: string
+  qrUrl?: string | null
+  qrScene: 'gateway_login' | 'bind_payload'
+  gatewayStatus?: string | null
+  gatewayErrorMessage?: string | null
+  gatewayUpdatedAt?: string | null
   expiresAt: string
   botAccountId?: string | null
   wechatPeerName?: string | null

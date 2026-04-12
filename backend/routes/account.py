@@ -32,6 +32,7 @@ from backend.models import (
     AccountWeChatIntegrationResponse,
     AccountWeChatIntegrationUpdateRequest,
     InternalWeChatBindCodeCompleteRequest,
+    InternalWeChatGatewayLoginStateUpdateRequest,
     CurrentUser,
     DailyActivityPoint,
     InternalWeChatBindSessionCompleteRequest,
@@ -43,6 +44,7 @@ from backend.models import (
 from backend.utils import _build_r2_storage
 from backend.storage import TaskType, WeChatBindSession, WeChatBinding, get_pipeline_manager
 from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
+from backend.wechat_gateway_state import get_wechat_gateway_login_state, update_wechat_gateway_login_state
 from config import settings
 
 
@@ -161,14 +163,14 @@ def _mask_wechat_peer_id(value: str | None) -> str | None:
     return f"{text[:2]}***{text[-2:]}"
 
 
-def _render_bind_qr_svg(qr_payload: str) -> str:
+def _render_qr_svg(payload: str) -> str:
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=8,
         border=2,
     )
-    qr.add_data(str(qr_payload or "").strip())
+    qr.add_data(str(payload or "").strip())
     qr.make(fit=True)
     svg_buffer = BytesIO()
     qr.make_image(image_factory=SvgPathImage).save(svg_buffer)
@@ -193,12 +195,21 @@ def _build_wechat_binding_response(binding: WeChatBinding) -> AccountWeChatBindi
 
 
 def _build_wechat_bind_session_response(session: WeChatBindSession) -> AccountWeChatBindSessionResponse:
+    gateway_state = get_wechat_gateway_login_state()
+    qr_url = gateway_state.qr_url
+    qr_scene = "gateway_login" if gateway_state.status == "qr_ready" and qr_url else "bind_payload"
+    qr_svg = _render_qr_svg(qr_url if qr_scene == "gateway_login" and qr_url else session.qr_payload)
     return AccountWeChatBindSessionResponse(
         bindSessionId=session.bind_session_id,
         status=session.status,
         bindCode=session.bind_code,
         qrPayload=session.qr_payload,
-        qrSvg=session.qr_svg,
+        qrSvg=qr_svg,
+        qrUrl=qr_url,
+        qrScene=qr_scene,
+        gatewayStatus=gateway_state.status,
+        gatewayErrorMessage=_sanitize_profile_text(gateway_state.error_message),
+        gatewayUpdatedAt=gateway_state.updated_at,
         expiresAt=session.expires_at.isoformat(),
         botAccountId=session.bot_account_id,
         wechatPeerName=_sanitize_profile_text(session.wechat_peer_name),
@@ -584,7 +595,7 @@ async def post_account_wechat_bind_session(
             status="pending",
             bind_code=bind_code,
             qr_payload=qr_payload,
-            qr_svg=_render_bind_qr_svg(qr_payload),
+            qr_svg=_render_qr_svg(qr_payload),
             expires_at=now_dt + timedelta(seconds=int(getattr(settings, "WECHAT_BIND_SESSION_TTL_SECONDS", 600) or 600)),
             created_at=now_dt,
             updated_at=now_dt,
@@ -708,6 +719,25 @@ async def post_internal_wechat_bind_session_complete_by_code(
         ),
         _token=_token,
     )
+
+
+@router.post("/api/internal/wechat/gateway/login-state")
+async def post_internal_wechat_gateway_login_state(
+    payload: InternalWeChatGatewayLoginStateUpdateRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    state = update_wechat_gateway_login_state(
+        status=payload.status,
+        qr_url=payload.qrUrl,
+        error_message=payload.errorMessage,
+    )
+    return {
+        "status": state.status,
+        "qrUrl": state.qr_url,
+        "errorMessage": state.error_message,
+        "updatedAt": state.updated_at,
+    }
 
 
 @router.get("/api/internal/wechat/bindings/by-peer")

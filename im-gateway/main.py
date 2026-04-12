@@ -6,6 +6,7 @@ import inspect
 import os
 import re
 from pathlib import Path
+from concurrent.futures import Future
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
@@ -31,6 +32,7 @@ class WeChatGateway:
     def __init__(self, *, backend: BackendClient) -> None:
         self.backend = backend
         self.bot: Any = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _build_bot(self) -> Any:
         try:
@@ -40,14 +42,15 @@ class WeChatGateway:
                 "未安装 wechatbot-sdk，无法启动真实微信网关。请先执行 `pip install wechatbot-sdk`。"
             ) from exc
         return WeChatBot(
-            on_qr_url=lambda url: print(f"[im-gateway] scan qr: {url}"),
-            on_scanned=lambda: print("[im-gateway] qr scanned"),
-            on_expired=lambda: print("[im-gateway] qr expired"),
-            on_error=lambda exc: print(f"[im-gateway] sdk error: {exc}"),
+            on_qr_url=self._on_qr_url,
+            on_scanned=self._on_scanned,
+            on_expired=self._on_expired,
+            on_error=self._on_error,
         )
 
     async def run(self) -> None:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        self._loop = asyncio.get_running_loop()
         poller = asyncio.create_task(self._poll_delivery_jobs())
         try:
             while True:
@@ -55,13 +58,16 @@ class WeChatGateway:
                 self._register_handlers()
                 try:
                     print("[im-gateway] waiting for login")
+                    self._submit_login_state(status="waiting_for_qr")
                     await self.bot.login()
                     print("[im-gateway] login succeeded")
+                    self._submit_login_state(status="online")
                     await self.bot.start()
                     print("[im-gateway] bot session ended, restarting login flow")
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    self._submit_login_state(status="error", error_message=str(exc))
                     print(f"[im-gateway] login loop failed: {exc}. retrying in {LOGIN_RETRY_SECONDS}s")
                 finally:
                     await self._close_bot()
@@ -71,6 +77,34 @@ class WeChatGateway:
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
             await self.backend.close()
+
+    def _submit_login_state(self, *, status: str, qr_url: Optional[str] = None, error_message: Optional[str] = None) -> Optional[Future]:
+        if self._loop is None or self._loop.is_closed():
+            return None
+        return asyncio.run_coroutine_threadsafe(
+            self.backend.update_gateway_login_state(
+                status=status,
+                qr_url=qr_url,
+                error_message=error_message,
+            ),
+            self._loop,
+        )
+
+    def _on_qr_url(self, url: str) -> None:
+        print(f"[im-gateway] scan qr: {url}")
+        self._submit_login_state(status="qr_ready", qr_url=str(url or "").strip())
+
+    def _on_scanned(self) -> None:
+        print("[im-gateway] qr scanned")
+        self._submit_login_state(status="scanned")
+
+    def _on_expired(self) -> None:
+        print("[im-gateway] qr expired")
+        self._submit_login_state(status="expired")
+
+    def _on_error(self, exc: Exception) -> None:
+        print(f"[im-gateway] sdk error: {exc}")
+        self._submit_login_state(status="error", error_message=str(exc))
 
     async def _close_bot(self) -> None:
         bot, self.bot = self.bot, None

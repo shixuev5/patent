@@ -27,6 +27,7 @@ from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 from backend.time_utils import utc_now
+from backend.wechat_gateway_state import update_wechat_gateway_login_state
 from backend.wechat_runtime import WeChatRuntimeService
 from config import settings
 from fastapi import HTTPException
@@ -332,6 +333,7 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
     monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
+    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-user')
     storage.upsert_authing_user(
         User(
@@ -392,6 +394,7 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
 def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
+    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-refresh-user')
     storage.upsert_authing_user(
         User(
@@ -414,18 +417,43 @@ def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_
 
 
 def test_account_wechat_bind_qr_svg_depends_on_payload():
-    first = account._render_bind_qr_svg('wechat-bind:wbs-001:ABCDEF12')
-    second = account._render_bind_qr_svg('wechat-bind:wbs-002:ABCDEF12')
+    first = account._render_qr_svg('wechat-bind:wbs-001:ABCDEF12')
+    second = account._render_qr_svg('wechat-bind:wbs-002:ABCDEF12')
 
     assert first.startswith('<svg')
     assert '<path' in first
     assert first != second
 
 
+def test_account_wechat_bind_session_prefers_gateway_qr(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
+    update_wechat_gateway_login_state(
+        status='qr_ready',
+        qr_url='https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=test-qr&bot_type=3',
+    )
+    user = CurrentUser(user_id='authing:wechat-gateway-qr-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='wechat-gateway-qr-user',
+            name='网关二维码用户',
+        )
+    )
+
+    bind_session = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+
+    assert bind_session.qrScene == 'gateway_login'
+    assert bind_session.qrUrl == 'https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=test-qr&bot_type=3'
+    assert bind_session.gatewayStatus == 'qr_ready'
+    assert bind_session.qrSvg.startswith('<svg')
+
+
 def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
     monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
+    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-code-user')
     storage.upsert_authing_user(
         User(
@@ -474,6 +502,10 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     events: list[str] = []
 
     class FakeBackend:
+        async def update_gateway_login_state(self, *, status: str, qr_url=None, error_message=None):
+            events.append(f'state:{status}:{qr_url or ""}:{error_message or ""}')
+            return {}
+
         async def close(self):
             events.append('backend:close')
 
@@ -487,6 +519,9 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
 
         async def login(self):
             events.append('bot:login')
+            if self.login_error is not None:
+                gateway._on_qr_url('https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc&bot_type=3')
+                gateway._on_expired()
             if self.login_error is not None:
                 raise self.login_error
 
@@ -524,7 +559,9 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     assert events.count('bot:login') == 2
     assert 'sleep:1' in events
     assert events.count('bot:stop') == 2
-    assert events[-1] == 'backend:close'
+    assert any(item.startswith('state:qr_ready:https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc&bot_type=3:') for item in events)
+    assert any(item.startswith('state:error::QR code expired 3 times') for item in events)
+    assert 'backend:close' in events
 
 
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):
