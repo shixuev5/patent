@@ -18,7 +18,7 @@ from agents.common.retrieval.academic_query_utils import (
 )
 from agents.common.retrieval.academic_search import AcademicSearchClient
 from agents.common.search_clients.factory import SearchClientFactory
-from backend.storage.ai_search_support import (
+from backend.storage.ai_search_ids import (
     build_ai_search_canonical_id,
     stable_ai_search_document_id,
 )

@@ -11,7 +11,7 @@ from loguru import logger
 
 from config import settings
 from ..models import TaskType
-from ..schema import REQUIRED_COLUMNS, SQLITE_CREATE_TABLES_SQL
+from ..schema.shared_schema import REQUIRED_COLUMNS, SQLITE_CREATE_TABLES_SQL
 
 
 class SQLiteBackend:

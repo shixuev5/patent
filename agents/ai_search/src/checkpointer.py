@@ -20,7 +20,7 @@ from langgraph.checkpoint.base import (
 )
 from langchain_core.runnables import RunnableConfig
 
-from backend.storage.ai_search_support import decode_typed_value, encode_typed_value
+from backend.storage.checkpoint_codec import decode_typed_value, encode_typed_value
 
 
 class AiSearchCheckpointSaver(BaseCheckpointSaver[str]):

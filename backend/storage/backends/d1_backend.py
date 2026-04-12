@@ -12,12 +12,14 @@ from loguru import logger
 
 from backend.time_utils import utc_now_z
 from ..models import TaskType
-from ..schema import (
+from ..schema.d1_schema import (
     D1_CREATE_TABLES_SQL,
     D1_EXTRA_INDEX_SQL,
     D1_SCHEMA_META_KEY,
     D1_SCHEMA_META_TABLE,
     D1_SCHEMA_META_TABLE_SQL,
+)
+from ..schema.shared_schema import (
     REQUIRED_COLUMNS,
 )
 

@@ -4,9 +4,8 @@ import sqlite3
 from datetime import datetime
 
 from backend.storage import Task, TaskStatus, TaskType
-from backend.storage.ai_search_support import encode_typed_value
+from backend.storage.checkpoint_codec import encode_typed_value
 from backend.storage import SQLiteTaskStorage
-
 
 def test_ai_search_storage_roundtrip(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_storage.db")
