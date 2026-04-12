@@ -18,7 +18,7 @@ from agents.ai_search.src.state import (
     phase_step,
     phase_to_task_status,
 )
-from backend.notifications import build_task_email_notification_service
+from backend.notifications import build_task_notification_dispatcher
 from backend.system_logs import emit_system_log
 from backend.storage import TaskType, get_pipeline_manager
 from backend.task_usage_tracking import (
@@ -113,7 +113,7 @@ class AiSearchService:
         *,
         error_message: Optional[str] = None,
     ) -> Dict[str, Any]:
-        service = build_task_email_notification_service(
+        service = build_task_notification_dispatcher(
             storage=self.storage,
             system_log_emitter=self._emit_system_log,
         )

@@ -1,30 +1,38 @@
 <template>
   <div class="mt-4">
-    <article class="notification-settings-card">
-      <div class="notification-settings-header">
-        <div>
-          <h2 class="text-base font-semibold text-slate-900">任务邮件通知</h2>
-          <p class="mt-1 text-xs text-slate-500">可分别配置工作邮箱和个人邮箱。开启后，已填写的地址都会收到任务完成或失败通知。</p>
+    <section class="notification-panel">
+      <div class="notification-toolbar">
+        <div class="min-w-0">
+          <h2 class="notification-title">邮件通知</h2>
+          <p class="notification-summary">开启后，工作邮箱和个人邮箱中已填写的地址都会收到任务完成或失败通知。</p>
+        </div>
+
+        <div class="notification-toolbar-actions">
+          <label class="notification-toggle-inline">
+            <span class="notification-toggle-text">{{ notificationEmailEnabled ? '已开启' : '已关闭' }}</span>
+            <span class="notification-switch">
+              <input
+                :checked="notificationEmailEnabled"
+                type="checkbox"
+                class="sr-only"
+                @change="onEnabledChange"
+              />
+              <span class="notification-switch-track" :class="{ 'is-on': notificationEmailEnabled }" />
+            </span>
+          </label>
+
+          <button
+            type="button"
+            class="notification-save-btn"
+            :disabled="savingNotificationSettings || notificationFormInvalid"
+            @click="emit('save')"
+          >
+            {{ savingNotificationSettings ? '保存中...' : '保存设置' }}
+          </button>
         </div>
       </div>
 
       <div class="notification-form-grid">
-        <label class="notification-toggle-row">
-          <span class="notification-field-copy">
-            <span class="notification-field-label">开启邮件通知</span>
-            <span class="notification-field-help">关闭后不会发送邮件，但会保留已填写的邮箱。</span>
-          </span>
-          <span class="notification-switch">
-            <input
-              :checked="notificationEmailEnabled"
-              type="checkbox"
-              class="sr-only"
-              @change="onEnabledChange"
-            />
-            <span class="notification-switch-track" :class="{ 'is-on': notificationEmailEnabled }" />
-          </span>
-        </label>
-
         <label class="notification-field">
           <span class="notification-field-label">工作邮箱</span>
           <input
@@ -37,7 +45,6 @@
             placeholder="name@company.com"
             @input="onWorkEmailInput"
           />
-          <span class="notification-field-help">可留空；开启通知时，工作邮箱和个人邮箱至少填写一个。</span>
         </label>
 
         <label class="notification-field">
@@ -52,25 +59,17 @@
             placeholder="name@example.com"
             @input="onPersonalEmailInput"
           />
-          <span class="notification-field-help">两个邮箱可以填成同一个地址，实际发送会自动去重。</span>
         </label>
       </div>
+
+      <p class="notification-hint">
+        关闭后不会发送邮件，但会保留已填写的邮箱。开启通知时，两个邮箱至少填写一个；若填写相同地址，实际发送会自动去重。
+      </p>
 
       <p v-if="notificationSettingsErrorMessage" class="notification-settings-error">
         {{ notificationSettingsErrorMessage }}
       </p>
-
-      <div class="notification-actions">
-        <button
-          type="button"
-          class="notification-save-btn"
-          :disabled="savingNotificationSettings || notificationFormInvalid"
-          @click="emit('save')"
-        >
-          {{ savingNotificationSettings ? '保存中...' : '保存设置' }}
-        </button>
-      </div>
-    </article>
+    </section>
   </div>
 </template>
 
@@ -107,18 +106,51 @@ const onPersonalEmailInput = (event: Event) => {
 </script>
 
 <style scoped>
-.notification-settings-card {
+.notification-panel {
   border: 1px solid #e2e8f0;
-  border-radius: 1.25rem;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-radius: 1rem;
+  background: #ffffff;
   padding: 1rem;
 }
 
-.notification-settings-header {
+.notification-toolbar {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.9rem;
+}
+
+.notification-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.notification-summary {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.notification-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.notification-toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.notification-toggle-text {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
 }
 
 .notification-form-grid {
@@ -127,33 +159,16 @@ const onPersonalEmailInput = (event: Event) => {
   margin-top: 1rem;
 }
 
-.notification-toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border: 1px solid #dbeafe;
-  border-radius: 1rem;
-  background: #f8fbff;
-  padding: 0.9rem 1rem;
-}
-
-.notification-field-copy,
-.notification-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
 .notification-field-label {
   font-size: 0.85rem;
   font-weight: 600;
   color: #0f172a;
 }
 
-.notification-field-help {
-  font-size: 0.75rem;
-  color: #64748b;
+.notification-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .notification-switch {
@@ -195,10 +210,10 @@ const onPersonalEmailInput = (event: Event) => {
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid #cbd5e1;
-  border-radius: 0.9rem;
+  border-radius: 0.8rem;
   background: #ffffff;
-  padding: 0.7rem 0.85rem;
-  font-size: 0.9rem;
+  padding: 0.65rem 0.8rem;
+  font-size: 0.88rem;
   color: #0f172a;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -220,25 +235,26 @@ const onPersonalEmailInput = (event: Event) => {
   background: #fff1f2;
 }
 
+.notification-hint {
+  margin: 0.75rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: #64748b;
+}
+
 .notification-settings-error {
-  margin: 0.9rem 0 0;
+  margin: 0.6rem 0 0;
   font-size: 0.8rem;
   color: #e11d48;
 }
 
-.notification-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 1rem;
-}
-
 .notification-save-btn {
-  min-height: 2.5rem;
-  border-radius: 0.9rem;
+  min-height: 2.35rem;
+  border-radius: 0.8rem;
   border: 1px solid #0891b2;
   background: #06b6d4;
-  padding: 0.45rem 1rem;
-  font-size: 0.85rem;
+  padding: 0.42rem 0.9rem;
+  font-size: 0.82rem;
   font-weight: 600;
   color: #ecfeff;
   transition: all 0.18s ease;
@@ -251,5 +267,20 @@ const onPersonalEmailInput = (event: Event) => {
 .notification-save-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+@media (min-width: 768px) {
+  .notification-toolbar {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .notification-toolbar-actions {
+    justify-content: flex-end;
+  }
+
+  .notification-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

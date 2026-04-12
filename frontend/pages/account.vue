@@ -166,25 +166,12 @@
     </section>
 
     <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
-      <div class="inline-flex rounded-2xl border border-slate-200 bg-slate-50 p-1">
-        <button
-          type="button"
-          class="account-tab-btn"
-          :class="activeTab === 'overview' ? 'is-active' : ''"
-          @click="activeTab = 'overview'"
-        >
-          概览
-        </button>
-        <button
-          v-if="hasNotificationTab"
-          type="button"
-          class="account-tab-btn"
-          :class="activeTab === 'notifications' ? 'is-active' : ''"
-          @click="activeTab = 'notifications'"
-        >
-          邮件通知
-        </button>
-      </div>
+      <AccountTabs
+        :active-tab="activeTab"
+        :has-notification-tab="hasNotificationTab"
+        :has-wechat-tab="hasWechatTab"
+        @update:active-tab="activeTab = $event"
+      />
 
       <div v-if="errorMessage" class="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
         {{ errorMessage }}
@@ -225,7 +212,7 @@
       />
 
       <AccountNotificationTab
-        v-else
+        v-else-if="activeTab === 'notifications'"
         :notification-email-enabled="notificationEmailEnabledInput"
         :work-notification-email="workNotificationEmailInput"
         :personal-notification-email="personalNotificationEmailInput"
@@ -239,14 +226,37 @@
         @update:personal-notification-email="personalNotificationEmailInput = $event"
         @save="saveNotificationSettings"
       />
+
+      <AccountWechatIntegrationTab
+        v-else
+        :binding-status="wechatIntegration?.bindingStatus || 'unbound'"
+        :binding="wechatIntegration?.binding || null"
+        :bind-session="wechatIntegration?.bindSession || null"
+        :available-commands="wechatIntegration?.availableCommands || []"
+        :push-task-completed="pushTaskCompletedInput"
+        :push-task-failed="pushTaskFailedInput"
+        :push-ai-search-pending-action="pushAiSearchPendingActionInput"
+        :saving-settings="savingWechatSettings"
+        :starting-bind-session="startingWechatBindSession"
+        :disconnecting="disconnectingWechat"
+        :error-message="wechatIntegrationErrorMessage"
+        @update:push-task-completed="pushTaskCompletedInput = $event"
+        @update:push-task-failed="pushTaskFailedInput = $event"
+        @update:push-ai-search-pending-action="pushAiSearchPendingActionInput = $event"
+        @save-settings="saveWechatSettings"
+        @start-bind-session="startWechatBindSession"
+        @disconnect="disconnectWechat"
+      />
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import AccountTabs from '~/components/account/AccountTabs.vue'
 import AccountNotificationTab from '~/components/account/AccountNotificationTab.vue'
 import AccountOverviewTab from '~/components/account/AccountOverviewTab.vue'
+import AccountWechatIntegrationTab from '~/components/account/AccountWechatIntegrationTab.vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import { cachedGetJson, invalidateQueries, requestRaw, setCachedQueryData } from '~/utils/apiClient'
@@ -257,6 +267,8 @@ import type {
   AccountNotificationSettingsUpdateRequest,
   AccountProfile,
   AccountProfileUpdateRequest,
+  AccountWeChatIntegration,
+  AccountWeChatIntegrationUpdateRequest,
   WeeklyActivityPoint,
 } from '~/types/account'
 import type { UsageResponse } from '~/types/usage'
@@ -275,26 +287,32 @@ const authStore = useAuthStore()
 const taskStore = useTaskStore()
 const usageNowTs = ref(Date.now())
 let usageCountdownTimer: ReturnType<typeof setInterval> | null = null
+let wechatBindPollTimer: ReturnType<typeof setInterval> | null = null
 const EMAIL_PATTERN = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$/i
 
 const now = new Date()
 const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
-const activeTab = ref<'overview' | 'notifications'>('overview')
+const activeTab = ref<'overview' | 'notifications' | 'wechat'>('overview')
 const loading = ref(false)
 const refreshing = ref(false)
 const savingTarget = ref(false)
 const savingDisplayName = ref(false)
 const savingAvatar = ref(false)
 const savingNotificationSettings = ref(false)
+const savingWechatSettings = ref(false)
+const startingWechatBindSession = ref(false)
+const disconnectingWechat = ref(false)
 const pageReady = ref(false)
 const errorMessage = ref('')
 const targetErrorMessage = ref('')
 const profileSaveErrorMessage = ref('')
 const notificationSettingsErrorMessage = ref('')
+const wechatIntegrationErrorMessage = ref('')
 const monthTargetInput = ref('0')
 const hoveredDay = ref<number | null>(null)
 const profile = ref<AccountProfile | null>(null)
 const dashboard = ref<AccountDashboard | null>(null)
+const wechatIntegration = ref<AccountWeChatIntegration | null>(null)
 const editingDisplayName = ref(false)
 const profileAvatarFileInput = ref<HTMLInputElement>()
 const displayNameEditorRef = ref<HTMLElement>()
@@ -303,6 +321,9 @@ const discardDisplayNameOnBlur = ref(false)
 const notificationEmailEnabledInput = ref(false)
 const workNotificationEmailInput = ref('')
 const personalNotificationEmailInput = ref('')
+const pushTaskCompletedInput = ref(true)
+const pushTaskFailedInput = ref(true)
+const pushAiSearchPendingActionInput = ref(true)
 
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -332,6 +353,7 @@ const monthDisplayLabel = computed(() => `${parsedYearMonth.value.year}年${pars
 const canMoveNextMonth = computed(() => selectedMonth.value < currentMonthKey)
 const isCurrentMonthSelection = computed(() => selectedMonth.value === currentMonthKey)
 const hasNotificationTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
+const hasWechatTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
 
 const monthDays = computed(() => new Date(parsedYearMonth.value.year, parsedYearMonth.value.month, 0).getDate())
 const visibleDayCount = computed(() => {
@@ -778,6 +800,7 @@ const getAuthToken = async (): Promise<string> => {
 const getAuthScopeKey = (): string => `${taskStore.authMode}:${taskStore.userId || 'anonymous'}`
 const getAccountProfileQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'profile']
 const getAccountNotificationSettingsQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'notification-settings']
+const getAccountWechatIntegrationQueryKey = (): readonly unknown[] => ['api', getAuthScopeKey(), 'account', 'wechat-integration']
 const getAccountDashboardQueryKey = (year: number, month: number): readonly unknown[] => [
   'api',
   getAuthScopeKey(),
@@ -816,6 +839,20 @@ const syncNotificationSettingsForm = (nextSettings: AccountNotificationSettings 
   notificationEmailEnabledInput.value = !!nextSettings?.notificationEmailEnabled
   workNotificationEmailInput.value = String(nextSettings?.workNotificationEmail || '')
   personalNotificationEmailInput.value = String(nextSettings?.personalNotificationEmail || '')
+}
+
+const syncWechatIntegrationForm = (nextIntegration: AccountWeChatIntegration | null) => {
+  wechatIntegration.value = nextIntegration
+  pushTaskCompletedInput.value = !!nextIntegration?.binding?.pushTaskCompleted
+  pushTaskFailedInput.value = !!nextIntegration?.binding?.pushTaskFailed
+  pushAiSearchPendingActionInput.value = !!nextIntegration?.binding?.pushAiSearchPendingAction
+}
+
+const stopWechatBindPolling = () => {
+  if (wechatBindPollTimer) {
+    clearInterval(wechatBindPollTimer)
+    wechatBindPollTimer = null
+  }
 }
 
 const syncDisplayNameEditor = () => {
@@ -989,6 +1026,24 @@ const fetchNotificationSettings = async (token: string) => {
   syncNotificationSettingsForm(nextSettings)
 }
 
+const fetchWechatIntegration = async (token: string) => {
+  try {
+    const nextIntegration = await cachedGetJson<AccountWeChatIntegration>({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/wechat-integration',
+      token,
+      queryKey: getAccountWechatIntegrationQueryKey(),
+      staleTime: 5 * 1000,
+      gcTime: 24 * 60 * 60 * 1000,
+    })
+    wechatIntegrationErrorMessage.value = ''
+    syncWechatIntegrationForm(nextIntegration)
+  } catch (error) {
+    syncWechatIntegrationForm(null)
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '加载微信接入状态失败。'
+  }
+}
+
 const fetchDashboard = async (token: string) => {
   const { year, month } = parsedYearMonth.value
   const nextDashboard = await cachedGetJson<AccountDashboard>({
@@ -1017,6 +1072,120 @@ const fetchUsage = async (token: string) => {
     if ((taskStore.dailyUsage?.remainingPoints || 0) > 0) taskStore.clearPointLimitNotice()
   } catch (error) {
     console.error('加载积分信息失败：', error)
+  }
+}
+
+const saveWechatSettings = async () => {
+  wechatIntegrationErrorMessage.value = ''
+  if (!hasWechatTab.value || !wechatIntegration.value?.binding) return
+  const payload: AccountWeChatIntegrationUpdateRequest = {
+    pushTaskCompleted: pushTaskCompletedInput.value,
+    pushTaskFailed: pushTaskFailedInput.value,
+    pushAiSearchPendingAction: pushAiSearchPendingActionInput.value,
+  }
+  savingWechatSettings.value = true
+  try {
+    const token = await getAuthToken()
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/wechat-integration/settings',
+      method: 'PUT',
+      token,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    const nextIntegration = await response.json() as AccountWeChatIntegration
+    syncWechatIntegrationForm(nextIntegration)
+    setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
+    taskStore.showGlobalNotice('success', '微信推送设置已更新。')
+  } catch (error) {
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '保存微信设置失败。'
+  } finally {
+    savingWechatSettings.value = false
+  }
+}
+
+const startWechatBindSession = async () => {
+  wechatIntegrationErrorMessage.value = ''
+  startingWechatBindSession.value = true
+  try {
+    const token = await getAuthToken()
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/wechat-integration/bind-session',
+      method: 'POST',
+      token,
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    const bindSession = await response.json() as AccountWeChatIntegration['bindSession']
+    const nextIntegration: AccountWeChatIntegration = {
+      bindingStatus: 'binding',
+      binding: wechatIntegration.value?.binding || null,
+      bindSession: bindSession || null,
+      availableCommands: wechatIntegration.value?.availableCommands || [],
+    }
+    syncWechatIntegrationForm(nextIntegration)
+    setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
+  } catch (error) {
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '生成绑定二维码失败。'
+  } finally {
+    startingWechatBindSession.value = false
+  }
+}
+
+const pollWechatBindSession = async () => {
+  const bindSessionId = String(wechatIntegration.value?.bindSession?.bindSessionId || '').trim()
+  if (!bindSessionId) return
+  try {
+    const token = await getAuthToken()
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: `/api/account/wechat-integration/bind-session/${bindSessionId}`,
+      method: 'GET',
+      token,
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    const nextBindSession = await response.json() as AccountWeChatIntegration['bindSession']
+    const nextIntegration: AccountWeChatIntegration = {
+      bindingStatus: nextBindSession?.status === 'bound' ? 'bound' : 'binding',
+      binding: wechatIntegration.value?.binding || null,
+      bindSession: nextBindSession || null,
+      availableCommands: wechatIntegration.value?.availableCommands || [],
+    }
+    syncWechatIntegrationForm(nextIntegration)
+    if (nextBindSession?.status === 'bound') {
+      await fetchWechatIntegration(token)
+    }
+  } catch (error) {
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '轮询绑定状态失败。'
+    stopWechatBindPolling()
+  }
+}
+
+const disconnectWechat = async () => {
+  wechatIntegrationErrorMessage.value = ''
+  disconnectingWechat.value = true
+  try {
+    const token = await getAuthToken()
+    const response = await requestRaw({
+      baseUrl: config.public.apiBaseUrl,
+      path: '/api/account/wechat-integration/disconnect',
+      method: 'POST',
+      token,
+    })
+    if (!response.ok) throw new Error(await toApiError(response))
+    const nextIntegration = await response.json() as AccountWeChatIntegration
+    syncWechatIntegrationForm(nextIntegration)
+    setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
+    stopWechatBindPolling()
+    taskStore.showGlobalNotice('success', '微信绑定已解除。')
+  } catch (error) {
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '解绑微信失败。'
+  } finally {
+    disconnectingWechat.value = false
   }
 }
 
@@ -1160,6 +1329,7 @@ const loadData = async (loadProfile: boolean) => {
 
   errorMessage.value = ''
   notificationSettingsErrorMessage.value = ''
+  wechatIntegrationErrorMessage.value = ''
 
   try {
     const token = await getAuthToken()
@@ -1171,7 +1341,14 @@ const loadData = async (loadProfile: boolean) => {
       jobs.push(fetchNotificationSettings(token))
     } else {
       syncNotificationSettingsForm(null)
-      activeTab.value = 'overview'
+      if (activeTab.value === 'notifications') activeTab.value = 'overview'
+    }
+    if (hasWechatTab.value) {
+      jobs.push(fetchWechatIntegration(token))
+    } else {
+      syncWechatIntegrationForm(null)
+      stopWechatBindPolling()
+      if (activeTab.value === 'wechat') activeTab.value = 'overview'
     }
     await Promise.all(jobs)
   } catch (error) {
@@ -1200,6 +1377,26 @@ watch(hasNotificationTab, (value) => {
   syncNotificationSettingsForm(null)
 })
 
+watch(hasWechatTab, (value) => {
+  if (value) return
+  if (activeTab.value === 'wechat') activeTab.value = 'overview'
+  syncWechatIntegrationForm(null)
+  stopWechatBindPolling()
+})
+
+watch(
+  () => wechatIntegration.value?.bindSession?.bindSessionId || '',
+  (value) => {
+    stopWechatBindPolling()
+    if (!value) return
+    const status = String(wechatIntegration.value?.bindSession?.status || '').trim()
+    if (!['pending', 'scanned'].includes(status)) return
+    wechatBindPollTimer = setInterval(() => {
+      void pollWechatBindSession()
+    }, 4000)
+  },
+)
+
 onMounted(async () => {
   usageCountdownTimer = setInterval(() => {
     usageNowTs.value = Date.now()
@@ -1213,25 +1410,11 @@ onUnmounted(() => {
     clearInterval(usageCountdownTimer)
     usageCountdownTimer = null
   }
+  stopWechatBindPolling()
 })
 </script>
 
 <style scoped>
-.account-tab-btn {
-  border-radius: 0.85rem;
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #475569;
-  transition: all 0.18s ease;
-}
-
-.account-tab-btn.is-active {
-  background: #ffffff;
-  color: #0f172a;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-}
-
 .account-top-row {
   display: flex;
   flex-direction: column;

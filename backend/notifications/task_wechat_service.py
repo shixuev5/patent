@@ -1,0 +1,169 @@
+"""WeChat task notification queueing service."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Callable, Dict, Optional
+from uuid import uuid4
+
+from backend.storage import WeChatDeliveryJob
+from backend.time_utils import utc_now, utc_now_z
+from config import settings
+
+
+SystemLogEmitter = Callable[..., None]
+
+TERMINAL_COMPLETED = "completed"
+TERMINAL_FAILED = "failed"
+
+
+def _noop_emit_system_log(**_kwargs: Any) -> None:
+    return
+
+
+class TaskWeChatNotificationService:
+    def __init__(
+        self,
+        *,
+        storage: Any,
+        system_log_emitter: Optional[SystemLogEmitter] = None,
+    ) -> None:
+        self.storage = storage
+        self.system_log_emitter = system_log_emitter or _noop_emit_system_log
+
+    def notify_task_terminal_status(
+        self,
+        task_id: str,
+        *,
+        terminal_status: str,
+        task_type: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_status = str(terminal_status or "").strip().lower()
+        if normalized_status not in {TERMINAL_COMPLETED, TERMINAL_FAILED}:
+            return {"status": "ignored", "reason": "unsupported_terminal_status"}
+
+        task = self.storage.get_task(task_id)
+        if not task:
+            return {"status": "ignored", "reason": "task_not_found"}
+
+        existing = self._existing_delivery(task, normalized_status)
+        if existing is not None:
+            return {"status": "duplicate", "record": existing}
+
+        if not bool(settings.WECHAT_INTEGRATION_ENABLED):
+            record = self._save_delivery_record(task_id, normalized_status, task=task, delivery_status="skipped", reason="wechat_integration_disabled")
+            self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
+            return record
+
+        binding = self.storage.get_wechat_binding_by_owner(str(getattr(task, "owner_id", "") or "").strip())
+        if not binding or str(binding.status or "").strip() != "active":
+            record = self._save_delivery_record(task_id, normalized_status, task=task, delivery_status="skipped", reason="binding_missing")
+            self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
+            return record
+
+        if normalized_status == TERMINAL_COMPLETED and not bool(binding.push_task_completed):
+            record = self._save_delivery_record(task_id, normalized_status, task=task, delivery_status="skipped", reason="push_completed_disabled")
+            self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
+            return record
+        if normalized_status == TERMINAL_FAILED and not bool(binding.push_task_failed):
+            record = self._save_delivery_record(task_id, normalized_status, task=task, delivery_status="skipped", reason="push_failed_disabled")
+            self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
+            return record
+
+        payload = {
+            "taskId": str(getattr(task, "id", "") or "").strip(),
+            "taskType": str(task_type or getattr(task, "task_type", "") or "").strip(),
+            "title": str(getattr(task, "title", "") or "").strip() or str(getattr(task, "id", "") or "").strip(),
+            "terminalStatus": normalized_status,
+            "errorMessage": str(error_message or getattr(task, "error_message", "") or "").strip() or None,
+            "outputFiles": getattr(task, "metadata", {}).get("output_files") if isinstance(getattr(task, "metadata", {}), dict) else None,
+        }
+        job = self.storage.create_wechat_delivery_job(
+            WeChatDeliveryJob(
+                delivery_job_id=f"wdj-{uuid4().hex[:12]}",
+                owner_id=str(getattr(task, "owner_id", "") or "").strip(),
+                binding_id=binding.binding_id,
+                task_id=str(getattr(task, "id", "") or "").strip(),
+                event_type=f"task.{normalized_status}",
+                status="pending",
+                payload=payload,
+                attempt_count=0,
+                max_attempts=int(getattr(settings, "WECHAT_DELIVERY_MAX_ATTEMPTS", 3) or 3),
+                next_attempt_at=utc_now(),
+            )
+        )
+        record = self._save_delivery_record(
+            task_id,
+            normalized_status,
+            task=task,
+            delivery_status="queued",
+            reason="",
+            delivery_job_id=job.delivery_job_id,
+            binding_id=binding.binding_id,
+        )
+        self._emit_delivery_log("task_wechat_queued", task, normalized_status, record)
+        return record
+
+    def _existing_delivery(self, task: Any, terminal_status: str) -> Optional[Dict[str, Any]]:
+        metadata = getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {}
+        notifications = metadata.get("notifications") if isinstance(metadata.get("notifications"), dict) else {}
+        wechat_meta = notifications.get("wechat") if isinstance(notifications.get("wechat"), dict) else {}
+        record = wechat_meta.get(terminal_status)
+        return deepcopy(record) if isinstance(record, dict) else None
+
+    def _save_delivery_record(
+        self,
+        task_id: str,
+        terminal_status: str,
+        *,
+        task: Any,
+        delivery_status: str,
+        reason: str,
+        delivery_job_id: Optional[str] = None,
+        binding_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        latest_task = self.storage.get_task(task_id) or task
+        metadata = deepcopy(getattr(latest_task, "metadata", {}) if isinstance(getattr(latest_task, "metadata", {}), dict) else {})
+        notifications = metadata.get("notifications") if isinstance(metadata.get("notifications"), dict) else {}
+        wechat_meta = notifications.get("wechat") if isinstance(notifications.get("wechat"), dict) else {}
+        record = {
+            "status": delivery_status,
+            "reason": reason or None,
+            "binding_id": binding_id or None,
+            "delivery_job_id": delivery_job_id or None,
+            "processed_at": utc_now_z(timespec="seconds"),
+        }
+        wechat_meta[terminal_status] = record
+        notifications["wechat"] = wechat_meta
+        metadata["notifications"] = notifications
+        self.storage.update_task(task_id, metadata=metadata)
+        return record
+
+    def _emit_delivery_log(self, event_name: str, task: Any, terminal_status: str, record: Dict[str, Any]) -> None:
+        self.system_log_emitter(
+            category="task_execution",
+            event_name=event_name,
+            owner_id=str(getattr(task, "owner_id", "") or "").strip() or None,
+            task_id=str(getattr(task, "id", "") or "").strip() or None,
+            task_type=str(getattr(task, "task_type", "") or "").strip() or None,
+            success=record.get("status") == "queued",
+            message=f"任务终态微信通知{record.get('status') or 'unknown'}",
+            payload={
+                "terminal_status": terminal_status,
+                "binding_id": record.get("binding_id"),
+                "delivery_job_id": record.get("delivery_job_id"),
+                "reason": record.get("reason"),
+            },
+        )
+
+
+def build_task_wechat_notification_service(
+    *,
+    storage: Any,
+    system_log_emitter: Optional[SystemLogEmitter] = None,
+) -> TaskWeChatNotificationService:
+    return TaskWeChatNotificationService(
+        storage=storage,
+        system_log_emitter=system_log_emitter,
+    )

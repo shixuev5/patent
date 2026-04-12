@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from threading import Event
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskResponse(BaseModel):
@@ -87,6 +87,101 @@ class AccountNotificationSettingsUpdateRequest(BaseModel):
     notificationEmailEnabled: bool
     workNotificationEmail: Optional[str] = None
     personalNotificationEmail: Optional[str] = None
+
+
+class AccountWeChatBindingResponse(BaseModel):
+    bindingId: str
+    status: str
+    botAccountId: Optional[str] = None
+    wechatPeerIdMasked: Optional[str] = None
+    wechatPeerName: Optional[str] = None
+    pushTaskCompleted: bool = True
+    pushTaskFailed: bool = True
+    pushAiSearchPendingAction: bool = True
+    boundAt: Optional[str] = None
+    disconnectedAt: Optional[str] = None
+    lastInboundAt: Optional[str] = None
+    lastOutboundAt: Optional[str] = None
+
+
+class AccountWeChatBindSessionResponse(BaseModel):
+    bindSessionId: str
+    status: str
+    bindCode: str
+    qrPayload: str
+    qrSvg: str
+    expiresAt: str
+    botAccountId: Optional[str] = None
+    wechatPeerName: Optional[str] = None
+    errorMessage: Optional[str] = None
+    boundAt: Optional[str] = None
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+
+
+class AccountWeChatIntegrationResponse(BaseModel):
+    bindingStatus: Literal["unbound", "binding", "bound"]
+    binding: Optional[AccountWeChatBindingResponse] = None
+    bindSession: Optional[AccountWeChatBindSessionResponse] = None
+    availableCommands: List[str]
+
+
+class AccountWeChatIntegrationUpdateRequest(BaseModel):
+    pushTaskCompleted: bool
+    pushTaskFailed: bool
+    pushAiSearchPendingAction: bool
+
+
+class InternalWeChatBindSessionCompleteRequest(BaseModel):
+    botAccountId: str
+    wechatPeerId: str
+    wechatPeerName: Optional[str] = None
+
+
+class InternalWeChatBindCodeCompleteRequest(BaseModel):
+    bindCode: str
+    botAccountId: str
+    wechatPeerId: str
+    wechatPeerName: Optional[str] = None
+
+
+class InternalWeChatDeliveryJobClaimRequest(BaseModel):
+    limit: int = 1
+
+
+class InternalWeChatDeliveryJobResolveRequest(BaseModel):
+    errorMessage: Optional[str] = None
+
+
+class InternalWeChatInboundAttachment(BaseModel):
+    filename: str
+    storedPath: str
+    contentType: Optional[str] = None
+
+
+class InternalWeChatInboundMessageRequest(BaseModel):
+    botAccountId: str
+    wechatPeerId: str
+    wechatPeerName: Optional[str] = None
+    text: Optional[str] = None
+    attachments: List[InternalWeChatInboundAttachment] = Field(default_factory=list)
+
+
+class InternalWeChatOutboundMessage(BaseModel):
+    type: Literal["text", "file"] = "text"
+    text: Optional[str] = None
+    fileName: Optional[str] = None
+    downloadPath: Optional[str] = None
+
+
+class InternalWeChatInboundMessageResponse(BaseModel):
+    ownerId: str
+    bindingId: str
+    handled: bool = True
+    sessionType: Optional[str] = None
+    flowSessionId: Optional[str] = None
+    taskId: Optional[str] = None
+    messages: List[InternalWeChatOutboundMessage] = Field(default_factory=list)
 
 
 class WeeklyActivityPoint(BaseModel):

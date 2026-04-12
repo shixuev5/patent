@@ -144,6 +144,12 @@ class Settings:
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "false").strip().lower() in {"1", "true", "yes", "on"}
     SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() in {"1", "true", "yes", "on"}
 
+    # --- WeChat integration / internal gateway ---
+    WECHAT_INTEGRATION_ENABLED = os.getenv("WECHAT_INTEGRATION_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
+    WECHAT_BIND_SESSION_TTL_SECONDS = max(60, int(os.getenv("WECHAT_BIND_SESSION_TTL_SECONDS", "600")))
+    WECHAT_DELIVERY_MAX_ATTEMPTS = max(1, int(os.getenv("WECHAT_DELIVERY_MAX_ATTEMPTS", "3")))
+
     @property
     def ZHIHUIYA_ACCOUNTS(self) -> List[Dict[str, str]]:
         return load_zhihuiya_accounts()

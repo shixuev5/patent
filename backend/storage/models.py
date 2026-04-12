@@ -65,6 +65,76 @@ class User:
 
 
 @dataclass
+class WeChatBinding:
+    binding_id: str
+    owner_id: str
+    status: str
+    bot_account_id: Optional[str] = None
+    wechat_peer_id: Optional[str] = None
+    wechat_peer_name: Optional[str] = None
+    push_task_completed: bool = True
+    push_task_failed: bool = True
+    push_ai_search_pending_action: bool = True
+    bound_at: Optional[datetime] = None
+    disconnected_at: Optional[datetime] = None
+    last_inbound_at: Optional[datetime] = None
+    last_outbound_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class WeChatBindSession:
+    bind_session_id: str
+    owner_id: str
+    status: str
+    bind_code: str
+    qr_payload: str
+    qr_svg: str
+    expires_at: datetime
+    bot_account_id: Optional[str] = None
+    wechat_peer_id: Optional[str] = None
+    wechat_peer_name: Optional[str] = None
+    error_message: Optional[str] = None
+    bound_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class WeChatFlowSession:
+    flow_session_id: str
+    owner_id: str
+    flow_type: str
+    status: str
+    current_step: Optional[str] = None
+    draft_payload: Dict[str, Any] = field(default_factory=dict)
+    expires_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
+class WeChatDeliveryJob:
+    delivery_job_id: str
+    owner_id: str
+    binding_id: Optional[str] = None
+    task_id: Optional[str] = None
+    event_type: str = ""
+    status: str = "pending"
+    payload: Dict[str, Any] = field(default_factory=dict)
+    attempt_count: int = 0
+    max_attempts: int = 3
+    next_attempt_at: Optional[datetime] = None
+    claimed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
 class RefreshSession:
     token_hash: str
     owner_id: str

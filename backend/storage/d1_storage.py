@@ -20,7 +20,18 @@ from backend.time_utils import (
     utc_to_local_day,
 )
 from .ai_search_support import AI_SEARCH_STORAGE_SQL
-from .models import AccountMonthTarget, RefreshSession, Task, TaskStatus, TaskType, User
+from .models import (
+    AccountMonthTarget,
+    RefreshSession,
+    Task,
+    TaskStatus,
+    TaskType,
+    User,
+    WeChatBinding,
+    WeChatBindSession,
+    WeChatDeliveryJob,
+    WeChatFlowSession,
+)
 
 _UNSET = object()
 
@@ -134,6 +145,68 @@ class D1TaskStorage:
             ("revoked_at", "revoked_at TEXT"),
             ("replaced_by_token_hash", "replaced_by_token_hash TEXT"),
         ],
+        "wechat_bindings": [
+            ("binding_id", "binding_id TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("status", "status TEXT NOT NULL"),
+            ("bot_account_id", "bot_account_id TEXT"),
+            ("wechat_peer_id", "wechat_peer_id TEXT"),
+            ("wechat_peer_name", "wechat_peer_name TEXT"),
+            ("push_task_completed", "push_task_completed INTEGER NOT NULL DEFAULT 1"),
+            ("push_task_failed", "push_task_failed INTEGER NOT NULL DEFAULT 1"),
+            ("push_ai_search_pending_action", "push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1"),
+            ("bound_at", "bound_at TEXT"),
+            ("disconnected_at", "disconnected_at TEXT"),
+            ("last_inbound_at", "last_inbound_at TEXT"),
+            ("last_outbound_at", "last_outbound_at TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+        ],
+        "wechat_bind_sessions": [
+            ("bind_session_id", "bind_session_id TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("status", "status TEXT NOT NULL"),
+            ("bind_code", "bind_code TEXT NOT NULL"),
+            ("qr_payload", "qr_payload TEXT NOT NULL"),
+            ("qr_svg", "qr_svg TEXT NOT NULL"),
+            ("expires_at", "expires_at TEXT NOT NULL"),
+            ("bot_account_id", "bot_account_id TEXT"),
+            ("wechat_peer_id", "wechat_peer_id TEXT"),
+            ("wechat_peer_name", "wechat_peer_name TEXT"),
+            ("error_message", "error_message TEXT"),
+            ("bound_at", "bound_at TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+        ],
+        "wechat_flow_sessions": [
+            ("flow_session_id", "flow_session_id TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("flow_type", "flow_type TEXT NOT NULL"),
+            ("status", "status TEXT NOT NULL"),
+            ("current_step", "current_step TEXT"),
+            ("draft_payload_json", "draft_payload_json TEXT"),
+            ("expires_at", "expires_at TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+        ],
+        "wechat_delivery_jobs": [
+            ("delivery_job_id", "delivery_job_id TEXT PRIMARY KEY"),
+            ("owner_id", "owner_id TEXT NOT NULL"),
+            ("binding_id", "binding_id TEXT"),
+            ("task_id", "task_id TEXT"),
+            ("event_type", "event_type TEXT NOT NULL"),
+            ("status", "status TEXT NOT NULL"),
+            ("payload_json", "payload_json TEXT"),
+            ("attempt_count", "attempt_count INTEGER NOT NULL DEFAULT 0"),
+            ("max_attempts", "max_attempts INTEGER NOT NULL DEFAULT 3"),
+            ("next_attempt_at", "next_attempt_at TEXT"),
+            ("claimed_at", "claimed_at TEXT"),
+            ("completed_at", "completed_at TEXT"),
+            ("failed_at", "failed_at TEXT"),
+            ("last_error", "last_error TEXT"),
+            ("created_at", "created_at TEXT NOT NULL"),
+            ("updated_at", "updated_at TEXT NOT NULL"),
+        ],
         "ai_search_documents": [
             ("run_id", "run_id TEXT"),
             ("source_type", "source_type TEXT"),
@@ -174,6 +247,13 @@ class D1TaskStorage:
     EXTRA_INDEX_SQL = (
         "CREATE INDEX IF NOT EXISTS idx_patent_analyses_sha256 ON patent_analyses(sha256)",
         "CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_owner_status ON wechat_bindings(owner_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_peer_status ON wechat_bindings(bot_account_id, wechat_peer_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_owner_status ON wechat_bind_sessions(owner_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_expires_at ON wechat_bind_sessions(expires_at)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_flow_sessions_owner_type_status ON wechat_flow_sessions(owner_id, flow_type, status)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_next_attempt ON wechat_delivery_jobs(status, next_attempt_at)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_owner_status ON wechat_delivery_jobs(owner_id, status)",
     )
 
     CREATE_TABLES_SQL = """
@@ -283,6 +363,72 @@ class D1TaskStorage:
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
         replaced_by_token_hash TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS wechat_bindings (
+        binding_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        bot_account_id TEXT,
+        wechat_peer_id TEXT,
+        wechat_peer_name TEXT,
+        push_task_completed INTEGER NOT NULL DEFAULT 1,
+        push_task_failed INTEGER NOT NULL DEFAULT 1,
+        push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1,
+        bound_at TEXT,
+        disconnected_at TEXT,
+        last_inbound_at TEXT,
+        last_outbound_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wechat_bind_sessions (
+        bind_session_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        bind_code TEXT NOT NULL,
+        qr_payload TEXT NOT NULL,
+        qr_svg TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        bot_account_id TEXT,
+        wechat_peer_id TEXT,
+        wechat_peer_name TEXT,
+        error_message TEXT,
+        bound_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wechat_flow_sessions (
+        flow_session_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        flow_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        current_step TEXT,
+        draft_payload_json TEXT,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wechat_delivery_jobs (
+        delivery_job_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        binding_id TEXT,
+        task_id TEXT,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        payload_json TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        next_attempt_at TEXT,
+        claimed_at TEXT,
+        completed_at TEXT,
+        failed_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
@@ -609,6 +755,76 @@ class D1TaskStorage:
             year=int(row["year"]),
             month=int(row["month"]),
             target_count=int(row["target_count"]),
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_wechat_binding(self, row: Dict[str, Any]) -> WeChatBinding:
+        return WeChatBinding(
+            binding_id=str(row["binding_id"]),
+            owner_id=str(row["owner_id"]),
+            status=str(row["status"]),
+            bot_account_id=row.get("bot_account_id"),
+            wechat_peer_id=row.get("wechat_peer_id"),
+            wechat_peer_name=row.get("wechat_peer_name"),
+            push_task_completed=bool(row.get("push_task_completed", 1)),
+            push_task_failed=bool(row.get("push_task_failed", 1)),
+            push_ai_search_pending_action=bool(row.get("push_ai_search_pending_action", 1)),
+            bound_at=parse_storage_ts(row["bound_at"], naive_strategy="utc") if row.get("bound_at") else None,
+            disconnected_at=parse_storage_ts(row["disconnected_at"], naive_strategy="utc") if row.get("disconnected_at") else None,
+            last_inbound_at=parse_storage_ts(row["last_inbound_at"], naive_strategy="utc") if row.get("last_inbound_at") else None,
+            last_outbound_at=parse_storage_ts(row["last_outbound_at"], naive_strategy="utc") if row.get("last_outbound_at") else None,
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_wechat_bind_session(self, row: Dict[str, Any]) -> WeChatBindSession:
+        return WeChatBindSession(
+            bind_session_id=str(row["bind_session_id"]),
+            owner_id=str(row["owner_id"]),
+            status=str(row["status"]),
+            bind_code=str(row["bind_code"]),
+            qr_payload=str(row["qr_payload"]),
+            qr_svg=str(row["qr_svg"]),
+            expires_at=parse_storage_ts(row["expires_at"], naive_strategy="utc"),
+            bot_account_id=row.get("bot_account_id"),
+            wechat_peer_id=row.get("wechat_peer_id"),
+            wechat_peer_name=row.get("wechat_peer_name"),
+            error_message=row.get("error_message"),
+            bound_at=parse_storage_ts(row["bound_at"], naive_strategy="utc") if row.get("bound_at") else None,
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_wechat_flow_session(self, row: Dict[str, Any]) -> WeChatFlowSession:
+        return WeChatFlowSession(
+            flow_session_id=str(row["flow_session_id"]),
+            owner_id=str(row["owner_id"]),
+            flow_type=str(row["flow_type"]),
+            status=str(row["status"]),
+            current_step=row.get("current_step"),
+            draft_payload=self._parse_metadata(row.get("draft_payload_json")),
+            expires_at=parse_storage_ts(row["expires_at"], naive_strategy="utc") if row.get("expires_at") else None,
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_wechat_delivery_job(self, row: Dict[str, Any]) -> WeChatDeliveryJob:
+        return WeChatDeliveryJob(
+            delivery_job_id=str(row["delivery_job_id"]),
+            owner_id=str(row["owner_id"]),
+            binding_id=row.get("binding_id"),
+            task_id=row.get("task_id"),
+            event_type=str(row["event_type"]),
+            status=str(row["status"]),
+            payload=self._parse_metadata(row.get("payload_json")),
+            attempt_count=int(row.get("attempt_count") or 0),
+            max_attempts=int(row.get("max_attempts") or 3),
+            next_attempt_at=parse_storage_ts(row["next_attempt_at"], naive_strategy="utc") if row.get("next_attempt_at") else None,
+            claimed_at=parse_storage_ts(row["claimed_at"], naive_strategy="utc") if row.get("claimed_at") else None,
+            completed_at=parse_storage_ts(row["completed_at"], naive_strategy="utc") if row.get("completed_at") else None,
+            failed_at=parse_storage_ts(row["failed_at"], naive_strategy="utc") if row.get("failed_at") else None,
+            last_error=row.get("last_error"),
             created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
         )
@@ -2187,6 +2403,387 @@ class D1TaskStorage:
             return None
         row = self._fetchone("SELECT * FROM users WHERE owner_id = ?", [owner_id])
         return self._row_to_user(row) if row else None
+
+    def create_wechat_bind_session(self, session: WeChatBindSession) -> WeChatBindSession:
+        self._request(
+            """
+            INSERT INTO wechat_bind_sessions (
+                bind_session_id, owner_id, status, bind_code, qr_payload, qr_svg,
+                expires_at, bot_account_id, wechat_peer_id, wechat_peer_name,
+                error_message, bound_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                session.bind_session_id,
+                session.owner_id,
+                session.status,
+                session.bind_code,
+                session.qr_payload,
+                session.qr_svg,
+                to_utc_z(session.expires_at, naive_strategy="utc"),
+                session.bot_account_id,
+                session.wechat_peer_id,
+                session.wechat_peer_name,
+                session.error_message,
+                to_utc_z(session.bound_at, naive_strategy="utc") if session.bound_at else None,
+                to_utc_z(session.created_at, naive_strategy="utc"),
+                to_utc_z(session.updated_at, naive_strategy="utc"),
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_bind_sessions WHERE bind_session_id = ?", [session.bind_session_id])
+        if row is None:
+            raise RuntimeError("Failed to create wechat bind session")
+        return self._row_to_wechat_bind_session(row)
+
+    def get_wechat_bind_session(self, bind_session_id: str) -> Optional[WeChatBindSession]:
+        row = self._fetchone("SELECT * FROM wechat_bind_sessions WHERE bind_session_id = ?", [str(bind_session_id or "").strip()])
+        return self._row_to_wechat_bind_session(row) if row else None
+
+    def get_wechat_bind_session_by_code(self, bind_code: str) -> Optional[WeChatBindSession]:
+        normalized = str(bind_code or "").strip().upper()
+        if not normalized:
+            return None
+        row = self._fetchone(
+            """
+            SELECT * FROM wechat_bind_sessions
+            WHERE UPPER(bind_code) = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            [normalized],
+        )
+        return self._row_to_wechat_bind_session(row) if row else None
+
+    def get_current_wechat_bind_session(self, owner_id: str) -> Optional[WeChatBindSession]:
+        row = self._fetchone(
+            """
+            SELECT * FROM wechat_bind_sessions
+            WHERE owner_id = ? AND status IN ('pending', 'scanned', 'bound')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            [owner_id],
+        )
+        return self._row_to_wechat_bind_session(row) if row else None
+
+    def update_wechat_bind_session(self, bind_session_id: str, **updates: Any) -> Optional[WeChatBindSession]:
+        normalized = {k: v for k, v in updates.items() if k}
+        if not normalized:
+            return self.get_wechat_bind_session(bind_session_id)
+        normalized.setdefault("updated_at", utc_now_z())
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = []
+        for key, value in normalized.items():
+            if key in {"created_at", "updated_at", "expires_at", "bound_at"} and value is not None:
+                values.append(to_utc_z(value, naive_strategy="utc"))
+            else:
+                values.append(value)
+        values.append(str(bind_session_id or "").strip())
+        result = self._request(
+            f"UPDATE wechat_bind_sessions SET {assignments} WHERE bind_session_id = ?",
+            values,
+        )
+        if self._changed_rows(result) <= 0:
+            return None
+        row = self._fetchone("SELECT * FROM wechat_bind_sessions WHERE bind_session_id = ?", [str(bind_session_id or "").strip()])
+        return self._row_to_wechat_bind_session(row) if row else None
+
+    def get_wechat_binding_by_owner(self, owner_id: str) -> Optional[WeChatBinding]:
+        row = self._fetchone(
+            """
+            SELECT * FROM wechat_bindings
+            WHERE owner_id = ? AND status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            [owner_id],
+        )
+        return self._row_to_wechat_binding(row) if row else None
+
+    def get_wechat_binding_by_peer(self, bot_account_id: str, wechat_peer_id: str) -> Optional[WeChatBinding]:
+        row = self._fetchone(
+            """
+            SELECT * FROM wechat_bindings
+            WHERE bot_account_id = ? AND wechat_peer_id = ? AND status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            [bot_account_id, wechat_peer_id],
+        )
+        return self._row_to_wechat_binding(row) if row else None
+
+    def upsert_wechat_binding(self, binding: WeChatBinding) -> WeChatBinding:
+        now_iso = utc_now_z()
+        self._request(
+            """
+            UPDATE wechat_bindings
+            SET status = 'disconnected', disconnected_at = ?, updated_at = ?
+            WHERE owner_id = ? AND status = 'active'
+            """,
+            [now_iso, now_iso, binding.owner_id],
+        )
+        if binding.bot_account_id and binding.wechat_peer_id:
+            self._request(
+                """
+                UPDATE wechat_bindings
+                SET status = 'disconnected', disconnected_at = ?, updated_at = ?
+                WHERE bot_account_id = ? AND wechat_peer_id = ? AND status = 'active'
+                """,
+                [now_iso, now_iso, binding.bot_account_id, binding.wechat_peer_id],
+            )
+        self._request(
+            """
+            INSERT INTO wechat_bindings (
+                binding_id, owner_id, status, bot_account_id, wechat_peer_id, wechat_peer_name,
+                push_task_completed, push_task_failed, push_ai_search_pending_action,
+                bound_at, disconnected_at, last_inbound_at, last_outbound_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(binding_id) DO UPDATE SET
+                owner_id = excluded.owner_id,
+                status = excluded.status,
+                bot_account_id = excluded.bot_account_id,
+                wechat_peer_id = excluded.wechat_peer_id,
+                wechat_peer_name = excluded.wechat_peer_name,
+                push_task_completed = excluded.push_task_completed,
+                push_task_failed = excluded.push_task_failed,
+                push_ai_search_pending_action = excluded.push_ai_search_pending_action,
+                bound_at = excluded.bound_at,
+                disconnected_at = excluded.disconnected_at,
+                last_inbound_at = excluded.last_inbound_at,
+                last_outbound_at = excluded.last_outbound_at,
+                updated_at = excluded.updated_at
+            """,
+            [
+                binding.binding_id,
+                binding.owner_id,
+                binding.status,
+                binding.bot_account_id,
+                binding.wechat_peer_id,
+                binding.wechat_peer_name,
+                1 if binding.push_task_completed else 0,
+                1 if binding.push_task_failed else 0,
+                1 if binding.push_ai_search_pending_action else 0,
+                to_utc_z(binding.bound_at, naive_strategy="utc") if binding.bound_at else None,
+                to_utc_z(binding.disconnected_at, naive_strategy="utc") if binding.disconnected_at else None,
+                to_utc_z(binding.last_inbound_at, naive_strategy="utc") if binding.last_inbound_at else None,
+                to_utc_z(binding.last_outbound_at, naive_strategy="utc") if binding.last_outbound_at else None,
+                to_utc_z(binding.created_at, naive_strategy="utc"),
+                to_utc_z(binding.updated_at, naive_strategy="utc"),
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_bindings WHERE binding_id = ?", [binding.binding_id])
+        if row is None:
+            raise RuntimeError("Failed to upsert wechat binding")
+        return self._row_to_wechat_binding(row)
+
+    def update_wechat_binding(self, binding_id: str, **updates: Any) -> Optional[WeChatBinding]:
+        normalized = {k: v for k, v in updates.items() if k}
+        if not normalized:
+            return None
+        normalized.setdefault("updated_at", utc_now_z())
+        assignments = ", ".join(f"{key} = ?" for key in normalized)
+        values = []
+        for key, value in normalized.items():
+            if key in {"bound_at", "disconnected_at", "last_inbound_at", "last_outbound_at", "created_at", "updated_at"} and value is not None:
+                values.append(to_utc_z(value, naive_strategy="utc"))
+            else:
+                values.append(value)
+        values.append(str(binding_id or "").strip())
+        result = self._request(
+            f"UPDATE wechat_bindings SET {assignments} WHERE binding_id = ?",
+            values,
+        )
+        if self._changed_rows(result) <= 0:
+            return None
+        row = self._fetchone("SELECT * FROM wechat_bindings WHERE binding_id = ?", [str(binding_id or "").strip()])
+        return self._row_to_wechat_binding(row) if row else None
+
+    def disconnect_wechat_binding(self, owner_id: str) -> Optional[WeChatBinding]:
+        binding = self.get_wechat_binding_by_owner(owner_id)
+        if not binding:
+            return None
+        now_iso = utc_now_z()
+        return self.update_wechat_binding(binding.binding_id, status="disconnected", disconnected_at=now_iso, updated_at=now_iso)
+
+    def create_wechat_flow_session(self, flow_session: WeChatFlowSession) -> WeChatFlowSession:
+        self._request(
+            """
+            INSERT INTO wechat_flow_sessions (
+                flow_session_id, owner_id, flow_type, status, current_step,
+                draft_payload_json, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                flow_session.flow_session_id,
+                flow_session.owner_id,
+                flow_session.flow_type,
+                flow_session.status,
+                flow_session.current_step,
+                self._encode_json_value(flow_session.draft_payload),
+                to_utc_z(flow_session.expires_at, naive_strategy="utc") if flow_session.expires_at else None,
+                to_utc_z(flow_session.created_at, naive_strategy="utc"),
+                to_utc_z(flow_session.updated_at, naive_strategy="utc"),
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_flow_sessions WHERE flow_session_id = ?", [flow_session.flow_session_id])
+        if row is None:
+            raise RuntimeError("Failed to create wechat flow session")
+        return self._row_to_wechat_flow_session(row)
+
+    def get_active_wechat_flow_session(self, owner_id: str, flow_type: str) -> Optional[WeChatFlowSession]:
+        row = self._fetchone(
+            """
+            SELECT * FROM wechat_flow_sessions
+            WHERE owner_id = ? AND flow_type = ? AND status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            [owner_id, flow_type],
+        )
+        return self._row_to_wechat_flow_session(row) if row else None
+
+    def upsert_wechat_flow_session(
+        self,
+        owner_id: str,
+        flow_type: str,
+        *,
+        current_step: Optional[str],
+        draft_payload: Dict[str, Any],
+        expires_at: Optional[Any],
+        status: str = "active",
+    ) -> WeChatFlowSession:
+        existing = self.get_active_wechat_flow_session(owner_id, flow_type)
+        now_iso = utc_now_z()
+        flow_session_id = existing.flow_session_id if existing else f"wf-{str(now_iso).replace(':', '').replace('-', '').replace('T', '').replace('Z', '')}"
+        created_at = to_utc_z(existing.created_at, naive_strategy="utc") if existing else now_iso
+        self._request(
+            """
+            INSERT INTO wechat_flow_sessions (
+                flow_session_id, owner_id, flow_type, status, current_step,
+                draft_payload_json, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(flow_session_id) DO UPDATE SET
+                status = excluded.status,
+                current_step = excluded.current_step,
+                draft_payload_json = excluded.draft_payload_json,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            """,
+            [
+                flow_session_id,
+                owner_id,
+                flow_type,
+                status,
+                current_step,
+                self._encode_json_value(draft_payload),
+                to_utc_z(expires_at, naive_strategy="utc") if expires_at else None,
+                created_at,
+                now_iso,
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_flow_sessions WHERE flow_session_id = ?", [flow_session_id])
+        if row is None:
+            raise RuntimeError("Failed to upsert wechat flow session")
+        return self._row_to_wechat_flow_session(row)
+
+    def resolve_wechat_flow_session(self, owner_id: str, flow_type: str, status: str = "completed") -> bool:
+        result = self._request(
+            """
+            UPDATE wechat_flow_sessions
+            SET status = ?, updated_at = ?
+            WHERE owner_id = ? AND flow_type = ? AND status = 'active'
+            """,
+            [status, utc_now_z(), owner_id, flow_type],
+        )
+        return self._changed_rows(result) > 0
+
+    def create_wechat_delivery_job(self, job: WeChatDeliveryJob) -> WeChatDeliveryJob:
+        self._request(
+            """
+            INSERT INTO wechat_delivery_jobs (
+                delivery_job_id, owner_id, binding_id, task_id, event_type, status,
+                payload_json, attempt_count, max_attempts, next_attempt_at, claimed_at,
+                completed_at, failed_at, last_error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                job.delivery_job_id,
+                job.owner_id,
+                job.binding_id,
+                job.task_id,
+                job.event_type,
+                job.status,
+                self._encode_json_value(job.payload),
+                job.attempt_count,
+                job.max_attempts,
+                to_utc_z(job.next_attempt_at, naive_strategy="utc") if job.next_attempt_at else None,
+                to_utc_z(job.claimed_at, naive_strategy="utc") if job.claimed_at else None,
+                to_utc_z(job.completed_at, naive_strategy="utc") if job.completed_at else None,
+                to_utc_z(job.failed_at, naive_strategy="utc") if job.failed_at else None,
+                job.last_error,
+                to_utc_z(job.created_at, naive_strategy="utc"),
+                to_utc_z(job.updated_at, naive_strategy="utc"),
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_delivery_jobs WHERE delivery_job_id = ?", [job.delivery_job_id])
+        if row is None:
+            raise RuntimeError("Failed to create wechat delivery job")
+        return self._row_to_wechat_delivery_job(row)
+
+    def claim_wechat_delivery_jobs(self, limit: int = 1) -> List[WeChatDeliveryJob]:
+        normalized_limit = max(1, int(limit or 1))
+        now_iso = utc_now_z()
+        rows = self._fetchall(
+            """
+            SELECT * FROM wechat_delivery_jobs
+            WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            [now_iso, normalized_limit],
+        )
+        jobs: List[WeChatDeliveryJob] = []
+        for row in rows:
+            delivery_job_id = str(row.get("delivery_job_id") or "").strip()
+            if not delivery_job_id:
+                continue
+            self._request(
+                """
+                UPDATE wechat_delivery_jobs
+                SET status = 'processing', claimed_at = ?, updated_at = ?, attempt_count = attempt_count + 1
+                WHERE delivery_job_id = ?
+                """,
+                [now_iso, now_iso, delivery_job_id],
+            )
+            claimed = self._fetchone("SELECT * FROM wechat_delivery_jobs WHERE delivery_job_id = ?", [delivery_job_id])
+            if claimed:
+                jobs.append(self._row_to_wechat_delivery_job(claimed))
+        return jobs
+
+    def update_wechat_delivery_job(self, delivery_job_id: str, **updates: Any) -> Optional[WeChatDeliveryJob]:
+        normalized = {k: v for k, v in updates.items() if k}
+        if not normalized:
+            return None
+        normalized.setdefault("updated_at", utc_now_z())
+        assignments = ", ".join(f"{('payload_json' if key == 'payload' else key)} = ?" for key in normalized)
+        values = []
+        for key, value in normalized.items():
+            target_key = "payload_json" if key == "payload" else key
+            if target_key == "payload_json":
+                values.append(self._encode_json_value(value))
+            elif target_key in {"next_attempt_at", "claimed_at", "completed_at", "failed_at", "created_at", "updated_at"} and value is not None:
+                values.append(to_utc_z(value, naive_strategy="utc"))
+            else:
+                values.append(value)
+        values.append(str(delivery_job_id or "").strip())
+        result = self._request(
+            f"UPDATE wechat_delivery_jobs SET {assignments} WHERE delivery_job_id = ?",
+            values,
+        )
+        if self._changed_rows(result) <= 0:
+            return None
+        row = self._fetchone("SELECT * FROM wechat_delivery_jobs WHERE delivery_job_id = ?", [str(delivery_job_id or "").strip()])
+        return self._row_to_wechat_delivery_job(row) if row else None
 
     def upsert_account_month_target(
         self,

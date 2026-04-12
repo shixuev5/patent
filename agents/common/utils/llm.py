@@ -50,6 +50,7 @@ class LLMService:
         "retrieval_query_planning": {"tier": "default", "thinking": True},
         "search_matrix_reasoning": {"tier": "large", "thinking": True},
         "semantic_query_rewrite": {"tier": "default", "thinking": True},
+        "wechat_intent_routing": {"tier": "default", "thinking": False},
         "core_summary_generation": {"tier": "default", "thinking": True},
         "claim_feature_reasoning": {"tier": "large", "thinking": True},
         "technical_means_generation": {"tier": "large", "thinking": True},

@@ -29,6 +29,49 @@ export interface AccountNotificationSettingsUpdateRequest {
   personalNotificationEmail: string | null
 }
 
+export interface AccountWeChatBinding {
+  bindingId: string
+  status: string
+  botAccountId?: string | null
+  wechatPeerIdMasked?: string | null
+  wechatPeerName?: string | null
+  pushTaskCompleted: boolean
+  pushTaskFailed: boolean
+  pushAiSearchPendingAction: boolean
+  boundAt?: string | null
+  disconnectedAt?: string | null
+  lastInboundAt?: string | null
+  lastOutboundAt?: string | null
+}
+
+export interface AccountWeChatBindSession {
+  bindSessionId: string
+  status: string
+  bindCode: string
+  qrPayload: string
+  qrSvg: string
+  expiresAt: string
+  botAccountId?: string | null
+  wechatPeerName?: string | null
+  errorMessage?: string | null
+  boundAt?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+export interface AccountWeChatIntegration {
+  bindingStatus: 'unbound' | 'binding' | 'bound'
+  binding?: AccountWeChatBinding | null
+  bindSession?: AccountWeChatBindSession | null
+  availableCommands: string[]
+}
+
+export interface AccountWeChatIntegrationUpdateRequest {
+  pushTaskCompleted: boolean
+  pushTaskFailed: boolean
+  pushAiSearchPendingAction: boolean
+}
+
 export interface WeeklyActivityPoint {
   week: string
   analysisCreated: number

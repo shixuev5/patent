@@ -19,7 +19,7 @@ from loguru import logger
 from config import VERSION, settings
 from backend.auth import _get_current_user
 from backend.log_context import bind_task_logger, task_log_context
-from backend.notifications import build_task_email_notification_service
+from backend.notifications import build_task_notification_dispatcher
 from backend.system_logs import emit_system_log
 from backend.usage import _enforce_daily_quota
 from backend.task_usage_tracking import (
@@ -119,14 +119,14 @@ def _to_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _notify_task_terminal_email_sync(
+def _notify_task_terminal_status_sync(
     task_id: str,
     terminal_status: str,
     *,
     task_type: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> Dict[str, Any]:
-    service = build_task_email_notification_service(
+    service = build_task_notification_dispatcher(
         storage=task_manager.storage,
         system_log_emitter=emit_system_log,
     )
@@ -138,7 +138,7 @@ def _notify_task_terminal_email_sync(
     )
 
 
-async def _notify_task_terminal_email(
+async def _notify_task_terminal_status(
     task_id: str,
     terminal_status: str,
     *,
@@ -147,14 +147,14 @@ async def _notify_task_terminal_email(
 ) -> None:
     try:
         await asyncio.to_thread(
-            _notify_task_terminal_email_sync,
+            _notify_task_terminal_status_sync,
             task_id,
             terminal_status,
             task_type=task_type,
             error_message=error_message,
         )
     except Exception as exc:
-        logger.exception(f"任务终态邮件通知失败：task_id={task_id} status={terminal_status} error={exc}")
+        logger.exception(f"任务终态通知失败：task_id={task_id} status={terminal_status} error={exc}")
 
 
 def _should_persist_progress_update(
@@ -854,7 +854,7 @@ async def run_patent_analysis_task(
                         message="命中历史分析结果，直接复用",
                         payload={"pn": resolved_pn, "reuse": True},
                     )
-                    await _notify_task_terminal_email(
+                    await _notify_task_terminal_status(
                         task_id,
                         "completed",
                         task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1015,7 +1015,7 @@ async def run_patent_analysis_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_email(
+            await _notify_task_terminal_status(
                 task_id,
                 "failed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1053,7 +1053,7 @@ async def run_patent_analysis_task(
                 task_manager.fail_task(task_id, error_msg)
                 latest_task = task_manager.get_task(task_id)
                 task_logger.bind(stage="finalize_report").error(error_msg)
-                await _notify_task_terminal_email(
+                await _notify_task_terminal_status(
                     task_id,
                     "failed",
                     task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1135,7 +1135,7 @@ async def run_patent_analysis_task(
                 message="任务执行完成",
                 payload={"output_pdf": output_pdf, "pn": final_pn},
             )
-            await _notify_task_terminal_email(
+            await _notify_task_terminal_status(
                 task_id,
                 "completed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1155,7 +1155,7 @@ async def run_patent_analysis_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_email(
+            await _notify_task_terminal_status(
                 task_id,
                 "failed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1203,7 +1203,7 @@ async def run_patent_analysis_task(
             success=False,
             message=str(exc),
         )
-        await _notify_task_terminal_email(
+        await _notify_task_terminal_status(
             task_id,
             "failed",
             task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1698,7 +1698,7 @@ async def run_ai_reply_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_email(
+            await _notify_task_terminal_status(
                 task_id,
                 "failed",
                 task_type=TaskType.AI_REPLY.value,
@@ -1720,7 +1720,7 @@ async def run_ai_reply_task(
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
             task_logger.bind(stage="finalize_report").error(error_msg)
-            await _notify_task_terminal_email(
+            await _notify_task_terminal_status(
                 task_id,
                 "failed",
                 task_type=TaskType.AI_REPLY.value,
@@ -1814,7 +1814,7 @@ async def run_ai_reply_task(
             message="任务执行完成",
             payload={"output_pdf": pdf_path},
         )
-        await _notify_task_terminal_email(
+        await _notify_task_terminal_status(
             task_id,
             "completed",
             task_type=TaskType.AI_REPLY.value,
@@ -1848,7 +1848,7 @@ async def run_ai_reply_task(
             success=False,
             message=error_msg,
         )
-        await _notify_task_terminal_email(
+        await _notify_task_terminal_status(
             task_id,
             "failed",
             task_type=TaskType.AI_REPLY.value,
@@ -1881,7 +1881,7 @@ async def run_ai_reply_task(
             success=False,
             message=str(exc),
         )
-        await _notify_task_terminal_email(
+        await _notify_task_terminal_status(
             task_id,
             "failed",
             task_type=TaskType.AI_REPLY.value,

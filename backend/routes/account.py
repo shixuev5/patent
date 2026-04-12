@@ -5,12 +5,13 @@ import io
 import mimetypes
 import re
 import uuid
+from html import escape
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 
@@ -24,13 +25,21 @@ from backend.models import (
     AccountNotificationSettingsUpdateRequest,
     AccountProfileResponse,
     AccountProfileUpdateRequest,
+    AccountWeChatBindSessionResponse,
+    AccountWeChatBindingResponse,
+    AccountWeChatIntegrationResponse,
+    AccountWeChatIntegrationUpdateRequest,
+    InternalWeChatBindCodeCompleteRequest,
     CurrentUser,
     DailyActivityPoint,
+    InternalWeChatBindSessionCompleteRequest,
+    InternalWeChatDeliveryJobClaimRequest,
+    InternalWeChatDeliveryJobResolveRequest,
     TaskWindowCounts,
     WeeklyActivityPoint,
 )
 from backend.utils import _build_r2_storage
-from backend.storage import TaskType, get_pipeline_manager
+from backend.storage import TaskType, WeChatBindSession, WeChatBinding, get_pipeline_manager
 from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
 from config import settings
 
@@ -134,6 +143,123 @@ def _build_notification_settings_response(user) -> AccountNotificationSettingsRe
         workNotificationEmail=_sanitize_profile_text(getattr(user, "work_notification_email", None)),
         personalNotificationEmail=_sanitize_profile_text(getattr(user, "personal_notification_email", None)),
     )
+
+
+def _ensure_wechat_integration_enabled() -> None:
+    if not bool(settings.WECHAT_INTEGRATION_ENABLED):
+        raise HTTPException(status_code=503, detail="微信接入尚未启用。")
+
+
+def _mask_wechat_peer_id(value: str | None) -> str | None:
+    text = _sanitize_profile_text(value)
+    if not text:
+        return None
+    if len(text) <= 4:
+        return "*" * len(text)
+    return f"{text[:2]}***{text[-2:]}"
+
+
+def _render_bind_qr_svg(bind_code: str) -> str:
+    safe_code = escape(str(bind_code or "").strip() or "-")
+    return f"""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 280" role="img" aria-label="wechat bind code">
+  <rect width="280" height="280" rx="24" fill="#0f172a"/>
+  <rect x="24" y="24" width="232" height="232" rx="18" fill="#ffffff"/>
+  <rect x="48" y="48" width="52" height="52" rx="10" fill="#0f172a"/>
+  <rect x="180" y="48" width="52" height="52" rx="10" fill="#0f172a"/>
+  <rect x="48" y="180" width="52" height="52" rx="10" fill="#0f172a"/>
+  <rect x="122" y="122" width="36" height="36" rx="8" fill="#06b6d4"/>
+  <rect x="168" y="122" width="24" height="24" rx="6" fill="#0f172a"/>
+  <rect x="122" y="168" width="24" height="24" rx="6" fill="#0f172a"/>
+  <text x="140" y="250" text-anchor="middle" font-family="Menlo, monospace" font-size="18" fill="#0f172a">{safe_code}</text>
+</svg>
+""".strip()
+
+
+def _build_wechat_binding_response(binding: WeChatBinding) -> AccountWeChatBindingResponse:
+    return AccountWeChatBindingResponse(
+        bindingId=binding.binding_id,
+        status=binding.status,
+        botAccountId=binding.bot_account_id,
+        wechatPeerIdMasked=_mask_wechat_peer_id(binding.wechat_peer_id),
+        wechatPeerName=_sanitize_profile_text(binding.wechat_peer_name),
+        pushTaskCompleted=bool(binding.push_task_completed),
+        pushTaskFailed=bool(binding.push_task_failed),
+        pushAiSearchPendingAction=bool(binding.push_ai_search_pending_action),
+        boundAt=binding.bound_at.isoformat() if binding.bound_at else None,
+        disconnectedAt=binding.disconnected_at.isoformat() if binding.disconnected_at else None,
+        lastInboundAt=binding.last_inbound_at.isoformat() if binding.last_inbound_at else None,
+        lastOutboundAt=binding.last_outbound_at.isoformat() if binding.last_outbound_at else None,
+    )
+
+
+def _build_wechat_bind_session_response(session: WeChatBindSession) -> AccountWeChatBindSessionResponse:
+    return AccountWeChatBindSessionResponse(
+        bindSessionId=session.bind_session_id,
+        status=session.status,
+        bindCode=session.bind_code,
+        qrPayload=session.qr_payload,
+        qrSvg=session.qr_svg,
+        expiresAt=session.expires_at.isoformat(),
+        botAccountId=session.bot_account_id,
+        wechatPeerName=_sanitize_profile_text(session.wechat_peer_name),
+        errorMessage=_sanitize_profile_text(session.error_message),
+        boundAt=session.bound_at.isoformat() if session.bound_at else None,
+        createdAt=session.created_at.isoformat() if session.created_at else None,
+        updatedAt=session.updated_at.isoformat() if session.updated_at else None,
+    )
+
+
+def _expire_bind_session_if_needed(session: WeChatBindSession | None) -> WeChatBindSession | None:
+    if not session:
+        return None
+    if session.status in {"bound", "expired", "failed", "cancelled"}:
+        return session
+    if session.expires_at <= utc_now():
+        updated = task_manager.storage.update_wechat_bind_session(
+            session.bind_session_id,
+            status="expired",
+            updated_at=utc_now(),
+        )
+        return updated or session
+    return session
+
+
+def _build_wechat_integration_response(owner_id: str) -> AccountWeChatIntegrationResponse:
+    binding = task_manager.storage.get_wechat_binding_by_owner(owner_id) if hasattr(task_manager.storage, "get_wechat_binding_by_owner") else None
+    bind_session = task_manager.storage.get_current_wechat_bind_session(owner_id) if hasattr(task_manager.storage, "get_current_wechat_bind_session") else None
+    bind_session = _expire_bind_session_if_needed(bind_session)
+    if binding:
+        binding_status = "bound"
+    elif bind_session and bind_session.status in {"pending", "scanned", "bound"}:
+        binding_status = "binding"
+    else:
+        binding_status = "unbound"
+    return AccountWeChatIntegrationResponse(
+        bindingStatus=binding_status,
+        binding=_build_wechat_binding_response(binding) if binding else None,
+        bindSession=_build_wechat_bind_session_response(bind_session) if bind_session else None,
+        availableCommands=[
+            "帮我检索某个技术方向",
+            "分析专利 CN202410009999.9",
+            "帮我审查这个专利",
+            "我要答复审查意见",
+            "/analysis new",
+            "/review new",
+            "/reply new",
+            "确认计划",
+            "继续检索",
+            "按当前结果完成",
+        ],
+    )
+
+
+def _ensure_internal_gateway_token(x_internal_gateway_token: str | None = Header(default=None)) -> str:
+    configured = str(getattr(settings, "INTERNAL_GATEWAY_TOKEN", "") or "").strip()
+    provided = str(x_internal_gateway_token or "").strip()
+    if not configured or provided != configured:
+        raise HTTPException(status_code=401, detail="invalid internal gateway token")
+    return provided
 
 
 def _build_avatar_filename(owner_id: str, suffix: str) -> str:
@@ -420,6 +546,269 @@ async def put_account_notification_settings(
     if not saved:
         raise HTTPException(status_code=404, detail="未找到可更新的认证账号档案。")
     return _build_notification_settings_response(saved)
+
+
+@router.get("/api/account/wechat-integration", response_model=AccountWeChatIntegrationResponse)
+async def get_account_wechat_integration(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_wechat_integration_enabled()
+    user = _ensure_authing_user_or_403(current_user)
+    return _build_wechat_integration_response(user.owner_id)
+
+
+@router.post("/api/account/wechat-integration/bind-session", response_model=AccountWeChatBindSessionResponse)
+async def post_account_wechat_bind_session(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_wechat_integration_enabled()
+    user = _ensure_authing_user_or_403(current_user)
+    current = _expire_bind_session_if_needed(task_manager.storage.get_current_wechat_bind_session(user.owner_id))
+    if current and current.status in {"pending", "scanned"}:
+        return _build_wechat_bind_session_response(current)
+
+    bind_session_id = f"wbs-{uuid.uuid4().hex[:12]}"
+    bind_code = uuid.uuid4().hex[:8].upper()
+    qr_payload = f"wechat-bind:{bind_session_id}:{bind_code}"
+    now_dt = utc_now()
+    created = task_manager.storage.create_wechat_bind_session(
+        WeChatBindSession(
+            bind_session_id=bind_session_id,
+            owner_id=user.owner_id,
+            status="pending",
+            bind_code=bind_code,
+            qr_payload=qr_payload,
+            qr_svg=_render_bind_qr_svg(bind_code),
+            expires_at=now_dt + timedelta(seconds=int(getattr(settings, "WECHAT_BIND_SESSION_TTL_SECONDS", 600) or 600)),
+            created_at=now_dt,
+            updated_at=now_dt,
+        )
+    )
+    return _build_wechat_bind_session_response(created)
+
+
+@router.get("/api/account/wechat-integration/bind-session/{bind_session_id}", response_model=AccountWeChatBindSessionResponse)
+async def get_account_wechat_bind_session(
+    bind_session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_wechat_integration_enabled()
+    user = _ensure_authing_user_or_403(current_user)
+    session = task_manager.storage.get_wechat_bind_session(bind_session_id)
+    if not session or str(session.owner_id or "") != str(user.owner_id or ""):
+        raise HTTPException(status_code=404, detail="未找到微信绑定会话。")
+    session = _expire_bind_session_if_needed(session)
+    return _build_wechat_bind_session_response(session)
+
+
+@router.put("/api/account/wechat-integration/settings", response_model=AccountWeChatIntegrationResponse)
+async def put_account_wechat_integration_settings(
+    payload: AccountWeChatIntegrationUpdateRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_wechat_integration_enabled()
+    user = _ensure_authing_user_or_403(current_user)
+    binding = task_manager.storage.get_wechat_binding_by_owner(user.owner_id)
+    if not binding:
+        raise HTTPException(status_code=404, detail="当前没有已绑定的微信账号。")
+    task_manager.storage.update_wechat_binding(
+        binding.binding_id,
+        push_task_completed=1 if payload.pushTaskCompleted else 0,
+        push_task_failed=1 if payload.pushTaskFailed else 0,
+        push_ai_search_pending_action=1 if payload.pushAiSearchPendingAction else 0,
+        updated_at=utc_now(),
+    )
+    return _build_wechat_integration_response(user.owner_id)
+
+
+@router.post("/api/account/wechat-integration/disconnect", response_model=AccountWeChatIntegrationResponse)
+async def post_account_wechat_disconnect(
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ensure_wechat_integration_enabled()
+    user = _ensure_authing_user_or_403(current_user)
+    task_manager.storage.disconnect_wechat_binding(user.owner_id)
+    current = task_manager.storage.get_current_wechat_bind_session(user.owner_id)
+    if current and current.status in {"pending", "scanned", "bound"}:
+        task_manager.storage.update_wechat_bind_session(current.bind_session_id, status="cancelled", updated_at=utc_now())
+    return _build_wechat_integration_response(user.owner_id)
+
+
+@router.post("/api/internal/wechat/bind-sessions/{bind_session_id}/complete")
+async def post_internal_wechat_bind_session_complete(
+    bind_session_id: str,
+    payload: InternalWeChatBindSessionCompleteRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    session = task_manager.storage.get_wechat_bind_session(bind_session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="bind session not found")
+    session = _expire_bind_session_if_needed(session)
+    if not session or session.status not in {"pending", "scanned"}:
+        raise HTTPException(status_code=409, detail="bind session is not active")
+
+    existing_binding = task_manager.storage.get_wechat_binding_by_owner(session.owner_id)
+    now_dt = utc_now()
+    binding = task_manager.storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id=existing_binding.binding_id if existing_binding else f"wb-{uuid.uuid4().hex[:12]}",
+            owner_id=session.owner_id,
+            status="active",
+            bot_account_id=payload.botAccountId,
+            wechat_peer_id=payload.wechatPeerId,
+            wechat_peer_name=_sanitize_profile_text(payload.wechatPeerName),
+            push_task_completed=existing_binding.push_task_completed if existing_binding else True,
+            push_task_failed=existing_binding.push_task_failed if existing_binding else True,
+            push_ai_search_pending_action=existing_binding.push_ai_search_pending_action if existing_binding else True,
+            bound_at=now_dt,
+            last_inbound_at=now_dt,
+            created_at=existing_binding.created_at if existing_binding else now_dt,
+            updated_at=now_dt,
+        )
+    )
+    updated_session = task_manager.storage.update_wechat_bind_session(
+        bind_session_id,
+        status="bound",
+        bot_account_id=payload.botAccountId,
+        wechat_peer_id=payload.wechatPeerId,
+        wechat_peer_name=_sanitize_profile_text(payload.wechatPeerName),
+        bound_at=now_dt,
+        updated_at=now_dt,
+    )
+    return {
+        "binding": _build_wechat_binding_response(binding).model_dump(),
+        "bindSession": _build_wechat_bind_session_response(updated_session or session).model_dump(),
+    }
+
+
+@router.post("/api/internal/wechat/bind-sessions/complete-by-code")
+async def post_internal_wechat_bind_session_complete_by_code(
+    payload: InternalWeChatBindCodeCompleteRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    if not hasattr(task_manager.storage, "get_wechat_bind_session_by_code"):
+        raise HTTPException(status_code=501, detail="bind code lookup is not supported")
+    session = task_manager.storage.get_wechat_bind_session_by_code(payload.bindCode)
+    if not session:
+        raise HTTPException(status_code=404, detail="bind session not found")
+    return await post_internal_wechat_bind_session_complete(
+        bind_session_id=session.bind_session_id,
+        payload=InternalWeChatBindSessionCompleteRequest(
+            botAccountId=payload.botAccountId,
+            wechatPeerId=payload.wechatPeerId,
+            wechatPeerName=payload.wechatPeerName,
+        ),
+        _token=_token,
+    )
+
+
+@router.get("/api/internal/wechat/bindings/by-peer")
+async def get_internal_wechat_binding_by_peer(
+    botAccountId: str = Query(...),
+    wechatPeerId: str = Query(...),
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    binding = task_manager.storage.get_wechat_binding_by_peer(botAccountId, wechatPeerId)
+    if not binding:
+        raise HTTPException(status_code=404, detail="binding not found")
+    return {
+        "ownerId": binding.owner_id,
+        "binding": _build_wechat_binding_response(binding).model_dump(),
+    }
+
+
+@router.post("/api/internal/wechat/delivery-jobs/claim")
+async def post_internal_wechat_delivery_jobs_claim(
+    payload: InternalWeChatDeliveryJobClaimRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    jobs = task_manager.storage.claim_wechat_delivery_jobs(payload.limit)
+    items: List[Dict[str, object]] = []
+    for job in jobs:
+        task = task_manager.storage.get_task(job.task_id) if job.task_id else None
+        binding = task_manager.storage.get_wechat_binding_by_owner(job.owner_id)
+        items.append(
+            {
+                "deliveryJobId": job.delivery_job_id,
+                "ownerId": job.owner_id,
+                "bindingId": job.binding_id,
+                "taskId": job.task_id,
+                "eventType": job.event_type,
+                "status": job.status,
+                "payload": job.payload,
+                "binding": {
+                    "bindingId": binding.binding_id,
+                    "botAccountId": binding.bot_account_id,
+                    "wechatPeerId": binding.wechat_peer_id,
+                    "wechatPeerName": binding.wechat_peer_name,
+                } if binding else None,
+                "task": {
+                    "id": getattr(task, "id", None),
+                    "title": getattr(task, "title", None),
+                    "taskType": getattr(task, "task_type", None),
+                    "status": getattr(getattr(task, "status", None), "value", getattr(task, "status", None)),
+                    "metadata": getattr(task, "metadata", None),
+                    "downloadPath": f"/api/internal/wechat/tasks/{job.task_id}/download" if task and str(getattr(getattr(task, 'status', None), 'value', getattr(task, 'status', None)) or '') == "completed" else None,
+                } if task else None,
+            }
+        )
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/api/internal/wechat/delivery-jobs/{delivery_job_id}/complete")
+async def post_internal_wechat_delivery_job_complete(
+    delivery_job_id: str,
+    _payload: InternalWeChatDeliveryJobResolveRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    updated = task_manager.storage.update_wechat_delivery_job(
+        delivery_job_id,
+        status="completed",
+        completed_at=utc_now(),
+        updated_at=utc_now(),
+        last_error=None,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="delivery job not found")
+    binding = task_manager.storage.get_wechat_binding_by_owner(updated.owner_id)
+    if binding:
+        task_manager.storage.update_wechat_binding(binding.binding_id, last_outbound_at=utc_now(), updated_at=utc_now())
+    return {"ok": True}
+
+
+@router.post("/api/internal/wechat/delivery-jobs/{delivery_job_id}/fail")
+async def post_internal_wechat_delivery_job_fail(
+    delivery_job_id: str,
+    payload: InternalWeChatDeliveryJobResolveRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    error_message = _sanitize_profile_text(payload.errorMessage) or "delivery_failed"
+    next_attempt_at = utc_now() + timedelta(minutes=1)
+    updated = task_manager.storage.update_wechat_delivery_job(
+        delivery_job_id,
+        status="pending",
+        failed_at=utc_now(),
+        next_attempt_at=next_attempt_at,
+        updated_at=utc_now(),
+        last_error=error_message,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="delivery job not found")
+    if updated.attempt_count >= updated.max_attempts:
+        task_manager.storage.update_wechat_delivery_job(
+            delivery_job_id,
+            status="failed",
+            updated_at=utc_now(),
+            failed_at=utc_now(),
+            last_error=error_message,
+        )
+    return {"ok": True}
 
 
 @router.get("/api/account/month-target", response_model=AccountMonthTargetResponse)
