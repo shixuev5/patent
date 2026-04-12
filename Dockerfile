@@ -24,6 +24,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # 复制项目文件
 COPY . .
 
+RUN chmod +x /app/docker-entrypoint.sh
+
 # 安装 Python 依赖（使用 uv）
 RUN pip install --upgrade pip uv && \
     uv sync --frozen --no-dev
@@ -32,7 +34,7 @@ RUN pip install --upgrade pip uv && \
 RUN uv run playwright install --with-deps chromium
 
 # 创建必要的目录
-RUN mkdir -p output uploads data assets
+RUN mkdir -p output uploads data assets im-gateway/tmp
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
@@ -46,4 +48,4 @@ ENV MINERU_MODEL_SOURCE=modelscope
 EXPOSE 7860
 
 # 启动应用（使用 uv）
-CMD ["uv", "run", "python", "-m", "backend.main"]
+CMD ["/app/docker-entrypoint.sh"]

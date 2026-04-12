@@ -17,17 +17,11 @@
 
 ## 依赖
 
-当前仓库主 Python 依赖里已经包含 `httpx` / `fastapi` / `uvicorn`。微信 SDK 需要额外安装：
-
-```bash
-pip install wechatbot-sdk
-```
-
-如果要把它纳入项目依赖，可把 `wechatbot-sdk` 加入根 `pyproject.toml`。
+当前仓库主 Python 依赖里已经包含 `httpx` / `fastapi` / `uvicorn`，并已将 `wechatbot-sdk` 纳入根 `pyproject.toml`，Docker 镜像构建时会一并安装。
 
 ## 环境变量
 
-- `API_BASE_URL`：后端地址，默认 `http://127.0.0.1:8000`
+- `API_BASE_URL`：后端地址，默认 `http://127.0.0.1:${PORT:-7860}`
 - `INTERNAL_GATEWAY_TOKEN`：与后端共享的内部 token
 - `IM_GATEWAY_POLL_INTERVAL_SECONDS`：出站轮询间隔，默认 `8`
 - `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `./tmp`
@@ -37,6 +31,8 @@ pip install wechatbot-sdk
 ```bash
 python im-gateway/main.py
 ```
+
+若运行在 Hugging Face Space 的单容器部署中，根目录 `docker-entrypoint.sh` 会先启动后端，再在 `WECHAT_INTEGRATION_ENABLED=true` 时自动拉起 `im-gateway`。
 
 ## 当前实现说明
 

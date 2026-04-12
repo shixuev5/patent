@@ -16,7 +16,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+DEFAULT_BACKEND_PORT = str(os.getenv("PORT", "7860") or "7860").strip() or "7860"
+API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}")
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
 DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(Path(__file__).resolve().parent / "tmp")))
