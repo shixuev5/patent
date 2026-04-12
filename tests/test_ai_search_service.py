@@ -83,7 +83,7 @@ from agents.ai_search.src.state import (
 )
 from backend.storage import TaskStatus, TaskType
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_service(monkeypatch, tmp_path):

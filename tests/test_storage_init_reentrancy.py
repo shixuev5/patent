@@ -4,7 +4,7 @@ import threading
 
 from backend import system_logs
 from backend.storage import task_storage
-from backend.storage import d1_storage
+from backend.storage import facade as storage_facade
 
 
 def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
@@ -30,7 +30,7 @@ def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
                 payload={"source": "test"},
             )
 
-    monkeypatch.setattr(d1_storage, "D1TaskStorage", _DummyD1Storage)
+    monkeypatch.setattr(storage_facade, "D1TaskStorage", _DummyD1Storage)
 
     result = {}
     error = {}

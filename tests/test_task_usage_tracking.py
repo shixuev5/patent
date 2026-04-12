@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from backend import task_usage_tracking
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 from backend.time_utils import to_utc_z
 
 

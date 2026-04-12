@@ -12,9 +12,9 @@ from typing import Any, Iterable, Literal, Optional
 from dotenv import load_dotenv
 
 from backend.storage import TaskType
-from backend.storage.ai_search_support import AI_SEARCH_STORAGE_SQL
-from backend.storage.d1_storage import D1TaskStorage
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage.schema.ai_search_sql import AI_SEARCH_STORAGE_SQL
+from backend.storage import D1TaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 BackendType = Literal["sqlite", "d1"]

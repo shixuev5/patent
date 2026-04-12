@@ -18,7 +18,7 @@ from agents.ai_search.src.state import (
     merge_ai_search_meta,
 )
 from backend.storage import Task, TaskStatus, TaskType
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _build_context(tmp_path, *, phase: str = PHASE_EXECUTE_SEARCH) -> tuple[AiSearchAgentContext, SQLiteTaskStorage]:

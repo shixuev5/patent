@@ -1,9 +1,8 @@
 """
 任务存储模块 - 提供任务持久化存储能力
 """
-from .task_storage import get_task_storage
-from .sqlite_storage import SQLiteTaskStorage
-from .d1_storage import D1TaskStorage
+from .facade import D1TaskStorage, SQLiteTaskStorage
+from .interfaces import TaskStorage
 from .models import (
     RefreshSession,
     Task,
@@ -16,11 +15,13 @@ from .models import (
     WeChatFlowSession,
 )
 from .pipeline_adapter import PipelineTaskManager, get_pipeline_manager, DEFAULT_PIPELINE_STEPS
+from .task_storage import get_task_storage
 
 __all__ = [
     # Storage
     "SQLiteTaskStorage",
     "D1TaskStorage",
+    "TaskStorage",
     "get_task_storage",
     # Models
     "Task",

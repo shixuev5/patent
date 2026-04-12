@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from backend.routes import tasks as tasks_route
 from backend.storage.models import TaskStatus, TaskType
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def test_download_result_returns_ai_search_zip(monkeypatch, tmp_path) -> None:

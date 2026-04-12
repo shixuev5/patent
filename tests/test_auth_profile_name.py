@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from backend.routes import auth as auth_routes
 from backend.storage import User
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_storage(monkeypatch, tmp_path):

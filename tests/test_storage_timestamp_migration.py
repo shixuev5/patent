@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from backend.scripts.migrate_storage_timestamps_to_utc import main as migrate_timestamps_main
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def test_summarize_admin_tasks_uses_shanghai_natural_day(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "tasks.db")
     monkeypatch.setattr(
-        "backend.storage.sqlite_storage.local_recent_day_window_to_utc",
+        "backend.storage.repositories.tasks.local_recent_day_window_to_utc",
         lambda days: {
             1: ("2026-03-20T16:00:00Z", "2026-03-21T16:00:00Z"),
             7: ("2026-03-14T16:00:00Z", "2026-03-21T16:00:00Z"),

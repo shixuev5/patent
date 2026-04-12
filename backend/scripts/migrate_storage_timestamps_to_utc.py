@@ -14,8 +14,8 @@ from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from dotenv import load_dotenv
 
-from backend.storage.d1_storage import D1TaskStorage
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import D1TaskStorage
+from backend.storage import SQLiteTaskStorage
 from backend.time_utils import NaiveStrategy, to_utc_z
 
 

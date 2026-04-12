@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from backend import usage
 from backend.time_utils import utc_now
 from backend.storage import Task, TaskStatus, TaskType
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_storage(monkeypatch, tmp_path):

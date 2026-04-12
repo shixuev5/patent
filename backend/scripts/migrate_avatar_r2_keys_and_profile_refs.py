@@ -12,7 +12,7 @@ from urllib.parse import urlparse, urlunparse
 from loguru import logger
 
 from config import settings
-from backend.storage.d1_storage import D1TaskStorage
+from backend.storage import D1TaskStorage
 from backend.utils import _build_r2_storage
 
 AVATAR_READ_PREFIX = "/api/account/profile/avatar/"

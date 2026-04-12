@@ -5,7 +5,7 @@ from datetime import datetime
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from backend.storage import Task, TaskStatus, TaskType
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _create_task(storage: SQLiteTaskStorage, task_id: str, phase: str, *, active_plan_version: int = 1) -> None:

@@ -5,12 +5,14 @@ Task storage layer - factory for initializing storage instances based on TASK_ST
 import os
 import threading
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 from loguru import logger
 
+from .interfaces import TaskStorage
 
-_storage_instance: Optional[Any] = None
+
+_storage_instance: Optional[TaskStorage] = None
 _storage_lock = threading.Lock()
 _storage_init_local = threading.local()
 
@@ -19,7 +21,7 @@ class StorageInitializationInProgressError(RuntimeError):
     """Raised when task storage is re-entered during initialization."""
 
 
-def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
+def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> TaskStorage:
     """
     Get a task storage instance based on TASK_STORAGE_BACKEND environment variable.
 
@@ -48,7 +50,7 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
                     logger.info(f"初始化任务存储后端：{backend}")
 
                     if backend == "d1":
-                        from .d1_storage import D1TaskStorage
+                        from .facade import D1TaskStorage
 
                         account_id = os.getenv("D1_ACCOUNT_ID", "").strip()
                         database_id = os.getenv("D1_DATABASE_ID", "").strip()
@@ -64,7 +66,7 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> Any:
                             api_base_url=api_base_url,
                         )
                     elif backend in {"", "sqlite"}:
-                        from .sqlite_storage import SQLiteTaskStorage
+                        from .facade import SQLiteTaskStorage
 
                         _storage_instance = SQLiteTaskStorage(db_path)
                     else:

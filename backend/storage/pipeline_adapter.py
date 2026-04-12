@@ -6,13 +6,14 @@ import json
 import threading
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
 from config import settings
 from backend.time_utils import utc_now
 from .models import Task, TaskStatus, TaskType
+from .interfaces import TaskStorage
 from .task_storage import get_task_storage
 
 DEFAULT_PIPELINE_STEPS = [
@@ -31,7 +32,7 @@ DEFAULT_PIPELINE_STEPS = [
 
 
 class PipelineTaskManager:
-    def __init__(self, storage: Any = None):
+    def __init__(self, storage: Optional[TaskStorage] = None):
         self.storage = storage or get_task_storage()
 
     def create_task(
@@ -235,7 +236,7 @@ class LazyPipelineTaskManager:
 _lazy_pipeline_manager = LazyPipelineTaskManager()
 
 
-def get_pipeline_manager(storage: Any = None) -> Any:
+def get_pipeline_manager(storage: Optional[TaskStorage] = None) -> Any:
     if storage is not None:
         return PipelineTaskManager(storage)
     return _lazy_pipeline_manager

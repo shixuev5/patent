@@ -45,10 +45,18 @@ class WeChatRuntimeService:
         if not isinstance(resolved_task_manager, PipelineTaskManager) and storage is not None:
             resolved_task_manager = PipelineTaskManager(storage)
         self.task_manager = resolved_task_manager
-        self.storage = getattr(resolved_task_manager, "storage", storage)
+        self._storage = storage if storage is not None else (
+            resolved_task_manager.storage if isinstance(resolved_task_manager, PipelineTaskManager) else None
+        )
         self.ai_search_service = ai_search_service or AiSearchService()
         self.ai_search_service.task_manager = self.task_manager
         self.llm_service = get_llm_service()
+
+    @property
+    def storage(self):
+        if self._storage is None:
+            self._storage = getattr(self.task_manager, "storage")
+        return self._storage
 
     async def handle_inbound_message(
         self,

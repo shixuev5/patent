@@ -11,7 +11,7 @@ from fastapi import HTTPException, UploadFile
 from backend.models import CurrentUser
 from backend.routes import tasks as tasks_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 from config import settings
 
 

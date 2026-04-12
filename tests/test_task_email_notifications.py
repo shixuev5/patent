@@ -8,7 +8,7 @@ from config import settings
 from backend.notifications.task_email_service import build_task_email_notification_service
 from backend.storage.models import TaskType, User
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 class _FakeEmailSender:

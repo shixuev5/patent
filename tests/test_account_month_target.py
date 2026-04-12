@@ -22,7 +22,7 @@ from backend.routes import account
 from backend.routes import tasks as task_routes
 from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 from backend.time_utils import utc_now
 from backend.wechat_runtime import WeChatRuntimeService
 from config import settings

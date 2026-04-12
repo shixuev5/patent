@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from config import settings
-from backend.storage.d1_storage import D1TaskStorage
+from backend.storage import D1TaskStorage
 from backend.storage.r2_storage import R2Config, R2Storage
 from backend.storage.models import TaskType
 

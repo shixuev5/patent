@@ -12,7 +12,7 @@ from backend import admin_auth
 from backend.models import CurrentUser
 from backend.routes import admin_entities
 from backend.storage import Task, TaskStatus, User
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 class _DisabledR2Storage:

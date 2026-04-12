@@ -5,7 +5,7 @@ import json
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.subagents.query_executor import build_search_tools
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 class _StubStorage:

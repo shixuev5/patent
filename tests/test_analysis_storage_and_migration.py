@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from backend.scripts.migrate_r2_task_keys_to_pn_dirs import migrate_task_artifacts_to_pn_layout
 from backend.storage.r2_storage import R2Config, R2Storage
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def test_sqlite_patent_analysis_sha256_roundtrip(tmp_path):

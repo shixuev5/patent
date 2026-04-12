@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -25,6 +25,8 @@ from loguru import logger
 
 from config import settings
 from backend.time_utils import utc_now, utc_now_z
+if TYPE_CHECKING:
+    from backend.storage.interfaces import TaskStorage
 
 
 SYSTEM_LOG_RETENTION_DAYS = int(os.getenv("SYSTEM_LOG_RETENTION_DAYS", "14"))
@@ -75,10 +77,10 @@ _CLEANUP_TASK: Optional[asyncio.Task] = None
 class LazySystemLogStorageProxy:
     """Resolve the storage backend only when DB persistence is actually used."""
 
-    def __init__(self, factory: Callable[[], Any]):
+    def __init__(self, factory: Callable[[], "TaskStorage"]):
         self._factory = factory
 
-    def _storage(self) -> Any:
+    def _storage(self) -> "TaskStorage":
         return self._factory()
 
     def insert_system_log(self, record: Dict[str, Any]) -> Any:

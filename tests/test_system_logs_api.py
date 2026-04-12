@@ -11,7 +11,7 @@ from backend import admin_auth
 from backend.models import CurrentUser
 from backend.routes import admin_logs
 from backend.storage import User
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_storage(monkeypatch, tmp_path):

@@ -7,7 +7,7 @@ from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.state import default_ai_search_meta
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_context(tmp_path):

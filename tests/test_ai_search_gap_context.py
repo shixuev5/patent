@@ -10,7 +10,7 @@ from agents.ai_search.src.orchestration.execution_runtime import (
     evaluate_exhaustion_payload,
 )
 from backend.storage import Task, TaskStatus, TaskType
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _plan_record(task_id: str, *, plan_version: int = 1, status: str = "confirmed", include_conditional: bool = False) -> dict:

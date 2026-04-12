@@ -11,7 +11,7 @@ from backend import task_usage_tracking
 from backend.models import CurrentUser
 from backend.routes import ai_search as ai_search_route
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 from backend.ai_search import agent_run_service as ai_search_agent_run_service_module
 from backend.ai_search import service as ai_search_service_module
 from backend.ai_search.models import AiSearchCreateSessionResponse

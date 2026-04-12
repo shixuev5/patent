@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from backend.routes import tasks as tasks_route
 from backend.storage.models import TaskType
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 stub_retrieval_pkg = sys.modules.get("agents.common.retrieval")

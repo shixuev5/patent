@@ -1,6 +1,6 @@
 from backend.storage.models import TaskStatus
 from backend.storage.pipeline_adapter import PipelineTaskManager
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def test_fail_task_sets_completed_at(tmp_path) -> None:

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from backend.models import CurrentUser
 from backend.routes import auth as auth_routes
-from backend.storage.sqlite_storage import SQLiteTaskStorage
+from backend.storage import SQLiteTaskStorage
 
 
 def _mount_storage(monkeypatch, tmp_path):

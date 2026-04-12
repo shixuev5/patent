@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.storage.d1_storage import D1TaskStorage
+from backend.storage import D1TaskStorage
 
 
 def test_d1_init_database_skips_full_bootstrap_when_schema_version_matches(monkeypatch):
