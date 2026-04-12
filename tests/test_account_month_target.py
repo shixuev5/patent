@@ -564,6 +564,88 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     assert 'backend:close' in events
 
 
+def test_im_gateway_uses_sdk_credentials_account_id():
+    im_gateway_main = _load_im_gateway_main()
+    captured: dict[str, str] = {}
+
+    class FakeBackend:
+        async def post_inbound_message(self, **payload):
+            captured['bot_account_id'] = payload['bot_account_id']
+            return {'messages': []}
+
+    class FakeBot:
+        def get_credentials(self):
+            return SimpleNamespace(account_id='bot-cred-001')
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+    gateway.bot = FakeBot()
+
+    asyncio.run(
+        gateway._handle_message(
+            SimpleNamespace(
+                user_id='wx-peer-001',
+                text='hello',
+            )
+        )
+    )
+
+    assert captured['bot_account_id'] == 'bot-cred-001'
+
+
+def test_im_gateway_wraps_file_payloads_for_sdk():
+    im_gateway_main = _load_im_gateway_main()
+    reply_payloads: list[dict[str, object]] = []
+    send_payloads: list[dict[str, object]] = []
+    sent_texts: list[str] = []
+    completed_jobs: list[str] = []
+
+    class FakeBackend:
+        async def download_task_artifact(self, _download_path: str):
+            return b'file-bytes', 'application/pdf', 'result.pdf'
+
+        async def complete_delivery_job(self, delivery_job_id: str):
+            completed_jobs.append(delivery_job_id)
+
+        async def fail_delivery_job(self, _delivery_job_id: str, _error_message: str):
+            raise AssertionError('delivery job should not fail')
+
+    class FakeBot:
+        async def send(self, _peer_id: str, text: str):
+            sent_texts.append(text)
+
+        async def send_media(self, _peer_id: str, payload: dict[str, object]):
+            send_payloads.append(payload)
+
+        async def reply_media(self, _incoming_msg, payload: dict[str, object]):
+            reply_payloads.append(payload)
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+    gateway.bot = FakeBot()
+
+    asyncio.run(
+        gateway._send_messages(
+            peer_id='wx-peer-001',
+            incoming_msg=SimpleNamespace(user_id='wx-peer-001'),
+            messages=[{'type': 'file', 'downloadPath': '/download/path', 'fileName': 'custom.pdf'}],
+        )
+    )
+    asyncio.run(
+        gateway._deliver_job(
+            {
+                'deliveryJobId': 'job-001',
+                'binding': {'wechatPeerId': 'wx-peer-001'},
+                'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
+                'task': {'downloadPath': '/download/path'},
+            }
+        )
+    )
+
+    assert reply_payloads == [{'file': b'file-bytes', 'file_name': 'custom.pdf'}]
+    assert send_payloads == [{'file': b'file-bytes', 'file_name': 'result.pdf'}]
+    assert sent_texts[0] == '分析任务 已完成。'
+    assert completed_jobs == ['job-001']
+
+
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)

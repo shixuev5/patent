@@ -94,20 +94,16 @@
       <section v-else-if="bindSession" class="wechat-panel">
         <div class="wechat-panel-header">
           <div>
-            <p class="wechat-badge">{{ bindSession.status === 'bound' ? '绑定成功' : '等待扫码' }}</p>
-            <h3 class="wechat-name">扫码绑定微信私聊身份</h3>
-            <p class="wechat-meta">绑定码 {{ bindSession.bindCode }}<span v-if="expiresText"> · {{ expiresText }}</span></p>
+            <p class="wechat-badge" :class="bindBadgeClass">{{ bindBadgeLabel }}</p>
+            <h3 class="wechat-name">{{ bindStatusTitle }}</h3>
+            <p class="wechat-meta">{{ bindStatusSummary }}<span v-if="expiresText"> · {{ expiresText }}</span></p>
           </div>
         </div>
 
         <div class="wechat-bind-grid">
           <div class="wechat-qr-stage">
             <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
-            <div class="wechat-qr-code-card">
-              <p class="wechat-qr-code-label">{{ bindSession.qrScene === 'gateway_login' ? '第二步发送绑定码' : '备用绑定码' }}</p>
-              <p class="wechat-qr-code-value">{{ bindSession.bindCode }}</p>
-              <p class="wechat-copy-text">{{ bindCodeHelperText }}</p>
-            </div>
+            <p class="wechat-qr-caption">{{ qrCaptionText }}</p>
           </div>
 
           <div class="wechat-bind-copy">
@@ -123,6 +119,8 @@
                 <div class="wechat-step-content">
                   <p class="wechat-step-title">{{ step.title }}</p>
                   <p class="wechat-copy-text">{{ step.description }}</p>
+                  <p v-if="step.code" class="wechat-step-code">{{ step.code }}</p>
+                  <p v-if="step.helper" class="wechat-step-helper">{{ step.helper }}</p>
                 </div>
               </div>
             </div>
@@ -234,8 +232,49 @@ const bindCodeHelperText = computed(() => {
   return '如果当前不方便扫码，可以直接把这串绑定码发给接入微信号。'
 })
 
+const bindBadgeLabel = computed(() => {
+  if (props.bindSession?.status === 'bound') return '绑定成功'
+  if (props.bindSession?.gatewayStatus === 'scanned') return '已扫码'
+  if (props.bindSession?.gatewayStatus === 'error') return '接入异常'
+  if (props.bindSession?.gatewayStatus === 'expired') return '二维码已过期'
+  return '等待扫码'
+})
+
+const bindBadgeClass = computed(() => {
+  if (props.bindSession?.status === 'bound') return 'is-bound'
+  if (props.bindSession?.gatewayStatus === 'scanned') return 'is-scanned'
+  if (props.bindSession?.gatewayStatus === 'error') return 'is-error'
+  return ''
+})
+
+const bindStatusTitle = computed(() => {
+  if (props.bindSession?.status === 'bound') return '微信私聊身份已绑定'
+  if (props.bindSession?.gatewayStatus === 'scanned') return '继续在微信里发送绑定码'
+  return '扫码绑定微信私聊身份'
+})
+
+const bindStatusSummary = computed(() => {
+  if (!props.bindSession) return ''
+  if (props.bindSession.status === 'bound') return `绑定码 ${props.bindSession.bindCode}`
+  if (props.bindSession.gatewayStatus === 'scanned') return `已完成扫码，下一步发送绑定码 ${props.bindSession.bindCode}`
+  return `绑定码 ${props.bindSession.bindCode}`
+})
+
+const qrCaptionText = computed(() => {
+  if (props.bindSession?.qrScene === 'gateway_login') {
+    if (props.bindSession.gatewayStatus === 'scanned') {
+      return '二维码已扫描。请回到微信里的接入会话，发送右侧绑定码完成网页账号绑定。'
+    }
+    return '用微信扫一扫这个二维码，进入接入微信号。'
+  }
+  return '当前展示的是绑定载荷二维码。如果扫码体验不稳定，可直接复制右侧绑定码到已打开的接入会话。'
+})
+
 const stepIntroText = computed(() => {
   if (props.bindSession?.qrScene === 'gateway_login') {
+    if (props.bindSession.gatewayStatus === 'scanned') {
+      return '你已经完成扫码，当前只差一步：把绑定码发送到微信聊天窗口，网页账号才会和这次扫码的微信私聊身份绑定。'
+    }
     return '左侧二维码会把你带到接入微信号；进入聊天后发送绑定码，再发第一条任务消息即可。'
   }
   return '当前左侧仍是绑定载荷二维码，建议优先使用接入微信二维码进入聊天，再发送绑定码。'
@@ -250,16 +289,22 @@ const bindSteps = computed(() => {
       description: usesGatewayQr
         ? '用微信扫一扫左侧二维码，手机里会打开接入微信号的入口。'
         : '请先用微信打开接入微信号的入口，再进行下面两步。',
+      code: '',
+      helper: '',
     },
     {
       index: '2',
       title: '发送绑定码',
-      description: `把“${props.bindSession?.bindCode || ''}”发送到聊天窗口，完成网页账号绑定。`,
+      description: '把下面这串绑定码发送到聊天窗口，完成网页账号绑定。',
+      code: props.bindSession?.bindCode || '',
+      helper: bindCodeHelperText.value,
     },
     {
       index: '3',
       title: '发送第一条任务消息',
       description: '绑定成功后，直接发自然语言任务，例如“帮我检索固态电池隔膜相关专利”。',
+      code: '',
+      helper: '',
     },
   ]
 })
@@ -345,6 +390,18 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   border-color: #86efac;
   background: #f0fdf4;
   color: #15803d;
+}
+
+.wechat-badge.is-scanned {
+  border-color: #99f6e4;
+  background: #ecfeff;
+  color: #0f766e;
+}
+
+.wechat-badge.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
 }
 
 .wechat-name {
@@ -439,6 +496,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 .wechat-qr-stage {
   display: grid;
   gap: 0.9rem;
+  align-content: start;
 }
 
 .wechat-qr-box {
@@ -456,28 +514,17 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   height: 15rem;
 }
 
-.wechat-qr-code-card,
+.wechat-qr-caption,
+.wechat-scene-card {
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
 .wechat-scene-card {
   border: 1px solid #dbeafe;
   border-radius: 1rem;
   background: #f8fbff;
   padding: 0.9rem;
-}
-
-.wechat-qr-code-label {
-  font-size: 0.74rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: #0f766e;
-  text-transform: uppercase;
-}
-
-.wechat-qr-code-value {
-  margin-top: 0.35rem;
-  font-size: 1.15rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: #0f172a;
 }
 
 .wechat-phone-preview {
@@ -533,6 +580,28 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   font-size: 0.82rem;
   font-weight: 700;
   color: #0f172a;
+}
+
+.wechat-step-code {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  margin-top: 0.55rem;
+  border: 1px dashed #7dd3fc;
+  border-radius: 0.9rem;
+  background: #f8fdff;
+  padding: 0.35rem 0.9rem;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #0f172a;
+}
+
+.wechat-step-helper {
+  margin-top: 0.45rem;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: #64748b;
 }
 
 .wechat-phone-dot {
@@ -601,6 +670,12 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
   .wechat-usage-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .wechat-bind-grid {
+    grid-template-columns: minmax(17rem, 21rem) minmax(0, 1fr);
   }
 }
 </style>

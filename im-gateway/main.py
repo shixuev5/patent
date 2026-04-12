@@ -130,10 +130,22 @@ class WeChatGateway:
                 print(f"[im-gateway] inbound message failed: {exc}")
         self.bot.on_message(_on_message)
 
+    def _resolve_bot_account_id(self) -> str:
+        credentials = getattr(self.bot, "get_credentials", None)
+        if callable(credentials):
+            try:
+                creds = credentials()
+            except Exception:
+                creds = None
+            account_id = str(getattr(creds, "account_id", "") or "").strip()
+            if account_id:
+                return account_id
+        return str(getattr(self.bot, "self_id", "") or getattr(self.bot, "wxid", "") or "default-bot").strip()
+
     async def _handle_message(self, msg: Any) -> None:  # pragma: no cover - depends on optional sdk
         peer_id = str(getattr(msg, "user_id", "") or getattr(msg, "from_user", "") or "").strip()
         peer_name = str(getattr(msg, "nickname", "") or getattr(msg, "user_name", "") or "").strip() or None
-        bot_account_id = str(getattr(self.bot, "self_id", "") or getattr(self.bot, "wxid", "") or "default-bot").strip()
+        bot_account_id = self._resolve_bot_account_id()
         text = str(getattr(msg, "text", "") or "").strip() or None
         attachments = await self._download_attachments(msg)
         if await self._maybe_complete_binding(
@@ -273,7 +285,7 @@ class WeChatGateway:
                     resolved_name = unquote(str(filename or "").strip()) or "result.bin"
                     send_media = getattr(self.bot, "send_media", None)
                     if callable(send_media):
-                        await send_media(peer_id, content, file_name=resolved_name)
+                        await send_media(peer_id, {"file": content, "file_name": resolved_name})
                     else:
                         await self.bot.send(peer_id, f"结果文件已生成，但当前网关未启用文件发送能力：{resolved_name}")
                 except Exception as file_exc:
@@ -294,7 +306,7 @@ class WeChatGateway:
                     resolved_name = unquote(str(item.get("fileName") or filename or "").strip()) or "result.bin"
                     reply_media = getattr(self.bot, "reply_media", None)
                     if callable(reply_media):
-                        await reply_media(incoming_msg, content, file_name=resolved_name)
+                        await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
                     else:
                         await self.bot.send(peer_id, f"文件结果已生成，但当前网关未启用文件发送能力：{resolved_name}")
                 except Exception as exc:
