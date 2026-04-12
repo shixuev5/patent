@@ -346,6 +346,31 @@
           </div>
         </div>
 
+        <div v-if="queuedExecutionMessages.length" class="border-t border-slate-200 px-4 py-4">
+          <div class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
+            <p class="text-xs font-semibold text-slate-700">待执行用户消息</p>
+            <div class="mt-2 space-y-2">
+              <div
+                v-for="item in queuedExecutionMessages"
+                :key="item.queueMessageId"
+                class="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
+              >
+                <p class="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-slate-700">
+                  {{ item.content }}
+                </p>
+                <button
+                  type="button"
+                  class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-rose-600"
+                  aria-label="删除待执行用户消息"
+                  @click="deleteQueuedExecutionMessage(item.queueMessageId)"
+                >
+                  <XMarkIcon class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="border-t border-slate-200 px-4 py-4">
           <AiSearchQuestionCard
             v-if="pendingQuestion"
@@ -421,7 +446,7 @@
               v-if="['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase || '')"
               class="mt-2 text-xs text-slate-500"
             >
-              当前轮检索执行中，执行完成后可继续调整计划。
+              执行中补充的消息会在下一个执行节点统一生效。
             </p>
           </section>
         </div>
@@ -558,6 +583,7 @@ const resumeAction = computed<Record<string, any> | null>(() => {
   }
 })
 const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.todos || [])
+const queuedExecutionMessages = computed<Array<Record<string, any>>>(() => currentSession.value?.executionMessageQueue?.items || [])
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
 const activeExecutionTodoTitle = computed(() => {
   const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
@@ -628,7 +654,7 @@ const inputPlaceholder = computed(() => {
   if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
   if (humanDecisionAction.value?.available) return '当前处于人工决策状态，请选择继续检索或按当前结果完成。'
   if (isAiSearchExecutionPhase(activePhase.value)) {
-    return '检索执行中，请稍后再补充消息。'
+    return '执行中补充的消息会在下一个执行节点统一生效'
   }
   return '继续调整检索计划'
 })
@@ -954,6 +980,10 @@ const submitMessage = async () => {
   if (!currentSession.value) return
   composer.value = ''
   await aiSearchStore.sendMessage(content)
+}
+
+const deleteQueuedExecutionMessage = async (queueMessageId: string) => {
+  await aiSearchStore.deleteQueuedExecutionMessage(queueMessageId)
 }
 
 const submitAnswer = async () => {

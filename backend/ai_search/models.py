@@ -53,6 +53,10 @@ class AiSearchMessageRequest(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+class AiSearchExecutionQueueMessageRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
 class AiSearchSessionUpdateRequest(BaseModel):
     title: Optional[str] = None
     pinned: Optional[bool] = None
@@ -77,10 +81,23 @@ class AiSearchFeatureComparisonRequest(BaseModel):
     planVersion: int = Field(..., ge=1)
 
 
+class AiSearchExecutionQueueMessage(BaseModel):
+    queueMessageId: str
+    runId: str
+    content: str
+    ordinal: int
+    createdAt: str
+
+
+class AiSearchExecutionQueueResponse(BaseModel):
+    items: List[AiSearchExecutionQueueMessage]
+
+
 class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
     run: Dict[str, Any]
     conversation: Dict[str, Any]
+    executionMessageQueue: Dict[str, Any]
     plan: Dict[str, Any]
     retrieval: Dict[str, Any]
     analysis: Dict[str, Any]

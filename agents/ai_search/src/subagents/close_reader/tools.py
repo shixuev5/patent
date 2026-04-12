@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT, DEFAULT_SHORTLIST_LIMIT
 from agents.ai_search.src.state import PHASE_CLOSE_READ
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
@@ -358,7 +359,12 @@ def build_close_reader_tools(context: Any) -> List[Any]:
             context.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
             context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
             context.notify_snapshot_changed(runtime, reason="selection")
+            takeover = context.consume_execution_message_queue_for_takeover(runtime=runtime)
+            if takeover is not None:
+                raise takeover
             return json.dumps({"selected_count": selected_count}, ensure_ascii=False)
+        except ExecutionQueueTakeoverRequested:
+            raise
         except Exception as exc:
             return context.record_todo_failure("close_read", str(exc), current_task="close_read", resume_from="run_close_read_batch")
 

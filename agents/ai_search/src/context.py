@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.execution_state import (
     DEFAULT_EXECUTION_POLICY,
     normalize_execution_plan,
@@ -30,13 +31,6 @@ from agents.ai_search.src.state import (
     phase_step,
     phase_to_task_status,
 )
-from agents.ai_search.src.subagents.close_reader.tools import build_close_reader_tools
-from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools
-from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_comparer_tools
-from agents.ai_search.src.subagents.planner.tools import build_planner_tools
-from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
-from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
-from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
 from backend.time_utils import utc_now_z
 from backend.utils import _build_r2_storage
 
@@ -541,6 +535,137 @@ class AiSearchAgentContext:
                 return metadata
         return {}
 
+    def current_execution_message_queue(self, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        resolved_run_id = str(run_id or self.active_run_id() or "").strip()
+        if not resolved_run_id:
+            return []
+        return self.storage.list_ai_search_execution_queue_messages(
+            self.task_id,
+            resolved_run_id,
+            statuses=["pending"],
+        )
+
+    def append_execution_message_queue(self, content: str) -> Optional[Dict[str, Any]]:
+        resolved_content = str(content or "").strip()
+        run = self.active_run()
+        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        if not resolved_content or not run_id:
+            return None
+        ordinal = self.storage.get_next_ai_search_execution_queue_ordinal(self.task_id, run_id)
+        queue_message_id = uuid.uuid4().hex
+        created_at = utc_now_z()
+        created = self.storage.create_ai_search_execution_queue_message(
+            {
+                "queue_message_id": queue_message_id,
+                "task_id": self.task_id,
+                "run_id": run_id,
+                "content": resolved_content,
+                "ordinal": ordinal,
+                "status": "pending",
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+        if not created:
+            return None
+        return self.storage.get_ai_search_execution_queue_message(queue_message_id)
+
+    def delete_execution_message_queue(self, queue_message_id: str) -> bool:
+        item = self.storage.get_ai_search_execution_queue_message(queue_message_id)
+        if not item:
+            return False
+        if str(item.get("task_id") or "").strip() != self.task_id:
+            return False
+        if str(item.get("status") or "").strip() != "pending":
+            return False
+        return self.storage.update_ai_search_execution_queue_message(
+            queue_message_id,
+            status="deleted",
+        )
+
+    def _build_execution_queue_takeover_prompt(self, queued_messages: List[Dict[str, Any]]) -> str:
+        lines = [
+            "用户在执行阶段补充了新的调整要求。不要继续当前执行分支，把这些消息合并纳入接下来的重规划。",
+            "这不是新会话；需要继承当前已经落库的检索、粗筛、精读或对比结果。",
+            "",
+            "执行中补充消息（按发送顺序）:",
+        ]
+        for index, item in enumerate(queued_messages, start=1):
+            content = str(item.get("content") or "").strip()
+            if content:
+                lines.append(f"{index}. {content}")
+        lines.extend(
+            [
+                "",
+                "现在请立即回到 drafting_plan，先读取最新 planning/execution context，再基于这些补充要求调整检索计划。",
+            ]
+        )
+        return "\n".join(lines).strip()
+
+    def consume_execution_message_queue_for_takeover(self, *, runtime: Any | None = None) -> Optional[ExecutionQueueTakeoverRequested]:
+        run = self.active_run()
+        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        if not run_id:
+            return None
+        queued_messages = self.current_execution_message_queue(run_id)
+        if not queued_messages:
+            return None
+        current_todo = self.current_todo()
+        current_todo_id = str(current_todo.get("todo_id") or "").strip() if isinstance(current_todo, dict) else ""
+        current_status = str(current_todo.get("status") or "").strip() if isinstance(current_todo, dict) else ""
+        if current_todo_id and current_status == "in_progress":
+            self.update_todo(
+                current_todo_id,
+                "paused",
+                current_task=None,
+                resume_from="execution_queue_takeover",
+                state_updates={"queued_takeover": True},
+                runtime=runtime,
+            )
+        for item in queued_messages:
+            queue_message_id = str(item.get("queue_message_id") or "").strip()
+            if queue_message_id:
+                self.storage.update_ai_search_execution_queue_message(queue_message_id, status="consuming")
+        for item in queued_messages:
+            self.storage.create_ai_search_message(
+                {
+                    "message_id": uuid.uuid4().hex,
+                    "task_id": self.task_id,
+                    "plan_version": int(run.get("plan_version") or 0) or None,
+                    "role": "user",
+                    "kind": "chat",
+                    "content": str(item.get("content") or "").strip(),
+                    "stream_status": "completed",
+                    "metadata": {
+                        "queuedDuringExecution": True,
+                        "queuedMessageId": str(item.get("queue_message_id") or "").strip() or None,
+                        "runId": run_id,
+                    },
+                }
+            )
+        for item in queued_messages:
+            queue_message_id = str(item.get("queue_message_id") or "").strip()
+            if queue_message_id:
+                self.storage.update_ai_search_execution_queue_message(
+                    queue_message_id,
+                    status="consumed",
+                    consumed_at=utc_now_z(),
+                )
+        self.clear_planner_draft(runtime=runtime)
+        self.update_task_phase(
+            "drafting_plan",
+            runtime=runtime,
+            active_plan_version=int(run.get("plan_version") or 0) or None,
+            run_id=run_id,
+            current_task=None,
+            active_batch_id=None,
+        )
+        self.notify_snapshot_changed(runtime, reason="execution_message_queue")
+        return ExecutionQueueTakeoverRequested(
+            queued_messages=queued_messages,
+            takeover_prompt=self._build_execution_queue_takeover_prompt(queued_messages),
+        )
+
     def load_source_patent_data(self) -> Dict[str, Any]:
         task = self.storage.get_task(self.task_id)
         meta = get_ai_search_meta(task)
@@ -722,24 +847,38 @@ class AiSearchAgentContext:
         return build_main_agent_tools(self)
 
     def build_search_elements_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
+
         return build_search_elements_tools(self)
 
     def build_planner_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.planner.tools import build_planner_tools
+
         return build_planner_tools(self)
 
     def build_query_executor_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
+
         return build_query_executor_tools(self)
 
     def build_plan_prober_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
+
         return build_plan_prober_tools(self)
 
     def build_coarse_screener_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools
+
         return build_coarse_screener_tools(self)
 
     def build_close_reader_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.close_reader.tools import build_close_reader_tools
+
         return build_close_reader_tools(self)
 
     def build_feature_comparer_tools(self) -> List[Any]:
+        from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_comparer_tools
+
         return build_feature_comparer_tools(self)
 
     def execution_todos_from_plan(self, plan_version: int, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:

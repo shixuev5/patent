@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from langgraph.types import Command
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.orchestration.action_runtime import (
     build_pending_action_view,
     current_pending_action,
@@ -39,11 +40,13 @@ from backend.storage import TaskType
 from backend.time_utils import utc_now_z
 
 from .models import (
+    INVALID_SESSION_PHASE_CODE,
     PENDING_QUESTION_EXISTS_CODE,
     PLAN_CONFIRMATION_REQUIRED_CODE,
     RESUME_NOT_AVAILABLE_CODE,
     SEARCH_IN_PROGRESS_CODE,
     STALE_PLAN_CONFIRMATION_CODE,
+    AiSearchExecutionQueueResponse,
     AiSearchSnapshotResponse,
 )
 
@@ -122,6 +125,57 @@ class AiSearchAgentRunService:
             "payload": payload,
         }
         return f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
+
+    def _execution_queue_response(self, task_id: str, run_id: str) -> AiSearchExecutionQueueResponse:
+        items = self.storage.list_ai_search_execution_queue_messages(task_id, run_id, statuses=["pending"])
+        return AiSearchExecutionQueueResponse(
+            items=[
+                {
+                    "queueMessageId": str(item.get("queue_message_id") or "").strip(),
+                    "runId": str(item.get("run_id") or "").strip(),
+                    "content": str(item.get("content") or ""),
+                    "ordinal": int(item.get("ordinal") or 0),
+                    "createdAt": str(item.get("created_at") or ""),
+                }
+                for item in items
+                if str(item.get("queue_message_id") or "").strip()
+            ]
+        )
+
+    def append_execution_queue_message(self, session_id: str, owner_id: str, content: str) -> AiSearchExecutionQueueResponse:
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
+        if phase not in ACTIVE_EXECUTION_PHASES:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": INVALID_SESSION_PHASE_CODE, "message": "当前阶段不支持添加待执行用户消息。", "phase": phase},
+            )
+        context = AiSearchAgentContext(self.storage, task.id)
+        created = context.append_execution_message_queue(content)
+        if not created:
+            raise HTTPException(status_code=409, detail="当前执行轮次不可追加待执行用户消息。")
+        return self._execution_queue_response(task.id, str(created.get("run_id") or ""))
+
+    def delete_execution_queue_message(self, session_id: str, owner_id: str, queue_message_id: str) -> AiSearchExecutionQueueResponse:
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        item = self.storage.get_ai_search_execution_queue_message(queue_message_id)
+        if not item or str(item.get("task_id") or "").strip() != task.id:
+            raise HTTPException(status_code=404, detail="待执行用户消息不存在。")
+        meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
+        if phase not in ACTIVE_EXECUTION_PHASES:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": INVALID_SESSION_PHASE_CODE, "message": "当前阶段不支持删除待执行用户消息。", "phase": phase},
+            )
+        if str(item.get("status") or "").strip() != "pending":
+            raise HTTPException(status_code=409, detail="该待执行用户消息已进入处理流程，不能删除。")
+        context = AiSearchAgentContext(self.storage, task.id)
+        if not context.delete_execution_message_queue(queue_message_id):
+            raise HTTPException(status_code=409, detail="删除待执行用户消息失败。")
+        run_id = str(item.get("run_id") or "").strip()
+        return self._execution_queue_response(task.id, run_id)
 
     def _append_process_message(self, task_id: str, phase: str, payload: Dict[str, Any]) -> None:
         summary = str(payload.get("summary") or payload.get("statusText") or payload.get("label") or payload.get("toolLabel") or "").strip()
@@ -872,6 +926,24 @@ class AiSearchAgentRunService:
                 self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
                 {"interrupted": stream_state["interrupted"], **completion_payload},
             )
+        except ExecutionQueueTakeoverRequested as exc:
+            handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_diff_events(
+                stream_state["last_snapshot"],
+                handoff_snapshot,
+                stream_state=stream_state,
+            ):
+                yield event
+            stream_state["last_snapshot"] = handoff_snapshot
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
+                owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
+                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
+                persist_fallback_assistant=True,
+            ):
+                yield event
         except Exception as exc:
             yield self._format_event(
                 "run.error",
@@ -1001,6 +1073,26 @@ class AiSearchAgentRunService:
                     "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
                 },
             )
+        except ExecutionQueueTakeoverRequested as exc:
+            handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_diff_events(
+                stream_state["last_snapshot"],
+                handoff_snapshot,
+                stream_state=stream_state,
+            ):
+                yield event
+            stream_state["last_snapshot"] = handoff_snapshot
+            meta = get_ai_search_meta(self.storage.get_task(task.id))
+            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
+                owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
+                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
+                persist_fallback_assistant=True,
+            ):
+                yield event
         except Exception as exc:
             yield self._format_event(
                 "run.error",

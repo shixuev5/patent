@@ -8,6 +8,7 @@ from typing import Any, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.stage_limits import DEFAULT_SELECTED_LIMIT
 from agents.ai_search.src.state import PHASE_FEATURE_COMPARISON
@@ -110,7 +111,12 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                 run_id=str(batch.get("run_id") or ""),
                 active_batch_id=batch_id,
             )
+            takeover = context.consume_execution_message_queue_for_takeover(runtime=runtime)
+            if takeover is not None:
+                raise takeover
             return json.dumps({"feature_comparison_id": feature_comparison_id}, ensure_ascii=False)
+        except ExecutionQueueTakeoverRequested:
+            raise
         except Exception as exc:
             return context.record_todo_failure(
                 "feature_comparison",

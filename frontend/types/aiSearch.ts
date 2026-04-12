@@ -33,6 +33,14 @@ export interface AiSearchPendingAction {
   [key: string]: any
 }
 
+export interface AiSearchQueuedExecutionMessage {
+  queueMessageId: string
+  runId: string
+  content: string
+  ordinal: number
+  createdAt: string
+}
+
 export interface AiSearchRetrievalState {
   todos: Array<Record<string, any>>
   activeTodo: Record<string, any> | null
@@ -67,6 +75,9 @@ export interface AiSearchSnapshot {
     messages: Array<Record<string, any>>
     pendingAction: AiSearchPendingAction | null
   }
+  executionMessageQueue: {
+    items: AiSearchQueuedExecutionMessage[]
+  }
   plan: {
     currentPlan: Record<string, any> | null
   }
@@ -90,6 +101,10 @@ export interface AiSearchCreateSessionResponse {
   threadId: string
   reused?: boolean
   sourceTaskId?: string | null
+}
+
+export interface AiSearchExecutionQueueResponse {
+  items: AiSearchQueuedExecutionMessage[]
 }
 
 export interface AiSearchStreamEvent {

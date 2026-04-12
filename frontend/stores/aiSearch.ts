@@ -5,6 +5,7 @@ import type {
   AiSearchActiveRun,
   AiSearchBatchSummary,
   AiSearchCreateSessionResponse,
+  AiSearchExecutionQueueResponse,
   AiSearchPendingAction,
   AiSearchPendingAssistantMessage,
   AiSearchPhaseMarker,
@@ -143,6 +144,9 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
     messages: [],
     pendingAction: null,
   },
+  executionMessageQueue: {
+    items: [],
+  },
   plan: {
     currentPlan: null,
   },
@@ -216,8 +220,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     inputDisabled(): boolean {
       const phase = activePhase(this.currentSession)
       const action = pendingAction(this.currentSession)
-      return this.streaming
-        || isExecutionPhase(phase)
+      return (!isExecutionPhase(phase) && this.streaming)
         || pendingActionType(this.currentSession) === 'question'
         || !!resumeAction(this.currentSession)?.available
         || action?.actionType === 'human_decision'
@@ -333,6 +336,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           conversation: {
             ...(snapshot.conversation || { messages: [], pendingAction: null }),
             messages: normalizeMessages(snapshot.conversation?.messages),
+          },
+          executionMessageQueue: {
+            items: Array.isArray(snapshot.executionMessageQueue?.items) ? snapshot.executionMessageQueue.items : [],
           },
         },
       }
@@ -873,11 +879,28 @@ export const useAiSearchStore = defineStore('aiSearch', {
       await this._consumeStream(response)
     },
 
+    async _postJson<T>(path: string, payload?: Record<string, any>, method: 'POST' | 'DELETE' = 'POST') {
+      const token = await this._ensureToken()
+      const config = useRuntimeConfig()
+      return requestJson<T>({
+        baseUrl: config.public.apiBaseUrl,
+        path,
+        method,
+        token,
+        headers: payload ? { 'Content-Type': 'application/json' } : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      })
+    },
+
     async sendMessage(content: string) {
       const sessionId = String(this.currentSessionId || '').trim()
       const snapshot = this._getSnapshot(sessionId)
       const text = String(content || '').trim()
       if (!text || !sessionId || !snapshot) return
+      if (isExecutionPhase(activePhase(snapshot))) {
+        await this.queueExecutionMessage(text)
+        return
+      }
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
       this._pushUserMessage(sessionId, text, 'chat')
@@ -894,6 +917,43 @@ export const useAiSearchStore = defineStore('aiSearch', {
       } finally {
         this._setStreaming(sessionId, false)
         await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
+      }
+    },
+
+    async queueExecutionMessage(content: string) {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      const text = String(content || '').trim()
+      if (!text || !sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      try {
+        await this._postJson<AiSearchExecutionQueueResponse>(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/execution-message-queue`,
+          { content: text },
+        )
+      } catch (error: any) {
+        this._setRuntimeError(sessionId, error?.message || '添加待执行用户消息失败')
+      } finally {
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId, silent: true })
+      }
+    },
+
+    async deleteQueuedExecutionMessage(queueMessageId: string) {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      const targetId = String(queueMessageId || '').trim()
+      if (!sessionId || !snapshot || !targetId) return
+      this._setRuntimeError(sessionId, '')
+      try {
+        await this._postJson<AiSearchExecutionQueueResponse>(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/execution-message-queue/${encodeURIComponent(targetId)}`,
+          undefined,
+          'DELETE',
+        )
+      } catch (error: any) {
+        this._setRuntimeError(sessionId, error?.message || '删除待执行用户消息失败')
+      } finally {
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId, silent: true })
       }
     },
 

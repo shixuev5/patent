@@ -29,6 +29,7 @@ from backend.task_usage_tracking import (
 from backend.usage import _enforce_daily_quota
 from .models import (
     AiSearchCreateSessionResponse,
+    AiSearchExecutionQueueResponse,
     AiSearchSessionListResponse,
     AiSearchSessionSummary,
     AiSearchSnapshotResponse,
@@ -152,6 +153,12 @@ class AiSearchService:
 
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
         return self.snapshots.get_snapshot(session_id, owner_id)
+
+    def append_execution_queue_message(self, session_id: str, owner_id: str, content: str) -> AiSearchExecutionQueueResponse:
+        return self.agent_runs.append_execution_queue_message(session_id, owner_id, content)
+
+    def delete_execution_queue_message(self, session_id: str, owner_id: str, queue_message_id: str) -> AiSearchExecutionQueueResponse:
+        return self.agent_runs.delete_execution_queue_message(session_id, owner_id, queue_message_id)
 
     def _update_phase(self, task_id: str, phase: str, **meta_updates: Any) -> None:
         task = self.storage.get_task(task_id)

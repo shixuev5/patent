@@ -81,6 +81,21 @@ def _set_current_plan(service, session_id: str, *, plan_version: int = 1, review
     )
 
 
+def _seed_execution_run(service, session_id: str, *, phase: str = "execute_search", plan_version: int = 1) -> str:
+    context = AiSearchAgentContext(service.storage, session_id)
+    run = context.ensure_run(plan_version, phase=phase)
+    task = service.storage.get_task(session_id)
+    service.storage.update_task(
+        session_id,
+        metadata=merge_ai_search_meta(
+            task,
+            current_phase=phase,
+            active_plan_version=plan_version,
+        ),
+    )
+    return str(run.get("run_id") or "")
+
+
 def test_stream_message_endpoint_surfaces_direct_reply_even_without_state_transition(monkeypatch, tmp_path):
     app, service = _mount_app(monkeypatch, tmp_path)
 
@@ -413,3 +428,32 @@ def test_handoff_complete_endpoint_streams_complete_run(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert "run.completed" in response.text
+
+
+def test_execution_message_queue_endpoints_roundtrip(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/ai-search/sessions")
+    session_id = created.json()["sessionId"]
+    _seed_execution_run(service, session_id)
+
+    append_response = client.post(
+        f"/api/ai-search/sessions/{session_id}/execution-message-queue",
+        json={"content": "执行中补充条件 A"},
+    )
+
+    assert append_response.status_code == 200
+    payload = append_response.json()
+    assert [item["content"] for item in payload["items"]] == ["执行中补充条件 A"]
+    queue_message_id = payload["items"][0]["queueMessageId"]
+
+    snapshot = client.get(f"/api/ai-search/sessions/{session_id}").json()
+    assert [item["content"] for item in snapshot["executionMessageQueue"]["items"]] == ["执行中补充条件 A"]
+
+    delete_response = client.delete(
+        f"/api/ai-search/sessions/{session_id}/execution-message-queue/{queue_message_id}",
+    )
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["items"] == []

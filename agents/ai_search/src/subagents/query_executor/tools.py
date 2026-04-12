@@ -8,6 +8,7 @@ from typing import Any, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.orchestration.execution_runtime import build_step_directive
 from agents.ai_search.src.runtime import extract_json_object
 
@@ -108,7 +109,12 @@ def build_query_executor_tools(context: Any) -> List[Any]:
                         state_updates={"last_summary": payload, "plan_version": version},
                     )
             context.notify_snapshot_changed(runtime, reason="execution_step_summary")
+            takeover = context.consume_execution_message_queue_for_takeover(runtime=runtime)
+            if takeover is not None:
+                raise takeover
             return "execution step summary saved"
+        except ExecutionQueueTakeoverRequested:
+            raise
         except Exception as exc:
             return context.record_todo_failure(
                 todo_id,

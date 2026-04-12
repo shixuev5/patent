@@ -13,6 +13,7 @@ from backend.models import CurrentUser
 from backend.ai_search.models import (
     AiSearchAnswerRequest,
     AiSearchCreateFromAnalysisRequest,
+    AiSearchExecutionQueueMessageRequest,
     AiSearchFeatureComparisonRequest,
     AiSearchMessageRequest,
     AiSearchPlanConfirmRequest,
@@ -89,6 +90,24 @@ async def stream_ai_search_messages(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@router.post("/api/ai-search/sessions/{session_id}/execution-message-queue")
+async def append_ai_search_execution_message_queue(
+    session_id: str,
+    request: AiSearchExecutionQueueMessageRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.append_execution_queue_message(session_id, current_user.user_id, request.content)
+
+
+@router.delete("/api/ai-search/sessions/{session_id}/execution-message-queue/{queue_message_id}")
+async def delete_ai_search_execution_message_queue(
+    session_id: str,
+    queue_message_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.delete_execution_queue_message(session_id, current_user.user_id, queue_message_id)
 
 
 @router.post("/api/ai-search/sessions/{session_id}/resume/stream")

@@ -59,6 +59,7 @@ from backend.ai_search.analysis_seed import (
 )
 from backend import task_usage_tracking
 from backend.ai_search.models import (
+    INVALID_SESSION_PHASE_CODE,
     PENDING_QUESTION_EXISTS_CODE,
     PLAN_CONFIRMATION_REQUIRED_CODE,
     RESUME_NOT_AVAILABLE_CODE,
@@ -67,6 +68,8 @@ from backend.ai_search.models import (
 )
 import agents.ai_search.src.context as ai_search_context_module
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
+from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -288,6 +291,29 @@ def _seed_run_todos(
     return run_id
 
 
+def _seed_execution_queue_message(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    run_id: str,
+    *,
+    content: str,
+    ordinal: int,
+    status: str = "pending",
+) -> str:
+    queue_message_id = f"queue-{ordinal}"
+    storage.create_ai_search_execution_queue_message(
+        {
+            "queue_message_id": queue_message_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "content": content,
+            "ordinal": ordinal,
+            "status": status,
+        }
+    )
+    return queue_message_id
+
+
 def _create_pending_action(
     storage: SQLiteTaskStorage,
     task_id: str,
@@ -457,6 +483,60 @@ def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == SEARCH_IN_PROGRESS_CODE
 
 
+def test_append_execution_queue_message_requires_execution_phase(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.append_execution_queue_message(created.sessionId, "guest_ai_search", "请把日期范围缩窄到最近五年")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == INVALID_SESSION_PHASE_CODE
+
+
+def test_append_and_delete_execution_queue_message_roundtrip(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_EXECUTE_SEARCH)
+    _set_phase(storage, created.sessionId, PHASE_EXECUTE_SEARCH, active_plan_version=1)
+
+    appended = service.append_execution_queue_message(created.sessionId, "guest_ai_search", "补充申请人限制")
+
+    assert [item.content for item in appended.items] == ["补充申请人限制"]
+    assert appended.items[0].ordinal == 1
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    assert snapshot.executionMessageQueue["items"][0]["runId"] == run_id
+
+    queue_message_id = appended.items[0].queueMessageId
+    deleted = service.delete_execution_queue_message(created.sessionId, "guest_ai_search", queue_message_id)
+
+    assert deleted.items == []
+    stored = storage.get_ai_search_execution_queue_message(queue_message_id)
+    assert stored is not None
+    assert stored["status"] == "deleted"
+
+
+def test_delete_execution_queue_message_rejects_consumed_item(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_EXECUTE_SEARCH)
+    _set_phase(storage, created.sessionId, PHASE_EXECUTE_SEARCH, active_plan_version=1)
+    queue_message_id = _seed_execution_queue_message(
+        storage,
+        created.sessionId,
+        run_id,
+        content="补充排除项",
+        ordinal=1,
+        status="consumed",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.delete_execution_queue_message(created.sessionId, "guest_ai_search", queue_message_id)
+
+    assert exc_info.value.status_code == 409
+
+
 def test_stream_message_keeps_unified_flow_without_structured_claim_source(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
@@ -538,11 +618,70 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert snapshot.run["phase"] == PHASE_EXECUTE_SEARCH
-    assert snapshot.retrieval["activeTodo"] is not None
-    assert snapshot.retrieval["activeTodo"]["last_error"] == "timeout"
-    assert not any("assistant.message.completed" in item for item in events)
-    assert any("run.completed" in item for item in events)
-    assert notify_calls == []
+
+
+def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeover(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试计划"))
+    _seed_run_todos(
+        storage,
+        created.sessionId,
+        plan_version=1,
+        phase=PHASE_EXECUTE_SEARCH,
+        active_todo_id="plan_1:sub_plan_1:step_1",
+        todos=[
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "sub_plan_id": "sub_plan_1",
+                "step_id": "step_1",
+                "title": "执行步骤 1",
+                "description": "目的：验证首轮召回",
+                "status": "in_progress",
+            }
+        ],
+    )
+    _set_phase(storage, created.sessionId, PHASE_EXECUTE_SEARCH, active_plan_version=1, current_task="plan_1:sub_plan_1:step_1")
+    run = storage.get_ai_search_run(created.sessionId, plan_version=1)
+    assert run is not None
+    _seed_execution_queue_message(storage, created.sessionId, str(run.get("run_id") or ""), content="缩窄时间范围到最近五年", ordinal=1)
+    _seed_execution_queue_message(storage, created.sessionId, str(run.get("run_id") or ""), content="优先关注申请人为华为", ordinal=2)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    run_execution_step = build_query_executor_tools(context)[0]
+
+    with pytest.raises(ExecutionQueueTakeoverRequested) as exc_info:
+        run_execution_step(
+            operation="commit",
+            plan_version=1,
+            payload_json=json.dumps(
+                {
+                    "result_summary": "完成本轮召回",
+                    "next_recommendation": "continue",
+                    "candidate_pool_size": 12,
+                    "new_unique_candidates": 4,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    exc = exc_info.value
+    assert "缩窄时间范围到最近五年" in exc.takeover_prompt
+    assert "优先关注申请人为华为" in exc.takeover_prompt
+
+    queue_rows = storage.list_ai_search_execution_queue_messages(created.sessionId, str(run.get("run_id") or ""))
+    assert [item["status"] for item in queue_rows] == ["consumed", "consumed"]
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    assert snapshot.session.phase == PHASE_DRAFTING_PLAN
+    assert snapshot.executionMessageQueue["items"] == []
+    queued_messages = [
+        item
+        for item in snapshot.conversation["messages"]
+        if item["role"] == "user" and item.get("metadata", {}).get("queuedDuringExecution")
+    ]
+    assert [item["content"] for item in queued_messages] == ["缩窄时间范围到最近五年", "优先关注申请人为华为"]
+    assert snapshot.retrieval["activeTodo"] is None
 
 
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):

@@ -8,6 +8,7 @@ from typing import Any, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.stage_limits import DEFAULT_SHORTLIST_LIMIT
 from backend.time_utils import utc_now_z
 
@@ -138,7 +139,12 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
             context.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
             context.notify_snapshot_changed(runtime, reason="documents")
             context.update_task_phase("coarse_screen", runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
+            takeover = context.consume_execution_message_queue_for_takeover(runtime=runtime)
+            if takeover is not None:
+                raise takeover
             return json.dumps(applied, ensure_ascii=False)
+        except ExecutionQueueTakeoverRequested:
+            raise
         except Exception as exc:
             return context.record_todo_failure("coarse_screen", str(exc), current_task="coarse_screen", resume_from="run_coarse_screen_batch")
 

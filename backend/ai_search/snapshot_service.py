@@ -91,6 +91,26 @@ class AiSearchSnapshotService:
             payload["sourceTaskId"] = source_task_id
         return payload
 
+    def _execution_message_queue(self, task: Any) -> Dict[str, Any]:
+        run = self._active_run(task)
+        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        if not run_id:
+            return {"items": []}
+        items = self.storage.list_ai_search_execution_queue_messages(task.id, run_id, statuses=["pending"])
+        return {
+            "items": [
+                {
+                    "queueMessageId": str(item.get("queue_message_id") or "").strip(),
+                    "runId": str(item.get("run_id") or "").strip(),
+                    "content": str(item.get("content") or ""),
+                    "ordinal": int(item.get("ordinal") or 0),
+                    "createdAt": item.get("created_at"),
+                }
+                for item in items
+                if str(item.get("queue_message_id") or "").strip()
+            ]
+        }
+
     def _has_visible_plan_confirmation(self, snapshot: AiSearchSnapshotResponse) -> bool:
         for item in reversed(self._snapshot_messages(snapshot)):
             if str(item.get("role") or "").strip() != "assistant":
@@ -189,6 +209,7 @@ class AiSearchSnapshotService:
                 "messages": self._display_messages(messages),
                 "pendingAction": pending_action,
             },
+            executionMessageQueue=self._execution_message_queue(task),
             plan={"currentPlan": current_plan},
             retrieval={
                 "todos": self._execution_todos(task),
