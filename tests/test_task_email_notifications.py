@@ -31,6 +31,16 @@ class _FakeR2Storage:
         return self.payload if key else None
 
 
+def _get_plain_body(message: EmailMessage) -> str:
+    body = message.get_body(preferencelist=("plain",))
+    return body.get_content() if body is not None else ""
+
+
+def _get_html_body(message: EmailMessage) -> str:
+    body = message.get_body(preferencelist=("html",))
+    return body.get_content() if body is not None else ""
+
+
 def _configure_email_settings(monkeypatch) -> None:
     monkeypatch.setattr(settings, "EMAIL_NOTIFICATIONS_ENABLED", True)
     monkeypatch.setattr(settings, "EMAIL_PROVIDER", "brevo")
@@ -114,7 +124,21 @@ def test_task_email_notification_sends_completed_pdf_and_dedupes(monkeypatch, tm
     assert second["status"] == "duplicate"
     assert len(sender.messages) == 1
     assert sender.messages[0]["To"] == "work-1@example.com, home-1@example.com"
-    assert "任务完成通知" in str(sender.messages[0]["Subject"])
+    assert str(sender.messages[0]["Subject"]) == "【结果通知】AI 分析已完成 - CN123456A"
+    plain_body = _get_plain_body(sender.messages[0])
+    html_body = _get_html_body(sender.messages[0])
+    assert "尊敬的用户：" in plain_body
+    assert "专利号/公开号：CN123456A" in plain_body
+    assert "结果附件：completed.pdf" in plain_body
+    assert "任务 ID" not in plain_body
+    assert "渲染报告" not in plain_body
+    assert "终态状态" not in plain_body
+    assert "AI Patents" in html_body
+    assert "专利审查助手" in html_body
+    assert "CN123456A" in html_body
+    assert "前往系统查看" in html_body
+    assert "https://aipatents.cn/tasks" in html_body
+    assert "任务 ID" not in html_body
     attachments = list(sender.messages[0].iter_attachments())
     assert len(attachments) == 1
     assert attachments[0].get_filename() == "completed.pdf"
@@ -204,7 +228,15 @@ def test_task_email_notification_sends_failed_email_without_attachment(monkeypat
     assert len(sender.messages) == 1
     assert sender.messages[0]["To"] == "work-2@example.com"
     assert list(sender.messages[0].iter_attachments()) == []
-    assert "失败原因：执行失败" in sender.messages[0].get_body(preferencelist=("plain",)).get_content()
+    plain_body = _get_plain_body(sender.messages[0])
+    html_body = _get_html_body(sender.messages[0])
+    assert str(sender.messages[0]["Subject"]) == "【结果通知】AI 检索处理未完成 - AI 检索会话 - 测试"
+    assert "简要说明：执行失败" in plain_body
+    assert "执行专利检索" not in plain_body
+    assert "failed" not in plain_body
+    assert "执行失败" in html_body
+    assert "前往系统查看" in html_body
+    assert "https://aipatents.cn/tasks" in html_body
 
 
 def test_task_email_notification_reads_pdf_attachment_from_r2(monkeypatch, tmp_path):
@@ -327,6 +359,11 @@ def test_task_email_notification_uses_brevo_api_payload(monkeypatch, tmp_path):
     assert captured["headers"]["api-key"] == "brevo-key"
     assert captured["json"]["sender"]["email"] == "noreply@example.com"
     assert captured["json"]["to"] == [{"email": "work-5@example.com"}, {"email": "home-5@example.com"}]
+    assert "htmlContent" in captured["json"]
+    assert "AI Patents" in captured["json"]["htmlContent"]
+    assert "https://aipatents.cn/tasks" in captured["json"]["htmlContent"]
+    assert "textContent" in captured["json"]
+    assert "尊敬的用户：" in captured["json"]["textContent"]
     assert captured["json"]["attachment"][0]["name"] == "completed.pdf"
     assert f"task_id:{task.id}" in captured["json"]["tags"]
     assert latest is not None
@@ -366,3 +403,38 @@ def test_task_email_notification_dedupes_same_work_and_personal_address(monkeypa
     assert sender.messages[0]["To"] == "same@example.com"
     assert latest is not None
     assert latest.metadata["notifications"]["email"]["completed"]["recipients"] == ["same@example.com"]
+
+
+def test_task_email_notification_filters_auto_title_and_sanitizes_failure_reason(monkeypatch, tmp_path):
+    _configure_email_settings(monkeypatch)
+    storage, manager = _mount_storage(tmp_path)
+    _create_user(
+        storage,
+        "authing:user-7",
+        "user-7@example.com",
+        work_notification_email="work-7@example.com",
+    )
+    task = manager.create_task(
+        owner_id="authing:user-7",
+        task_type=TaskType.AI_REPLY.value,
+    )
+    manager.fail_task(
+        task.id,
+        "Traceback (most recent call last): File \"/Users/demo/app.py\", line 10, in <module> RuntimeError: boom",
+    )
+
+    sender = _FakeEmailSender()
+    service = build_task_email_notification_service(storage=storage, email_sender=sender)
+    result = service.notify_task_terminal_status(task.id, terminal_status="failed")
+
+    assert result["status"] == "sent"
+    assert str(sender.messages[0]["Subject"]) == "【结果通知】AI 答复处理未完成"
+    plain_body = _get_plain_body(sender.messages[0])
+    html_body = _get_html_body(sender.messages[0])
+    assert "任务名称" not in plain_body
+    assert task.id not in plain_body
+    assert "处理过程中出现异常，请前往系统查看详情。" in plain_body
+    assert "Traceback" not in plain_body
+    assert "app.py" not in plain_body
+    assert "处理过程中出现异常，请前往系统查看详情。" in html_body
+    assert "Traceback" not in html_body

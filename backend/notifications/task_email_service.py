@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formataddr
+from html import escape
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -30,10 +32,19 @@ R2Factory = Callable[[], Any]
 
 TERMINAL_COMPLETED = "completed"
 TERMINAL_FAILED = "failed"
+DEFAULT_TASKS_URL = "https://aipatents.cn/tasks"
+DEFAULT_FAILURE_REASON = "处理过程中出现异常，请前往系统查看详情。"
+AUTO_GENERATED_TITLE_PATTERNS = (
+    re.compile(r"^AI 分析任务 - [0-9A-Fa-f]{8}$"),
+    re.compile(r"^AI 检索会话 - [0-9A-Fa-f]{8}$"),
+    re.compile(r"^AI 答复任务 - [0-9A-Fa-f]{8}$"),
+    re.compile(r"^AI 审查任务 - [0-9A-Fa-f]{8}$"),
+)
 
 TASK_TYPE_LABELS = {
     TaskType.PATENT_ANALYSIS.value: "AI 分析",
     TaskType.AI_REPLY.value: "AI 答复",
+    TaskType.AI_REVIEW.value: "AI 审查",
     TaskType.AI_SEARCH.value: "AI 检索",
 }
 
@@ -43,6 +54,23 @@ class AttachmentPayload:
     filename: str
     content: bytes
     content_type: str = "application/pdf"
+
+
+@dataclass
+class TaskEmailTemplateContext:
+    task_type_label: str
+    terminal_status: str
+    subject_prefix: str
+    subject_suffix: str
+    summary_title: str
+    opening_sentence: str
+    identifier_label: str = ""
+    identifier_value: str = ""
+    completed_at: str = ""
+    attachment_name: str = ""
+    failure_reason: str = ""
+    cta_url: str = DEFAULT_TASKS_URL
+    cta_label: str = "前往系统查看"
 
 
 def _noop_emit_system_log(**_kwargs: Any) -> None:
@@ -226,11 +254,17 @@ class TaskEmailNotificationService:
         return recipients
 
     def _build_subject(self, task: Any, terminal_status: str, *, task_type: Optional[str] = None) -> str:
-        prefix = "任务完成通知" if terminal_status == TERMINAL_COMPLETED else "任务失败通知"
-        task_type_value = str(task_type or getattr(task, "task_type", "") or "").strip().lower()
-        label = TASK_TYPE_LABELS.get(task_type_value, task_type_value or "任务")
-        title = str(getattr(task, "title", "") or "").strip() or str(getattr(task, "id", "") or "").strip()
-        return f"【{prefix}】{label} - {title}"
+        context = self._build_template_context(
+            task=task,
+            terminal_status=terminal_status,
+            error_message="",
+            attachment=None,
+            task_type=task_type,
+        )
+        subject = f"【结果通知】{context.task_type_label}{context.subject_prefix}"
+        if context.subject_suffix:
+            subject = f"{subject} - {context.subject_suffix}"
+        return subject
 
     def _build_message(
         self,
@@ -244,22 +278,28 @@ class TaskEmailNotificationService:
         task_type: Optional[str] = None,
     ) -> EmailMessage:
         message = EmailMessage()
-        from_address = str(getattr(settings, "SMTP_FROM_ADDRESS", "") or "").strip()
-        from_name = str(getattr(settings, "SMTP_FROM_NAME", "") or "").strip()
+        context = self._build_template_context(
+            task=task,
+            terminal_status=terminal_status,
+            error_message=error_message,
+            attachment=attachment,
+            task_type=task_type,
+        )
+        from_address = str(
+            getattr(settings, "BREVO_FROM_ADDRESS", "") or getattr(settings, "SMTP_FROM_ADDRESS", "") or ""
+        ).strip()
+        from_name = str(
+            getattr(settings, "BREVO_FROM_NAME", "") or getattr(settings, "SMTP_FROM_NAME", "") or ""
+        ).strip()
         message["Subject"] = subject
         message["From"] = formataddr((from_name, from_address)) if from_name else from_address
         message["To"] = ", ".join(recipients)
         message.set_content(
-            self._build_body(
-                task=task,
-                terminal_status=terminal_status,
-                error_message=error_message,
-                attachment=attachment,
-                task_type=task_type,
-            ),
+            self._build_plain_body(context),
             subtype="plain",
             charset="utf-8",
         )
+        message.add_alternative(self._build_html_body(context), subtype="html", charset="utf-8")
         if attachment is not None:
             maintype, subtype = attachment.content_type.split("/", 1) if "/" in attachment.content_type else ("application", "octet-stream")
             message.add_attachment(
@@ -270,7 +310,7 @@ class TaskEmailNotificationService:
             )
         return message
 
-    def _build_body(
+    def _build_template_context(
         self,
         *,
         task: Any,
@@ -278,37 +318,170 @@ class TaskEmailNotificationService:
         error_message: str,
         attachment: Optional[AttachmentPayload],
         task_type: Optional[str] = None,
-    ) -> str:
+    ) -> TaskEmailTemplateContext:
         task_type_value = str(task_type or getattr(task, "task_type", "") or "").strip().lower()
         task_type_label = TASK_TYPE_LABELS.get(task_type_value, task_type_value or "任务")
-        terminal_label = "成功完成" if terminal_status == TERMINAL_COMPLETED else "执行失败"
         completed_at = format_for_admin_local(
             getattr(task, "completed_at", None) or getattr(task, "updated_at", None),
             naive_strategy="utc",
             timespec="seconds",
         ) or ""
+        identifier_label, identifier_value = self._resolve_business_identifier(task)
+        subject_suffix = identifier_value
+        if terminal_status == TERMINAL_COMPLETED:
+            return TaskEmailTemplateContext(
+                task_type_label=task_type_label,
+                terminal_status=terminal_status,
+                subject_prefix="已完成",
+                subject_suffix=subject_suffix,
+                summary_title=f"{task_type_label}已完成",
+                opening_sentence=f"您提交的{task_type_label}任务已处理完成，相关结果已生成。",
+                identifier_label=identifier_label,
+                identifier_value=identifier_value,
+                completed_at=completed_at,
+                attachment_name=attachment.filename if attachment is not None else "",
+            )
+        return TaskEmailTemplateContext(
+            task_type_label=task_type_label,
+            terminal_status=terminal_status,
+            subject_prefix="处理未完成",
+            subject_suffix=subject_suffix,
+            summary_title=f"{task_type_label}处理未完成",
+            opening_sentence=f"您提交的{task_type_label}任务暂未完成处理。",
+            identifier_label=identifier_label,
+            identifier_value=identifier_value,
+            completed_at=completed_at,
+            failure_reason=self._sanitize_failure_reason(error_message),
+        )
+
+    def _resolve_business_identifier(self, task: Any) -> tuple[str, str]:
+        pn = str(getattr(task, "pn", "") or "").strip()
+        if pn:
+            return "专利号/公开号", pn
+        title = str(getattr(task, "title", "") or "").strip()
+        if title and not self._is_auto_generated_title(title):
+            return "任务名称", title
+        return "", ""
+
+    def _is_auto_generated_title(self, title: str) -> bool:
+        normalized = str(title or "").strip()
+        return any(pattern.match(normalized) for pattern in AUTO_GENERATED_TITLE_PATTERNS)
+
+    def _sanitize_failure_reason(self, error_message: str) -> str:
+        compact = re.sub(r"\s+", " ", str(error_message or "").strip())
+        if not compact:
+            return DEFAULT_FAILURE_REASON
+        lowered = compact.lower()
+        blocked_markers = (
+            "traceback",
+            "file \"",
+            ".py",
+            "exception",
+            " stack ",
+            "sql",
+            "requests.",
+            "http://",
+            "https://",
+            "/users/",
+            "/home/",
+            "\\",
+        )
+        if any(marker in lowered for marker in blocked_markers):
+            return DEFAULT_FAILURE_REASON
+        if len(compact) > 80:
+            compact = f"{compact[:77].rstrip()}..."
+        return compact
+
+    def _build_plain_body(self, context: TaskEmailTemplateContext) -> str:
         lines = [
-            f"{task_type_label}已{terminal_label}。",
+            "尊敬的用户：",
             "",
-            f"任务标题：{str(getattr(task, 'title', '') or '').strip() or '-'}",
-            f"任务 ID：{str(getattr(task, 'id', '') or '').strip() or '-'}",
-            f"任务类型：{task_type_label}",
-            f"专利号/公开号：{str(getattr(task, 'pn', '') or '').strip() or '-'}",
-            f"终态状态：{terminal_status}",
-            f"最终步骤：{str(getattr(task, 'current_step', '') or '').strip() or '-'}",
-            f"终态时间：{completed_at or '-'}",
+            context.opening_sentence,
         ]
-        if terminal_status == TERMINAL_FAILED:
-            lines.append(f"失败原因：{error_message or '-'}")
-        if attachment is not None:
-            lines.append(f"PDF 附件：{attachment.filename}")
+        if context.identifier_label and context.identifier_value:
+            lines.append(f"{context.identifier_label}：{context.identifier_value}")
+        if context.completed_at:
+            lines.append(f"完成时间：{context.completed_at}")
+        if context.terminal_status == TERMINAL_COMPLETED and context.attachment_name:
+            lines.append(f"结果附件：{context.attachment_name}")
+            lines.append("相关结果已随邮件附上。")
+        if context.terminal_status == TERMINAL_FAILED:
+            lines.append(f"简要说明：{context.failure_reason or DEFAULT_FAILURE_REASON}")
         lines.extend(
             [
                 "",
-                "如需再次查看或下载结果，也可在任务列表中打开对应任务。",
+                "您可前往系统查看相关详情：",
+                context.cta_url,
+                "",
+                "此致",
+                "",
+                "AI Patents",
+                "专利审查助手",
             ]
         )
         return "\n".join(lines)
+
+    def _build_html_body(self, context: TaskEmailTemplateContext) -> str:
+        summary_bg = "#ecfeff" if context.terminal_status == TERMINAL_COMPLETED else "#fff7ed"
+        summary_border = "#67e8f9" if context.terminal_status == TERMINAL_COMPLETED else "#fdba74"
+        badge_bg = "#0891b2" if context.terminal_status == TERMINAL_COMPLETED else "#c2410c"
+        detail_rows = []
+        if context.identifier_label and context.identifier_value:
+            detail_rows.append(self._build_html_detail_row(context.identifier_label, context.identifier_value))
+        if context.completed_at:
+            detail_rows.append(self._build_html_detail_row("完成时间", context.completed_at))
+        if context.terminal_status == TERMINAL_COMPLETED and context.attachment_name:
+            detail_rows.append(self._build_html_detail_row("结果附件", context.attachment_name))
+        if context.terminal_status == TERMINAL_FAILED:
+            detail_rows.append(
+                self._build_html_detail_row("简要说明", context.failure_reason or DEFAULT_FAILURE_REASON)
+            )
+        details_html = "".join(detail_rows)
+        return (
+            "<!doctype html>"
+            "<html lang=\"zh-CN\">"
+            "<body style=\"margin:0;background:#f4f7fb;padding:24px 12px;color:#0f172a;"
+            "font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;\">"
+            "<div style=\"max-width:680px;margin:0 auto;\">"
+            "<div style=\"background:linear-gradient(135deg,#0f172a 0%,#164e63 100%);"
+            "border-radius:20px 20px 0 0;padding:28px 32px;color:#ffffff;\">"
+            "<div style=\"font-size:13px;letter-spacing:0.24em;text-transform:uppercase;color:#a5f3fc;\">AI Patents</div>"
+            "<div style=\"margin-top:8px;font-size:24px;font-weight:700;\">专利审查助手</div>"
+            "<div style=\"margin-top:8px;font-size:14px;line-height:22px;color:#e2e8f0;\">正式任务处理结果通知</div>"
+            "</div>"
+            "<div style=\"background:#ffffff;border:1px solid #dbeafe;border-top:none;border-radius:0 0 20px 20px;padding:32px;\">"
+            f"<div style=\"border:1px solid {summary_border};background:{summary_bg};border-radius:18px;padding:20px 22px;\">"
+            f"<div style=\"display:inline-block;background:{badge_bg};color:#ffffff;border-radius:999px;padding:6px 12px;"
+            "font-size:12px;font-weight:700;letter-spacing:0.04em;\">结果通知</div>"
+            f"<div style=\"margin-top:14px;font-size:28px;line-height:36px;font-weight:700;color:#0f172a;\">{escape(context.summary_title)}</div>"
+            f"<div style=\"margin-top:10px;font-size:15px;line-height:24px;color:#334155;\">{escape(context.opening_sentence)}</div>"
+            "</div>"
+            f"<div style=\"margin-top:22px;border:1px solid #e2e8f0;border-radius:18px;padding:20px 22px;background:#ffffff;\">{details_html}</div>"
+            "<div style=\"margin-top:22px;font-size:14px;line-height:24px;color:#475569;\">"
+            "如需进一步查看任务结果或处理详情，请进入系统任务列表。"
+            "</div>"
+            f"<div style=\"margin-top:24px;\"><a href=\"{escape(context.cta_url)}\" "
+            "style=\"display:inline-block;background:#0891b2;color:#ffffff;text-decoration:none;"
+            "padding:12px 22px;border-radius:999px;font-size:14px;font-weight:700;\">"
+            f"{escape(context.cta_label)}</a></div>"
+            "<div style=\"margin-top:28px;padding-top:18px;border-top:1px solid #e2e8f0;font-size:12px;"
+            "line-height:20px;color:#64748b;\">"
+            "本邮件为系统通知邮件，请勿直接回复。<br>"
+            "AI Patents | 专利审查助手 | aipatents.cn"
+            "</div>"
+            "</div>"
+            "</div>"
+            "</body>"
+            "</html>"
+        )
+
+    def _build_html_detail_row(self, label: str, value: str) -> str:
+        return (
+            "<div style=\"padding:10px 0;border-bottom:1px solid #e2e8f0;\">"
+            f"<div style=\"font-size:12px;font-weight:700;letter-spacing:0.04em;color:#0891b2;\">{escape(label)}</div>"
+            f"<div style=\"margin-top:6px;font-size:15px;line-height:24px;color:#0f172a;\">{escape(value)}</div>"
+            "</div>"
+        )
 
     def _resolve_attachment(self, task: Any, terminal_status: str) -> Optional[AttachmentPayload]:
         metadata = getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {}

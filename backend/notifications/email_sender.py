@@ -138,6 +138,9 @@ class BrevoEmailSender(EmailSender):
             "subject": str(message.get("Subject") or "").strip(),
             "textContent": self._extract_text_content(message),
         }
+        html_content = self._extract_html_content(message)
+        if html_content:
+            payload["htmlContent"] = html_content
         if self.config.from_name:
             payload["sender"]["name"] = self.config.from_name
 
@@ -155,6 +158,15 @@ class BrevoEmailSender(EmailSender):
             body = message.get_body(preferencelist=("plain",))
             return body.get_content() if body is not None else ""
         return message.get_content()
+
+    def _extract_html_content(self, message: EmailMessage) -> str:
+        if message.is_multipart():
+            body = message.get_body(preferencelist=("html",))
+            return body.get_content() if body is not None else ""
+        content_type = str(message.get_content_type() or "").strip().lower()
+        if content_type == "text/html":
+            return message.get_content()
+        return ""
 
     def _build_attachments(self, message: EmailMessage) -> list[dict[str, str]]:
         attachments: list[dict[str, str]] = []
