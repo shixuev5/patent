@@ -43,6 +43,7 @@ def test_is_patent_application_number_detects_common_formats() -> None:
     positives = [
         "202211411308.6",
         "202310001234.5",
+        "202310658730.X",
         "PCT/CN2024/123456",
     ]
     negatives = [
