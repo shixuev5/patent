@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
+import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -506,17 +508,25 @@ def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
 
 
 def _load_im_gateway_main():
-    module_path = Path(__file__).resolve().parents[1] / 'im-gateway' / 'main.py'
-    module_name = 'test_im_gateway_main_module'
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(module_path.parent))
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path.pop(0)
-    return module
+    module = importlib.import_module('im_gateway.main')
+    return importlib.reload(module)
+
+
+def test_im_gateway_module_entrypoint_uses_package_imports():
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env['INTERNAL_GATEWAY_TOKEN'] = ''
+    result = subprocess.run(
+        [sys.executable, '-m', 'im_gateway.main'],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert '缺少 INTERNAL_GATEWAY_TOKEN' in result.stderr
+    assert "No module named 'backend'" not in result.stderr
 
 
 def test_im_gateway_r2_credential_store_roundtrip(tmp_path):

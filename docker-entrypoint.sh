@@ -49,7 +49,7 @@ if is_true "${WECHAT_INTEGRATION_ENABLED:-false}"; then
     export API_BASE_URL
   fi
   echo "[entrypoint] starting im-gateway -> ${API_BASE_URL}"
-  uv run python im-gateway/main.py &
+  uv run python -m im_gateway.main &
   GATEWAY_PID=$!
 else
   echo "[entrypoint] WECHAT_INTEGRATION_ENABLED is false; skip im-gateway"

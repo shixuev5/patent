@@ -5,7 +5,7 @@
 ## 设计边界
 
 - `backend/` 仍然是系统真相，负责账号、绑定、AI 检索、任务系统和通知队列。
-- `im-gateway/` 只负责微信登录态、消息收发、媒体下载上传、调用后端内部接口。
+- `im_gateway/` 包只负责微信登录态、消息收发、媒体下载上传、调用后端内部接口。
 - 不引入额外上层 agent。
 
 ## 关键能力
@@ -24,7 +24,7 @@
 - `API_BASE_URL`：后端地址，默认 `http://127.0.0.1:${PORT:-7860}`
 - `INTERNAL_GATEWAY_TOKEN`：与后端共享的内部 token
 - `IM_GATEWAY_POLL_INTERVAL_SECONDS`：出站轮询间隔，默认 `8`
-- `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `./tmp`
+- `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `<repo>/im-gateway/tmp`
 - `IM_GATEWAY_CRED_PATH`：本地微信 SDK 凭证文件路径；启用 R2 持久化时默认使用 `IM_GATEWAY_DOWNLOAD_DIR/credentials.json`
 - `IM_GATEWAY_CRED_R2_KEY`：启用后，将加密后的微信 SDK 凭证文件持久化到该 R2 key
 - `IM_GATEWAY_CRED_ENCRYPTION_KEY`：启用 R2 持久化时必填；用于加密存入 R2 的凭证文件
@@ -32,7 +32,7 @@
 ## 启动
 
 ```bash
-python im-gateway/main.py
+python -m im_gateway.main
 ```
 
 若运行在 Hugging Face Space 的单容器部署中，根目录 `docker-entrypoint.sh` 会先启动后端，再在 `WECHAT_INTEGRATION_ENABLED=true` 时自动拉起 `im-gateway`。
