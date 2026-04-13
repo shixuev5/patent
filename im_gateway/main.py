@@ -24,7 +24,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_POR
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
 LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
-DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(ROOT_DIR / "im-gateway" / "tmp")))
+DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(ROOT_DIR / "data" / "im_gateway")))
 BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
 

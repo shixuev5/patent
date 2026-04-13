@@ -24,7 +24,7 @@
 - `API_BASE_URL`：后端地址，默认 `http://127.0.0.1:${PORT:-7860}`
 - `INTERNAL_GATEWAY_TOKEN`：与后端共享的内部 token
 - `IM_GATEWAY_POLL_INTERVAL_SECONDS`：出站轮询间隔，默认 `8`
-- `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `<repo>/im-gateway/tmp`
+- `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `<repo>/data/im_gateway`
 - `IM_GATEWAY_CRED_PATH`：本地微信 SDK 凭证文件路径；启用 R2 持久化时默认使用 `IM_GATEWAY_DOWNLOAD_DIR/credentials.json`
 - `IM_GATEWAY_CRED_R2_KEY`：启用后，将加密后的微信 SDK 凭证文件持久化到该 R2 key
 - `IM_GATEWAY_CRED_ENCRYPTION_KEY`：启用 R2 持久化时必填；用于加密存入 R2 的凭证文件

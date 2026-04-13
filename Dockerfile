@@ -34,7 +34,7 @@ RUN pip install --upgrade pip uv && \
 RUN uv run playwright install --with-deps chromium
 
 # 创建必要的目录
-RUN mkdir -p output uploads data assets im-gateway/tmp
+RUN mkdir -p output uploads data data/im_gateway assets
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
