@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
-from backend.logging_setup import setup_logging_utc8
+from backend.logging_setup import configure_uvicorn_access_log_filter, setup_logging_utc8
 from backend.system_logs import (
     LazySystemLogStorageProxy,
     configure_system_log_storage,
@@ -29,6 +29,7 @@ setup_logging_utc8(
     retention="14 days",
     compression="zip",
 )
+configure_uvicorn_access_log_filter()
 initialize_system_logging()
 from backend.routes import router as api_router
 

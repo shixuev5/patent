@@ -127,7 +127,8 @@ class WeChatGateway:
             try:
                 await self._handle_message(msg)
             except Exception as exc:
-                print(f"[im-gateway] inbound message failed: {exc}")
+                error_text = str(exc).strip() or type(exc).__name__
+                print(f"[im-gateway] inbound message failed: {error_text}")
         self.bot.on_message(_on_message)
 
     def _resolve_bot_account_id(self) -> str:
@@ -334,34 +335,19 @@ class WeChatGateway:
             {
                 "type": "text",
                 "text": (
-                    "微信绑定成功。\n"
-                    "现在你可以直接在这里发起任务，即使不打开网页也能继续处理。"
-                ),
-            },
-            {
-                "type": "text",
-                "text": (
+                    "微信绑定成功\n"
+                    "------------\n"
+                    "现在可以直接在这里发任务。\n\n"
                     "常用用法：\n"
-                    "1. 直接发自然语言，例如“帮我检索锂电池负极相关专利”\n"
-                    "2. 直接发“分析专利 CN117347385A”或上传 PDF 并说“帮我分析这个专利”\n"
-                    "3. 直接发“帮我审查这个专利”\n"
-                    "4. 直接发“我要答复审查意见”\n"
-                    "5. 也支持 /analysis new、/review new、/reply new"
-                ),
-            },
-            {
-                "type": "text",
-                "text": (
+                    "1. 帮我检索固态电池隔膜相关专利\n"
+                    "2. 分析专利 CN117347385A\n"
+                    "3. 帮我审查这个专利\n"
+                    "4. 我要答复审查意见\n"
+                    "5. 也支持 /analysis new、/review new、/reply new\n\n"
                     "检索过程中可直接回复：\n"
-                    "确认计划\n"
-                    "继续检索\n"
-                    "按当前结果完成\n"
-                    "选择 1 3 5"
+                    "确认计划 / 继续检索 / 按当前结果完成 / 选择 1 3 5\n\n"
+                    "收集材料时可发送 /cancel 取消当前流程。"
                 ),
-            },
-            {
-                "type": "text",
-                "text": "如果正在收集材料，发送 /cancel 可以取消当前微信任务流程。",
             },
         ]
 

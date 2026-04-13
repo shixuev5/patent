@@ -4,7 +4,7 @@
       <div class="wechat-header">
         <div>
           <h2 class="text-base font-semibold text-slate-900">微信 IM 渠道</h2>
-          <p class="mt-1 text-xs text-slate-500">绑定后，即使不打开网页，也可以通过微信私聊发起检索、分析、审查和答复任务，并接收结果回推。</p>
+          <p class="mt-1 text-xs text-slate-500">绑定后可直接在微信发起任务并接收结果回推。</p>
         </div>
         <button
           v-if="bindingStatus !== 'bound'"
@@ -42,7 +42,7 @@
           <label class="wechat-toggle-row">
             <span>
               <span class="wechat-toggle-title">任务完成回推</span>
-              <span class="wechat-toggle-help">分析、审查、答复完成后主动推送到微信。</span>
+              <span class="wechat-toggle-help">任务完成后自动推送到微信。</span>
             </span>
             <input
               :checked="pushTaskCompleted"
@@ -55,7 +55,7 @@
           <label class="wechat-toggle-row">
             <span>
               <span class="wechat-toggle-title">任务失败回推</span>
-              <span class="wechat-toggle-help">失败时把错误摘要推送到微信，便于及时恢复处理。</span>
+              <span class="wechat-toggle-help">失败时推送错误摘要，便于及时处理。</span>
             </span>
             <input
               :checked="pushTaskFailed"
@@ -68,7 +68,7 @@
           <label class="wechat-toggle-row">
             <span>
               <span class="wechat-toggle-title">检索待确认提醒</span>
-              <span class="wechat-toggle-help">当 AI 检索需要补问、确认计划或人工决策时主动提醒。</span>
+              <span class="wechat-toggle-help">检索需要补问或确认时主动提醒。</span>
             </span>
             <input
               :checked="pushAiSearchPendingAction"
@@ -125,28 +125,28 @@
             <span>首次对话示例</span>
           </div>
           <div class="wechat-phone-body">
-            <div class="wechat-bubble is-system">欢迎使用专利审查助手。请发送绑定码完成网页账号绑定。</div>
+            <div class="wechat-bubble is-system">请发送绑定码完成网页账号绑定。</div>
             <div class="wechat-bubble is-user">{{ bindSession.bindCode }}</div>
-            <div class="wechat-bubble is-system">绑定成功。现在可以直接发任务，例如“帮我检索固态电池隔膜相关专利”。</div>
+            <div class="wechat-bubble is-system">绑定成功，现在可以直接发任务。</div>
             <div class="wechat-bubble is-user">帮我检索固态电池隔膜相关专利</div>
-            <div class="wechat-bubble is-system">收到，我会先整理检索计划，确认后继续执行。</div>
+            <div class="wechat-bubble is-system">收到，我会先整理检索计划。</div>
           </div>
         </div>
-        <p v-if="bindSession.gatewayStatus === 'expired'" class="wechat-inline-tip">接入微信二维码刚刚过期，网关会自动刷新，页面轮询后会显示新二维码。</p>
+        <p v-if="bindSession.gatewayStatus === 'expired'" class="wechat-inline-tip">二维码刚过期，页面刷新后会显示新二维码。</p>
         <p v-else-if="bindSession.gatewayStatus === 'error'" class="wechat-inline-tip">接入微信号正在重连：{{ bindSession.gatewayErrorMessage || '请稍后重试。' }}</p>
         <p v-if="bindSession.errorMessage" class="wechat-error-inline">{{ bindSession.errorMessage }}</p>
       </section>
 
       <section v-else class="wechat-panel wechat-empty">
         <p class="wechat-copy-title">尚未绑定微信</p>
-        <p class="wechat-copy-text">点击上方按钮生成绑定二维码。当前仅支持一个网页账号绑定一个微信私聊身份。</p>
+        <p class="wechat-copy-text">点击上方按钮生成绑定二维码。当前仅支持 1 个网页账号绑定 1 个微信私聊身份。</p>
       </section>
 
       <section class="wechat-panel">
         <div class="wechat-usage-header">
           <div>
             <p class="wechat-copy-title">微信里可以直接这样用</p>
-            <p class="wechat-copy-text">自然语言优先，斜杠命令只是兜底入口。下面这些都是用户真正会发出的对话示例。</p>
+            <p class="wechat-copy-text">自然语言优先，斜杠命令只是兜底入口。</p>
           </div>
           <p v-if="fallbackCommandsText" class="wechat-usage-hint">兜底命令：{{ fallbackCommandsText }}</p>
         </div>
@@ -220,9 +220,9 @@ const fallbackCommandsText = computed(() => {
 
 const bindCodeHelperText = computed(() => {
   if (props.bindSession?.qrScene === 'gateway_login') {
-    return '扫码进入接入微信号后，把这串绑定码发送到聊天窗口，网页账号就会和当前微信私聊身份绑定。'
+    return '扫码进入接入微信号后，把这串绑定码发送到聊天窗口即可完成绑定。'
   }
-  return '如果当前不方便扫码，可以直接把这串绑定码发给接入微信号。'
+  return '不方便扫码时，也可以直接把这串绑定码发给接入微信号。'
 })
 
 const bindSteps = computed(() => {
@@ -232,8 +232,8 @@ const bindSteps = computed(() => {
       index: '1',
       title: usesGatewayQr ? '微信扫码进入接入号' : '进入接入微信号',
       description: usesGatewayQr
-        ? '用微信扫一扫左侧二维码，手机里会打开接入微信号的入口。'
-        : '请先用微信打开接入微信号的入口，再进行下面两步。',
+        ? '用微信扫一扫左侧二维码，进入接入微信号。'
+        : '先用微信打开接入微信号入口，再继续下面两步。',
       code: '',
       helper: '',
     },
@@ -247,7 +247,7 @@ const bindSteps = computed(() => {
     {
       index: '3',
       title: '发送第一条任务消息',
-      description: '绑定成功后，直接发自然语言任务，例如“帮我检索固态电池隔膜相关专利”。',
+      description: '绑定成功后，直接发任务，例如“帮我检索固态电池隔膜相关专利”。',
       code: '',
       helper: '',
     },
@@ -258,17 +258,17 @@ const usageScenes = [
   {
     title: '自然语言检索',
     user: '帮我检索固态电池隔膜相关专利',
-    reply: '我会先整理检索计划，再把结果、补问和确认动作直接发回这个聊天窗口。',
+    reply: '我会先整理检索计划，再把结果和确认动作发回这里。',
   },
   {
     title: '专利分析',
     user: '分析专利 CN117347385A',
-    reply: '收到后会立即创建分析任务，完成时把摘要和结果文件回推到微信。',
+    reply: '收到后会立即创建分析任务，完成时把结果回推到微信。',
   },
   {
     title: '审查 / 答复',
     user: '我要答复审查意见',
-    reply: '我会按步骤收材料。过程中你可以继续上传文件，必要时随时发送 /cancel 取消。',
+    reply: '我会按步骤收材料，过程中可继续上传文件或发送 /cancel 取消。',
   },
 ] as const
 
@@ -303,7 +303,8 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 .wechat-actions,
 .wechat-usage-header {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
+  flex-direction: column;
   justify-content: space-between;
   gap: 0.75rem;
 }
@@ -314,6 +315,10 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   border-radius: 1rem;
   background: rgba(255, 255, 255, 0.94);
   padding: 1rem;
+}
+
+.wechat-actions {
+  margin-top: 1rem;
 }
 
 .wechat-empty {
@@ -353,7 +358,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
 .wechat-toggle-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   border: 1px solid #dbeafe;
@@ -379,18 +384,25 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 .wechat-checkbox {
+  flex: 0 0 auto;
   height: 1rem;
+  margin-top: 0.15rem;
   width: 1rem;
 }
 
 .wechat-primary-btn,
 .wechat-secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 2.5rem;
   border-radius: 0.9rem;
   padding: 0.45rem 1rem;
   font-size: 0.85rem;
   font-weight: 600;
   transition: all 0.18s ease;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .wechat-primary-btn {
@@ -436,8 +448,8 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 .wechat-qr-box :deep(svg) {
-  width: 15rem;
-  height: 15rem;
+  width: min(100%, 15rem);
+  height: auto;
 }
 
 .wechat-scene-card {
@@ -520,6 +532,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   display: inline-flex;
   align-items: center;
   min-height: 2.75rem;
+  max-width: 100%;
   margin-top: 0.55rem;
   border: 1px dashed #7dd3fc;
   border-radius: 0.9rem;
@@ -529,6 +542,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   font-weight: 800;
   letter-spacing: 0.08em;
   color: #0f172a;
+  overflow-wrap: anywhere;
 }
 
 .wechat-step-helper {
@@ -554,7 +568,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 .wechat-bubble {
-  max-width: 85%;
+  max-width: 100%;
   border-radius: 1rem;
   padding: 0.75rem 0.85rem;
   font-size: 0.78rem;
@@ -597,6 +611,31 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 }
 
 @media (min-width: 768px) {
+  .wechat-header,
+  .wechat-panel-header,
+  .wechat-usage-header {
+    align-items: flex-start;
+    flex-direction: row;
+  }
+
+  .wechat-actions {
+    flex-direction: row;
+    justify-content: flex-start;
+  }
+
+  .wechat-primary-btn,
+  .wechat-secondary-btn {
+    width: auto;
+  }
+
+  .wechat-toggle-row {
+    align-items: center;
+  }
+
+  .wechat-bubble {
+    max-width: 85%;
+  }
+
   .wechat-bind-grid {
     grid-template-columns: 16rem minmax(0, 1fr);
     align-items: start;

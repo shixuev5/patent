@@ -2,12 +2,13 @@
 Loguru and timezone configuration helpers.
 """
 
+import logging
 import os
 import re
 import sys
 import time
 from datetime import timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from loguru import logger
 
@@ -27,6 +28,10 @@ FILE_LOG_FORMAT = (
     "{extra[time_utc8]} | {level: <8} | {extra[task_id]} | "
     "{extra[task_type_label]} | {extra[pn]} | {extra[stage]} | {message}"
 )
+QUIET_UVICORN_ACCESS_PATHS = frozenset((
+    "/api/health",
+    "/api/internal/wechat/delivery-jobs/claim",
+))
 
 
 def configure_process_timezone_to_utc8() -> None:
@@ -139,3 +144,41 @@ def setup_logging_utc8(
             retention=retention,
             compression=compression,
         )
+
+
+def should_suppress_uvicorn_access_log(record: logging.LogRecord, quiet_paths: Optional[Sequence[str]] = None) -> bool:
+    if str(getattr(record, "name", "") or "").strip() != "uvicorn.access":
+        return False
+
+    args = getattr(record, "args", ())
+    if not isinstance(args, tuple) or len(args) < 5:
+        return False
+
+    full_path = str(args[2] or "").strip()
+    path = full_path.split("?", 1)[0]
+    try:
+        status_code = int(args[4])
+    except Exception:
+        return False
+
+    if status_code < 200 or status_code >= 300:
+        return False
+    return path in set(quiet_paths or QUIET_UVICORN_ACCESS_PATHS)
+
+
+class QuietUvicornAccessFilter(logging.Filter):
+    def __init__(self, quiet_paths: Optional[Sequence[str]] = None):
+        super().__init__()
+        self.quiet_paths = tuple(quiet_paths or QUIET_UVICORN_ACCESS_PATHS)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not should_suppress_uvicorn_access_log(record, self.quiet_paths)
+
+
+def configure_uvicorn_access_log_filter(quiet_paths: Optional[Sequence[str]] = None) -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    normalized_paths = tuple(quiet_paths or QUIET_UVICORN_ACCESS_PATHS)
+    for existing in access_logger.filters:
+        if isinstance(existing, QuietUvicornAccessFilter) and tuple(existing.quiet_paths) == normalized_paths:
+            return
+    access_logger.addFilter(QuietUvicornAccessFilter(normalized_paths))

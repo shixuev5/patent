@@ -32,6 +32,11 @@ from backend.wechat_runtime import WeChatRuntimeService
 from config import settings
 from fastapi import HTTPException
 
+WECHAT_INTENT_GUIDANCE = (
+    '请直接告诉我你要做什么：检索、分析、审查，或答复审查意见。\n'
+    '示例：帮我检索固态电池隔膜相关专利 / 分析专利 CN117347385A / 我要答复审查意见'
+)
+
 
 def _mount_storage(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'month_target_test.db')
@@ -646,6 +651,21 @@ def test_im_gateway_wraps_file_payloads_for_sdk():
     assert completed_jobs == ['job-001']
 
 
+def test_im_gateway_binding_success_messages_are_single_text():
+    im_gateway_main = _load_im_gateway_main()
+
+    gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace())
+    messages = gateway._build_binding_success_messages()
+
+    assert len(messages) == 1
+    assert messages[0]['type'] == 'text'
+    text = messages[0]['text']
+    assert '微信绑定成功' in text
+    assert '常用用法' in text
+    assert '确认计划 / 继续检索 / 按当前结果完成 / 选择 1 3 5' in text
+    assert '/cancel' in text
+
+
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
@@ -848,7 +868,230 @@ def test_wechat_runtime_low_confidence_intent_asks_for_confirmation(monkeypatch,
         )
     )
     assert result.taskId is None
-    assert '不能确定你的意图' in (result.messages[0].text or '')
+    assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+
+
+@pytest.mark.parametrize('text', ['你好', '帮我看看', '这个怎么弄'])
+def test_wechat_runtime_ambiguous_messages_return_guidance(monkeypatch, tmp_path, text):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_ambiguous.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-ambiguous',
+            authing_sub='wx-ambiguous',
+            name='微信模糊消息用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-ambiguous',
+            owner_id='authing:wx-ambiguous',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-ambiguous',
+            wechat_peer_name='模糊微信',
+            bound_at=utc_now(),
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'unknown',
+            'confidence': 0.31,
+            'requires_confirmation': True,
+            'extracted': {},
+        },
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-ambiguous',
+            text=text,
+        )
+    )
+
+    assert result.taskId is None
+    assert result.sessionType is None
+    assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+    assert storage.list_tasks(owner_id='authing:wx-ambiguous') == []
+
+
+def test_wechat_runtime_attachment_without_intent_returns_guidance(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_attachment_guidance.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-attachment',
+            authing_sub='wx-attachment',
+            name='微信附件用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-attachment',
+            owner_id='authing:wx-attachment',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-attachment',
+            wechat_peer_name='附件微信',
+            bound_at=utc_now(),
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    uploaded = tmp_path / 'unknown.pdf'
+    uploaded.write_bytes(b'pdf')
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-attachment',
+            attachments=[InternalWeChatInboundAttachment(filename=uploaded.name, storedPath=str(uploaded), contentType='application/pdf')],
+        )
+    )
+
+    assert result.taskId is None
+    assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+    assert storage.list_tasks(owner_id='authing:wx-attachment') == []
+
+
+def test_wechat_runtime_explicit_search_still_creates_ai_search_session(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search',
+            authing_sub='wx-search',
+            name='微信检索用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search',
+            owner_id='authing:wx-search',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search',
+            wechat_peer_name='检索微信',
+            bound_at=utc_now(),
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+
+    async def fake_stream_message(session_id: str, owner_id: str, content: str):
+        assert owner_id == 'authing:wx-search'
+        assert content == '帮我检索固态电池隔膜相关专利'
+        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+
+    monkeypatch.setattr(service.ai_search_service, 'stream_message', fake_stream_message)
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search',
+            text='帮我检索固态电池隔膜相关专利',
+        )
+    )
+
+    assert result.taskId is not None
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    task = storage.get_task(result.taskId)
+    assert task is not None
+    assert task.task_type == TaskType.AI_SEARCH.value
+
+
+def test_wechat_runtime_llm_high_confidence_search_creates_ai_search_session(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_llm.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search-llm',
+            authing_sub='wx-search-llm',
+            name='微信检索 LLM 用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search-llm',
+            owner_id='authing:wx-search-llm',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-llm',
+            wechat_peer_name='检索 LLM 微信',
+            bound_at=utc_now(),
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': TaskType.AI_SEARCH.value,
+            'confidence': 0.94,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    async def fake_stream_message(session_id: str, owner_id: str, content: str):
+        assert owner_id == 'authing:wx-search-llm'
+        assert content == '查一下这个方向'
+        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+
+    monkeypatch.setattr(service.ai_search_service, 'stream_message', fake_stream_message)
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-llm',
+            text='查一下这个方向',
+        )
+    )
+
+    assert result.taskId is not None
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    task = storage.get_task(result.taskId)
+    assert task is not None
+    assert task.task_type == TaskType.AI_SEARCH.value
+
+
+def test_wechat_runtime_ai_search_exception_returns_fallback(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_exception.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search-error',
+            authing_sub='wx-search-error',
+            name='微信检索异常用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search-error',
+            owner_id='authing:wx-search-error',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-error',
+            wechat_peer_name='检索异常微信',
+            bound_at=utc_now(),
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+
+    async def broken_stream_message(_session_id: str, _owner_id: str, _content: str):
+        raise RuntimeError('boom')
+        yield ''
+
+    monkeypatch.setattr(service.ai_search_service, 'stream_message', broken_stream_message)
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-error',
+            text='帮我检索固态电池隔膜相关专利',
+        )
+    )
+
+    assert result.taskId is not None
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    assert '刚刚处理检索消息时出现异常' in (result.messages[0].text or '')
 
 
 def test_wechat_runtime_reply_flow_collects_files_and_creates_task(monkeypatch, tmp_path):

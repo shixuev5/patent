@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
 from backend.ai_search.service import AiSearchService
@@ -31,6 +32,7 @@ FLOW_REPLY = TaskType.AI_REPLY.value
 ACTIVE_FLOW_TYPES = (FLOW_REPLY, FLOW_ANALYSIS, FLOW_REVIEW)
 REPLY_ALLOWED_SUFFIXES = {".pdf", ".doc", ".docx"}
 PATENT_NUMBER_PATTERN = re.compile(r"\b(?:CN|US|EP|WO|JP|KR)?\s?\d{6,}[A-Z0-9.\-/]*\b", re.IGNORECASE)
+SEARCH_INTENT_TOKENS = ("检索", "找专利", "现有技术", "prior art", "search")
 
 
 class WeChatRuntimeService:
@@ -90,11 +92,7 @@ class WeChatRuntimeService:
         if normalized_text in {"/analysis new", "/review new", "/reply new"}:
             return self._start_flow(binding, normalized_text)
 
-        routed = await self._handle_intent_routed_message(binding, normalized_text, normalized_attachments)
-        if routed is not None:
-            return routed
-
-        return await self._handle_ai_search(binding, normalized_text, normalized_attachments)
+        return await self._handle_intent_routed_message(binding, normalized_text, normalized_attachments)
 
     def _require_binding(self, bot_account_id: str, wechat_peer_id: str) -> WeChatBinding:
         binding = self.storage.get_wechat_binding_by_peer(str(bot_account_id or "").strip(), str(wechat_peer_id or "").strip())
@@ -133,6 +131,15 @@ class WeChatRuntimeService:
     def _text(self, content: str) -> InternalWeChatOutboundMessage:
         return InternalWeChatOutboundMessage(type="text", text=str(content or "").strip())
 
+    def _intent_guidance_text(self) -> str:
+        return (
+            "请直接告诉我你要做什么：检索、分析、审查，或答复审查意见。\n"
+            "示例：帮我检索固态电池隔膜相关专利 / 分析专利 CN117347385A / 我要答复审查意见"
+        )
+
+    def _ai_search_retry_text(self) -> str:
+        return "刚刚处理检索消息时出现异常，请稍后重试。你也可以直接描述检索目标、核心技术和约束条件。"
+
     def _get_active_flow(self, owner_id: str) -> Optional[WeChatFlowSession]:
         for flow_type in ACTIVE_FLOW_TYPES:
             flow = self.storage.get_active_wechat_flow_session(owner_id, flow_type)
@@ -143,6 +150,20 @@ class WeChatRuntimeService:
     def _close_all_active_flows(self, owner_id: str, *, status: str = "cancelled") -> None:
         for flow_type in ACTIVE_FLOW_TYPES:
             self.storage.resolve_wechat_flow_session(owner_id, flow_type, status=status)
+
+    def _get_active_ai_search_session_id(self, owner_id: str) -> Optional[str]:
+        sessions = self.ai_search_service.list_sessions(owner_id).items
+        if not sessions:
+            return None
+        ordered = sorted(
+            sessions,
+            key=lambda item: str(item.updatedAt or item.createdAt or ""),
+            reverse=True,
+        )
+        latest = ordered[0]
+        if str(latest.phase or "").strip() in {"completed", "failed", "cancelled"}:
+            return None
+        return latest.sessionId
 
     def _start_flow(self, binding: WeChatBinding, command_text: str) -> InternalWeChatInboundMessageResponse:
         self._close_all_active_flows(binding.owner_id, status="superseded")
@@ -359,24 +380,21 @@ class WeChatRuntimeService:
         binding: WeChatBinding,
         text: str,
         attachments: List[InternalWeChatInboundAttachment],
-    ) -> Optional[InternalWeChatInboundMessageResponse]:
+    ) -> InternalWeChatInboundMessageResponse:
+        active_ai_search_session_id = self._get_active_ai_search_session_id(binding.owner_id)
+        if active_ai_search_session_id:
+            return await self._handle_ai_search(binding, text, attachments, session_id=active_ai_search_session_id)
+
         if not text and not attachments:
-            return None
+            return self._response(binding, messages=[self._text(self._intent_guidance_text())])
+
         route = self._classify_intent(text=text, attachments=attachments)
         intent = str(route.get("intent") or "").strip()
         confidence = float(route.get("confidence") or 0.0)
         if intent in {"unknown", ""}:
-            if attachments:
-                return self._response(
-                    binding,
-                    messages=[self._text("已收到文件。请说明你要做什么，例如“分析这个专利”或“审查这个专利”，也可以直接发送 /analysis new 或 /review new。")],
-                )
-            return None
+            return self._response(binding, messages=[self._text(self._intent_guidance_text())])
         if bool(route.get("requires_confirmation")) or confidence < 0.62:
-            return self._response(
-                binding,
-                messages=[self._text("我还不能确定你的意图。你是要：AI 检索、AI 分析、AI 审查，还是 AI 答复？\n也可以直接发送 /analysis new、/review new、/reply new。")],
-            )
+            return self._response(binding, messages=[self._text(self._intent_guidance_text())])
 
         extracted = route.get("extracted") if isinstance(route.get("extracted"), dict) else {}
         patent_number = self._normalize_patent_number_candidate(extracted.get("patent_number") or text)
@@ -403,8 +421,8 @@ class WeChatRuntimeService:
         if intent == FLOW_REPLY:
             return self._start_flow(binding, "/reply new")
         if intent == TaskType.AI_SEARCH.value:
-            return None
-        return None
+            return await self._handle_ai_search(binding, text, attachments)
+        return self._response(binding, messages=[self._text(self._intent_guidance_text())])
 
     def _normalize_patent_number_candidate(self, value: Any) -> Optional[str]:
         text = str(value or "").strip().upper()
@@ -436,25 +454,44 @@ class WeChatRuntimeService:
                 [
                     {
                         "role": "system",
-                        "content": (
-                            "你是微信任务入口的意图识别器。"
-                            "只输出 JSON，不要输出解释。"
-                            "可选 intent: ai_search, patent_analysis, ai_review, ai_reply, unknown。"
-                            "如果用户只是普通检索、查现有技术、找对比文献，intent=ai_search。"
-                            "如果用户要分析专利报告，intent=patent_analysis。"
-                            "如果用户要专利审查/审查报告，intent=ai_review。"
-                            "如果用户要答复审查意见、意见陈述、OA reply，intent=ai_reply。"
-                            "若不确定，intent=unknown 且 requires_confirmation=true。"
-                            "返回字段: intent, confidence(0-1), requires_confirmation(boolean), extracted{patent_number|null}。"
-                        ),
+                        "content": f"""你是一个专业的专利AI助手的意图识别引擎，负责处理微信用户的输入并将其路由到正确的任务流。
+
+【任务目标】
+结合用户的文本和附件情况，将意图精确分类为以下 5 种之一，并提取专利号。
+
+【意图定义(intent)】
+1. {TaskType.AI_SEARCH.value}: 专利检索、查现有技术、找对比文献、查新、找相关专利。
+2. {FLOW_ANALYSIS}: 专利深度分析、技术拆解、解读某篇专利。
+3. {FLOW_REVIEW}: 专利撰写质量审查、形式审查、找错别字/逻辑错误、审查报告。
+4. {FLOW_REPLY}: 答复官方的审查意见通知书(OA)、撰写意见陈述书。
+5. unknown: 日常寒暄、无明确指令的纯分享、闲聊、或信息太少无法判断(如仅发送了一个专利号或仅发送了一个纯附件)。
+
+【判断规则】
+- 区分分析与审查：“分析”侧重于理解技术方案和专利内容；“审查”侧重于找文档本身的错误或评估撰写质量。
+- 区分审查与答复：“审查”是评估自己/别人的专利；“答复/OA”是对抗局里的驳回意见。
+- 极简输入处理：如果用户只发送了一个专利号(如'CN112233445A')或纯附件(无文字说明)，意图必须判定为 unknown，且 requires_confirmation=true。
+- 意图冲突：当存在多种意图可能时，confidence 需低于 0.65，且 requires_confirmation 设为 true。
+
+【实体提取(extracted.patent_number)】
+- 仅当文本中出现明确的专利号（如 CN...A / US...B2 / EP...A1）时提取。
+- 不要把普通数字、日期或文件名当作专利号。如果没有则返回 null。
+
+【输出格式】
+必须且仅输出严格的 JSON，格式如下：
+{{
+  "intent": "<{TaskType.AI_SEARCH.value}|{FLOW_ANALYSIS}|{FLOW_REVIEW}|{FLOW_REPLY}|unknown>",
+  "confidence": <0.0到1.0的浮点数>,
+  "requires_confirmation": <boolean>,
+  "extracted": {{
+    "patent_number": "<string或null>"
+  }}
+}}"""
                     },
                     {
                         "role": "user",
-                        "content": (
-                            f"用户消息: {normalized_text}\n"
-                            f"是否带附件: {'yes' if attachments else 'no'}\n"
-                            "请返回 JSON。"
-                        ),
+                        "content": f"""输入文本: "{normalized_text}"
+是否带附件: {'true' if attachments else 'false'}
+仅返回 JSON，不要补充解释。"""
                     },
                 ],
                 task_kind="wechat_intent_routing",
@@ -637,44 +674,61 @@ class WeChatRuntimeService:
         binding: WeChatBinding,
         text: str,
         attachments: List[InternalWeChatInboundAttachment],
+        *,
+        session_id: Optional[str] = None,
     ) -> InternalWeChatInboundMessageResponse:
         if attachments:
             return self._response(binding, session_type=TaskType.AI_SEARCH.value, messages=[self._text("当前版本暂不支持在微信检索会话中直接上传文件，请先发送文本需求。")])
         if not text:
-            return self._response(binding, session_type=TaskType.AI_SEARCH.value, messages=[self._text("请直接发送检索需求，或使用 `/analysis new`、`/review new`、`/reply new`。")])
+            return self._response(binding, session_type=TaskType.AI_SEARCH.value, messages=[self._text(self._intent_guidance_text())])
 
-        session_id = await self._resolve_ai_search_session(binding.owner_id)
-        snapshot = self.ai_search_service.get_snapshot(session_id, binding.owner_id)
-        pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
-        action_type = str((pending_action or {}).get("actionType") or "").strip()
+        resolved_session_id = session_id
         try:
+            resolved_session_id = resolved_session_id or await self._resolve_ai_search_session(binding.owner_id)
+            snapshot = self.ai_search_service.get_snapshot(resolved_session_id, binding.owner_id)
+            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
+            action_type = str((pending_action or {}).get("actionType") or "").strip()
             if text == "确认计划":
                 plan_version = int((pending_action or {}).get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or snapshot.run.get("planVersion") or 0)
                 if plan_version <= 0:
                     raise HTTPException(status_code=409, detail="当前没有可确认的检索计划。")
-                await self._drain(self.ai_search_service.stream_plan_confirmation(session_id, binding.owner_id, plan_version))
+                await self._drain(self.ai_search_service.stream_plan_confirmation(resolved_session_id, binding.owner_id, plan_version))
             elif text == "继续检索":
-                await self._drain(self.ai_search_service.stream_decision_continue(session_id, binding.owner_id))
+                await self._drain(self.ai_search_service.stream_decision_continue(resolved_session_id, binding.owner_id))
             elif text == "按当前结果完成":
-                await self._drain(self.ai_search_service.stream_decision_complete(session_id, binding.owner_id))
+                await self._drain(self.ai_search_service.stream_decision_complete(resolved_session_id, binding.owner_id))
             elif text.startswith("选择 "):
-                await self._handle_selection_text(session_id, binding.owner_id, text)
+                await self._handle_selection_text(resolved_session_id, binding.owner_id, text)
             elif action_type == "question":
                 question_id = str((pending_action or {}).get("questionId") or (pending_action or {}).get("question_id") or "").strip()
                 if not question_id:
                     raise HTTPException(status_code=409, detail="当前追问缺少 questionId，无法继续。")
-                await self._drain(self.ai_search_service.stream_answer(session_id, binding.owner_id, question_id, text))
+                await self._drain(self.ai_search_service.stream_answer(resolved_session_id, binding.owner_id, question_id, text))
             else:
-                await self._drain(self.ai_search_service.stream_message(session_id, binding.owner_id, text))
+                await self._drain(self.ai_search_service.stream_message(resolved_session_id, binding.owner_id, text))
         except HTTPException as exc:
-            return self._response(binding, session_type=TaskType.AI_SEARCH.value, task_id=session_id, messages=[self._text(self._detail_to_text(exc.detail))])
+            return self._response(binding, session_type=TaskType.AI_SEARCH.value, task_id=resolved_session_id, messages=[self._text(self._detail_to_text(exc.detail))])
+        except Exception:
+            logger.bind(task_id=resolved_session_id or "-", task_type_label=TaskType.AI_SEARCH.value, stage="wechat_runtime").exception(
+                "微信 AI 检索处理失败 owner_id={} binding_id={} peer_id={} text={!r}",
+                binding.owner_id,
+                binding.binding_id,
+                binding.wechat_peer_id,
+                text,
+            )
+            return self._response(
+                binding,
+                session_type=TaskType.AI_SEARCH.value,
+                task_id=resolved_session_id,
+                messages=[self._text(self._ai_search_retry_text())],
+            )
 
-        final_snapshot = self.ai_search_service.get_snapshot(session_id, binding.owner_id)
-        final_snapshot = await self._auto_select_small_candidate_set(session_id, binding.owner_id, final_snapshot)
+        final_snapshot = self.ai_search_service.get_snapshot(resolved_session_id, binding.owner_id)
+        final_snapshot = await self._auto_select_small_candidate_set(resolved_session_id, binding.owner_id, final_snapshot)
         return self._response(
             binding,
             session_type=TaskType.AI_SEARCH.value,
-            task_id=session_id,
+            task_id=resolved_session_id,
             messages=self._build_ai_search_messages(final_snapshot),
         )
 
@@ -775,7 +829,7 @@ class WeChatRuntimeService:
         if download_url and str(snapshot.run.get("status") or "").strip() == "completed":
             messages.append(self._text(f"检索结果已生成，可下载：{download_url}"))
 
-        return messages or [self._text("已处理微信检索消息。")]
+        return messages or [self._text("请直接描述检索目标、核心技术和约束条件。")]
 
     def _detail_to_text(self, detail: Any) -> str:
         if isinstance(detail, dict):
