@@ -50,6 +50,9 @@ class WeChatGateway:
 
     async def run(self) -> None:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        print("[im-gateway] waiting for backend")
+        await self.backend.wait_until_ready()
+        print("[im-gateway] backend ready")
         self._loop = asyncio.get_running_loop()
         poller = asyncio.create_task(self._poll_delivery_jobs())
         try:

@@ -5,11 +5,13 @@ Unified system logging helpers.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import contextvars
 import gzip
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -37,6 +39,7 @@ SYSTEM_LOG_DIR = settings.DATA_DIR / "logs"
 SYSTEM_LOG_FILE = SYSTEM_LOG_DIR / "system_events.log"
 SYSTEM_LOG_PAYLOAD_DIR = SYSTEM_LOG_DIR / "payloads"
 REDACTED_VALUE = "***REDACTED***"
+INTERNAL_API_PATH_PREFIX = "/api/internal/"
 
 
 _SENSITIVE_KEY_RE = re.compile(
@@ -72,6 +75,11 @@ _ORIGINAL_SESSION_REQUEST = None
 _STORAGE_REF = None
 _DB_PERSISTENCE_READY = True
 _CLEANUP_TASK: Optional[asyncio.Task] = None
+_WRITE_QUEUE_MAXSIZE = max(128, int(os.getenv("SYSTEM_LOG_WRITE_QUEUE_MAXSIZE", "4096")))
+_WRITE_QUEUE: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(maxsize=_WRITE_QUEUE_MAXSIZE)
+_WRITE_WORKER: Optional[threading.Thread] = None
+_WRITE_WORKER_STOP = threading.Event()
+_WRITE_WORKER_LOCK = threading.Lock()
 
 
 class LazySystemLogStorageProxy:
@@ -286,6 +294,94 @@ def _append_system_log_file(record: Dict[str, Any]) -> None:
             handle.write("\n")
 
 
+def _persist_system_log_record(
+    db_record: Dict[str, Any],
+    file_record: Dict[str, Any],
+    *,
+    persist_db: bool,
+) -> None:
+    try:
+        _append_system_log_file(file_record)
+    except Exception as exc:
+        logger.warning(f"[系统日志] 追加文件失败：{exc}")
+
+    if persist_db:
+        try:
+            storage = _get_storage()
+            if hasattr(storage, "insert_system_log"):
+                with internal_log_write_context():
+                    storage.insert_system_log(db_record)
+        except Exception as exc:
+            logger.warning(f"[系统日志] 持久化数据库失败：{exc}")
+
+
+def _system_log_write_loop() -> None:
+    while True:
+        try:
+            item = _WRITE_QUEUE.get(timeout=0.5)
+        except queue.Empty:
+            if _WRITE_WORKER_STOP.is_set():
+                break
+            continue
+
+        try:
+            if item is None:
+                if _WRITE_WORKER_STOP.is_set():
+                    return
+                continue
+            _persist_system_log_record(
+                db_record=dict(item.get("db_record") or {}),
+                file_record=dict(item.get("file_record") or {}),
+                persist_db=bool(item.get("persist_db")),
+            )
+        finally:
+            _WRITE_QUEUE.task_done()
+
+
+def _ensure_system_log_write_worker() -> None:
+    global _WRITE_WORKER
+    worker = _WRITE_WORKER
+    if worker is not None and worker.is_alive():
+        return
+
+    with _WRITE_WORKER_LOCK:
+        worker = _WRITE_WORKER
+        if worker is not None and worker.is_alive():
+            return
+        _WRITE_WORKER_STOP.clear()
+        _WRITE_WORKER = threading.Thread(
+            target=_system_log_write_loop,
+            name="system-log-writer",
+            daemon=True,
+        )
+        _WRITE_WORKER.start()
+
+
+def flush_system_log_queue(timeout_seconds: float = 5.0) -> bool:
+    deadline = time.perf_counter() + max(0.1, float(timeout_seconds or 0.0))
+    while time.perf_counter() < deadline:
+        if _WRITE_QUEUE.unfinished_tasks == 0:
+            return True
+        time.sleep(0.01)
+    return _WRITE_QUEUE.unfinished_tasks == 0
+
+
+def _shutdown_system_log_write_worker() -> None:
+    global _WRITE_WORKER
+    with _WRITE_WORKER_LOCK:
+        worker = _WRITE_WORKER
+        if worker is None:
+            return
+        _WRITE_WORKER_STOP.set()
+        try:
+            _WRITE_QUEUE.put_nowait(None)
+        except queue.Full:
+            pass
+        worker.join(timeout=1.0)
+        if not worker.is_alive():
+            _WRITE_WORKER = None
+
+
 def _should_persist_system_log(*, category: str, method: Optional[str], success: bool) -> bool:
     category_text = str(category or "").strip().lower() or "system"
     method_text = str(method or "").strip().upper()
@@ -294,6 +390,16 @@ def _should_persist_system_log(*, category: str, method: Optional[str], success:
     if category_text == "user_action":
         return method_text != "GET"
     return not bool(success)
+
+
+def _should_persist_user_action_request(*, method: str, path: str, success: bool) -> bool:
+    method_text = str(method or "").strip().upper()
+    path_text = str(path or "").strip()
+    if method_text == "GET":
+        return False
+    if bool(success) and path_text.startswith(INTERNAL_API_PATH_PREFIX):
+        return False
+    return True
 
 
 def emit_system_log(
@@ -363,11 +469,6 @@ def emit_system_log(
     file_record = db_record.copy()
     file_record["payload"] = safe_payload
 
-    try:
-        _append_system_log_file(file_record)
-    except Exception as exc:
-        logger.warning(f"[系统日志] 追加文件失败：{exc}")
-
     # Keep system-event persistence, but avoid high-frequency success logs flooding stdout.
     if not success or db_record["level"] in {"ERROR", "CRITICAL"}:
         try:
@@ -378,14 +479,21 @@ def emit_system_log(
         except Exception:
             logger.info(f"[系统日志] {db_record['category']}.{db_record['event_name']} 成功={success}")
 
-    if SYSTEM_LOG_DB_ENABLED and _DB_PERSISTENCE_READY:
-        try:
-            storage = _get_storage()
-            if hasattr(storage, "insert_system_log"):
-                with internal_log_write_context():
-                    storage.insert_system_log(db_record)
-        except Exception as exc:
-            logger.warning(f"[系统日志] 持久化数据库失败：{exc}")
+    _ensure_system_log_write_worker()
+    try:
+        _WRITE_QUEUE.put_nowait(
+            {
+                "db_record": db_record,
+                "file_record": file_record,
+                "persist_db": bool(SYSTEM_LOG_DB_ENABLED and _DB_PERSISTENCE_READY),
+            }
+        )
+    except queue.Full:
+        logger.warning(
+            "[系统日志] 写入队列已满，日志已丢弃：category={} event_name={}",
+            db_record["category"],
+            db_record["event_name"],
+        )
 
     return log_id
 
@@ -541,7 +649,11 @@ async def request_logging_middleware(request: Request, call_next):
         elif status_code >= 400:
             level = "WARNING"
 
-        should_log = path.startswith("/api/") and method != "GET"
+        should_log = path.startswith("/api/") and _should_persist_user_action_request(
+            method=method,
+            path=path,
+            success=error_text is None and status_code < 400,
+        )
         if should_log:
             emit_system_log(
                 category="user_action",
@@ -669,3 +781,7 @@ def initialize_system_logging() -> None:
     instrument_requests()
     SYSTEM_LOG_DIR.mkdir(parents=True, exist_ok=True)
     SYSTEM_LOG_PAYLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_system_log_write_worker()
+
+
+atexit.register(_shutdown_system_log_write_worker)

@@ -66,6 +66,7 @@ def test_requests_instrumentation_logs_failed_calls(tmp_path, monkeypatch):
     session = requests.Session()
     response = session.request("GET", "https://api.example.com/v1/demo?token=abc", timeout=3)
     assert response.status_code == 500
+    assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
 
     assert storage.rows
     row = storage.rows[-1]
@@ -101,6 +102,7 @@ def test_system_log_db_persistence_is_gated_until_ready(tmp_path, monkeypatch):
         event_name="after_ready",
         success=True,
     )
+    assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
     assert len(storage.rows) == 1
     assert storage.rows[0]["event_name"] == "after_ready"
 
@@ -119,5 +121,6 @@ def test_emit_system_log_applies_policy_filter(tmp_path, monkeypatch):
     system_logs.emit_system_log(category="user_action", event_name="post_ok", method="POST", success=True)
     system_logs.emit_system_log(category="task_execution", event_name="task_ok", success=True)
     system_logs.emit_system_log(category="task_execution", event_name="task_fail", success=False)
+    assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
 
     assert [row["event_name"] for row in storage.rows] == ["llm_ok", "post_ok", "task_fail"]

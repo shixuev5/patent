@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -13,6 +14,27 @@ class BackendClient:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    async def wait_until_ready(
+        self,
+        *,
+        poll_interval_seconds: float = 1.0,
+        request_timeout_seconds: float = 5.0,
+    ) -> None:
+        interval = max(0.2, float(poll_interval_seconds or 0.0))
+        timeout = max(1.0, float(request_timeout_seconds or 0.0))
+        while True:
+            try:
+                response = await self._client.get(
+                    f"{self.api_base_url}/api/health",
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(interval)
 
     @property
     def _headers(self) -> Dict[str, str]:

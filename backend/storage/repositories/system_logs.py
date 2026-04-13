@@ -8,6 +8,12 @@ from backend.time_utils import utc_now_z
 
 
 class SystemLogsRepositoryMixin:
+    POLICY_CLEANUP_WHERE = (
+        "(category = 'user_action' AND UPPER(COALESCE(method, '')) = 'GET') "
+        "OR (category = 'user_action' AND success = 1 AND path LIKE '/api/internal/%') "
+        "OR (category != 'llm_call' AND category != 'user_action' AND success = 1)"
+    )
+
     def _row_to_system_log(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "log_id": row.get("log_id"),
@@ -204,12 +210,11 @@ class SystemLogsRepositoryMixin:
         return self._changed_rows(self._request("DELETE FROM system_logs WHERE timestamp < ?", [cutoff_iso]))
 
     def list_system_log_payload_paths_for_policy_cleanup(self) -> List[str]:
-        policy_where = "(category = 'user_action' AND UPPER(COALESCE(method, '')) = 'GET') OR (category != 'llm_call' AND category != 'user_action' AND success = 1)"
         rows = self._fetchall(
             f"""
             SELECT payload_file_path
             FROM system_logs
-            WHERE ({policy_where})
+            WHERE ({self.POLICY_CLEANUP_WHERE})
               AND payload_file_path IS NOT NULL
               AND payload_file_path != ''
             """
@@ -217,5 +222,4 @@ class SystemLogsRepositoryMixin:
         return [str(row.get("payload_file_path") or "").strip() for row in rows if str(row.get("payload_file_path") or "").strip()]
 
     def cleanup_system_logs_by_policy(self) -> int:
-        policy_where = "(category = 'user_action' AND UPPER(COALESCE(method, '')) = 'GET') OR (category != 'llm_call' AND category != 'user_action' AND success = 1)"
-        return self._changed_rows(self._request(f"DELETE FROM system_logs WHERE {policy_where}"))
+        return self._changed_rows(self._request(f"DELETE FROM system_logs WHERE {self.POLICY_CLEANUP_WHERE}"))

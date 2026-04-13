@@ -507,6 +507,9 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     events: list[str] = []
 
     class FakeBackend:
+        async def wait_until_ready(self):
+            events.append('backend:ready')
+
         async def update_gateway_login_state(self, *, status: str, qr_url=None, error_message=None):
             events.append(f'state:{status}:{qr_url or ""}:{error_message or ""}')
             return {}
@@ -567,6 +570,57 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     assert any(item.startswith('state:qr_ready:https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc&bot_type=3:') for item in events)
     assert any(item.startswith('state:error::QR code expired 3 times') for item in events)
     assert 'backend:close' in events
+
+
+def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    events: list[str] = []
+
+    class FakeBackend:
+        async def wait_until_ready(self):
+            events.append('backend:ready')
+
+        async def update_gateway_login_state(self, *, status: str, qr_url=None, error_message=None):
+            events.append(f'state:{status}')
+            return {}
+
+        async def close(self):
+            events.append('backend:close')
+
+    class FakeBot:
+        def on_message(self, _handler):
+            events.append('handler:registered')
+
+        async def login(self):
+            events.append('bot:login')
+            await asyncio.sleep(0)
+
+        async def start(self):
+            events.append('bot:start')
+            raise asyncio.CancelledError()
+
+        async def stop(self):
+            events.append('bot:stop')
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    def fake_build_bot():
+        return FakeBot()
+
+    async def fake_poll_delivery_jobs():
+        events.append('poller:start')
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gateway, '_build_bot', fake_build_bot)
+    monkeypatch.setattr(gateway, '_poll_delivery_jobs', fake_poll_delivery_jobs)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway.run())
+
+    assert events[0] == 'backend:ready'
+    assert events.index('backend:ready') < events.index('state:waiting_for_qr')
+    assert events.index('backend:ready') < events.index('bot:login')
+    assert events.index('backend:ready') < events.index('poller:start')
 
 
 def test_im_gateway_uses_sdk_credentials_account_id():

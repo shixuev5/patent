@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 
+from backend import system_logs
 from backend.storage import SQLiteTaskStorage
 
 
@@ -13,6 +15,7 @@ def _insert_sample(
     ts: str,
     *,
     method: str = "GET",
+    path: str = "/api/tasks",
     payload_file_path: str | None = None,
 ):
     storage.insert_system_log(
@@ -28,7 +31,7 @@ def _insert_sample(
             "request_id": "req-1",
             "trace_id": "trace-1",
             "method": method,
-            "path": "/api/tasks",
+            "path": path,
             "status_code": 200 if success else 500,
             "duration_ms": 12,
             "provider": "llm",
@@ -116,6 +119,15 @@ def test_system_logs_policy_cleanup_queries_and_delete(tmp_path):
     )
     _insert_sample(
         storage,
+        "log-user-internal-post-ok",
+        "user_action",
+        True,
+        now_iso,
+        method="POST",
+        path="/api/internal/wechat/messages",
+    )
+    _insert_sample(
+        storage,
         "log-task-ok",
         "task_execution",
         True,
@@ -136,8 +148,45 @@ def test_system_logs_policy_cleanup_queries_and_delete(tmp_path):
     assert set(paths) == {str(payload1), str(payload2)}
 
     deleted = storage.cleanup_system_logs_by_policy()
-    assert deleted == 2
+    assert deleted == 3
 
     remaining = storage.list_system_logs(page=1, page_size=20)
     remaining_ids = {item["log_id"] for item in remaining["items"]}
     assert remaining_ids == {"log-llm-ok", "log-user-post-ok", "log-task-failed"}
+
+
+def test_emit_system_log_is_async_and_non_blocking(monkeypatch):
+    appended: list[dict] = []
+    inserted: list[dict] = []
+
+    class SlowStorage:
+        def insert_system_log(self, record):
+            time.sleep(0.2)
+            inserted.append(record)
+            return True
+
+    def slow_append(record):
+        time.sleep(0.2)
+        appended.append(record)
+
+    monkeypatch.setattr(system_logs, "_append_system_log_file", slow_append)
+    system_logs.configure_system_log_storage(SlowStorage())
+    system_logs.set_system_log_db_persistence_ready(True)
+
+    started = time.perf_counter()
+    log_id = system_logs.emit_system_log(
+        category="llm_call",
+        event_name="chat_completion_json",
+        provider="llm",
+        target_host="example.com",
+        success=True,
+        message="ok",
+        payload={"request": {"task_kind": "wechat_intent_routing"}},
+    )
+    elapsed = time.perf_counter() - started
+
+    assert log_id
+    assert elapsed < 0.1
+    assert system_logs.flush_system_log_queue(timeout_seconds=2.0)
+    assert len(appended) == 1
+    assert len(inserted) == 1
