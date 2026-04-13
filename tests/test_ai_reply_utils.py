@@ -19,6 +19,7 @@ def test_is_patent_document_supports_common_publication_number_variants() -> Non
         "JPS62123456A",
         "KR2020000001A",
         "TW202412345A",
+        "CH708501A1",
         "DE102023000123A1",
         "FR3123456A1",
         "GB2612345A",

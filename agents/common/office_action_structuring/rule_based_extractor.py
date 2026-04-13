@@ -4,18 +4,22 @@
 """
 
 import re
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from agents.common.office_action_structuring.models import (
     OfficeAction,
     ComparisonDocument,
     OfficeActionParagraph,
 )
-from agents.ai_reply.src.utils import is_patent_document
+from agents.ai_reply.src.utils import is_patent_document, normalize_patent_identifier
 from loguru import logger
 
 
 class OfficeActionExtractor:
     """审查意见通知书结构化提取器"""
+
+    def __init__(self, patent_resolver: Optional[Callable[[str], bool]] = None):
+        self.patent_resolver = patent_resolver
+        self._patent_resolution_cache: dict[str, bool] = {}
 
     def extract(self, markdown_content: str) -> OfficeAction:
         """
@@ -143,7 +147,7 @@ class OfficeActionExtractor:
                 ComparisonDocument(
                     document_id=document_id,
                     document_number=document_number,
-                    is_patent=is_patent_document(document_number),
+                    is_patent=self._resolve_is_patent(document_number),
                     publication_date=None,
                 )
             )
@@ -178,7 +182,7 @@ class OfficeActionExtractor:
                 ComparisonDocument(
                     document_id=f"D{document_index}",
                     document_number=document_number,
-                    is_patent=is_patent_document(document_number),
+                    is_patent=self._resolve_is_patent(document_number),
                     publication_date=self._clean_embedded_text(cells[2]) or None,
                 )
             )
@@ -232,6 +236,19 @@ class OfficeActionExtractor:
         value = str(text or "")
         translation = str.maketrans("０１２３４５６７８９", "0123456789")
         return value.translate(translation)
+
+    def _resolve_is_patent(self, document_number: str) -> bool:
+        normalized_number = self._clean_embedded_text(document_number)
+        cache_key = normalize_patent_identifier(normalized_number)
+        if cache_key in self._patent_resolution_cache:
+            return self._patent_resolution_cache[cache_key]
+
+        is_patent = is_patent_document(normalized_number)
+        if not is_patent and self.patent_resolver is not None and normalized_number:
+            is_patent = bool(self.patent_resolver(normalized_number))
+
+        self._patent_resolution_cache[cache_key] = is_patent
+        return is_patent
 
     def _extract_claim_ids(self, content: str) -> List[str]:
         """仅提取段落中第一次出现的权利要求编号，兼容单点与区间表达（如 1-3）。"""

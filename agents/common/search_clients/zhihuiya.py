@@ -830,6 +830,15 @@ class ZhihuiyaClient(BaseSearchClient):
 
     def _query_patent_info_by_count(self, query: str) -> Optional[Dict[str, Any]]:
         """通过 count 接口查询 patent_info。"""
+        return self._query_patent_info_by_count_with_options(query, raise_on_error=False)
+
+    def _query_patent_info_by_count_with_options(
+        self,
+        query: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """通过 count 接口查询 patent_info。"""
         url = "https://search-service.zhihuiya.com/core-search-api/search/patent/query/count"
         payload = {
             "search_mode": "publication",
@@ -846,7 +855,10 @@ class ZhihuiyaClient(BaseSearchClient):
             data = resp.json()
 
             if not data.get("status"):
-                logger.error(f"[智慧芽] count 查询失败：{data.get('message')}")
+                message = str(data.get("message") or "").strip() or "count 查询失败"
+                logger.error(f"[智慧芽] count 查询失败：{message}")
+                if raise_on_error:
+                    raise RuntimeError(message)
                 return None
 
             patent_info = data.get("data", {}).get("patent_info", {})
@@ -855,7 +867,25 @@ class ZhihuiyaClient(BaseSearchClient):
             return None
         except Exception as e:
             logger.error(f"[智慧芽] count 查询失败：{e}")
+            if raise_on_error:
+                raise
             return None
+
+    def has_patent_record(self, identifier: str) -> bool:
+        """使用 count 接口判断文献号/申请号是否存在于智慧芽。"""
+        normalized = str(identifier or "").strip()
+        if not normalized:
+            return False
+
+        if is_patent_application_number(normalized):
+            logger.info(f"[智慧芽] 存在性判断识别为申请号：{normalized}")
+            query = f"APNO:({normalized})"
+        else:
+            logger.info(f"[智慧芽] 存在性判断识别为公开号：{normalized}")
+            query = f"PN:({normalized})"
+
+        patent_info = self._query_patent_info_by_count_with_options(query, raise_on_error=True)
+        return bool(patent_info)
 
     def _get_patent_id_by_pn(self, pn: str) -> Optional[str]:
         """

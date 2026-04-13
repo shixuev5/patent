@@ -56,7 +56,7 @@ class DataPreparationNode:
         except Exception as e:
             logger.error(f"数据准备节点执行失败: {e}")
             error_message = str(e)
-            error_type = "non_patent_mismatch" if "非专文献数量不匹配" in error_message else "data_preparation"
+            error_type = "non_patent_mismatch" if ("非专文献数量不匹配" in error_message or "缺少对比文件" in error_message) else "data_preparation"
             updates["errors"] = [{
                 "node_name": "data_preparation",
                 "error_message": error_message,
@@ -76,11 +76,6 @@ class DataPreparationNode:
             self._to_dict(item) for item in parsed_files
             if self._to_dict(item).get("file_type") == "comparison_doc"
         ]
-
-        if len(non_patent_docs) != len(uploaded_non_patent_files):
-            raise ValueError(
-                f"非专文献数量不匹配: comparison_documents中非专={len(non_patent_docs)}，上传非专文件={len(uploaded_non_patent_files)}"
-            )
 
         patent_data_map = self._build_patent_data_map(search_results)
         application_number = str(office_action.get("application_number", "")).strip()
@@ -208,8 +203,12 @@ class DataPreparationNode:
         uploaded_non_patent_files: List[Dict[str, Any]],
     ) -> Dict[str, str]:
         """基于 document_number 中提取的标题，在上传非专 markdown 内容中命中并完成一对一映射。"""
+        if not non_patent_docs:
+            return {}
+
         content_map: Dict[str, str] = {}
         remaining_indices = set(range(len(uploaded_non_patent_files)))
+        missing_doc_labels: List[str] = []
 
         for doc in non_patent_docs:
             document_id = str(doc.get("document_id", "")).strip()
@@ -254,11 +253,27 @@ class DataPreparationNode:
                     f"非专文献映射冲突: {document_id} 标题「{title}」仅在已映射文件中出现: {', '.join(matched_files)}"
                 )
 
-            raise ValueError(
-                f"非专文献映射失败: {document_id} 标题「{title}」未在任何上传非专文件的 markdown 内容中命中"
-            )
+            missing_doc_labels.append(self._comparison_document_label(doc))
+
+        if missing_doc_labels:
+            uploaded_count = len(uploaded_non_patent_files)
+            message = f"缺少对比文件，请上传：{'、'.join(missing_doc_labels)}。"
+            if uploaded_count:
+                message += f" 当前已上传 {uploaded_count} 份对比文件，但仍未匹配到上述文献。"
+            raise ValueError(message)
 
         return content_map
+
+    def _comparison_document_label(self, doc: Dict[str, Any]) -> str:
+        document_id = str(doc.get("document_id", "")).strip()
+        document_number = str(doc.get("document_number", "")).strip()
+        if document_id and document_number:
+            return f"{document_id}（{document_number}）"
+        if document_id:
+            return document_id
+        if document_number:
+            return document_number
+        return "<unknown>"
 
     def _extract_non_patent_title(self, document_number: str) -> str:
         """提取 document_number 中第一个逗号（中英文）之前的内容作为标题。"""

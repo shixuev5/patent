@@ -83,6 +83,88 @@ def test_data_preparation_builds_local_retrieval_index(tmp_path: Path, monkeypat
     ]
 
 
+def test_data_preparation_reports_missing_comparison_documents_with_doc_labels(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D1",
+                "document_number": "ISO 12345, 标准文本",
+                "is_patent": False,
+                "publication_date": None,
+            },
+            {
+                "document_id": "D2",
+                "document_number": "CH708501A1",
+                "is_patent": True,
+                "publication_date": None,
+            },
+        ],
+    }
+    parsed_files = [
+        {"file_type": "response", "content": "答复内容"},
+    ]
+
+    try:
+        node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    assert message == "缺少对比文件，请上传：D1（ISO 12345, 标准文本）。"
+
+
+def test_data_preparation_reports_remaining_missing_documents_after_partial_upload(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D1",
+                "document_number": "ISO 12345, 标准文本",
+                "is_patent": False,
+                "publication_date": None,
+            },
+            {
+                "document_id": "D2",
+                "document_number": "IEEE 802.11, 通信协议",
+                "is_patent": False,
+                "publication_date": None,
+            },
+        ],
+    }
+    parsed_files = [
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-iso.pdf",
+            "markdown_path": "doc-iso.md",
+            "content": "ISO 12345\n这是标准文本。",
+        },
+        {"file_type": "response", "content": "答复内容"},
+    ]
+
+    try:
+        node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    assert message == "缺少对比文件，请上传：D2（IEEE 802.11, 通信协议）。 当前已上传 1 份对比文件，但仍未匹配到上述文献。"
+
+
 def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     _patch_fake_embeddings(monkeypatch)
 

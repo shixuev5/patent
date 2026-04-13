@@ -21,6 +21,30 @@ def test_office_action_extractor_treats_jph_publication_as_patent() -> None:
     assert [doc.is_patent for doc in office_action.comparison_documents] == [True, True]
 
 
+def test_office_action_extractor_uses_patent_resolver_for_non_matching_identifier() -> None:
+    markdown_content = """申请号：202610088597.2
+
+# 第一次审查意见通知书
+
+1、权利要求1相对于对比文件1(XX123456A1)和对比文件2(ISO 12345)不具备创造性。
+"""
+
+    resolver_calls: list[str] = []
+
+    def _resolver(document_number: str) -> bool:
+        resolver_calls.append(document_number)
+        return document_number == "XX123456A1"
+
+    office_action = OfficeActionExtractor(patent_resolver=_resolver).extract(markdown_content)
+
+    assert [doc.document_number for doc in office_action.comparison_documents] == [
+        "XX123456A1",
+        "ISO 12345",
+    ]
+    assert [doc.is_patent for doc in office_action.comparison_documents] == [True, False]
+    assert resolver_calls == ["XX123456A1", "ISO 12345"]
+
+
 def test_office_action_extractor_extracts_reliable_paragraph_fields() -> None:
     markdown_content = """申请号：202211411308.6
 

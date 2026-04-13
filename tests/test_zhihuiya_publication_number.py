@@ -97,3 +97,33 @@ def test_get_patent_id_by_pn_uses_application_query_for_chinese_application_numb
 
     assert patent_id == "pid-x"
     assert captured["query"] == "APNO:(202310658730.X)"
+
+
+def test_has_patent_record_uses_publication_query(monkeypatch):
+    client = ZhihuiyaClient()
+    captured = {}
+
+    def _fake_query(query, raise_on_error=False):
+        captured["query"] = query
+        captured["raise_on_error"] = raise_on_error
+        return {"PATENT_ID": "pid-1"}
+
+    monkeypatch.setattr(client, "_query_patent_info_by_count_with_options", _fake_query)
+
+    assert client.has_patent_record("CH708501A1") is True
+    assert captured["query"] == "PN:(CH708501A1)"
+    assert captured["raise_on_error"] is True
+
+
+def test_has_patent_record_uses_application_query(monkeypatch):
+    client = ZhihuiyaClient()
+    captured = {}
+
+    def _fake_query(query, raise_on_error=False):
+        captured["query"] = query
+        return {"PATENT_ID": "pid-1"}
+
+    monkeypatch.setattr(client, "_query_patent_info_by_count_with_options", _fake_query)
+
+    assert client.has_patent_record("PCT/CN2024/123456") is True
+    assert captured["query"] == "APNO:(PCT/CN2024/123456)"

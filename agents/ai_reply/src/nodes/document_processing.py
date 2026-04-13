@@ -11,6 +11,7 @@ from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.parsers.pdf_parser import PDFParser
 from agents.common.parsers.word_parser import WordParser
 from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
+from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.patent_structuring import extract_structured_claims
 from agents.ai_reply.src.state import WorkflowState, ParsedFile, StructuredClaim
 from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
@@ -23,7 +24,10 @@ class DocumentProcessingNode:
     def __init__(self, config=None):
         """初始化文档处理节点"""
         self.config = config
-        self.office_action_extractor = OfficeActionExtractor()
+        self._search_client = None
+        self.office_action_extractor = OfficeActionExtractor(
+            patent_resolver=self._resolve_is_patent_via_zhihuiya,
+        )
 
     def parse_document(self, file_path: str, output_dir: str) -> str:
         """
@@ -236,3 +240,22 @@ class DocumentProcessingNode:
         current_notice_round = int(office_action_data.get("current_notice_round", 0) or 0)
         if current_notice_round <= 0:
             raise ValueError("审查意见未解析出有效轮次(current_notice_round)")
+
+    def _get_search_client(self):
+        if self._search_client is None:
+            self._search_client = SearchClientFactory.get_client("zhihuiya")
+        return self._search_client
+
+    def _resolve_is_patent_via_zhihuiya(self, document_number: str) -> bool:
+        normalized = str(document_number or "").strip()
+        if not normalized:
+            return False
+
+        client = self._get_search_client()
+        has_patent_record = getattr(client, "has_patent_record", None)
+        if not callable(has_patent_record):
+            raise RuntimeError("智慧芽客户端不支持专利存在性查询")
+
+        result = bool(has_patent_record(normalized))
+        logger.info(f"智慧芽兜底识别对比文件是否为专利: {normalized} -> {result}")
+        return result
