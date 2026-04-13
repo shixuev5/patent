@@ -5,14 +5,15 @@ import contextlib
 import inspect
 import os
 import re
-from pathlib import Path
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from dotenv import load_dotenv
 
 from backend_client import BackendClient
+from credential_store import R2CredentialStore, build_credential_store_from_env
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,27 +30,78 @@ BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
 
 class WeChatGateway:
-    def __init__(self, *, backend: BackendClient) -> None:
+    def __init__(self, *, backend: BackendClient, credential_store: Optional[R2CredentialStore] = None) -> None:
         self.backend = backend
+        self.credential_store = credential_store if credential_store is not None else build_credential_store_from_env(download_dir=DOWNLOAD_DIR)
         self.bot: Any = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _build_bot(self) -> Any:
         try:
             from wechatbot import WeChatBot  # type: ignore
+            from wechatbot import client as wechatbot_client  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on optional sdk
             raise RuntimeError(
                 "未安装 wechatbot-sdk，无法启动真实微信网关。请先执行 `pip install wechatbot-sdk`。"
             ) from exc
-        return WeChatBot(
+        bot = WeChatBot(
+            cred_path=str(self.credential_store.local_path) if self.credential_store else None,
             on_qr_url=self._on_qr_url,
             on_scanned=self._on_scanned,
             on_expired=self._on_expired,
             on_error=self._on_error,
         )
+        self._attach_credential_hooks(bot, wechatbot_client=wechatbot_client)
+        return bot
+
+    async def _restore_credentials_from_remote(self) -> None:
+        if not self.credential_store:
+            return
+        restored = await asyncio.to_thread(self.credential_store.restore_local_credentials)
+        if restored:
+            print(f"[im-gateway] restored credentials from R2 -> {getattr(self.credential_store, 'local_path', '-')}")
+        else:
+            print("[im-gateway] no persisted credentials found in R2")
+
+    async def _persist_credentials_to_remote(self) -> None:
+        if not self.credential_store:
+            return
+        persisted = await asyncio.to_thread(self.credential_store.persist_local_credentials)
+        if persisted:
+            print(f"[im-gateway] persisted credentials to R2 -> {getattr(self.credential_store, 'r2_key', '-')}")
+        else:
+            print("[im-gateway] credential persistence skipped: local credential file not found or upload failed")
+
+    def _attach_credential_hooks(self, bot: Any, *, wechatbot_client: Any) -> None:
+        if not self.credential_store or getattr(bot, "_im_gateway_credential_hooks_installed", False):
+            return
+
+        original_login = getattr(bot, "login", None)
+        if callable(original_login):
+            async def login_with_sync(*args: Any, **kwargs: Any) -> Any:
+                result = await original_login(*args, **kwargs)
+                await self._persist_credentials_to_remote()
+                return result
+            bot.login = login_with_sync
+
+        original_clear = getattr(wechatbot_client, "clear_credentials", None)
+        if callable(original_clear) and not getattr(wechatbot_client, "_im_gateway_clear_credentials_wrapped", False):
+            credential_store = self.credential_store
+
+            async def clear_with_remote_sync(path: Path | str | None = None) -> Any:
+                result = await original_clear(path)
+                if credential_store.path_matches(path):
+                    await asyncio.to_thread(credential_store.clear_remote_credentials)
+                return result
+
+            wechatbot_client.clear_credentials = clear_with_remote_sync
+            wechatbot_client._im_gateway_clear_credentials_wrapped = True
+
+        bot._im_gateway_credential_hooks_installed = True
 
     async def run(self) -> None:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        await self._restore_credentials_from_remote()
         print("[im-gateway] waiting for backend")
         await self.backend.wait_until_ready()
         print("[im-gateway] backend ready")

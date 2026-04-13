@@ -25,6 +25,9 @@
 - `INTERNAL_GATEWAY_TOKEN`：与后端共享的内部 token
 - `IM_GATEWAY_POLL_INTERVAL_SECONDS`：出站轮询间隔，默认 `8`
 - `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `./tmp`
+- `IM_GATEWAY_CRED_PATH`：本地微信 SDK 凭证文件路径；启用 R2 持久化时默认使用 `IM_GATEWAY_DOWNLOAD_DIR/credentials.json`
+- `IM_GATEWAY_CRED_R2_KEY`：启用后，将加密后的微信 SDK 凭证文件持久化到该 R2 key
+- `IM_GATEWAY_CRED_ENCRYPTION_KEY`：启用 R2 持久化时必填；用于加密存入 R2 的凭证文件
 
 ## 启动
 
@@ -38,4 +41,5 @@ python im-gateway/main.py
 
 - 已接入后端内部 API 调用链和 Python 网关骨架。
 - `wechatbot-sdk` 的真实运行依赖于本地环境安装该库并完成扫码登录。
+- 配置 `IM_GATEWAY_CRED_R2_KEY` 后，网关会在启动时尝试从 R2 恢复凭证，并在登录成功后将加密后的凭证文件回写到 R2。
 - 若当前环境未安装 `wechatbot-sdk`，启动时会直接报出明确错误，避免误以为已经完成真实接入。

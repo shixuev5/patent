@@ -502,6 +502,93 @@ def _load_im_gateway_main():
     return module
 
 
+def test_im_gateway_r2_credential_store_roundtrip(tmp_path):
+    im_gateway_main = _load_im_gateway_main()
+
+    class FakeR2Storage:
+        def __init__(self):
+            self.payload: bytes | None = None
+            self.deleted_keys: list[str] = []
+
+        def get_bytes(self, key: str):
+            assert key == 'secure/im-gateway/credentials.enc'
+            return self.payload
+
+        def put_bytes(self, key: str, content: bytes, content_type: str = 'application/octet-stream'):
+            assert key == 'secure/im-gateway/credentials.enc'
+            assert content_type == 'application/octet-stream'
+            self.payload = content
+            return True
+
+        def delete_key(self, key: str):
+            self.deleted_keys.append(key)
+            self.payload = None
+            return True
+
+    local_path = tmp_path / 'credentials.json'
+    expected = b'{"token":"t-001","accountId":"bot-001"}\n'
+    local_path.write_bytes(expected)
+
+    r2_storage = FakeR2Storage()
+    store = im_gateway_main.R2CredentialStore(
+        r2_storage=r2_storage,
+        r2_key='secure/im-gateway/credentials.enc',
+        local_path=local_path,
+        encryption_secret='secret-for-test',
+    )
+
+    assert store.persist_local_credentials() is True
+    assert r2_storage.payload is not None
+    assert r2_storage.payload != expected
+
+    local_path.unlink()
+    assert store.restore_local_credentials() is True
+    assert local_path.read_bytes() == expected
+
+    assert store.clear_remote_credentials() is True
+    assert r2_storage.deleted_keys == ['secure/im-gateway/credentials.enc']
+
+
+def test_im_gateway_syncs_r2_credentials_on_login_and_clear(tmp_path):
+    im_gateway_main = _load_im_gateway_main()
+    events: list[str] = []
+
+    class FakeCredentialStore:
+        def __init__(self, local_path: Path):
+            self.local_path = local_path
+
+        def persist_local_credentials(self):
+            events.append('persist')
+            return True
+
+        def clear_remote_credentials(self):
+            events.append('clear-remote')
+            return True
+
+        def path_matches(self, path):
+            return Path(path).resolve() == self.local_path.resolve()
+
+    class FakeBot:
+        async def login(self, *, force: bool = False):
+            events.append(f'login:{force}')
+            return {'ok': True}
+
+    async def fake_clear_credentials(path=None):
+        events.append(f'clear-local:{Path(path).name}')
+
+    store = FakeCredentialStore(tmp_path / 'credentials.json')
+    gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace(), credential_store=store)
+    bot = FakeBot()
+    client_module = SimpleNamespace(clear_credentials=fake_clear_credentials)
+
+    gateway._attach_credential_hooks(bot, wechatbot_client=client_module)
+
+    asyncio.run(bot.login(force=True))
+    asyncio.run(client_module.clear_credentials(store.local_path))
+
+    assert events == ['login:True', 'persist', 'clear-local:credentials.json', 'clear-remote']
+
+
 def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.setattr(im_gateway_main, 'LOGIN_RETRY_SECONDS', 1)
