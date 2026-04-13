@@ -115,6 +115,22 @@ class WeChatFlowSession:
 
 
 @dataclass
+class WeChatConversationSession:
+    conversation_id: str
+    owner_id: str
+    binding_id: str
+    status: str
+    active_context_kind: str = "none"
+    active_context_session_id: Optional[str] = None
+    active_context_title: Optional[str] = None
+    memory: Dict[str, Any] = field(default_factory=dict)
+    last_inbound_at: Optional[datetime] = None
+    last_outbound_at: Optional[datetime] = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass
 class WeChatDeliveryJob:
     delivery_job_id: str
     owner_id: str

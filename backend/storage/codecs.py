@@ -16,6 +16,7 @@ from .models import (
     User,
     WeChatBinding,
     WeChatBindSession,
+    WeChatConversationSession,
     WeChatDeliveryJob,
     WeChatFlowSession,
 )
@@ -173,6 +174,22 @@ class StorageCodecsMixin:
             current_step=row.get("current_step"),
             draft_payload=self._parse_metadata(row.get("draft_payload_json")),
             expires_at=parse_storage_ts(row["expires_at"], naive_strategy="utc") if row.get("expires_at") else None,
+            created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
+            updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
+        )
+
+    def _row_to_wechat_conversation_session(self, row: Dict[str, Any]) -> WeChatConversationSession:
+        return WeChatConversationSession(
+            conversation_id=str(row["conversation_id"]),
+            owner_id=str(row["owner_id"]),
+            binding_id=str(row["binding_id"]),
+            status=str(row["status"]),
+            active_context_kind=str(row.get("active_context_kind") or "none"),
+            active_context_session_id=str(row.get("active_context_session_id") or "").strip() or None,
+            active_context_title=str(row.get("active_context_title") or "").strip() or None,
+            memory=self._parse_metadata(row.get("memory_json")),
+            last_inbound_at=parse_storage_ts(row["last_inbound_at"], naive_strategy="utc") if row.get("last_inbound_at") else None,
+            last_outbound_at=parse_storage_ts(row["last_outbound_at"], naive_strategy="utc") if row.get("last_outbound_at") else None,
             created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
         )

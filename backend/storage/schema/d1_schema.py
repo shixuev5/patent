@@ -21,6 +21,8 @@ D1_EXTRA_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_owner_status ON wechat_bind_sessions(owner_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_expires_at ON wechat_bind_sessions(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_wechat_flow_sessions_owner_type_status ON wechat_flow_sessions(owner_id, flow_type, status)",
+    "CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_owner_status ON wechat_conversation_sessions(owner_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_context ON wechat_conversation_sessions(active_context_kind, active_context_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_next_attempt ON wechat_delivery_jobs(status, next_attempt_at)",
     "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_owner_status ON wechat_delivery_jobs(owner_id, status)",
 )
@@ -177,6 +179,21 @@ CREATE TABLE IF NOT EXISTS wechat_flow_sessions (
     current_step TEXT,
     draft_payload_json TEXT,
     expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wechat_conversation_sessions (
+    conversation_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    active_context_kind TEXT NOT NULL DEFAULT 'none',
+    active_context_session_id TEXT,
+    active_context_title TEXT,
+    memory_json TEXT,
+    last_inbound_at TEXT,
+    last_outbound_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

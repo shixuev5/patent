@@ -249,14 +249,6 @@ def _build_wechat_integration_response(owner_id: str) -> AccountWeChatIntegratio
         bindingStatus=binding_status,
         binding=_build_wechat_binding_response(binding) if binding else None,
         bindSession=_build_wechat_bind_session_response(bind_session) if bind_session else None,
-        availableCommands=[
-            "分析专利 CN117347385A",
-            "帮我审查这个专利",
-            "我要答复审查意见",
-            "/analysis new",
-            "/review new",
-            "/reply new",
-        ],
     )
 
 

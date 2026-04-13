@@ -23,7 +23,7 @@ from backend.models import (
 from backend.notifications.task_wechat_service import TaskWeChatNotificationService
 from backend.routes import account
 from backend.routes import tasks as task_routes
-from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding
+from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding, WeChatConversationSession
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 from backend.time_utils import utc_now
@@ -33,11 +33,28 @@ from config import settings
 from fastapi import HTTPException
 
 WECHAT_INTENT_GUIDANCE = (
-    '请直接告诉我你要做什么：专利分析、专利审查，或答复审查意见。\n'
-    'AI 检索请到网页 AI 检索页面进行。\n'
-    '示例：分析专利 CN117347385A / 帮我审查这个专利 / 我要答复审查意见'
+    '请直接说你的目标，我可以处理：AI 检索、专利分析、专利审查、审查意见答复。\n'
+    '示例：帮我检索固态电池隔膜相关专利 / 分析专利 CN117347385A / 帮我审查这个专利 / 我要答复审查意见。'
 )
-WECHAT_AI_SEARCH_DISABLED = '微信暂不支持 AI 检索对话，请到网页 AI 检索页面继续；微信当前支持专利分析、专利审查、审查意见答复。'
+
+
+def _build_ai_search_snapshot(*, session_id: str, title: str = 'AI 检索会话 - test', pending_action=None):
+    return SimpleNamespace(
+        session=SimpleNamespace(title=title),
+        run={'status': 'pending', 'planVersion': 1},
+        conversation={
+            'messages': [{'role': 'assistant', 'content': '这是当前检索上下文'}],
+            'pendingAction': pending_action,
+        },
+        plan={'currentPlan': {'planVersion': 1}},
+        retrieval={'documents': {'candidates': [], 'selected': []}},
+        artifacts={},
+    )
+
+
+async def _empty_async_iter():
+    if False:
+        yield None
 
 
 def _mount_storage(monkeypatch, tmp_path):
@@ -591,6 +608,8 @@ def test_im_gateway_syncs_r2_credentials_on_login_and_clear(tmp_path):
 
 def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     monkeypatch.setattr(im_gateway_main, 'LOGIN_RETRY_SECONDS', 1)
 
     events: list[str] = []
@@ -663,6 +682,8 @@ def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
 
 def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     events: list[str] = []
 
     class FakeBackend:
@@ -712,8 +733,10 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
     assert events.index('backend:ready') < events.index('poller:start')
 
 
-def test_im_gateway_uses_sdk_credentials_account_id():
+def test_im_gateway_uses_sdk_credentials_account_id(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     captured: dict[str, str] = {}
 
     class FakeBackend:
@@ -740,8 +763,10 @@ def test_im_gateway_uses_sdk_credentials_account_id():
     assert captured['bot_account_id'] == 'bot-cred-001'
 
 
-def test_im_gateway_wraps_file_payloads_for_sdk():
+def test_im_gateway_wraps_file_payloads_for_sdk(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     reply_payloads: list[dict[str, object]] = []
     send_payloads: list[dict[str, object]] = []
     sent_texts: list[str] = []
@@ -794,8 +819,10 @@ def test_im_gateway_wraps_file_payloads_for_sdk():
     assert completed_jobs == ['job-001']
 
 
-def test_im_gateway_binding_success_messages_are_single_text():
+def test_im_gateway_binding_success_messages_are_single_text(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
 
     gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace())
     messages = gateway._build_binding_success_messages()
@@ -804,13 +831,13 @@ def test_im_gateway_binding_success_messages_are_single_text():
     assert messages[0]['type'] == 'text'
     text = messages[0]['text']
     assert '微信绑定成功' in text
-    assert '现在可以直接在这里发专利分析、专利审查和审查意见答复需求。' in text
-    assert 'AI 检索请到网页 AI 检索页面进行。' in text
+    assert '现在可以直接在这里发 AI 检索、专利分析、专利审查和审查意见答复需求。' in text
     assert '示例：' in text
+    assert '检索：帮我检索固态电池隔膜相关专利' in text
     assert '分析：分析专利 CN117347385A' in text
     assert '审查：帮我审查这个专利' in text
     assert '答复：我要答复审查意见' in text
-    assert '斜杠命令只在少数场景下作为兜底入口。' in text
+    assert '直接发送你的需求即可。' in text
     assert '------------' not in text
     assert '/cancel' not in text
 
@@ -910,7 +937,7 @@ def test_wechat_runtime_analysis_flow_creates_task(monkeypatch, tmp_path):
         service.handle_inbound_message(
             bot_account_id='bot-1',
             wechat_peer_id='wx-peer-analysis',
-            text='/analysis new',
+            text='帮我分析这个专利',
         )
     )
     assert started.sessionType == TaskType.PATENT_ANALYSIS.value
@@ -1104,7 +1131,7 @@ def test_wechat_runtime_attachment_without_intent_returns_guidance(tmp_path):
     assert storage.list_tasks(owner_id='authing:wx-attachment') == []
 
 
-def test_wechat_runtime_explicit_search_returns_disabled_message(tmp_path):
+def test_wechat_runtime_explicit_search_creates_search_context(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search.db')
     storage.upsert_authing_user(
         User(
@@ -1125,6 +1152,21 @@ def test_wechat_runtime_explicit_search_returns_disabled_message(tmp_path):
         )
     )
     service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'create_session',
+        lambda owner_id: SimpleNamespace(sessionId='search-session-1'),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'stream_message',
+        lambda *args, **kwargs: _empty_async_iter(),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'get_snapshot',
+        lambda *args, **kwargs: _build_ai_search_snapshot(session_id='search-session-1', title='固态电池检索'),
+    )
 
     result = asyncio.run(
         service.handle_inbound_message(
@@ -1134,13 +1176,12 @@ def test_wechat_runtime_explicit_search_returns_disabled_message(tmp_path):
         )
     )
 
-    assert result.taskId is None
-    assert result.sessionType is None
-    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
-    assert storage.list_tasks(owner_id='authing:wx-search') == []
+    assert result.taskId == 'search-session-1'
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    assert '当前检索上下文' in (result.messages[0].text or '')
 
 
-def test_wechat_runtime_llm_high_confidence_search_returns_disabled_message(monkeypatch, tmp_path):
+def test_wechat_runtime_llm_high_confidence_search_creates_context(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_llm.db')
     storage.upsert_authing_user(
         User(
@@ -1171,6 +1212,21 @@ def test_wechat_runtime_llm_high_confidence_search_returns_disabled_message(monk
             'extracted': {},
         },
     )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'create_session',
+        lambda owner_id: SimpleNamespace(sessionId='search-session-llm'),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'stream_message',
+        lambda *args, **kwargs: _empty_async_iter(),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'get_snapshot',
+        lambda *args, **kwargs: _build_ai_search_snapshot(session_id='search-session-llm', title='LLM 检索'),
+    )
 
     result = asyncio.run(
         service.handle_inbound_message(
@@ -1180,14 +1236,13 @@ def test_wechat_runtime_llm_high_confidence_search_returns_disabled_message(monk
         )
     )
 
-    assert result.taskId is None
-    assert result.sessionType is None
-    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
-    assert storage.list_tasks(owner_id='authing:wx-search-llm') == []
+    assert result.taskId == 'search-session-llm'
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    assert '当前检索上下文' in (result.messages[0].text or '')
 
 
-@pytest.mark.parametrize('text', ['确认计划', '继续检索', '按当前结果完成', '送审 1 3 5'])
-def test_wechat_runtime_ai_search_followup_commands_return_disabled_message(tmp_path, text):
+@pytest.mark.parametrize('text', ['确认计划', '继续检索', '按当前结果完成', '选择 1 3'])
+def test_wechat_runtime_ai_search_followup_commands_without_context_return_guidance(tmp_path, text):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_followup_blocked.db')
     storage.upsert_authing_user(
         User(
@@ -1219,10 +1274,10 @@ def test_wechat_runtime_ai_search_followup_commands_return_disabled_message(tmp_
 
     assert result.taskId is None
     assert result.sessionType is None
-    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
+    assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
 
 
-def test_wechat_runtime_does_not_continue_existing_ai_search_session(tmp_path):
+def test_wechat_runtime_chitchat_does_not_continue_existing_ai_search_session(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_existing_search_blocked.db')
     storage.upsert_authing_user(
         User(
@@ -1292,6 +1347,108 @@ def test_wechat_runtime_does_not_continue_existing_ai_search_session(tmp_path):
     assert before_messages == after_messages
 
 
+def test_wechat_runtime_exit_search_context_only_clears_context(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_exit_search.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-exit-search',
+            authing_sub='wx-exit-search',
+            name='微信退出检索用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-exit-search',
+            owner_id='authing:wx-exit-search',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-exit-search',
+            wechat_peer_name='退出检索微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(
+        owner_id='authing:wx-exit-search',
+        task_type=TaskType.AI_SEARCH.value,
+        title='AI 检索会话 - exit',
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-exit-search',
+            owner_id='authing:wx-exit-search',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='ai_search',
+            active_context_session_id=task.id,
+            active_context_title='退出检索测试',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=manager)
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-exit-search',
+            text='退出检索',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert result.taskId is None
+    assert '退出当前检索上下文' in (result.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'none'
+    assert storage.get_task(task.id) is not None
+
+
+def test_wechat_runtime_multiple_search_sessions_require_selection(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_multi_search.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-multi-search',
+            authing_sub='wx-multi-search',
+            name='微信多检索用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-multi-search',
+            owner_id='authing:wx-multi-search',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-multi-search',
+            wechat_peer_name='多检索微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    first = manager.create_task(owner_id='authing:wx-multi-search', task_type=TaskType.AI_SEARCH.value, title='检索 A')
+    second = manager.create_task(owner_id='authing:wx-multi-search', task_type=TaskType.AI_SEARCH.value, title='检索 B')
+    service = WeChatRuntimeService(task_manager=manager)
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'list_sessions',
+        lambda owner_id: SimpleNamespace(
+            items=[
+                SimpleNamespace(sessionId=first.id, title='检索 A', status='pending', phase='collecting_requirements', updatedAt='2026-01-02T00:00:00+00:00', createdAt='2026-01-01T00:00:00+00:00'),
+                SimpleNamespace(sessionId=second.id, title='检索 B', status='pending', phase='collecting_requirements', updatedAt='2026-01-03T00:00:00+00:00', createdAt='2026-01-02T00:00:00+00:00'),
+            ]
+        ),
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-multi-search',
+            text='继续检索',
+        )
+    )
+
+    assert result.taskId is None
+    assert '多个未完成检索' in (result.messages[0].text or '')
+
+
 def test_wechat_runtime_reply_flow_collects_files_and_creates_task(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_reply.db')
     storage.upsert_authing_user(
@@ -1326,7 +1483,7 @@ def test_wechat_runtime_reply_flow_collects_files_and_creates_task(monkeypatch, 
         service.handle_inbound_message(
             bot_account_id='bot-1',
             wechat_peer_id='wx-peer-reply',
-            text='/reply new',
+            text='我要答复审查意见',
         )
     )
     asyncio.run(

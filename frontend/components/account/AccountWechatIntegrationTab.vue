@@ -146,9 +146,8 @@
         <div class="wechat-usage-header">
           <div>
             <p class="wechat-copy-title">微信里可以直接这样用</p>
-            <p class="wechat-copy-text">自然语言优先，斜杠命令只是兜底入口。</p>
+            <p class="wechat-copy-text">直接发自然语言需求即可，系统会按意图进入检索、分析、审查或答复流程。</p>
           </div>
-          <p v-if="fallbackCommandsText" class="wechat-usage-hint">兜底命令：{{ fallbackCommandsText }}</p>
         </div>
 
         <div class="wechat-usage-grid">
@@ -177,7 +176,6 @@ const props = defineProps<{
   bindingStatus: 'unbound' | 'binding' | 'bound'
   binding: AccountWeChatBinding | null
   bindSession: AccountWeChatBindSession | null
-  availableCommands: string[]
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
   pushAiSearchPendingAction: boolean
@@ -210,12 +208,6 @@ const expiresText = computed(() => {
 const bindButtonLabel = computed(() => {
   if (props.startingBindSession) return '生成中...'
   return props.bindSession ? '刷新绑定二维码' : '生成绑定二维码'
-})
-
-const fallbackCommandsText = computed(() => {
-  return props.availableCommands
-    .filter(item => item.startsWith('/'))
-    .join(' · ')
 })
 
 const bindCodeHelperText = computed(() => {
@@ -266,7 +258,12 @@ const usageScenes = [
     reply: '收到后会立即创建分析任务，完成时把结果回推到微信。',
   },
   {
-    title: '审查 / 答复',
+    title: '专利审查',
+    user: '帮我审查这个专利',
+    reply: '我会先确认材料是否齐全，再创建审查任务并把结果回推到微信。',
+  },
+  {
+    title: '审查意见答复',
     user: '我要答复审查意见',
     reply: '我会先收集答复所需材料，再按流程推进并把结果回推到微信。',
   },
@@ -275,14 +272,15 @@ const usageScenes = [
 const bindingSuccessWelcomeText = [
   '微信绑定成功',
   '',
-  '现在可以直接在这里发专利检索、专利分析和审查意见答复需求。',
+  '现在可以直接在这里发 AI 检索、专利分析、专利审查和审查意见答复需求。',
   '',
   '示例：',
   '检索：帮我检索固态电池隔膜相关专利',
   '分析：分析专利 CN117347385A',
+  '审查：帮我审查这个专利',
   '答复：我要答复审查意见',
   '',
-  '直接发送你的需求即可，斜杠命令只在少数场景下作为兜底入口。',
+  '直接发送你的需求即可。',
 ].join('\n')
 
 const formatTime = (value?: string | null) => {

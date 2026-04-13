@@ -68,7 +68,6 @@ export interface AccountWeChatIntegration {
   bindingStatus: 'unbound' | 'binding' | 'bound'
   binding?: AccountWeChatBinding | null
   bindSession?: AccountWeChatBindSession | null
-  availableCommands: string[]
 }
 
 export interface AccountWeChatIntegrationUpdateRequest {

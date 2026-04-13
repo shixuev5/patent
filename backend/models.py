@@ -135,7 +135,6 @@ class AccountWeChatIntegrationResponse(BaseModel):
     bindingStatus: Literal["unbound", "binding", "bound"]
     binding: Optional[AccountWeChatBindingResponse] = None
     bindSession: Optional[AccountWeChatBindSessionResponse] = None
-    availableCommands: List[str]
 
 
 class AccountWeChatIntegrationUpdateRequest(BaseModel):

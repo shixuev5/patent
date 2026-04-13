@@ -232,7 +232,6 @@
         :binding-status="wechatIntegration?.bindingStatus || 'unbound'"
         :binding="wechatIntegration?.binding || null"
         :bind-session="wechatIntegration?.bindSession || null"
-        :available-commands="wechatIntegration?.availableCommands || []"
         :push-task-completed="pushTaskCompletedInput"
         :push-task-failed="pushTaskFailedInput"
         :push-ai-search-pending-action="pushAiSearchPendingActionInput"
@@ -1125,7 +1124,6 @@ const startWechatBindSession = async () => {
       bindingStatus: 'binding',
       binding: wechatIntegration.value?.binding || null,
       bindSession: bindSession || null,
-      availableCommands: wechatIntegration.value?.availableCommands || [],
     }
     syncWechatIntegrationForm(nextIntegration)
     setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
@@ -1153,7 +1151,6 @@ const pollWechatBindSession = async () => {
       bindingStatus: nextBindSession?.status === 'bound' ? 'bound' : 'binding',
       binding: wechatIntegration.value?.binding || null,
       bindSession: nextBindSession || null,
-      availableCommands: wechatIntegration.value?.availableCommands || [],
     }
     syncWechatIntegrationForm(nextIntegration)
     const nextStatus = String(nextBindSession?.status || '').trim()

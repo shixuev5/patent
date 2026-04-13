@@ -11,6 +11,7 @@ from .models import (
     User,
     WeChatBinding,
     WeChatBindSession,
+    WeChatConversationSession,
     WeChatDeliveryJob,
     WeChatFlowSession,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "RefreshSession",
     "WeChatBinding",
     "WeChatBindSession",
+    "WeChatConversationSession",
     "WeChatFlowSession",
     "WeChatDeliveryJob",
     # Pipeline Adapter

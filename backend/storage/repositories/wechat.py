@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from backend.time_utils import to_utc_z, utc_now_z
-from ..models import WeChatBindSession, WeChatBinding, WeChatDeliveryJob, WeChatFlowSession
+from ..models import WeChatBindSession, WeChatBinding, WeChatConversationSession, WeChatDeliveryJob, WeChatFlowSession
 
 
 class WeChatRepositoryMixin:
@@ -186,6 +186,81 @@ class WeChatRepositoryMixin:
             "UPDATE wechat_flow_sessions SET status = ?, updated_at = ? WHERE owner_id = ? AND flow_type = ? AND status = 'active'",
             [status, utc_now_z(), owner_id, flow_type],
         )) > 0
+
+    def get_wechat_conversation_session(self, binding_id: str) -> Optional[WeChatConversationSession]:
+        row = self._fetchone(
+            "SELECT * FROM wechat_conversation_sessions WHERE binding_id = ? ORDER BY updated_at DESC LIMIT 1",
+            [str(binding_id or "").strip()],
+        )
+        return self._row_to_wechat_conversation_session(row) if row else None
+
+    def upsert_wechat_conversation_session(self, session: WeChatConversationSession) -> WeChatConversationSession:
+        self._request(
+            """
+            INSERT INTO wechat_conversation_sessions (
+                conversation_id, owner_id, binding_id, status,
+                active_context_kind, active_context_session_id, active_context_title,
+                memory_json, last_inbound_at, last_outbound_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                owner_id = excluded.owner_id,
+                binding_id = excluded.binding_id,
+                status = excluded.status,
+                active_context_kind = excluded.active_context_kind,
+                active_context_session_id = excluded.active_context_session_id,
+                active_context_title = excluded.active_context_title,
+                memory_json = excluded.memory_json,
+                last_inbound_at = excluded.last_inbound_at,
+                last_outbound_at = excluded.last_outbound_at,
+                updated_at = excluded.updated_at
+            """,
+            [
+                session.conversation_id,
+                session.owner_id,
+                session.binding_id,
+                session.status,
+                session.active_context_kind,
+                session.active_context_session_id,
+                session.active_context_title,
+                self._encode_json_value(session.memory),
+                to_utc_z(session.last_inbound_at, naive_strategy="utc") if session.last_inbound_at else None,
+                to_utc_z(session.last_outbound_at, naive_strategy="utc") if session.last_outbound_at else None,
+                to_utc_z(session.created_at, naive_strategy="utc"),
+                to_utc_z(session.updated_at, naive_strategy="utc"),
+            ],
+        )
+        row = self._fetchone("SELECT * FROM wechat_conversation_sessions WHERE conversation_id = ?", [session.conversation_id])
+        if row is None:
+            raise RuntimeError("Failed to upsert wechat conversation session")
+        return self._row_to_wechat_conversation_session(row)
+
+    def update_wechat_conversation_session(self, conversation_id: str, **updates: Any) -> Optional[WeChatConversationSession]:
+        normalized = {k: v for k, v in updates.items() if k}
+        if not normalized:
+            row = self._fetchone("SELECT * FROM wechat_conversation_sessions WHERE conversation_id = ?", [str(conversation_id or "").strip()])
+            return self._row_to_wechat_conversation_session(row) if row else None
+        normalized.setdefault("updated_at", utc_now_z())
+        assignments = ", ".join(
+            f"{('memory_json' if key == 'memory' else key)} = ?" for key in normalized
+        )
+        values = []
+        for key, value in normalized.items():
+            target_key = "memory_json" if key == "memory" else key
+            if target_key == "memory_json":
+                values.append(self._encode_json_value(value))
+            elif target_key in {"last_inbound_at", "last_outbound_at", "created_at", "updated_at"} and value is not None:
+                values.append(to_utc_z(value, naive_strategy="utc"))
+            else:
+                values.append(value)
+        values.append(str(conversation_id or "").strip())
+        result = self._request(
+            f"UPDATE wechat_conversation_sessions SET {assignments} WHERE conversation_id = ?",
+            values,
+        )
+        if self._changed_rows(result) <= 0:
+            return None
+        row = self._fetchone("SELECT * FROM wechat_conversation_sessions WHERE conversation_id = ?", [str(conversation_id or "").strip()])
+        return self._row_to_wechat_conversation_session(row) if row else None
 
     def create_wechat_delivery_job(self, job: WeChatDeliveryJob) -> WeChatDeliveryJob:
         self._request(
