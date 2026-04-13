@@ -715,9 +715,14 @@ def test_im_gateway_binding_success_messages_are_single_text():
     assert messages[0]['type'] == 'text'
     text = messages[0]['text']
     assert '微信绑定成功' in text
-    assert '常用用法' in text
-    assert '确认计划 / 继续检索 / 按当前结果完成 / 选择 1 3 5' in text
-    assert '/cancel' in text
+    assert '现在可以直接在这里发专利检索、专利分析和审查意见答复需求。' in text
+    assert '示例：' in text
+    assert '检索：帮我检索固态电池隔膜相关专利' in text
+    assert '分析：分析专利 CN117347385A' in text
+    assert '答复：我要答复审查意见' in text
+    assert '斜杠命令只在少数场景下作为兜底入口。' in text
+    assert '------------' not in text
+    assert '/cancel' not in text
 
 
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):

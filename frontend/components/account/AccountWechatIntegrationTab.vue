@@ -127,7 +127,7 @@
           <div class="wechat-phone-body">
             <div class="wechat-bubble is-system">请发送绑定码完成网页账号绑定。</div>
             <div class="wechat-bubble is-user">{{ bindSession.bindCode }}</div>
-            <div class="wechat-bubble is-system">绑定成功，现在可以直接发任务。</div>
+            <div class="wechat-bubble is-system wechat-bubble-multiline">{{ bindingSuccessWelcomeText }}</div>
             <div class="wechat-bubble is-user">帮我检索固态电池隔膜相关专利</div>
             <div class="wechat-bubble is-system">收到，我会先整理检索计划。</div>
           </div>
@@ -268,9 +268,22 @@ const usageScenes = [
   {
     title: '审查 / 答复',
     user: '我要答复审查意见',
-    reply: '我会按步骤收材料，过程中可继续上传文件或发送 /cancel 取消。',
+    reply: '我会先收集答复所需材料，再按流程推进并把结果回推到微信。',
   },
 ] as const
+
+const bindingSuccessWelcomeText = [
+  '微信绑定成功',
+  '',
+  '现在可以直接在这里发专利检索、专利分析和审查意见答复需求。',
+  '',
+  '示例：',
+  '检索：帮我检索固态电池隔膜相关专利',
+  '分析：分析专利 CN117347385A',
+  '答复：我要答复审查意见',
+  '',
+  '直接发送你的需求即可，斜杠命令只在少数场景下作为兜底入口。',
+].join('\n')
 
 const formatTime = (value?: string | null) => {
   const text = String(value || '').trim()
@@ -573,6 +586,10 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   padding: 0.75rem 0.85rem;
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.wechat-bubble-multiline {
+  white-space: pre-line;
 }
 
 .wechat-bubble.is-user {
