@@ -14,6 +14,13 @@ class TaskResponse(BaseModel):
     message: str
 
 
+class PatentNumberValidationResponse(BaseModel):
+    patentNumber: str
+    exists: bool = True
+    patentTitle: Optional[str] = None
+    message: str
+
+
 class SessionAuthResponse(BaseModel):
     access_token: str
     access_expires_at: str

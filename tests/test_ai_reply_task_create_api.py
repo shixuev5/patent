@@ -108,6 +108,98 @@ def test_patent_like_title_uses_file_stem_without_suffix() -> None:
     assert title == "CN123456A"
 
 
+def test_validate_patent_analysis_patent_number_returns_title(monkeypatch) -> None:
+    monkeypatch.setattr(
+        tasks_route,
+        "_query_patent_info_for_publication_number",
+        lambda pn: {
+            "PN": "CN116745575A",
+            "PATENT_ID": "pid-1",
+            "TITLE": {"CN": "一种测试装置"},
+        },
+    )
+
+    result = tasks_route._validate_patent_analysis_patent_number("cn116745575a")
+
+    assert result["patentNumber"] == "CN116745575A"
+    assert result["patentTitle"] == "一种测试装置"
+
+
+def test_validate_patent_number_api_returns_title(monkeypatch, tmp_path) -> None:
+    _mount_task_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        tasks_route,
+        "_validate_patent_analysis_patent_number",
+        lambda pn: {
+            "patentNumber": "CN116745575A",
+            "patentTitle": "一种测试装置",
+            "patentInfo": {"PATENT_ID": "pid-1"},
+        },
+    )
+
+    response = asyncio.run(
+        tasks_route.validate_patent_number(
+            patentNumber="cn116745575a",
+            current_user=CurrentUser(user_id="authing:user-validate"),
+        )
+    )
+
+    assert response.patentNumber == "CN116745575A"
+    assert response.patentTitle == "一种测试装置"
+    assert response.exists is True
+
+
+def test_create_patent_analysis_task_stores_validated_title(monkeypatch, tmp_path) -> None:
+    manager = _mount_task_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        tasks_route,
+        "_validate_patent_analysis_patent_number",
+        lambda pn: {
+            "patentNumber": "CN116745575A",
+            "patentTitle": "一种测试装置",
+            "patentInfo": {"PATENT_ID": "pid-1"},
+        },
+    )
+
+    response = asyncio.run(
+        tasks_route.create_task(
+            request=_FakeRequest(keys=["taskType", "patentNumber"]),
+            taskType="patent_analysis",
+            patentNumber="cn116745575a",
+            file=None,
+            current_user=CurrentUser(user_id="authing:user-analysis"),
+        )
+    )
+
+    task = manager.get_task(response.taskId)
+    assert task is not None
+    assert task.pn == "CN116745575A"
+    assert task.metadata["patent_title"] == "一种测试装置"
+
+
+def test_create_patent_analysis_task_rejects_unknown_patent_number(monkeypatch, tmp_path) -> None:
+    _mount_task_manager(monkeypatch, tmp_path)
+
+    def _raise_not_found(_pn: str):
+        raise HTTPException(status_code=404, detail="未在智慧芽检索到该专利公开号，无法创建 AI 分析任务。")
+
+    monkeypatch.setattr(tasks_route, "_validate_patent_analysis_patent_number", _raise_not_found)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            tasks_route.create_task(
+                request=_FakeRequest(keys=["taskType", "patentNumber"]),
+                taskType="patent_analysis",
+                patentNumber="CN116745575A",
+                file=None,
+                current_user=CurrentUser(user_id="authing:user-analysis-404"),
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert "未在智慧芽检索到该专利公开号" in str(exc_info.value.detail)
+
+
 def test_create_ai_reply_task_rejects_legacy_claims_file_field(monkeypatch, tmp_path) -> None:
     _mount_task_manager(monkeypatch, tmp_path)
 

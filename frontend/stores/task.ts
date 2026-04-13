@@ -53,6 +53,14 @@ export interface TaskSubmitResult {
   shouldPromptLogin?: boolean
 }
 
+export interface PatentValidationResult {
+  ok: boolean
+  exists: boolean
+  patentNumber?: string
+  patentTitle?: string
+  message?: string
+}
+
 const normalizeTaskType = (taskType?: string): TaskType => {
   if (taskType === 'ai_reply') return 'ai_reply'
   if (taskType === 'ai_review') return 'ai_review'
@@ -750,6 +758,70 @@ export const useTaskStore = defineStore('tasks', {
     async parseApiError(response: Response): Promise<string> {
       const payload = await this.parseApiErrorPayload(response)
       return payload.message
+    },
+
+    async validatePatentNumber(patentNumber: string): Promise<PatentValidationResult> {
+      const normalized = String(patentNumber || '').trim().toUpperCase()
+      if (!normalized) {
+        return {
+          ok: false,
+          exists: false,
+          message: '缺少专利公开号。',
+        }
+      }
+
+      const config = useRuntimeConfig()
+      const authed = await this.ensureAuth()
+      if (!authed || !this.authToken) {
+        return {
+          ok: false,
+          exists: false,
+          patentNumber: normalized,
+          message: '认证失败，请刷新后重试。',
+        }
+      }
+
+      try {
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/tasks/patent-validation?patentNumber=${encodeURIComponent(normalized)}`,
+          method: 'GET',
+          token: this.authToken,
+        })
+        if (!response.ok) {
+          const apiError = await this.parseApiErrorPayload(response)
+          if (response.status === 404) {
+            return {
+              ok: true,
+              exists: false,
+              patentNumber: normalized,
+              message: apiError.message,
+            }
+          }
+          return {
+            ok: false,
+            exists: false,
+            patentNumber: normalized,
+            message: apiError.message,
+          }
+        }
+
+        const data = await response.json()
+        return {
+          ok: true,
+          exists: true,
+          patentNumber: data?.patentNumber || normalized,
+          patentTitle: typeof data?.patentTitle === 'string' ? data.patentTitle : undefined,
+          message: typeof data?.message === 'string' ? data.message : undefined,
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          exists: false,
+          patentNumber: normalized,
+          message: error instanceof Error ? error.message : '专利校验失败，请稍后重试。',
+        }
+      }
     },
 
     async fetchUsage(taskType?: TaskType): Promise<UsageResponse | null> {

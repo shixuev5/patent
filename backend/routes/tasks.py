@@ -27,7 +27,7 @@ from backend.task_usage_tracking import (
     persist_task_usage,
     task_usage_collection,
 )
-from backend.models import CurrentUser, TaskResponse
+from backend.models import CurrentUser, PatentNumberValidationResponse, TaskResponse
 from backend.utils import (
     _cleanup_path,
     _read_local_pdf_bytes,
@@ -559,6 +559,70 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
 def _normalize_pn(value: Any) -> Optional[str]:
     normalized = str(value or "").strip().upper()
     return normalized or None
+
+
+def _extract_patent_title(patent_info: Any) -> Optional[str]:
+    if not isinstance(patent_info, dict):
+        return None
+
+    title_value = patent_info.get("TITLE")
+    if isinstance(title_value, dict):
+        for key in ("CN", "ZH", "EN"):
+            cleaned = str(title_value.get(key) or "").strip()
+            if cleaned:
+                return cleaned
+        for value in title_value.values():
+            cleaned = str(value or "").strip()
+            if cleaned:
+                return cleaned
+    elif isinstance(title_value, str):
+        cleaned = title_value.strip()
+        if cleaned:
+            return cleaned
+
+    for key in ("TITLE_LANG", "INVENTION_TITLE", "patent_title", "title"):
+        cleaned = str(patent_info.get(key) or "").strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _query_patent_info_for_publication_number(patent_number: str) -> Optional[Dict[str, Any]]:
+    normalized_pn = _normalize_pn(patent_number)
+    if not normalized_pn:
+        return None
+
+    try:
+        from agents.common.search_clients.factory import SearchClientFactory
+
+        client = SearchClientFactory.get_client("zhihuiya")
+        if not hasattr(client, "_query_patent_info_by_count"):
+            raise RuntimeError("智慧芽客户端未提供 count 查询能力")
+        patent_info = client._query_patent_info_by_count(f"PN:({normalized_pn})")  # type: ignore[attr-defined]
+        return patent_info if isinstance(patent_info, dict) else None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"按公开号查询专利失败，patent_number={normalized_pn} error={exc}")
+        raise HTTPException(status_code=503, detail="专利校验服务暂不可用，请稍后重试。") from exc
+
+
+def _validate_patent_analysis_patent_number(patent_number: str) -> Dict[str, Any]:
+    normalized_pn = _normalize_pn(patent_number)
+    if not normalized_pn:
+        raise HTTPException(status_code=400, detail="缺少专利公开号。")
+
+    patent_info = _query_patent_info_for_publication_number(normalized_pn)
+    if not patent_info:
+        raise HTTPException(status_code=404, detail="未在智慧芽检索到该专利公开号，无法创建 AI 分析任务。")
+
+    resolved_pn = _normalize_pn(patent_info.get("PN")) or normalized_pn
+    patent_title = _extract_patent_title(patent_info)
+    return {
+        "patentNumber": resolved_pn,
+        "patentTitle": patent_title,
+        "patentInfo": patent_info,
+    }
 
 
 def _strip_filename_suffix(filename: Any) -> Optional[str]:
@@ -1909,6 +1973,21 @@ async def list_tasks(current_user: CurrentUser = Depends(_get_current_user)):
     }
 
 
+@router.get("/api/tasks/patent-validation", response_model=PatentNumberValidationResponse)
+async def validate_patent_number(
+    patentNumber: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    _ = current_user
+    result = _validate_patent_analysis_patent_number(patentNumber)
+    return PatentNumberValidationResponse(
+        patentNumber=result["patentNumber"],
+        exists=True,
+        patentTitle=result.get("patentTitle"),
+        message="已在智慧芽检索到该专利，可创建 AI 分析任务。",
+    )
+
+
 @router.post("/api/tasks", response_model=TaskResponse)
 async def create_task(
     request: Request,
@@ -1938,6 +2017,11 @@ async def create_task(
 
         pn_value = (patentNumber or "").strip()
         pn = pn_value or None
+        validated_patent_info: Optional[Dict[str, Any]] = None
+        if task_type == TaskType.PATENT_ANALYSIS.value and pn:
+            validated = _validate_patent_analysis_patent_number(pn)
+            pn = validated["patentNumber"]
+            validated_patent_info = validated
         task = task_manager.create_task(
             owner_id=current_user.user_id,
             task_type=task_type,
@@ -1959,6 +2043,8 @@ async def create_task(
         )
 
         task_metadata: Dict[str, Any] = {"task_type": task_type, "input_files": []}
+        if validated_patent_info and validated_patent_info.get("patentTitle"):
+            task_metadata["patent_title"] = validated_patent_info["patentTitle"]
         upload_file_path: Optional[str] = None
         upload_sha256: Optional[str] = None
         try:

@@ -89,6 +89,10 @@
             class="w-full rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
           />
           <p v-if="patentNumberError" class="mt-2 text-xs text-rose-600">{{ patentNumberError }}</p>
+          <p v-else-if="patentValidationHint" class="mt-2 text-xs" :class="patentValidationHintClass">{{ patentValidationHint }}</p>
+          <p v-if="!patentNumberError && patentValidationTitle" class="mt-1 text-xs text-slate-600">
+            专利名称：{{ patentValidationTitle }}
+          </p>
         </div>
 
         <div>
@@ -216,7 +220,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TaskPanel from '~/components/task/TaskPanel.vue'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
@@ -234,6 +238,12 @@ const loading = ref(false)
 const patentNumber = ref('')
 const patentFile = ref<File | null>(null)
 const patentFileInput = ref<HTMLInputElement>()
+const patentValidationStatus = ref<'idle' | 'pending' | 'success' | 'not_found' | 'error'>('idle')
+const patentValidationMessage = ref('')
+const patentValidationTitle = ref('')
+const patentValidationResolvedNumber = ref('')
+let patentValidationTimer: ReturnType<typeof setTimeout> | null = null
+let patentValidationSequence = 0
 
 const officeActionFile = ref<File | null>(null)
 const responseFile = ref<File | null>(null)
@@ -260,9 +270,33 @@ const patentNumberError = computed(() => {
 
 const patentFileName = computed(() => patentFile.value?.name || '')
 
+const patentValidationHint = computed(() => {
+  if (mode.value !== 'patent_analysis' || patentNumberError.value) return ''
+  if (patentValidationStatus.value === 'pending') return '正在校验专利是否存在...'
+  return patentValidationMessage.value
+})
+
+const patentValidationHintClass = computed(() => {
+  if (patentValidationStatus.value === 'success') return 'text-emerald-600'
+  if (patentValidationStatus.value === 'pending') return 'text-slate-500'
+  if (patentValidationStatus.value === 'not_found') return 'text-rose-600'
+  if (patentValidationStatus.value === 'error') return 'text-amber-700'
+  return 'text-slate-500'
+})
+
+const patentAnalysisPatentReady = computed(() => {
+  if (mode.value !== 'patent_analysis') return false
+  if (!normalizedPatentNumber.value || patentNumberError.value) return false
+  return patentValidationStatus.value === 'success' && patentValidationResolvedNumber.value === normalizedPatentNumber.value
+})
+
 const canSubmitPatent = computed(() => {
-  const hasPn = !!normalizedPatentNumber.value && !patentNumberError.value
   const hasFile = !!patentFile.value
+  if (mode.value === 'patent_analysis') {
+    if (normalizedPatentNumber.value) return patentAnalysisPatentReady.value
+    return hasFile
+  }
+  const hasPn = !!normalizedPatentNumber.value && !patentNumberError.value
   return hasPn || hasFile
 })
 
@@ -399,7 +433,33 @@ const onComparisonChange = (event: Event) => {
   comparisonDocs.value = files
 }
 
+const clearPatentValidationTimer = () => {
+  if (patentValidationTimer) {
+    clearTimeout(patentValidationTimer)
+    patentValidationTimer = null
+  }
+}
+
+const resetPatentValidation = () => {
+  clearPatentValidationTimer()
+  patentValidationStatus.value = 'idle'
+  patentValidationMessage.value = ''
+  patentValidationTitle.value = ''
+  patentValidationResolvedNumber.value = ''
+}
+
 const submitPatentLikeTask = async () => {
+  if (mode.value === 'patent_analysis' && normalizedPatentNumber.value) {
+    if (patentValidationStatus.value === 'pending') {
+      taskStore.showGlobalNotice('info', '专利号校验中，请稍候。')
+      return
+    }
+    if (!patentAnalysisPatentReady.value) {
+      taskStore.showGlobalNotice('error', patentValidationHint.value || '未在智慧芽检索到该专利，无法创建 AI 分析任务。')
+      return
+    }
+  }
+
   const payload: CreateTaskInput = {
     taskType: mode.value === 'ai_review' ? 'ai_review' : 'patent_analysis',
     patentNumber: normalizedPatentNumber.value || undefined,
@@ -412,6 +472,7 @@ const submitPatentLikeTask = async () => {
     if (result.ok) {
       patentNumber.value = ''
       patentFile.value = null
+      resetPatentValidation()
       if (patentFileInput.value) patentFileInput.value.value = ''
       taskStore.showGlobalNotice(
         'success',
@@ -478,9 +539,16 @@ onMounted(async () => {
   await refreshUsageForCurrentMode()
 })
 
+onBeforeUnmount(() => {
+  patentValidationSequence += 1
+  clearPatentValidationTimer()
+})
+
 watch(
   () => mode.value,
   async () => {
+    patentValidationSequence += 1
+    resetPatentValidation()
     await refreshUsageForCurrentMode()
   },
 )
@@ -490,6 +558,57 @@ watch(
   async () => {
     await taskStore.init()
     await refreshUsageForCurrentMode()
+  },
+)
+
+watch(
+  () => [mode.value, normalizedPatentNumber.value, patentNumberError.value] as const,
+  ([currentMode, currentPatentNumber, currentPatentNumberError]) => {
+    patentValidationSequence += 1
+    clearPatentValidationTimer()
+
+    if (currentMode !== 'patent_analysis' || !currentPatentNumber || !!currentPatentNumberError) {
+      resetPatentValidation()
+      return
+    }
+
+    if (
+      patentValidationResolvedNumber.value === currentPatentNumber
+      && (patentValidationStatus.value === 'success' || patentValidationStatus.value === 'not_found')
+    ) {
+      return
+    }
+
+    patentValidationStatus.value = 'pending'
+    patentValidationMessage.value = ''
+    patentValidationTitle.value = ''
+    patentValidationResolvedNumber.value = ''
+
+    const sequence = patentValidationSequence
+    patentValidationTimer = setTimeout(async () => {
+      const result = await taskStore.validatePatentNumber(currentPatentNumber)
+      if (sequence !== patentValidationSequence) return
+      if (mode.value !== 'patent_analysis' || normalizedPatentNumber.value !== currentPatentNumber) return
+
+      patentValidationResolvedNumber.value = result.patentNumber || currentPatentNumber
+      patentValidationTitle.value = result.patentTitle || ''
+
+      if (result.ok && result.exists) {
+        patentValidationStatus.value = 'success'
+        patentValidationMessage.value = result.message || '已在智慧芽检索到该专利，可创建 AI 分析任务。'
+        return
+      }
+      if (result.ok && !result.exists) {
+        patentValidationStatus.value = 'not_found'
+        patentValidationMessage.value = result.message || '未在智慧芽检索到该专利，无法创建 AI 分析任务。'
+        patentValidationTitle.value = ''
+        return
+      }
+
+      patentValidationStatus.value = 'error'
+      patentValidationMessage.value = result.message || '专利校验失败，请稍后重试。'
+      patentValidationTitle.value = ''
+    }, 450)
   },
 )
 
