@@ -769,13 +769,13 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     assert not any("run.completed" in item for item in events)
 
 
-def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_table(monkeypatch, tmp_path):
+def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
-    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_COMPLETED)
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_AWAITING_HUMAN_DECISION)
     storage.upsert_ai_search_documents(
         [
             {
@@ -791,7 +791,21 @@ def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_tab
                 "user_removed": False,
                 "coarse_status": "kept",
                 "close_read_status": "selected",
-            }
+            },
+            {
+                "run_id": run_id,
+                "document_id": "doc-2",
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "pn": "CN2",
+                "title": "文献2",
+                "abstract": "",
+                "stage": "shortlisted",
+                "user_pinned": False,
+                "user_removed": False,
+                "coarse_status": "kept",
+                "close_read_status": "rejected",
+            },
         ]
     )
     batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison")
@@ -809,25 +823,96 @@ def test_patch_selected_documents_reopens_feature_comparison_and_hides_stale_tab
     _set_phase(
         storage,
         created.sessionId,
-        "completed",
+        PHASE_AWAITING_HUMAN_DECISION,
         active_plan_version=1,
         current_feature_comparison_id="ft-1",
         active_batch_id=batch_id,
+        human_decision_reason="no_progress_limit_reached",
+        human_decision_summary="需要人工决策",
+    )
+    _create_pending_action(
+        storage,
+        created.sessionId,
+        "human_decision",
+        run_id=run_id,
+        plan_version=1,
+        payload={
+            "available": True,
+            "reason": "no_progress_limit_reached",
+            "summary": "需要人工决策",
+            "roundCount": 2,
+            "noProgressRoundCount": 1,
+            "selectedCount": 1,
+            "recommendedActions": ["continue_search", "complete_current_results"],
+        },
     )
 
-    snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, ["doc-1"], [])
+    class _FakeCloseReaderAgent:
+        def invoke(self, _payload):
+            run = storage.get_ai_search_run(created.sessionId, plan_version=1)
+            batch_id_value = str(run.get("active_batch_id") or "")
+            storage.update_ai_search_document(
+                created.sessionId,
+                1,
+                "doc-2",
+                stage="selected",
+                user_pinned=True,
+                user_removed=False,
+                close_read_status="selected",
+                close_read_reason="人工送审复核通过",
+                key_passages_json=[{"passage": "证据段"}],
+            )
+            storage.update_ai_search_batch(batch_id_value, status="committed")
+            return {"messages": [{"role": "assistant", "content": "done"}]}
 
-    assert snapshot.run["phase"] == PHASE_FEATURE_COMPARISON
-    assert snapshot.analysis["latestFeatureCompareResult"] is None
+    class _FakeFeatureAgent:
+        def invoke(self, _payload):
+            batch_id_value = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
+            storage.create_ai_search_feature_comparison(
+                {
+                    "feature_comparison_id": "ft-new",
+                    "run_id": run_id,
+                    "batch_id": batch_id_value,
+                    "task_id": created.sessionId,
+                    "plan_version": 1,
+                    "table_json": [{"feature": "B"}],
+                    "summary_markdown": "新特征表",
+                    "overall_findings": "人工复核后已更新对比结论。",
+                }
+            )
+            storage.update_ai_search_run(
+                created.sessionId,
+                run_id,
+                phase=PHASE_FEATURE_COMPARISON,
+                status=TaskStatus.PROCESSING.value,
+                active_batch_id=batch_id_value,
+            )
+            return {"messages": [{"role": "assistant", "content": "done"}]}
+
+    monkeypatch.setattr(ai_search_service_module, "build_close_reader_agent", lambda *_args, **_kwargs: _FakeCloseReaderAgent())
+    monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
+
+    events = asyncio.run(_collect_stream(service.stream_document_review(created.sessionId, "guest_ai_search", 1, ["doc-2"], ["doc-1"])))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    removed_doc = next(item for item in snapshot.retrieval["documents"]["candidates"] if item["document_id"] == "doc-1")
+    selected_doc = next(item for item in snapshot.retrieval["documents"]["selected"] if item["document_id"] == "doc-2")
+
+    assert snapshot.run["phase"] == PHASE_AWAITING_HUMAN_DECISION
+    assert removed_doc["stage"] == "shortlisted"
+    assert removed_doc["user_removed"] is True
+    assert selected_doc["stage"] == "selected"
+    assert snapshot.analysis["latestFeatureCompareResult"]["feature_comparison_id"] == "ft-new"
+    assert any("run.completed" in item for item in events)
 
 
-def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_empty(monkeypatch, tmp_path):
+def test_stream_document_review_keeps_human_decision_when_selection_becomes_empty(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
         _plan_record(created.sessionId, plan_version=1, status="confirmed", title="测试目标")
     )
-    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_FEATURE_COMPARISON)
+    run_id = _create_run(storage, created.sessionId, plan_version=1, phase=PHASE_AWAITING_HUMAN_DECISION)
     storage.upsert_ai_search_documents(
         [
             {
@@ -849,15 +934,36 @@ def test_patch_selected_documents_returns_to_close_read_when_selection_becomes_e
     _set_phase(
         storage,
         created.sessionId,
-        PHASE_FEATURE_COMPARISON,
+        PHASE_AWAITING_HUMAN_DECISION,
         active_plan_version=1,
         current_feature_comparison_id=None,
+        human_decision_reason="no_progress_limit_reached",
+        human_decision_summary="需要人工决策",
+    )
+    _create_pending_action(
+        storage,
+        created.sessionId,
+        "human_decision",
+        run_id=run_id,
+        plan_version=1,
+        payload={
+            "available": True,
+            "reason": "no_progress_limit_reached",
+            "summary": "需要人工决策",
+            "roundCount": 1,
+            "noProgressRoundCount": 1,
+            "selectedCount": 1,
+            "recommendedActions": ["continue_search", "complete_current_results"],
+        },
     )
 
-    snapshot = service.patch_selected_documents(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])
+    events = asyncio.run(_collect_stream(service.stream_document_review(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert snapshot.run["phase"] == PHASE_CLOSE_READ
+    assert snapshot.run["phase"] == PHASE_AWAITING_HUMAN_DECISION
     assert snapshot.retrieval["documents"]["selected"] == []
+    assert snapshot.retrieval["documents"]["candidates"][0]["stage"] == "shortlisted"
+    assert any("run.completed" in item for item in events)
 
 
 def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):

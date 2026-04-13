@@ -1186,7 +1186,7 @@ def test_wechat_runtime_llm_high_confidence_search_returns_disabled_message(monk
     assert storage.list_tasks(owner_id='authing:wx-search-llm') == []
 
 
-@pytest.mark.parametrize('text', ['确认计划', '继续检索', '按当前结果完成', '选择 1 3 5'])
+@pytest.mark.parametrize('text', ['确认计划', '继续检索', '按当前结果完成', '送审 1 3 5'])
 def test_wechat_runtime_ai_search_followup_commands_return_disabled_message(tmp_path, text):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_followup_blocked.db')
     storage.upsert_authing_user(

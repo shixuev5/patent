@@ -412,7 +412,11 @@
           <AiSearchHumanDecisionCard
             v-else-if="humanDecisionAction?.available"
             :action="humanDecisionAction"
+            :selected-docs="selectedReviewDocuments"
+            :candidate-docs="reviewCandidateDocuments"
             :disabled="streaming"
+            @request-review="requestDocumentReview"
+            @remove-selected="removeSelectedDocument"
             @continue-search="continueSearchFromDecision"
             @complete-current-results="completeCurrentResultsFromDecision"
           />
@@ -584,6 +588,10 @@ const resumeAction = computed<Record<string, any> | null>(() => {
 })
 const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.todos || [])
 const queuedExecutionMessages = computed<Array<Record<string, any>>>(() => currentSession.value?.executionMessageQueue?.items || [])
+const candidateDocuments = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.documents?.candidates || [])
+const selectedDocuments = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.documents?.selected || [])
+const reviewCandidateDocuments = computed<Array<Record<string, any>>>(() => candidateDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_review'))
+const selectedReviewDocuments = computed<Array<Record<string, any>>>(() => selectedDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_remove'))
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
 const activeExecutionTodoTitle = computed(() => {
   const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
@@ -1012,6 +1020,16 @@ const continueSearchFromDecision = async () => {
 const completeCurrentResultsFromDecision = async () => {
   if (!humanDecisionAction.value?.available) return
   await aiSearchStore.completeCurrentResultsFromDecision()
+}
+
+const requestDocumentReview = async (documentId: string) => {
+  if (!humanDecisionAction.value?.available || !activePlanVersion.value || !documentId) return
+  await aiSearchStore.submitDocumentReview(activePlanVersion.value, [documentId], [])
+}
+
+const removeSelectedDocument = async (documentId: string) => {
+  if (!humanDecisionAction.value?.available || !activePlanVersion.value || !documentId) return
+  await aiSearchStore.submitDocumentReview(activePlanVersion.value, [], [documentId])
 }
 
 const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()

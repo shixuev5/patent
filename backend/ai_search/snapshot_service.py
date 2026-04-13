@@ -166,9 +166,57 @@ class AiSearchSnapshotService:
         if not run:
             return [], []
         documents = self.storage.list_ai_search_documents(task.id, str(run.get("run_id") or ""))
-        selected = [item for item in documents if str(item.get("stage") or "") == "selected"]
-        candidate = [item for item in documents if str(item.get("stage") or "") != "selected"]
+        active_batch_id = str(run.get("active_batch_id") or "").strip()
+        active_batch = self.storage.get_ai_search_batch(active_batch_id) if active_batch_id else None
+        active_batch_type = str(active_batch.get("batch_type") or "").strip() if isinstance(active_batch, dict) else ""
+        active_batch_documents = set(self.storage.list_ai_search_batch_documents(active_batch_id)) if active_batch_id else set()
+        phase = str((self._session_summary(task).phase or "")).strip()
+        normalized = [
+            self._snapshot_document_item(
+                item,
+                phase=phase,
+                active_batch_type=active_batch_type,
+                active_batch_documents=active_batch_documents,
+            )
+            for item in documents
+        ]
+        selected = [item for item in normalized if str(item.get("stage") or "") == "selected"]
+        candidate = [item for item in normalized if str(item.get("stage") or "") != "selected"]
         return candidate, selected
+
+    def _snapshot_document_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        phase: str,
+        active_batch_type: str,
+        active_batch_documents: set[str],
+    ) -> Dict[str, Any]:
+        payload = dict(item)
+        document_id = str(item.get("document_id") or "").strip()
+        stage = str(item.get("stage") or "").strip()
+        evidence_ready = bool(
+            str(item.get("evidence_summary") or "").strip()
+            or (item.get("key_passages_json") if isinstance(item.get("key_passages_json"), list) else [])
+            or (item.get("claim_ids_json") if isinstance(item.get("claim_ids_json"), list) else [])
+        )
+        manual_action = "none"
+        if active_batch_type == "close_read" and document_id and document_id in active_batch_documents:
+            manual_action = "review_requested"
+        elif phase == "awaiting_human_decision":
+            if stage == "selected":
+                manual_action = "can_remove"
+            elif stage == "shortlisted":
+                manual_action = "can_review"
+        payload["manualAction"] = manual_action
+        payload["evidenceReady"] = evidence_ready
+        payload["reviewReason"] = (
+            str(item.get("close_read_reason") or "").strip()
+            or str(item.get("agent_reason") or "").strip()
+            or str(item.get("coarse_reason") or "").strip()
+            or None
+        )
+        return payload
 
     def _latest_assistant_chat(self, task_id: str) -> str:
         messages = self.storage.list_ai_search_messages(task_id)

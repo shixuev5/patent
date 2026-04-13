@@ -374,7 +374,7 @@ class WeChatRuntimeService:
     ) -> InternalWeChatInboundMessageResponse:
         if not text and not attachments:
             return self._response(binding, messages=[self._text(self._intent_guidance_text())])
-        if text in AI_SEARCH_FOLLOWUP_COMMANDS or text.startswith("选择 "):
+        if text in AI_SEARCH_FOLLOWUP_COMMANDS or text.startswith("选择 ") or text.startswith("送审 "):
             return self._response(binding, messages=[self._text(self._ai_search_disabled_text())])
 
         route = self._classify_intent(text=text, attachments=attachments)
@@ -687,7 +687,9 @@ class WeChatRuntimeService:
             elif text == "按当前结果完成":
                 await self._drain(self.ai_search_service.stream_decision_complete(resolved_session_id, binding.owner_id))
             elif text.startswith("选择 "):
-                await self._handle_selection_text(resolved_session_id, binding.owner_id, text)
+                raise HTTPException(status_code=400, detail="当前请使用“送审 1 3 5”发起人工文献复核。")
+            elif text.startswith("送审 "):
+                await self._handle_review_text(resolved_session_id, binding.owner_id, text)
             elif action_type == "question":
                 question_id = str((pending_action or {}).get("questionId") or (pending_action or {}).get("question_id") or "").strip()
                 if not question_id:
@@ -713,7 +715,6 @@ class WeChatRuntimeService:
             )
 
         final_snapshot = self.ai_search_service.get_snapshot(resolved_session_id, binding.owner_id)
-        final_snapshot = await self._auto_select_small_candidate_set(resolved_session_id, binding.owner_id, final_snapshot)
         return self._response(
             binding,
             session_type=TaskType.AI_SEARCH.value,
@@ -739,48 +740,27 @@ class WeChatRuntimeService:
         async for _chunk in stream:
             continue
 
-    async def _handle_selection_text(self, session_id: str, owner_id: str, text: str) -> None:
+    async def _handle_review_text(self, session_id: str, owner_id: str, text: str) -> None:
         snapshot = self.ai_search_service.get_snapshot(session_id, owner_id)
         candidates = snapshot.retrieval.get("documents", {}).get("candidates", []) if isinstance(snapshot.retrieval, dict) else []
         indexes = [
             int(item)
-            for item in text.replace("选择", "", 1).strip().split()
+            for item in text.replace("送审", "", 1).strip().split()
             if str(item).isdigit() and int(item) > 0
         ]
-        selected_ids: List[str] = []
+        reviewable_candidates = [item for item in candidates if str(item.get("manualAction") or "").strip() == "can_review"]
+        review_ids: List[str] = []
         for index in indexes:
-            if 1 <= index <= len(candidates):
-                document_id = str(candidates[index - 1].get("documentId") or candidates[index - 1].get("document_id") or "").strip()
+            if 1 <= index <= len(reviewable_candidates):
+                document_id = str(reviewable_candidates[index - 1].get("documentId") or reviewable_candidates[index - 1].get("document_id") or "").strip()
                 if document_id:
-                    selected_ids.append(document_id)
-        if not selected_ids:
-            raise HTTPException(status_code=400, detail="未识别到有效的候选文献编号。")
-        patched = self.ai_search_service.patch_selected_documents(session_id, owner_id, int(snapshot.run.get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or 0), selected_ids, [])
-        plan_version = int(patched.run.get("planVersion") or patched.plan.get("currentPlan", {}).get("planVersion") or 0)
-        if plan_version <= 0:
-            raise HTTPException(status_code=409, detail="当前没有有效计划版本，无法生成特征对比。")
-        await self._drain(self.ai_search_service.stream_feature_comparison(session_id, owner_id, plan_version))
-
-    async def _auto_select_small_candidate_set(self, session_id: str, owner_id: str, snapshot: Any) -> Any:
-        retrieval = snapshot.retrieval if isinstance(snapshot.retrieval, dict) else {}
-        documents = retrieval.get("documents") if isinstance(retrieval.get("documents"), dict) else {}
-        candidates = documents.get("candidates") if isinstance(documents.get("candidates"), list) else []
-        selected = documents.get("selected") if isinstance(documents.get("selected"), list) else []
-        if selected or not candidates or len(candidates) > 3:
-            return snapshot
+                    review_ids.append(document_id)
+        if not review_ids:
+            raise HTTPException(status_code=400, detail="未识别到可送审的候选文献编号。")
         plan_version = int(snapshot.run.get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or 0)
         if plan_version <= 0:
-            return snapshot
-        selected_ids = [
-            str(item.get("documentId") or item.get("document_id") or "").strip()
-            for item in candidates
-            if str(item.get("documentId") or item.get("document_id") or "").strip()
-        ]
-        if not selected_ids:
-            return snapshot
-        self.ai_search_service.patch_selected_documents(session_id, owner_id, plan_version, selected_ids, [])
-        await self._drain(self.ai_search_service.stream_feature_comparison(session_id, owner_id, plan_version))
-        return self.ai_search_service.get_snapshot(session_id, owner_id)
+            raise HTTPException(status_code=409, detail="当前没有有效计划版本，无法发起送审复核。")
+        await self._drain(self.ai_search_service.stream_document_review(session_id, owner_id, plan_version, review_ids, []))
 
     def _build_ai_search_messages(self, snapshot: Any) -> List[InternalWeChatOutboundMessage]:
         messages: List[InternalWeChatOutboundMessage] = []
@@ -805,9 +785,10 @@ class WeChatRuntimeService:
         elif action_type == "human_decision":
             documents = snapshot.retrieval.get("documents", {}) if isinstance(snapshot.retrieval, dict) else {}
             candidates = documents.get("candidates") if isinstance(documents.get("candidates"), list) else []
-            if candidates:
-                lines = ["候选文献如下，请回复“选择 1 3 5”这类编号指令："]
-                for index, item in enumerate(candidates, start=1):
+            reviewable_candidates = [item for item in candidates if str(item.get("manualAction") or "").strip() == "can_review"]
+            if reviewable_candidates:
+                lines = ["候选文献如下，请回复“送审 1 3 5”这类编号指令："]
+                for index, item in enumerate(reviewable_candidates, start=1):
                     title = str(item.get("title") or item.get("pn") or item.get("documentId") or item.get("document_id") or f"文献 {index}").strip()
                     lines.append(f"{index}. {title}")
                 messages.append(self._text("\n".join(lines)))

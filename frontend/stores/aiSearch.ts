@@ -1003,33 +1003,28 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async patchSelectedDocuments(planVersion: number, addDocumentIds?: string[], removeDocumentIds?: string[]) {
+    async submitDocumentReview(planVersion: number, reviewDocumentIds?: string[], removeDocumentIds?: string[]) {
       const sessionId = String(this.currentSessionId || '').trim()
-      if (!sessionId) return
-      this.loading = true
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
+      this._setStreaming(sessionId, true)
+      this._startPendingAssistant(sessionId, reviewDocumentIds?.length ? 'close_read' : 'feature_comparison', true)
       try {
-        const token = await this._ensureToken()
-        const config = useRuntimeConfig()
-        const data = await requestJson<AiSearchSnapshot>({
-          baseUrl: config.public.apiBaseUrl,
-          path: `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/selected-documents`,
-          method: 'PATCH',
-          token,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        await this._postStream(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/document-review/stream`,
+          {
             planVersion,
-            addDocumentIds,
+            reviewDocumentIds,
             removeDocumentIds,
-          }),
-        })
-        this._applySnapshot(data, { activate: sessionId === this.currentSessionId })
+          },
+        )
       } catch (error: any) {
-        this._setRuntimeError(sessionId, error?.message || '更新对比文件失败')
+        this._setRuntimeError(sessionId, error?.message || '提交人工文献复核失败')
+        this._resetTransientRunState(sessionId)
       } finally {
-        this.loading = false
+        this._setStreaming(sessionId, false)
+        await this.loadSession(sessionId, { activate: sessionId === this.currentSessionId })
       }
     },
 

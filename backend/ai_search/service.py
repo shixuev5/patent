@@ -60,6 +60,12 @@ def build_feature_comparer_agent(storage: Any, task_id: str) -> Any:
     return _build_feature_comparer_agent(storage, task_id)
 
 
+def build_close_reader_agent(storage: Any, task_id: str) -> Any:
+    from agents.ai_search.main import build_close_reader_agent as _build_close_reader_agent
+
+    return _build_close_reader_agent(storage, task_id)
+
+
 def build_ai_search_terminal_artifacts(**kwargs: Any) -> Dict[str, Any]:
     from .reporting import build_ai_search_terminal_artifacts as _build_ai_search_terminal_artifacts
 
@@ -103,6 +109,9 @@ class AiSearchService:
 
     def _build_feature_comparer_agent(self, storage: Any, task_id: str) -> Any:
         return build_feature_comparer_agent(storage, task_id)
+
+    def _build_close_reader_agent(self, storage: Any, task_id: str) -> Any:
+        return build_close_reader_agent(storage, task_id)
 
     def _build_terminal_artifacts(self, **kwargs: Any) -> Dict[str, Any]:
         return build_ai_search_terminal_artifacts(**kwargs)
@@ -301,15 +310,26 @@ class AiSearchService:
         ):
             yield event
 
-    def patch_selected_documents(
+    async def stream_document_review(
         self,
         session_id: str,
         owner_id: str,
         plan_version: int,
-        add_document_ids: Optional[List[str]],
+        review_document_ids: Optional[List[str]],
         remove_document_ids: Optional[List[str]],
-    ) -> AiSearchSnapshotResponse:
-        return self.agent_runs.patch_selected_documents(session_id, owner_id, plan_version, add_document_ids, remove_document_ids)
+    ) -> AsyncIterator[str]:
+        async for event in self._stream_with_task_usage(
+            session_id,
+            owner_id,
+            lambda: self.agent_runs.stream_document_review(
+                session_id,
+                owner_id,
+                plan_version,
+                review_document_ids,
+                remove_document_ids,
+            ),
+        ):
+            yield event
 
     async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(

@@ -13,12 +13,12 @@ from backend.models import CurrentUser
 from backend.ai_search.models import (
     AiSearchAnswerRequest,
     AiSearchCreateFromAnalysisRequest,
+    AiSearchDocumentReviewRequest,
     AiSearchExecutionQueueMessageRequest,
     AiSearchFeatureComparisonRequest,
     AiSearchMessageRequest,
     AiSearchPlanConfirmRequest,
     AiSearchSessionUpdateRequest,
-    AiSearchSelectedDocumentsPatchRequest,
 )
 from backend.ai_search.service import AiSearchService
 
@@ -160,20 +160,23 @@ async def stream_ai_search_plan_confirmation(
     )
 
 
-@router.patch("/api/ai-search/sessions/{session_id}/selected-documents")
-async def patch_ai_search_selected_documents(
+@router.post("/api/ai-search/sessions/{session_id}/document-review/stream")
+async def stream_ai_search_document_review(
     session_id: str,
-    request: AiSearchSelectedDocumentsPatchRequest,
+    request: AiSearchDocumentReviewRequest,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
-    return service.patch_selected_documents(
-        session_id,
-        current_user.user_id,
-        request.planVersion,
-        request.addDocumentIds,
-        request.removeDocumentIds,
+    return StreamingResponse(
+        service.stream_document_review(
+            session_id,
+            current_user.user_id,
+            request.planVersion,
+            request.reviewDocumentIds,
+            request.removeDocumentIds,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
-
 
 @router.post("/api/ai-search/sessions/{session_id}/feature-comparison/stream")
 async def stream_ai_search_feature_comparison(

@@ -68,6 +68,23 @@ def _summarize_evidence_locations(values: List[str]) -> str:
 
 
 def build_close_reader_tools(context: Any) -> List[Any]:
+    def _resolve_loaded_batch(version: int) -> tuple[Dict[str, Any] | None, List[str]]:
+        run = context.active_run(version)
+        active_batch_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
+        if not active_batch_id:
+            return None, []
+        batch = context.storage.get_ai_search_batch(active_batch_id)
+        if not batch or str(batch.get("batch_type") or "") != "close_read":
+            return None, []
+        if str(batch.get("status") or "") != "loaded":
+            return None, []
+        pending_ids = [
+            str(item or "").strip()
+            for item in context.storage.list_ai_search_batch_documents(active_batch_id)
+            if str(item or "").strip()
+        ]
+        return batch, pending_ids
+
     def run_close_read_batch(
         operation: str = "load",
         payload_json: str = "",
@@ -81,10 +98,13 @@ def build_close_reader_tools(context: Any) -> List[Any]:
         try:
             if op != "commit":
                 records = context.storage.list_ai_search_documents(context.task_id, version)
+                loaded_batch, loaded_ids = _resolve_loaded_batch(version)
+                loaded_id_set = set(loaded_ids)
                 pending = [
                     item
                     for item in records
                     if str(item.get("coarse_status") or "") == "kept" and str(item.get("close_read_status") or "pending") == "pending"
+                    and (not loaded_id_set or str(item.get("document_id") or "").strip() in loaded_id_set)
                 ][: max(int(limit or DEFAULT_SHORTLIST_LIMIT), 1)]
                 details: List[Dict[str, Any]] = []
                 task = context.storage.get_task(context.task_id)
@@ -135,20 +155,23 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                     )
                 file_map = prepare_close_read_workspace(workspace_dir, details)
                 pending_ids = [str(item.get("document_id") or "").strip() for item in pending if str(item.get("document_id") or "").strip()]
-                batch_id = uuid.uuid4().hex
+                batch_id = str((loaded_batch or {}).get("batch_id") or "").strip() or uuid.uuid4().hex
                 run_id = context.active_run_id(version)
-                context.storage.create_ai_search_batch(
-                    {
-                        "batch_id": batch_id,
-                        "run_id": run_id,
-                        "task_id": context.task_id,
-                        "plan_version": version,
-                        "batch_type": "close_read",
-                        "status": "loaded",
-                        "workspace_dir": str(workspace_dir),
-                    }
-                )
-                context.storage.replace_ai_search_batch_documents(batch_id, run_id, pending_ids)
+                if loaded_batch:
+                    context.storage.update_ai_search_batch(batch_id, workspace_dir=str(workspace_dir))
+                else:
+                    context.storage.create_ai_search_batch(
+                        {
+                            "batch_id": batch_id,
+                            "run_id": run_id,
+                            "task_id": context.task_id,
+                            "plan_version": version,
+                            "batch_type": "close_read",
+                            "status": "loaded",
+                            "workspace_dir": str(workspace_dir),
+                        }
+                    )
+                    context.storage.replace_ai_search_batch_documents(batch_id, run_id, pending_ids)
                 context.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=run_id, active_batch_id=batch_id)
                 return json.dumps(
                     {
@@ -187,6 +210,7 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                 raise ValueError("close_read commit 缺少有效 batch_id。")
             if str(batch.get("status") or "") == "committed":
                 raise ValueError("close_read batch 已提交，不能重复提交。")
+            manual_review_batch = str(batch.get("input_hash") or "").strip().startswith("manual_review")
             selected_ids = {str(item).strip() for item in (payload.get("selected") or []) if str(item).strip()}
             rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
             current_records = context.storage.list_ai_search_documents(context.task_id, version)
@@ -315,14 +339,14 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                         context.task_id,
                         version,
                         document_id,
-                        stage="rejected",
+                        stage="shortlisted" if manual_review_batch else "rejected",
                         key_passages_json=passages,
                         claim_ids_json=claim_ids,
                         evidence_locations_json=evidence_locations,
                         evidence_summary=evidence_summary,
-                        agent_reason="精读后排除",
+                        agent_reason="人工送审复核未通过" if manual_review_batch else "精读后排除",
                         close_read_status="rejected",
-                        close_read_reason="精读后排除",
+                        close_read_reason="人工送审复核未通过" if manual_review_batch else "精读后排除",
                         close_read_at=utc_now_z(),
                     )
                     context.storage.create_ai_search_document_decision(
@@ -334,8 +358,8 @@ def build_close_reader_tools(context: Any) -> List[Any]:
                             "plan_version": version,
                             "document_id": document_id,
                             "decision_stage": "close_read",
-                            "decision": "rejected",
-                            "reason": "精读后排除",
+                            "decision": "review_rejected" if manual_review_batch else "rejected",
+                            "reason": "人工送审复核未通过" if manual_review_batch else "精读后排除",
                             "metadata": {"assessment": assessment or {}},
                         }
                     )

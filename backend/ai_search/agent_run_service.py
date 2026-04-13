@@ -698,9 +698,11 @@ class AiSearchAgentRunService:
         previous_phase: str = "",
         config: Optional[Dict[str, Any]] = None,
         forward_model_text: bool = True,
+        emit_run_started: bool = True,
     ) -> AsyncIterator[str]:
         initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
-        yield self._format_event("run.started", session_id, initial_phase, {})
+        if emit_run_started:
+            yield self._format_event("run.started", session_id, initial_phase, {})
 
         iterator = agent.astream(
             payload,
@@ -961,6 +963,11 @@ class AiSearchAgentRunService:
         previous_phase: str = "",
         force_complete: bool = False,
         termination_reason: str = "",
+        force_human_decision: bool = False,
+        human_decision_reason: str = "",
+        human_decision_summary: str = "",
+        emit_run_started: bool = True,
+        emit_run_completed: bool = True,
     ) -> AsyncIterator[str]:
         previous_assistant = self.snapshots._latest_assistant_chat(task.id)
         initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
@@ -986,11 +993,13 @@ class AiSearchAgentRunService:
                     stream_state=stream_state,
                     initial_snapshot=initial_snapshot,
                     previous_phase=previous_phase,
+                    emit_run_started=emit_run_started,
                 ):
                     yield event
             else:
                 initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
-                yield self._format_event("run.started", task.id, initial_phase, {})
+                if emit_run_started:
+                    yield self._format_event("run.started", task.id, initial_phase, {})
                 current_phase = self._current_phase_value(task.id, initial_phase)
                 yield self._format_event(
                     "subagent.started",
@@ -1015,16 +1024,27 @@ class AiSearchAgentRunService:
             final_phase = PHASE_FEATURE_COMPARISON
             if force_complete:
                 final_phase = PHASE_COMPLETED
+            elif force_human_decision:
+                final_phase = PHASE_AWAITING_HUMAN_DECISION
             elif bool(round_evaluation.get("should_request_decision")):
                 final_phase = PHASE_AWAITING_HUMAN_DECISION
             elif str(progress.get("recommended_action") or "").strip() == "complete_execution":
                 final_phase = PHASE_COMPLETED
             selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
             if final_phase == PHASE_AWAITING_HUMAN_DECISION:
-                summary = str(round_evaluation.get("decision_summary") or "").strip() or "自动检索已停止，需要人工决策。"
+                findings = str(latest_feature.get("overall_findings") or "").strip()
+                summary = (
+                    str(human_decision_summary or "").strip()
+                    or findings
+                    or str(round_evaluation.get("decision_summary") or "").strip()
+                    or "自动检索已停止，需要人工决策。"
+                )
                 enter_human_decision(
                     context,
-                    reason=str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(),
+                    reason=(
+                        str(human_decision_reason or "").strip()
+                        or str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip()
+                    ),
                     summary=summary,
                 )
                 self.facade._append_message(
@@ -1062,17 +1082,116 @@ class AiSearchAgentRunService:
             async for event in self._emit_final_assistant_if_needed(task.id, stream_state):
                 yield event
 
+            if emit_run_completed:
+                yield self._format_event(
+                    "run.completed",
+                    task.id,
+                    self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                    {
+                        "interrupted": False,
+                        "featureComparisonId": feature_comparison_id or None,
+                        "recommendedAction": progress.get("recommended_action"),
+                        "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
+                    },
+                )
+        except ExecutionQueueTakeoverRequested as exc:
+            handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_diff_events(
+                stream_state["last_snapshot"],
+                handoff_snapshot,
+                stream_state=stream_state,
+            ):
+                yield event
+            stream_state["last_snapshot"] = handoff_snapshot
+            meta = get_ai_search_meta(self.storage.get_task(task.id))
+            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
+                owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
+                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
+                persist_fallback_assistant=True,
+            ):
+                yield event
+        except Exception as exc:
             yield self._format_event(
-                "run.completed",
+                "run.error",
                 task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                {
-                    "interrupted": False,
-                    "featureComparisonId": feature_comparison_id or None,
-                    "recommendedAction": progress.get("recommended_action"),
-                    "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
-                },
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                self._stream_error_payload(exc),
             )
+
+    async def _stream_close_reader_agent_execution(
+        self,
+        *,
+        task: Any,
+        owner_id: str,
+        previous_phase: str = "",
+        emit_run_started: bool = True,
+        emit_run_completed: bool = True,
+    ) -> AsyncIterator[str]:
+        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
+        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
+        agent = self.facade._build_close_reader_agent(self.storage, task.id)
+        prompt = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请仅对当前活动 close_read batch 中的文献完成人工送审复核，并使用工具加载上下文后提交结构化精读结果。",
+                }
+            ]
+        }
+
+        try:
+            if hasattr(agent, "astream") and callable(getattr(agent, "astream")):
+                async for event in self._consume_live_agent_stream(
+                    session_id=task.id,
+                    owner_id=owner_id,
+                    task_id=task.id,
+                    agent=agent,
+                    payload=prompt,
+                    stream_state=stream_state,
+                    initial_snapshot=initial_snapshot,
+                    previous_phase=previous_phase,
+                    emit_run_started=emit_run_started,
+                ):
+                    yield event
+            else:
+                initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
+                if emit_run_started:
+                    yield self._format_event("run.started", task.id, initial_phase, {})
+                current_phase = self._current_phase_value(task.id, initial_phase)
+                yield self._format_event(
+                    "subagent.started",
+                    task.id,
+                    current_phase,
+                    self._normalize_subagent_payload("subagent.started", {"name": "close-reader"}),
+                )
+                await asyncio.to_thread(agent.invoke, prompt)
+                yield self._format_event(
+                    "subagent.completed",
+                    task.id,
+                    self._current_phase_value(task.id, current_phase),
+                    self._normalize_subagent_payload("subagent.completed", {"name": "close-reader"}),
+                )
+
+            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_diff_events(
+                stream_state["last_snapshot"],
+                final_snapshot,
+                stream_state=stream_state,
+            ):
+                yield event
+            stream_state["last_snapshot"] = final_snapshot
+            if emit_run_completed:
+                yield self._format_event(
+                    "run.completed",
+                    task.id,
+                    self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                    {"interrupted": False, "closeRead": True},
+                )
         except ExecutionQueueTakeoverRequested as exc:
             handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
@@ -1475,15 +1594,36 @@ class AiSearchAgentRunService:
             {"interrupted": False, "completedFromTakeover": True},
         )
 
-    def patch_selected_documents(
+    def _create_manual_close_read_batch(self, task_id: str, plan_version: int, document_ids: List[str]) -> str:
+        run = self.storage.get_ai_search_run(task_id, plan_version=plan_version)
+        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        if not run_id:
+            raise HTTPException(status_code=409, detail="当前没有有效执行轮次，无法发起人工送审复核。")
+        batch_id = uuid.uuid4().hex
+        self.storage.create_ai_search_batch(
+            {
+                "batch_id": batch_id,
+                "run_id": run_id,
+                "task_id": task_id,
+                "plan_version": plan_version,
+                "batch_type": "close_read",
+                "status": "loaded",
+                "input_hash": f"manual_review:{uuid.uuid4().hex[:8]}",
+            }
+        )
+        self.storage.replace_ai_search_batch_documents(batch_id, run_id, document_ids)
+        return batch_id
+
+    async def stream_document_review(
         self,
         session_id: str,
         owner_id: str,
         plan_version: int,
-        add_document_ids: Optional[List[str]],
+        review_document_ids: Optional[List[str]],
         remove_document_ids: Optional[List[str]],
-    ) -> AiSearchSnapshotResponse:
+    ) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
+        self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
         if active_plan_version != int(plan_version):
@@ -1492,50 +1632,153 @@ class AiSearchAgentRunService:
                 detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前只允许操作活动计划版本。"},
             )
         phase = str(meta.get("current_phase") or "")
-        if phase not in {PHASE_CLOSE_READ, PHASE_FEATURE_COMPARISON, PHASE_AWAITING_HUMAN_DECISION, PHASE_COMPLETED}:
-            self.sessions._raise_invalid_phase(phase, "当前阶段不允许调整对比文件。")
-        add_ids = [str(item).strip() for item in (add_document_ids or []) if str(item).strip()]
+        if phase != PHASE_AWAITING_HUMAN_DECISION:
+            self.sessions._raise_invalid_phase(phase, "当前仅支持在人工决策状态下复核文献。")
+        review_ids = [str(item).strip() for item in (review_document_ids or []) if str(item).strip()]
         remove_ids = [str(item).strip() for item in (remove_document_ids or []) if str(item).strip()]
-        for document_id in add_ids:
-            self.storage.update_ai_search_document(
-                task.id,
-                plan_version,
-                document_id,
-                stage="selected",
-                user_pinned=True,
-                user_removed=False,
-                close_read_status="selected",
-                close_read_reason="用户手动加入对比文件",
-                agent_reason="用户手动加入对比文件",
-            )
+        if not review_ids and not remove_ids:
+            raise HTTPException(status_code=400, detail="请至少选择一篇待送审或待移出的文献。")
+        overlap_ids = set(review_ids) & set(remove_ids)
+        if overlap_ids:
+            raise HTTPException(status_code=400, detail=f"同一篇文献不能同时送审和移出：{', '.join(sorted(overlap_ids))}")
+
+        documents = self.storage.list_ai_search_documents(task.id, plan_version)
+        documents_by_id = {
+            str(item.get("document_id") or "").strip(): item
+            for item in documents
+            if str(item.get("document_id") or "").strip()
+        }
+        invalid_review_ids = [
+            document_id
+            for document_id in review_ids
+            if str((documents_by_id.get(document_id) or {}).get("stage") or "") != "shortlisted"
+        ]
+        invalid_remove_ids = [
+            document_id
+            for document_id in remove_ids
+            if str((documents_by_id.get(document_id) or {}).get("stage") or "") != "selected"
+        ]
+        if invalid_review_ids:
+            raise HTTPException(status_code=409, detail=f"仅允许送审当前 shortlisted 文献：{', '.join(sorted(invalid_review_ids))}")
+        if invalid_remove_ids:
+            raise HTTPException(status_code=409, detail=f"仅允许移出当前 selected 文献：{', '.join(sorted(invalid_remove_ids))}")
+
+        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
+        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
+        yield self._format_event("run.started", task.id, self.snapshots._snapshot_phase(initial_snapshot), {})
+
         for document_id in remove_ids:
             self.storage.update_ai_search_document(
                 task.id,
                 plan_version,
                 document_id,
-                stage="rejected",
+                stage="shortlisted",
                 user_pinned=False,
                 user_removed=True,
-                close_read_status="rejected",
-                close_read_reason="用户手动移出对比文件",
-                agent_reason="用户手动移出对比文件",
+                close_read_status="pending",
+                close_read_reason="用户手动移出已选，待复核",
+                agent_reason="用户手动移出已选",
+            )
+        context = AiSearchAgentContext(self.storage, task.id)
+        for document_id in review_ids:
+            self.storage.update_ai_search_document(
+                task.id,
+                plan_version,
+                document_id,
+                stage="shortlisted",
+                user_pinned=True,
+                user_removed=False,
+                close_read_status="pending",
+                close_read_reason="人工送审复核",
+                agent_reason="人工送审复核",
             )
         selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
-        next_phase = PHASE_FEATURE_COMPARISON if selected_count > 0 else PHASE_CLOSE_READ
-        context = AiSearchAgentContext(self.storage, task.id)
-        context.reset_execution_control(plan_version, clear_human_decision=True)
-        self._resolve_pending_action(
-            task.id,
-            expected_type="human_decision",
-            resolution={"decision": "continue_search"},
-        )
         self.facade._update_phase(
             task.id,
-            next_phase,
+            PHASE_AWAITING_HUMAN_DECISION,
             selected_document_count=selected_count,
+            active_plan_version=plan_version,
             active_batch_id=None,
         )
-        return self.snapshots.get_snapshot(task.id, owner_id)
+        updated_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+        async for event in self._emit_snapshot_diff_events(
+            stream_state["last_snapshot"],
+            updated_snapshot,
+            stream_state=stream_state,
+        ):
+            yield event
+        stream_state["last_snapshot"] = updated_snapshot
+
+        if review_ids:
+            batch_id = self._create_manual_close_read_batch(task.id, plan_version, review_ids)
+            self.facade._update_phase(
+                task.id,
+                PHASE_CLOSE_READ,
+                active_plan_version=plan_version,
+                active_batch_id=batch_id,
+                selected_document_count=selected_count,
+            )
+            refreshed_task = self.storage.get_task(task.id)
+            async for event in self._stream_close_reader_agent_execution(
+                task=refreshed_task,
+                owner_id=owner_id,
+                previous_phase=PHASE_AWAITING_HUMAN_DECISION,
+                emit_run_started=False,
+                emit_run_completed=False,
+            ):
+                yield event
+
+        selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
+        if selected_documents:
+            self.facade._update_phase(
+                task.id,
+                PHASE_FEATURE_COMPARISON,
+                active_plan_version=plan_version,
+            )
+            refreshed_task = self.storage.get_task(task.id)
+            async for event in self._stream_feature_agent_execution(
+                task=refreshed_task,
+                owner_id=owner_id,
+                plan_version=plan_version,
+                previous_phase=self._current_phase_value(task.id),
+                force_human_decision=True,
+                human_decision_reason="manual_document_review",
+                human_decision_summary="人工文献复核已完成，请决定继续检索或按当前结果完成。",
+                emit_run_started=False,
+                emit_run_completed=False,
+            ):
+                yield event
+        else:
+            summary = "当前无已选对比文献，请送审候选文献或继续检索。"
+            enter_human_decision(
+                context,
+                reason="manual_document_review",
+                summary=summary,
+            )
+            self.facade._append_message(
+                task.id,
+                "assistant",
+                "chat",
+                summary,
+                plan_version=plan_version or None,
+                metadata={"reason": "manual_document_review", "kind": "human_decision"},
+            )
+            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
+            async for event in self._emit_snapshot_diff_events(
+                stream_state["last_snapshot"],
+                final_snapshot,
+                stream_state=stream_state,
+            ):
+                yield event
+            stream_state["last_snapshot"] = final_snapshot
+
+        yield self._format_event(
+            "run.completed",
+            task.id,
+            self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"])),
+            {"interrupted": False, "documentReview": True},
+        )
 
     async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)

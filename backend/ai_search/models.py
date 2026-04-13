@@ -71,9 +71,9 @@ class AiSearchPlanConfirmRequest(BaseModel):
     planVersion: int = Field(..., ge=1)
 
 
-class AiSearchSelectedDocumentsPatchRequest(BaseModel):
+class AiSearchDocumentReviewRequest(BaseModel):
     planVersion: int = Field(..., ge=1)
-    addDocumentIds: Optional[List[str]] = None
+    reviewDocumentIds: Optional[List[str]] = None
     removeDocumentIds: Optional[List[str]] = None
 
 
