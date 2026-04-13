@@ -33,9 +33,11 @@ from config import settings
 from fastapi import HTTPException
 
 WECHAT_INTENT_GUIDANCE = (
-    '请直接告诉我你要做什么：检索、分析、审查，或答复审查意见。\n'
-    '示例：帮我检索固态电池隔膜相关专利 / 分析专利 CN117347385A / 我要答复审查意见'
+    '请直接告诉我你要做什么：专利分析、专利审查，或答复审查意见。\n'
+    'AI 检索请到网页 AI 检索页面进行。\n'
+    '示例：分析专利 CN117347385A / 帮我审查这个专利 / 我要答复审查意见'
 )
+WECHAT_AI_SEARCH_DISABLED = '微信暂不支持 AI 检索对话，请到网页 AI 检索页面继续；微信当前支持专利分析、专利审查、审查意见答复。'
 
 
 def _mount_storage(monkeypatch, tmp_path):
@@ -715,10 +717,11 @@ def test_im_gateway_binding_success_messages_are_single_text():
     assert messages[0]['type'] == 'text'
     text = messages[0]['text']
     assert '微信绑定成功' in text
-    assert '现在可以直接在这里发专利检索、专利分析和审查意见答复需求。' in text
+    assert '现在可以直接在这里发专利分析、专利审查和审查意见答复需求。' in text
+    assert 'AI 检索请到网页 AI 检索页面进行。' in text
     assert '示例：' in text
-    assert '检索：帮我检索固态电池隔膜相关专利' in text
     assert '分析：分析专利 CN117347385A' in text
+    assert '审查：帮我审查这个专利' in text
     assert '答复：我要答复审查意见' in text
     assert '斜杠命令只在少数场景下作为兜底入口。' in text
     assert '------------' not in text
@@ -1014,7 +1017,7 @@ def test_wechat_runtime_attachment_without_intent_returns_guidance(tmp_path):
     assert storage.list_tasks(owner_id='authing:wx-attachment') == []
 
 
-def test_wechat_runtime_explicit_search_still_creates_ai_search_session(monkeypatch, tmp_path):
+def test_wechat_runtime_explicit_search_returns_disabled_message(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search.db')
     storage.upsert_authing_user(
         User(
@@ -1036,13 +1039,6 @@ def test_wechat_runtime_explicit_search_still_creates_ai_search_session(monkeypa
     )
     service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
 
-    async def fake_stream_message(session_id: str, owner_id: str, content: str):
-        assert owner_id == 'authing:wx-search'
-        assert content == '帮我检索固态电池隔膜相关专利'
-        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
-
-    monkeypatch.setattr(service.ai_search_service, 'stream_message', fake_stream_message)
-
     result = asyncio.run(
         service.handle_inbound_message(
             bot_account_id='bot-1',
@@ -1051,14 +1047,13 @@ def test_wechat_runtime_explicit_search_still_creates_ai_search_session(monkeypa
         )
     )
 
-    assert result.taskId is not None
-    assert result.sessionType == TaskType.AI_SEARCH.value
-    task = storage.get_task(result.taskId)
-    assert task is not None
-    assert task.task_type == TaskType.AI_SEARCH.value
+    assert result.taskId is None
+    assert result.sessionType is None
+    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
+    assert storage.list_tasks(owner_id='authing:wx-search') == []
 
 
-def test_wechat_runtime_llm_high_confidence_search_creates_ai_search_session(monkeypatch, tmp_path):
+def test_wechat_runtime_llm_high_confidence_search_returns_disabled_message(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_llm.db')
     storage.upsert_authing_user(
         User(
@@ -1090,13 +1085,6 @@ def test_wechat_runtime_llm_high_confidence_search_creates_ai_search_session(mon
         },
     )
 
-    async def fake_stream_message(session_id: str, owner_id: str, content: str):
-        assert owner_id == 'authing:wx-search-llm'
-        assert content == '查一下这个方向'
-        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
-
-    monkeypatch.setattr(service.ai_search_service, 'stream_message', fake_stream_message)
-
     result = asyncio.run(
         service.handle_inbound_message(
             bot_account_id='bot-1',
@@ -1105,52 +1093,116 @@ def test_wechat_runtime_llm_high_confidence_search_creates_ai_search_session(mon
         )
     )
 
-    assert result.taskId is not None
-    assert result.sessionType == TaskType.AI_SEARCH.value
-    task = storage.get_task(result.taskId)
-    assert task is not None
-    assert task.task_type == TaskType.AI_SEARCH.value
+    assert result.taskId is None
+    assert result.sessionType is None
+    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
+    assert storage.list_tasks(owner_id='authing:wx-search-llm') == []
 
 
-def test_wechat_runtime_ai_search_exception_returns_fallback(monkeypatch, tmp_path):
-    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_exception.db')
+@pytest.mark.parametrize('text', ['确认计划', '继续检索', '按当前结果完成', '选择 1 3 5'])
+def test_wechat_runtime_ai_search_followup_commands_return_disabled_message(tmp_path, text):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_followup_blocked.db')
     storage.upsert_authing_user(
         User(
-            owner_id='authing:wx-search-error',
-            authing_sub='wx-search-error',
-            name='微信检索异常用户',
+            owner_id='authing:wx-search-followup',
+            authing_sub='wx-search-followup',
+            name='微信检索续接用户',
         )
     )
     storage.upsert_wechat_binding(
         WeChatBinding(
-            binding_id='binding-search-error',
-            owner_id='authing:wx-search-error',
+            binding_id='binding-search-followup',
+            owner_id='authing:wx-search-followup',
             status='active',
             bot_account_id='bot-1',
-            wechat_peer_id='wx-peer-search-error',
-            wechat_peer_name='检索异常微信',
+            wechat_peer_id='wx-peer-search-followup',
+            wechat_peer_name='检索续接微信',
             bound_at=utc_now(),
         )
     )
     service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
 
-    async def broken_stream_message(_session_id: str, _owner_id: str, _content: str):
-        raise RuntimeError('boom')
-        yield ''
-
-    monkeypatch.setattr(service.ai_search_service, 'stream_message', broken_stream_message)
-
     result = asyncio.run(
         service.handle_inbound_message(
             bot_account_id='bot-1',
-            wechat_peer_id='wx-peer-search-error',
-            text='帮我检索固态电池隔膜相关专利',
+            wechat_peer_id='wx-peer-search-followup',
+            text=text,
         )
     )
 
-    assert result.taskId is not None
-    assert result.sessionType == TaskType.AI_SEARCH.value
-    assert '刚刚处理检索消息时出现异常' in (result.messages[0].text or '')
+    assert result.taskId is None
+    assert result.sessionType is None
+    assert (result.messages[0].text or '') == WECHAT_AI_SEARCH_DISABLED
+
+
+def test_wechat_runtime_does_not_continue_existing_ai_search_session(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_existing_search_blocked.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-existing-search',
+            authing_sub='wx-existing-search',
+            name='微信旧检索用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-existing-search',
+            owner_id='authing:wx-existing-search',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-existing-search',
+            wechat_peer_name='旧检索微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(
+        owner_id='authing:wx-existing-search',
+        task_type=TaskType.AI_SEARCH.value,
+        title='AI 检索会话 - test',
+    )
+    storage.create_ai_search_message(
+        {
+            'message_id': 'msg-assistant-1',
+            'task_id': task.id,
+            'plan_version': None,
+            'role': 'assistant',
+            'kind': 'chat',
+            'content': '已有旧检索会话',
+            'stream_status': 'completed',
+            'question_id': None,
+            'metadata': {},
+        }
+    )
+    service = WeChatRuntimeService(task_manager=manager)
+    before_messages = storage.list_ai_search_messages(task.id)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'unknown',
+            'confidence': 0.21,
+            'requires_confirmation': True,
+            'extracted': {},
+        },
+    )
+    try:
+        result = asyncio.run(
+            service.handle_inbound_message(
+                bot_account_id='bot-1',
+                wechat_peer_id='wx-peer-existing-search',
+                text='你好',
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
+    after_messages = storage.list_ai_search_messages(task.id)
+    assert result.taskId is None
+    assert result.sessionType is None
+    assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+    assert before_messages == after_messages
 
 
 def test_wechat_runtime_reply_flow_collects_files_and_creates_task(monkeypatch, tmp_path):

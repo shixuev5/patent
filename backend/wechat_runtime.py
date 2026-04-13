@@ -33,6 +33,7 @@ ACTIVE_FLOW_TYPES = (FLOW_REPLY, FLOW_ANALYSIS, FLOW_REVIEW)
 REPLY_ALLOWED_SUFFIXES = {".pdf", ".doc", ".docx"}
 PATENT_NUMBER_PATTERN = re.compile(r"\b(?:CN|US|EP|WO|JP|KR)?\s?\d{6,}[A-Z0-9.\-/]*\b", re.IGNORECASE)
 SEARCH_INTENT_TOKENS = ("检索", "找专利", "现有技术", "prior art", "search")
+AI_SEARCH_FOLLOWUP_COMMANDS = ("确认计划", "继续检索", "按当前结果完成")
 
 
 class WeChatRuntimeService:
@@ -133,12 +134,16 @@ class WeChatRuntimeService:
 
     def _intent_guidance_text(self) -> str:
         return (
-            "请直接告诉我你要做什么：检索、分析、审查，或答复审查意见。\n"
-            "示例：帮我检索固态电池隔膜相关专利 / 分析专利 CN117347385A / 我要答复审查意见"
+            "请直接告诉我你要做什么：专利分析、专利审查，或答复审查意见。\n"
+            "AI 检索请到网页 AI 检索页面进行。\n"
+            "示例：分析专利 CN117347385A / 帮我审查这个专利 / 我要答复审查意见"
         )
 
     def _ai_search_retry_text(self) -> str:
         return "刚刚处理检索消息时出现异常，请稍后重试。你也可以直接描述检索目标、核心技术和约束条件。"
+
+    def _ai_search_disabled_text(self) -> str:
+        return "微信暂不支持 AI 检索对话，请到网页 AI 检索页面继续；微信当前支持专利分析、专利审查、审查意见答复。"
 
     def _get_active_flow(self, owner_id: str) -> Optional[WeChatFlowSession]:
         for flow_type in ACTIVE_FLOW_TYPES:
@@ -150,20 +155,6 @@ class WeChatRuntimeService:
     def _close_all_active_flows(self, owner_id: str, *, status: str = "cancelled") -> None:
         for flow_type in ACTIVE_FLOW_TYPES:
             self.storage.resolve_wechat_flow_session(owner_id, flow_type, status=status)
-
-    def _get_active_ai_search_session_id(self, owner_id: str) -> Optional[str]:
-        sessions = self.ai_search_service.list_sessions(owner_id).items
-        if not sessions:
-            return None
-        ordered = sorted(
-            sessions,
-            key=lambda item: str(item.updatedAt or item.createdAt or ""),
-            reverse=True,
-        )
-        latest = ordered[0]
-        if str(latest.phase or "").strip() in {"completed", "failed", "cancelled"}:
-            return None
-        return latest.sessionId
 
     def _start_flow(self, binding: WeChatBinding, command_text: str) -> InternalWeChatInboundMessageResponse:
         self._close_all_active_flows(binding.owner_id, status="superseded")
@@ -381,12 +372,10 @@ class WeChatRuntimeService:
         text: str,
         attachments: List[InternalWeChatInboundAttachment],
     ) -> InternalWeChatInboundMessageResponse:
-        active_ai_search_session_id = self._get_active_ai_search_session_id(binding.owner_id)
-        if active_ai_search_session_id:
-            return await self._handle_ai_search(binding, text, attachments, session_id=active_ai_search_session_id)
-
         if not text and not attachments:
             return self._response(binding, messages=[self._text(self._intent_guidance_text())])
+        if text in AI_SEARCH_FOLLOWUP_COMMANDS or text.startswith("选择 "):
+            return self._response(binding, messages=[self._text(self._ai_search_disabled_text())])
 
         route = self._classify_intent(text=text, attachments=attachments)
         intent = str(route.get("intent") or "").strip()
@@ -421,7 +410,7 @@ class WeChatRuntimeService:
         if intent == FLOW_REPLY:
             return self._start_flow(binding, "/reply new")
         if intent == TaskType.AI_SEARCH.value:
-            return await self._handle_ai_search(binding, text, attachments)
+            return self._response(binding, messages=[self._text(self._ai_search_disabled_text())])
         return self._response(binding, messages=[self._text(self._intent_guidance_text())])
 
     def _normalize_patent_number_candidate(self, value: Any) -> Optional[str]:

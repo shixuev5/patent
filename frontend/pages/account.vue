@@ -1156,7 +1156,11 @@ const pollWechatBindSession = async () => {
       availableCommands: wechatIntegration.value?.availableCommands || [],
     }
     syncWechatIntegrationForm(nextIntegration)
-    if (nextBindSession?.status === 'bound') {
+    const nextStatus = String(nextBindSession?.status || '').trim()
+    if (!['pending', 'scanned'].includes(nextStatus)) {
+      stopWechatBindPolling()
+    }
+    if (nextStatus === 'bound') {
       await fetchWechatIntegration(token)
     }
   } catch (error) {
@@ -1385,11 +1389,13 @@ watch(hasWechatTab, (value) => {
 })
 
 watch(
-  () => wechatIntegration.value?.bindSession?.bindSessionId || '',
-  (value) => {
+  () => ({
+    bindSessionId: String(wechatIntegration.value?.bindSession?.bindSessionId || '').trim(),
+    status: String(wechatIntegration.value?.bindSession?.status || '').trim(),
+  }),
+  ({ bindSessionId, status }) => {
     stopWechatBindPolling()
-    if (!value) return
-    const status = String(wechatIntegration.value?.bindSession?.status || '').trim()
+    if (!bindSessionId) return
     if (!['pending', 'scanned'].includes(status)) return
     wechatBindPollTimer = setInterval(() => {
       void pollWechatBindSession()

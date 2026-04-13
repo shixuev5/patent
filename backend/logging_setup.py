@@ -30,8 +30,13 @@ FILE_LOG_FORMAT = (
 )
 QUIET_UVICORN_ACCESS_PATHS = frozenset((
     "/api/health",
+    "/api/account/wechat-integration",
     "/api/internal/wechat/delivery-jobs/claim",
+    "/api/internal/wechat/gateway/login-state",
 ))
+QUIET_UVICORN_ACCESS_PATH_PREFIXES = (
+    "/api/account/wechat-integration/bind-session/",
+)
 
 
 def configure_process_timezone_to_utc8() -> None:
@@ -163,7 +168,10 @@ def should_suppress_uvicorn_access_log(record: logging.LogRecord, quiet_paths: O
 
     if status_code < 200 or status_code >= 300:
         return False
-    return path in set(quiet_paths or QUIET_UVICORN_ACCESS_PATHS)
+    normalized_quiet_paths = set(quiet_paths or QUIET_UVICORN_ACCESS_PATHS)
+    if path in normalized_quiet_paths:
+        return True
+    return any(path.startswith(prefix) for prefix in QUIET_UVICORN_ACCESS_PATH_PREFIXES)
 
 
 class QuietUvicornAccessFilter(logging.Filter):
