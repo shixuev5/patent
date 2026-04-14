@@ -140,6 +140,10 @@ def extract_publication_year(value: str | None) -> str:
 class AcademicSearchClient:
     _CROSSREF_MAX_RETRIES = 3
     _RETRY_BACKOFF_SECONDS = 0.2
+    _PROVIDER_COOLDOWN_SKIP_LOG_INTERVAL_SECONDS = 30.0
+    _provider_cooldowns: Dict[str, float] = {}
+    _provider_cooldown_log_deadlines: Dict[str, float] = {}
+    _provider_cooldown_lock = threading.Lock()
     _semanticscholar_request_lock = threading.Lock()
 
     def __init__(
@@ -190,6 +194,75 @@ class AcademicSearchClient:
                 "issued",
                 "score",
             ]
+        )
+
+    @classmethod
+    def _cleanup_expired_provider_cooldowns(cls, now: float | None = None) -> None:
+        now_ts = now if now is not None else time.monotonic()
+        expired_providers = [
+            provider
+            for provider, cooldown_until in cls._provider_cooldowns.items()
+            if cooldown_until <= now_ts
+        ]
+        for provider in expired_providers:
+            cls._provider_cooldowns.pop(provider, None)
+            cls._provider_cooldown_log_deadlines.pop(provider, None)
+
+    @staticmethod
+    def _format_cooldown_remaining(remaining_seconds: float) -> str:
+        seconds = max(0, int(round(remaining_seconds)))
+        minutes, seconds = divmod(seconds, 60)
+        if minutes <= 0:
+            return f"{seconds}s"
+        if seconds == 0:
+            return f"{minutes}m"
+        return f"{minutes}m{seconds}s"
+
+    def _provider_in_rate_limit_cooldown(
+        self,
+        *,
+        provider: str,
+        provider_label: str,
+        query: str,
+    ) -> bool:
+        now_ts = time.monotonic()
+        with self._provider_cooldown_lock:
+            self._cleanup_expired_provider_cooldowns(now_ts)
+            cooldown_until = self._provider_cooldowns.get(provider, 0.0)
+            if cooldown_until <= now_ts:
+                return False
+            should_log = self._provider_cooldown_log_deadlines.get(provider, 0.0) <= now_ts
+            if should_log:
+                self._provider_cooldown_log_deadlines[provider] = (
+                    now_ts + self._PROVIDER_COOLDOWN_SKIP_LOG_INTERVAL_SECONDS
+                )
+        if should_log:
+            logger.info(
+                f"{provider_label} 仍在限流冷却中，跳过本次检索，"
+                f"remaining={self._format_cooldown_remaining(cooldown_until - now_ts)} "
+                f"query={query[:100]}"
+            )
+        return True
+
+    def _mark_provider_rate_limit_cooldown(
+        self,
+        *,
+        provider: str,
+        provider_label: str,
+        reason: str,
+    ) -> None:
+        cooldown_seconds = max(int(settings.RETRIEVAL_RATE_LIMIT_COOLDOWN_SECONDS or 0), 1)
+        cooldown_until = time.monotonic() + cooldown_seconds
+        with self._provider_cooldown_lock:
+            self._cleanup_expired_provider_cooldowns()
+            previous = self._provider_cooldowns.get(provider, 0.0)
+            self._provider_cooldowns[provider] = max(previous, cooldown_until)
+            self._provider_cooldown_log_deadlines.pop(provider, None)
+            effective_until = self._provider_cooldowns[provider]
+        logger.warning(
+            f"{provider_label} 触发限流，进入冷却，"
+            f"remaining={self._format_cooldown_remaining(effective_until - time.monotonic())} "
+            f"reason={reason}"
         )
 
     def search_openalex(self, query: str, priority_date: Optional[str], per_query: int) -> List[Dict[str, Any]]:
@@ -281,6 +354,12 @@ class AcademicSearchClient:
         return results
 
     def openalex_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        if self._provider_in_rate_limit_cooldown(
+            provider="openalex",
+            provider_label="OpenAlex",
+            query=query,
+        ):
+            return {}
         normalized_query = normalize_academic_query(query)
         base_params: Dict[str, Any] = {"per-page": per_query}
         filters: List[str] = []
@@ -301,14 +380,25 @@ class AcademicSearchClient:
                     params=base_params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
                 )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = safe_json(response)
+                if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
+                    self._mark_provider_rate_limit_cooldown(
+                        provider="openalex",
+                        provider_label="OpenAlex",
+                        reason=f"status={status_code} anonymous",
+                    )
+                    return {}
                 response.raise_for_status()
-                return safe_json(response)
+                return data
             except Exception as ex:
                 logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
                 return {}
 
         total_keys = len(self.openalex_api_keys)
         start_index = self._openalex_key_cursor
+        limit_failures = 0
         for offset in range(total_keys):
             index = (start_index + offset) % total_keys
             params = dict(base_params)
@@ -328,6 +418,7 @@ class AcademicSearchClient:
                 continue
 
             if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
+                limit_failures += 1
                 logger.warning(f"OpenAlex key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}")
                 self._openalex_key_cursor = (index + 1) % total_keys
                 continue
@@ -339,10 +430,22 @@ class AcademicSearchClient:
             self._openalex_key_cursor = index
             return data
 
+        if total_keys > 0 and limit_failures == total_keys:
+            self._mark_provider_rate_limit_cooldown(
+                provider="openalex",
+                provider_label="OpenAlex",
+                reason=f"all_keys_rate_limited total_keys={total_keys}",
+            )
         logger.warning(f"OpenAlex 所有 key 均不可用，query={query[:100]}")
         return {}
 
     def semanticscholar_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        if self._provider_in_rate_limit_cooldown(
+            provider="semanticscholar",
+            provider_label="Semantic Scholar",
+            query=query,
+        ):
+            return {}
         params: Dict[str, Any] = {
             "query": normalize_academic_query(query),
             "limit": per_query,
@@ -360,14 +463,25 @@ class AcademicSearchClient:
                     params=params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
                 )
+                status_code = int(response.status_code)
+                response_text = str(response.text or "")
+                data = safe_json(response)
+                if self._is_semanticscholar_limit_error(status_code=status_code, data=data, response_text=response_text):
+                    self._mark_provider_rate_limit_cooldown(
+                        provider="semanticscholar",
+                        provider_label="Semantic Scholar",
+                        reason=f"status={status_code} anonymous",
+                    )
+                    return {}
                 response.raise_for_status()
-                return safe_json(response)
+                return data
             except Exception as ex:
                 logger.warning(f"Semantic Scholar 检索失败，query={query[:100]} error={ex}")
                 return {}
 
         total_keys = len(self.semanticscholar_api_keys)
         start_index = self._semanticscholar_key_cursor
+        limit_failures = 0
         for offset in range(total_keys):
             index = (start_index + offset) % total_keys
             headers = {"x-api-key": self.semanticscholar_api_keys[index]}
@@ -389,6 +503,7 @@ class AcademicSearchClient:
                 continue
 
             if self._is_semanticscholar_limit_error(status_code=status_code, data=data, response_text=response_text):
+                limit_failures += 1
                 logger.warning(
                     f"Semantic Scholar key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}"
                 )
@@ -402,6 +517,12 @@ class AcademicSearchClient:
             self._semanticscholar_key_cursor = index
             return data
 
+        if total_keys > 0 and limit_failures == total_keys:
+            self._mark_provider_rate_limit_cooldown(
+                provider="semanticscholar",
+                provider_label="Semantic Scholar",
+                reason=f"all_keys_rate_limited total_keys={total_keys}",
+            )
         logger.warning(f"Semantic Scholar 所有 key 均不可用，query={query[:100]}")
         return {}
 

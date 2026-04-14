@@ -165,131 +165,28 @@
           </div>
         </div>
 
-        <div class="relative min-h-0 flex-1">
-          <div ref="messageListRef" class="flex min-h-0 h-full flex-col overflow-y-auto px-4 py-4">
-            <div v-if="!conversationEntries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
-              描述检索目标、技术方案、核心效果或约束条件。
-            </div>
-
-            <div v-else class="space-y-3">
-              <template v-for="entry in conversationEntries" :key="entry.id">
-                <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
-                  <span class="h-px flex-1 bg-slate-200/80" />
-                  <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
-                    {{ phaseLabel(entry.phase) }}<span v-if="phaseDurationText(entry)"> · {{ phaseDurationText(entry) }}</span>
-                  </p>
-                  <span class="h-px flex-1 bg-slate-200/80" />
-                </article>
-
-                <AiSearchProcessLine v-else-if="isProcessMessage(entry)" :entry="entry" />
-
-                <article
-                  v-else
-                  class="group/message flex"
-                  :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
-                >
-                  <div class="max-w-[90%]">
-                    <div
-                      class="rounded-2xl px-3.5 py-2.5 text-[13px] leading-5 shadow-sm"
-                      :class="entry.role === 'user'
-                        ? 'bg-cyan-700 text-white shadow-cyan-100'
-                        : 'border border-slate-200 bg-slate-50 text-slate-700'"
-                    >
-                      <template v-if="entry.entryType === 'pending-assistant'">
-                        <div v-if="entry.content" class="text-slate-700">
-                          <AiSearchStructuredPlan
-                            v-if="structuredPlanExecutionSpec"
-                            :execution-spec="structuredPlanExecutionSpec"
-                          />
-                          <AiSearchExpandableContent
-                            v-else
-                            :content="entry.content"
-                            mode="markdown"
-                            fade-rgb="248,250,252"
-                          />
-                        </div>
-                        <div v-else class="space-y-2.5">
-                          <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
-                            <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
-                            <span>思考中</span>
-                          </div>
-                          <div class="space-y-2">
-                            <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
-                            <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
-                          </div>
-                        </div>
-                      </template>
-
-                      <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
-                        <div v-if="isLatestPlanMessage(entry)" class="space-y-3">
-                          <div class="flex items-center justify-between gap-3">
-                            <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
-                            <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                              v{{ planVersionOf(entry) || activePlanVersion || '?' }}
-                            </span>
-                          </div>
-                          <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                          <AiSearchPlanConfirmationCard
-                            v-if="isPendingPlanEntry(entry)"
-                            :confirm-disabled="streaming || !confirmationPlanVersion"
-                            :label="planConfirmationLabel"
-                            @confirm="confirmPlan"
-                          />
-                        </div>
-                        <details v-else class="group">
-                          <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                            <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
-                            <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
-                            <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
-                          </summary>
-                          <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
-                            <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                          </div>
-                        </details>
-                      </template>
-
-                      <template v-else-if="entry.role === 'assistant'">
-                        <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                      </template>
-
-                      <AiSearchExpandableContent
-                        v-else
-                        :content="entry.content"
-                        mode="plaintext"
-                        fade-rgb="14,116,144"
-                      />
-                    </div>
-                    <div
-                      v-if="canCopyEntry(entry)"
-                      class="flex justify-end px-0.5 pt-1 opacity-100 transition md:pointer-events-none md:opacity-0 md:group-hover/message:pointer-events-auto md:group-hover/message:opacity-100 md:group-focus-within/message:pointer-events-auto md:group-focus-within/message:opacity-100"
-                    >
-                      <button
-                        type="button"
-                        class="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-cyan-700"
-                        aria-label="复制消息内容"
-                        title="复制"
-                        @click="copyEntryContent(entry)"
-                      >
-                        <ClipboardDocumentIcon class="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              </template>
-            </div>
-          </div>
-
-          <button
-            v-if="showScrollToBottom"
-            type="button"
-            class="absolute bottom-4 right-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-cyan-200/80 bg-cyan-50/95 text-cyan-700 shadow-lg shadow-cyan-200/40 transition hover:bg-cyan-100"
-            aria-label="滚动到最新消息"
-            title="滚动到最新消息"
-            @click="scrollToLatest"
-          >
-            <ArrowDownIcon class="h-5 w-5" />
-          </button>
-        </div>
+        <AiSearchConversationView
+          :session-id="currentSession?.session.sessionId"
+          :entries="conversationRenderEntries"
+          :structured-plan-execution-spec="structuredPlanExecutionSpec"
+          :active-plan-version="activePlanVersion"
+          :confirmation-plan-version="confirmationPlanVersion"
+          :plan-confirmation-label="planConfirmationLabel"
+          :pending-question="pendingQuestion"
+          :human-decision-action="humanDecisionAction"
+          :selected-review-documents="selectedReviewDocuments"
+          :review-candidate-documents="reviewCandidateDocuments"
+          :streaming="streaming"
+          :resume-last-error="resumeLastError"
+          :resume-attempt-count="resumeAttemptCount"
+          :pending-assistant-content="pendingAssistantMessage?.content || ''"
+          @confirm-plan="confirmPlan"
+          @resume-execution="resumeExecution"
+          @request-document-review="requestDocumentReview"
+          @remove-selected-document="removeSelectedDocument"
+          @continue-search="continueSearchFromDecision"
+          @complete-current-results="completeCurrentResultsFromDecision"
+        />
 
         <div v-if="showExecutionPanel" class="border-t border-slate-200">
           <button type="button" class="accordion-toggle" @click="executionPanelOpen = !executionPanelOpen">
@@ -372,87 +269,16 @@
         </div>
 
         <div class="border-t border-slate-200 px-4 py-4">
-          <AiSearchQuestionCard
-            v-if="pendingQuestion"
-            v-model="answerDraft"
-            :prompt="questionPrompt"
-            :reason="questionReason"
-            :answer-shape="questionAnswerShape"
-            :disabled="streaming || !answerDraft.trim()"
-            @submit="submitAnswer"
+          <AiSearchComposerPanel
+            v-model="composer"
+            :disabled="inputDisabled || !currentSession"
+            :placeholder="inputPlaceholder"
+            :can-submit="canSubmitMessage"
+            :mode="composerMode"
+            :hint="composerHint"
+            :hint-tone="composerHintTone"
+            @submit="submitMessage"
           />
-
-          <section v-else-if="resumeAction?.available" class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
-            <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div class="min-w-0">
-                <p class="text-sm font-semibold text-amber-900">
-                  {{ resumeTaskTitle || '当前执行步骤' }}失败，需要显式恢复
-                </p>
-                <p class="mt-1 text-xs leading-5 text-amber-800">
-                  系统不会把恢复当成普通聊天消息。点击下方按钮后，会从当前失败步骤继续执行。
-                </p>
-                <p v-if="resumeLastError" class="mt-2 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900">
-                  上次错误：{{ resumeLastError }}
-                </p>
-                <p v-if="resumeAttemptCount > 0" class="mt-2 text-[11px] text-amber-700">
-                  已尝试 {{ resumeAttemptCount }} 次
-                </p>
-              </div>
-              <button
-                type="button"
-                class="shrink-0 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                :disabled="streaming"
-                @click="resumeExecution"
-              >
-                恢复执行
-              </button>
-            </div>
-          </section>
-
-          <AiSearchHumanDecisionCard
-            v-else-if="humanDecisionAction?.available"
-            :action="humanDecisionAction"
-            :selected-docs="selectedReviewDocuments"
-            :candidate-docs="reviewCandidateDocuments"
-            :disabled="streaming"
-            @request-review="requestDocumentReview"
-            @remove-selected="removeSelectedDocument"
-            @continue-search="continueSearchFromDecision"
-            @complete-current-results="completeCurrentResultsFromDecision"
-          />
-
-          <section v-else>
-            <div class="relative">
-              <textarea
-                v-model="composer"
-                rows="2"
-                class="min-h-[5.25rem] max-h-[9.5rem] w-full resize-none overflow-y-auto rounded-2xl border border-slate-200 bg-white px-4 py-3 pb-8 pr-16 text-sm text-slate-900 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:bg-slate-50"
-                :disabled="inputDisabled || !currentSession"
-                :placeholder="inputPlaceholder"
-                @keydown.enter.exact.prevent="onComposerEnter"
-                @keydown.meta.enter.prevent="submitMessage"
-                @keydown.ctrl.enter.prevent="submitMessage"
-              />
-              <span class="pointer-events-none absolute bottom-3 left-4 text-[11px] text-slate-400">
-                Enter 发送，Shift+Enter 换行
-              </span>
-              <button
-                type="button"
-                class="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                aria-label="发送消息"
-                :disabled="!canSubmitMessage"
-                @click="submitMessage"
-              >
-                <ArrowUpIcon class="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <p
-              v-if="['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase || '')"
-              class="mt-2 text-xs text-slate-500"
-            >
-              执行中补充的消息会在下一个执行节点统一生效。
-            </p>
-          </section>
         </div>
       </section>
     </section>
@@ -506,17 +332,15 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownIcon, ArrowUpIcon, Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ClipboardDocumentIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
-import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
-import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
-import AiSearchProcessLine from '~/components/ai-search/AiSearchProcessLine.vue'
-import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
+import AiSearchComposerPanel from '~/components/ai-search/AiSearchComposerPanel.vue'
+import AiSearchConversationView from '~/components/ai-search/AiSearchConversationView.vue'
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
-import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
+import { useAiSearchComposer } from '~/composables/ai-search/useAiSearchComposer'
+import { useAiSearchConversation } from '~/composables/ai-search/useAiSearchConversation'
 import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
@@ -551,19 +375,12 @@ const {
   streaming,
 } = storeToRefs(aiSearchStore)
 
-const composer = ref('')
-const answerDraft = ref('')
 const headerTitleDraft = ref('')
 const headerTitleInputRef = ref<HTMLInputElement | null>(null)
 const headerEditing = ref(false)
-const messageListRef = ref<HTMLElement | null>(null)
 const sidebarCollapsed = ref(false)
 const mobileDrawerOpen = ref(false)
 const executionPanelOpen = ref(true)
-const isNearBottom = ref(true)
-const hasScrollableOverflow = ref(false)
-const nowTick = ref(Date.now())
-let nowTimer: ReturnType<typeof setInterval> | null = null
 
 const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
@@ -617,16 +434,29 @@ const structuredPlanExecutionSpec = computed<Record<string, any> | null>(() => {
   return executionSpec && typeof executionSpec === 'object' ? executionSpec as Record<string, any> : null
 })
 const activePhaseLabel = computed(() => aiSearchPhaseLabel(activePhase.value || 'collecting_requirements'))
-const inputDisabled = computed(() => aiSearchStore.inputDisabled || !currentSession.value)
-const canSubmitMessage = computed(() => !!composer.value.trim() && !inputDisabled.value)
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
 const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
-const questionPrompt = computed(() => String(pendingQuestion.value?.prompt || '').trim())
-const questionReason = computed(() => String(pendingQuestion.value?.reason || '').trim())
-const questionAnswerShape = computed(() => String(pendingQuestion.value?.expected_answer_shape || pendingQuestion.value?.expectedAnswerShape || '').trim())
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
 const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.value || {}).filter((item) => item.name !== 'plan-prober'))
+const resumeActionCard = computed(() => {
+  if (!resumeAction.value?.available) return null
+  return {
+    actionType: 'resume',
+    title: `${resumeTaskTitle.value || '当前执行步骤'}失败，需要显式恢复`,
+    body: '系统不会把恢复当成普通聊天消息。点击下方按钮后，会从当前失败步骤继续执行。',
+    severity: 'amber',
+  }
+})
+const humanDecisionCard = computed(() => {
+  if (!humanDecisionAction.value?.available) return null
+  return {
+    actionType: 'human_decision',
+    title: '自动检索已暂停，等待人工决策',
+    body: '请在当前结果基础上决定继续检索，或按当前结果完成。',
+    severity: 'slate',
+  }
+})
 const showExecutionPanel = computed(() => (
   executionTodos.value.length > 0
   || activeSubagentList.value.length > 0
@@ -655,17 +485,46 @@ const canSubmitHeaderRename = computed(() => {
   const currentTitle = String(currentSession.value?.session.title || '').trim()
   return !!currentSession.value && !!nextTitle && nextTitle !== currentTitle
 })
-const showScrollToBottom = computed(() => hasScrollableOverflow.value && !isNearBottom.value)
 
-const inputPlaceholder = computed(() => {
-  if (!currentSession.value) return '正在准备会话...'
-  if (resumeAction.value?.available) return '当前失败步骤需要先恢复执行。'
-  if (humanDecisionAction.value?.available) return '当前处于人工决策状态，请选择继续检索或按当前结果完成。'
-  if (isAiSearchExecutionPhase(activePhase.value)) {
-    return '执行中补充的消息会在下一个执行节点统一生效'
-  }
-  return '继续调整检索计划'
+const { conversationRenderEntries } = useAiSearchConversation({
+  messages,
+  phaseMarkers,
+  pendingAssistantMessage,
+  currentPendingAction,
+  resumeActionCard,
+  humanDecisionCard,
 })
+
+const {
+  composer,
+  composerMode,
+  inputDisabled,
+  canSubmitMessage,
+  inputPlaceholder,
+  submitMessage,
+} = useAiSearchComposer({
+  currentSession,
+  pendingQuestion,
+  pendingConfirmation,
+  resumeAction,
+  humanDecisionAction,
+  activePhase,
+  storeInputDisabled: computed(() => aiSearchStore.inputDisabled),
+  sendMessage: (content: string) => aiSearchStore.sendMessage(content),
+  answerQuestion: (questionId: string, content: string) => aiSearchStore.answerQuestion(questionId, content),
+})
+
+const composerHint = computed(() => {
+  if (composerMode.value === 'blocked') return '当前需要先处理上方操作卡，暂不接受普通消息。'
+  if (['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase.value || '')) {
+    return '执行中补充的消息会在下一个执行节点统一生效。'
+  }
+  return ''
+})
+
+const composerHintTone = computed<'default' | 'warning'>(() => (
+  composerMode.value === 'answer' ? 'warning' : 'default'
+))
 
 const withTokenQuery = (url: string, token: string): string => {
   const separator = url.includes('?') ? '&' : '?'
@@ -696,11 +555,6 @@ const downloadCurrentResult = async () => {
     showMessage('error', '下载失败，请稍后重试。')
     window.open(rawDownloadUrl, '_blank')
   }
-}
-
-const onComposerEnter = (event: KeyboardEvent) => {
-  if (event.isComposing || inputDisabled.value || !currentSession.value || !composer.value.trim()) return
-  submitMessage()
 }
 
 const sortedSessions = computed<AiSearchSessionSummary[]>(() => {
@@ -742,44 +596,6 @@ const groupedSessions = computed<SessionGroup[]>(() => {
   return Array.from(groups.values())
 })
 
-const conversationEntries = computed<Array<Record<string, any>>>(() => {
-  const entries: Array<Record<string, any>> = []
-  messages.value.forEach((message, index) => {
-    entries.push({
-      id: message.message_id || `message-${index}`,
-      entryType: 'message',
-      sortKey: toMillis(message.created_at),
-      order: index,
-      ...message,
-    })
-  })
-  phaseMarkers.value.forEach((marker, index) => {
-    entries.push({
-      id: marker.id,
-      entryType: 'phase',
-      phase: marker.phase,
-      endedAt: marker.endedAt || null,
-      sortKey: toMillis(marker.createdAt),
-      order: 1000 + index,
-    })
-  })
-  if (pendingAssistantMessage.value) {
-    entries.push({
-      id: `pending-${pendingAssistantMessage.value.messageId}`,
-      entryType: 'pending-assistant',
-      role: 'assistant',
-      content: pendingAssistantMessage.value.content,
-      createdAt: pendingAssistantMessage.value.createdAt,
-      sortKey: toMillis(pendingAssistantMessage.value.createdAt),
-      order: 2000,
-    })
-  }
-  return entries.sort((left, right) => {
-    if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
-    return left.order - right.order
-  })
-})
-
 const toMillis = (value?: string | null): number => {
   const ts = Date.parse(String(value || ''))
   return Number.isFinite(ts) ? ts : 0
@@ -808,30 +624,6 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
   return { key: `month-${monthLabel}`, label: monthLabel }
 }
 
-const phaseLabel = (phase: string): string => aiSearchPhaseLabel(phase)
-
-const isProcessMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'process'
-
-const formatDuration = (durationMs: number): string => {
-  const totalSeconds = Math.max(1, Math.floor(durationMs / 1000))
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}小时${minutes}分`
-  if (minutes > 0) return `${minutes}分${seconds}秒`
-  return `${seconds}秒`
-}
-
-const phaseDurationText = (entry: Record<string, any>): string => {
-  const startedAt = toMillis(entry.createdAt)
-  if (!startedAt) return ''
-  const endedAt = toMillis(entry.endedAt)
-  if (endedAt > startedAt) return formatDuration(endedAt - startedAt)
-  const isLatestMarker = phaseMarkers.value[phaseMarkers.value.length - 1]?.id === entry.id
-  if (!isLatestMarker) return ''
-  return `进行中 · ${formatDuration(nowTick.value - startedAt)}`
-}
-
 const todoStatusLabel = (status?: string): string => {
   if (status === 'in_progress') return '进行中'
   if (status === 'completed') return '已完成'
@@ -856,21 +648,6 @@ const todoCheckClass = (status?: string): string => {
   return 'border-slate-200 bg-slate-50 text-slate-400'
 }
 
-const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
-
-const planVersionOf = (entry: Record<string, any>): number => {
-  const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
-  return Number.isFinite(value) ? value : 0
-}
-
-const isLatestPlanMessage = (entry: Record<string, any>): boolean => {
-  return isPlanMessage(entry) && planVersionOf(entry) === activePlanVersion.value
-}
-
-const isPendingPlanEntry = (entry: Record<string, any>): boolean => {
-  return isPlanMessage(entry) && !!pendingConfirmation.value && planVersionOf(entry) === confirmationPlanVersion.value
-}
-
 const isDesktopViewport = (): boolean => {
   if (!import.meta.client) return false
   return window.matchMedia('(min-width: 1024px)').matches
@@ -882,26 +659,6 @@ const toggleSidebar = () => {
     return
   }
   mobileDrawerOpen.value = !mobileDrawerOpen.value
-}
-
-const syncMessageListState = () => {
-  const el = messageListRef.value
-  if (!el) return
-  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
-  isNearBottom.value = remaining <= 160
-  hasScrollableOverflow.value = el.scrollHeight > el.clientHeight + 8
-}
-
-const scrollMessagesToBottom = async (behavior: ScrollBehavior = 'auto') => {
-  await nextTick()
-  const el = messageListRef.value
-  if (!el) return
-  el.scrollTo({ top: el.scrollHeight, behavior })
-  syncMessageListState()
-}
-
-const scrollToLatest = () => {
-  void scrollMessagesToBottom('smooth')
 }
 
 const createSession = async () => {
@@ -979,27 +736,8 @@ const deleteSession = async (sessionId: string) => {
   }
 }
 
-const submitMessage = async () => {
-  const content = composer.value.trim()
-  if (!content) return
-  if (pendingQuestion.value) return
-  if (resumeAction.value?.available) return
-  if (humanDecisionAction.value?.available) return
-  if (!currentSession.value) return
-  composer.value = ''
-  await aiSearchStore.sendMessage(content)
-}
-
 const deleteQueuedExecutionMessage = async (queueMessageId: string) => {
   await aiSearchStore.deleteQueuedExecutionMessage(queueMessageId)
-}
-
-const submitAnswer = async () => {
-  const answer = answerDraft.value.trim()
-  const questionId = String(pendingQuestion.value?.question_id || pendingQuestion.value?.questionId || '').trim()
-  if (!answer || !questionId) return
-  answerDraft.value = ''
-  await aiSearchStore.answerQuestion(questionId, answer)
 }
 
 const confirmPlan = async () => {
@@ -1032,39 +770,10 @@ const removeSelectedDocument = async (documentId: string) => {
   await aiSearchStore.submitDocumentReview(activePlanVersion.value, [], [documentId])
 }
 
-const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
-
-const canCopyEntry = (entry: Record<string, any>): boolean => {
-  if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
-  return !!entryCopyText(entry)
-}
-
-const copyEntryContent = async (entry: Record<string, any>) => {
-  const text = entryCopyText(entry)
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    showMessage('success', '已复制消息内容')
-  } catch (_error) {
-    showMessage('error', '复制失败，请稍后重试。')
-  }
-}
-
-const bindMessageListScroll = (element: HTMLElement | null, previous: HTMLElement | null = null) => {
-  if (previous) previous.removeEventListener('scroll', syncMessageListState)
-  if (element) {
-    element.addEventListener('scroll', syncMessageListState, { passive: true })
-    nextTick(() => {
-      syncMessageListState()
-    })
-  }
-}
-
 watch(
   () => currentSession.value?.session.sessionId || '',
   (sessionId) => {
     composer.value = ''
-    answerDraft.value = ''
     headerEditing.value = false
     syncHeaderRenameDraft()
     const currentQuerySession = String(route.query.session || '').trim()
@@ -1079,10 +788,6 @@ watch(
   },
 )
 
-watch(messageListRef, (element, previous) => {
-  bindMessageListScroll(element, previous)
-})
-
 watch(
   () => currentSession.value?.session.title || '',
   () => {
@@ -1096,30 +801,6 @@ watch(
     if (isAiSearchExecutionPhase(phase)) {
       executionPanelOpen.value = true
     }
-  },
-)
-
-watch(
-  [
-    () => currentSession.value?.session.sessionId || '',
-    () => conversationEntries.value.length,
-    () => pendingAssistantMessage.value?.content || '',
-  ],
-  ([sessionId], [previousSessionId]) => {
-    if (sessionId !== previousSessionId || isNearBottom.value) {
-      void scrollMessagesToBottom(sessionId !== previousSessionId ? 'auto' : 'auto')
-      return
-    }
-    nextTick(() => {
-      syncMessageListState()
-    })
-  },
-)
-
-watch(
-  () => pendingQuestion.value?.question_id || pendingQuestion.value?.questionId || '',
-  () => {
-    answerDraft.value = ''
   },
 )
 
@@ -1141,9 +822,6 @@ watch(
 )
 
 onMounted(async () => {
-  nowTimer = setInterval(() => {
-    nowTick.value = Date.now()
-  }, 1000)
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
     await adminUsageStore.fetchAccess(true)
@@ -1160,14 +838,6 @@ onMounted(async () => {
   }
   const preferredSessionId = String(route.query.session || '').trim()
   await aiSearchStore.init(preferredSessionId)
-  await scrollMessagesToBottom()
-})
-
-onBeforeUnmount(() => {
-  if (messageListRef.value) {
-    messageListRef.value.removeEventListener('scroll', syncMessageListState)
-  }
-  if (nowTimer) clearInterval(nowTimer)
 })
 </script>
 

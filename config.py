@@ -95,6 +95,7 @@ class Settings:
 
     # --- 外部检索/下载超时 ---
     RETRIEVAL_REQUEST_TIMEOUT_SECONDS = int(os.getenv("RETRIEVAL_REQUEST_TIMEOUT_SECONDS", "30"))
+    RETRIEVAL_RATE_LIMIT_COOLDOWN_SECONDS = max(1, int(os.getenv("RETRIEVAL_RATE_LIMIT_COOLDOWN_SECONDS", "120")))
     DOWNLOAD_REQUEST_TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_REQUEST_TIMEOUT_SECONDS", "60"))
 
     # --- 通用本地检索（可复用于 ai_reply / patent_analysis）---

@@ -1,0 +1,378 @@
+<template>
+  <div class="relative min-h-0 flex-1">
+    <div ref="messageListRef" class="flex min-h-0 h-full flex-col overflow-y-auto px-4 py-4">
+      <div v-if="!entries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
+        描述检索目标、技术方案、核心效果或约束条件。
+      </div>
+
+      <div v-else class="space-y-3">
+        <template v-for="entry in entries" :key="entry.id">
+          <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
+            <span class="h-px flex-1 bg-slate-200/80" />
+            <p class="shrink-0 text-[11px] font-medium tracking-[0.14em] text-slate-400">
+              {{ phaseLabel(entry.phase) }}<span v-if="phaseDurationText(entry)"> · {{ phaseDurationText(entry) }}</span>
+            </p>
+            <span class="h-px flex-1 bg-slate-200/80" />
+          </article>
+
+          <AiSearchProcessLine v-else-if="isProcessRenderEntry(entry)" :node="entry.node" />
+
+          <article v-else-if="isPendingActionEntry(entry)" class="flex justify-start">
+            <div class="w-full max-w-full">
+              <section
+                v-if="entry.actionType === 'resume'"
+                class="rounded-2xl border px-4 py-4"
+                :class="entry.card?.severity === 'amber' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'"
+              >
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold" :class="entry.card?.severity === 'amber' ? 'text-amber-900' : 'text-slate-900'">
+                      {{ entry.card?.title }}
+                    </p>
+                    <p class="mt-1 text-xs leading-5" :class="entry.card?.severity === 'amber' ? 'text-amber-800' : 'text-slate-700'">
+                      {{ entry.card?.body }}
+                    </p>
+                    <p v-if="resumeLastError" class="mt-2 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900">
+                      上次错误：{{ resumeLastError }}
+                    </p>
+                    <p v-if="resumeAttemptCount > 0" class="mt-2 text-[11px] text-amber-700">
+                      已尝试 {{ resumeAttemptCount }} 次
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    :disabled="streaming"
+                    @click="$emit('resume-execution')"
+                  >
+                    恢复执行
+                  </button>
+                </div>
+              </section>
+
+              <AiSearchHumanDecisionCard
+                v-else-if="entry.actionType === 'human_decision'"
+                :action="humanDecisionAction"
+                :selected-docs="selectedReviewDocuments"
+                :candidate-docs="reviewCandidateDocuments"
+                :disabled="streaming"
+                @request-review="$emit('request-document-review', $event)"
+                @remove-selected="$emit('remove-selected-document', $event)"
+                @continue-search="$emit('continue-search')"
+                @complete-current-results="$emit('complete-current-results')"
+              />
+            </div>
+          </article>
+
+          <article
+            v-else
+            class="group/message flex"
+            :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
+          >
+            <div class="max-w-[90%]">
+              <div
+                class="text-[13px] leading-5"
+                :class="messageCardClass(entry)"
+              >
+                <template v-if="entry.entryType === 'pending-assistant'">
+                  <div v-if="entry.content" class="text-slate-700">
+                    <AiSearchStructuredPlan
+                      v-if="structuredPlanExecutionSpec"
+                      :execution-spec="structuredPlanExecutionSpec"
+                    />
+                    <AiSearchExpandableContent
+                      v-else
+                      :content="entry.content"
+                      mode="markdown"
+                      fade-rgb="248,250,252"
+                    />
+                  </div>
+                  <div v-else class="space-y-2.5">
+                    <div class="flex items-center gap-2 text-[13px] font-medium text-slate-500">
+                      <span class="inline-flex h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                      <span>思考中</span>
+                    </div>
+                    <div class="space-y-2">
+                      <div class="h-2.5 w-36 rounded-full bg-slate-200/80" />
+                      <div class="h-2.5 w-48 rounded-full bg-slate-200/70" />
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
+                  <div v-if="isLatestPlanMessage(entry)" class="space-y-3">
+                    <div class="flex items-center justify-between gap-3">
+                      <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
+                      <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                        v{{ planVersionOf(entry) || activePlanVersion || '?' }}
+                      </span>
+                    </div>
+                    <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                    <AiSearchPlanConfirmationCard
+                      v-if="isPendingPlanEntry(entry)"
+                      :confirm-disabled="streaming || !confirmationPlanVersion"
+                      :label="planConfirmationLabel"
+                      @confirm="$emit('confirm-plan')"
+                    />
+                  </div>
+                  <details v-else class="group">
+                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
+                      <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
+                      <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
+                      <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
+                    </summary>
+                    <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
+                      <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                    </div>
+                  </details>
+                </template>
+
+                <template v-else-if="entry.role === 'assistant' && isQuestionMessage(entry)">
+                  <AiSearchQuestionCard
+                    :prompt="entry.content"
+                    :pending="isPendingQuestionEntry(entry)"
+                  />
+                </template>
+
+                <template v-else-if="entry.role === 'assistant'">
+                  <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                </template>
+
+                <AiSearchExpandableContent
+                  v-else
+                  :content="entry.content"
+                  mode="plaintext"
+                  fade-rgb="14,116,144"
+                />
+              </div>
+              <div
+                v-if="canCopyEntry(entry)"
+                class="flex justify-end px-0.5 pt-1 opacity-100 transition md:pointer-events-none md:opacity-0 md:group-hover/message:pointer-events-auto md:group-hover/message:opacity-100 md:group-focus-within/message:pointer-events-auto md:group-focus-within/message:opacity-100"
+              >
+                <button
+                  type="button"
+                  class="inline-flex h-4 w-4 items-center justify-center text-slate-400 transition hover:text-cyan-700"
+                  aria-label="复制消息内容"
+                  title="复制"
+                  @click="copyEntryContent(entry)"
+                >
+                  <ClipboardDocumentIcon class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </article>
+        </template>
+      </div>
+    </div>
+
+    <button
+      v-if="showScrollToBottom"
+      type="button"
+      class="absolute bottom-4 right-4 inline-flex h-11 w-11 items-center justify-center rounded-full border border-cyan-200/80 bg-cyan-50/95 text-cyan-700 shadow-lg shadow-cyan-200/40 transition hover:bg-cyan-100"
+      aria-label="滚动到最新消息"
+      title="滚动到最新消息"
+      @click="scrollToLatest"
+    >
+      <ArrowDownIcon class="h-5 w-5" />
+    </button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ArrowDownIcon, ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
+import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
+import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
+import AiSearchProcessLine from '~/components/ai-search/AiSearchProcessLine.vue'
+import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
+import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
+import { aiSearchPhaseLabel } from '~/utils/aiSearch'
+
+const props = withDefaults(defineProps<{
+  sessionId?: string
+  entries: Array<Record<string, any>>
+  structuredPlanExecutionSpec?: Record<string, any> | null
+  activePlanVersion?: number
+  confirmationPlanVersion?: number
+  planConfirmationLabel?: string
+  pendingQuestion?: Record<string, any> | null
+  humanDecisionAction?: Record<string, any> | null
+  selectedReviewDocuments?: Array<Record<string, any>>
+  reviewCandidateDocuments?: Array<Record<string, any>>
+  streaming?: boolean
+  resumeLastError?: string
+  resumeAttemptCount?: number
+  pendingAssistantContent?: string
+}>(), {
+  sessionId: '',
+  structuredPlanExecutionSpec: null,
+  activePlanVersion: 0,
+  confirmationPlanVersion: 0,
+  planConfirmationLabel: '实施此计划',
+  pendingQuestion: null,
+  humanDecisionAction: null,
+  selectedReviewDocuments: () => [],
+  reviewCandidateDocuments: () => [],
+  streaming: false,
+  resumeLastError: '',
+  resumeAttemptCount: 0,
+  pendingAssistantContent: '',
+})
+
+defineEmits<{
+  'confirm-plan': []
+  'resume-execution': []
+  'request-document-review': [documentId: string]
+  'remove-selected-document': [documentId: string]
+  'continue-search': []
+  'complete-current-results': []
+}>()
+
+const { showMessage } = useGlobalMessage()
+const messageListRef = ref<HTMLElement | null>(null)
+const isNearBottom = ref(true)
+const hasScrollableOverflow = ref(false)
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | null = null
+
+const showScrollToBottom = computed(() => hasScrollableOverflow.value && !isNearBottom.value)
+
+const toMillis = (value?: string | null): number => {
+  const ts = Date.parse(String(value || ''))
+  return Number.isFinite(ts) ? ts : 0
+}
+
+const formatDuration = (durationMs: number): string => {
+  const totalSeconds = Math.max(1, Math.floor(durationMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}小时${minutes}分`
+  if (minutes > 0) return `${minutes}分${seconds}秒`
+  return `${seconds}秒`
+}
+
+const phaseLabel = (phase: string): string => aiSearchPhaseLabel(phase)
+
+const phaseDurationText = (entry: Record<string, any>): string => {
+  const startedAt = toMillis(entry.createdAt)
+  if (!startedAt) return ''
+  const endedAt = toMillis(entry.endedAt)
+  if (endedAt > startedAt) return formatDuration(endedAt - startedAt)
+  const isLatestPhaseEntry = props.entries.filter(item => item.entryType === 'phase').at(-1)?.id === entry.id
+  if (!isLatestPhaseEntry) return ''
+  return `进行中 · ${formatDuration(nowTick.value - startedAt)}`
+}
+
+const isProcessRenderEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'process-render'
+const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
+const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
+const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
+
+const planVersionOf = (entry: Record<string, any>): number => {
+  const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
+  return Number.isFinite(value) ? value : 0
+}
+
+const isLatestPlanMessage = (entry: Record<string, any>): boolean => {
+  return isPlanMessage(entry) && planVersionOf(entry) === props.activePlanVersion
+}
+
+const isPendingPlanEntry = (entry: Record<string, any>): boolean => {
+  return isPlanMessage(entry) && !!props.confirmationPlanVersion && planVersionOf(entry) === props.confirmationPlanVersion
+}
+
+const isPendingQuestionEntry = (entry: Record<string, any>): boolean => {
+  if (!isQuestionMessage(entry) || !props.pendingQuestion) return false
+  const entryQuestionId = String(entry.question_id || entry.questionId || '').trim()
+  const pendingQuestionId = String(props.pendingQuestion.question_id || props.pendingQuestion.questionId || '').trim()
+  return !!entryQuestionId && entryQuestionId === pendingQuestionId
+}
+
+const messageCardClass = (entry: Record<string, any>): string => {
+  if (entry.role === 'user') {
+    return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
+  }
+  if (isQuestionMessage(entry)) return ''
+  return 'rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-slate-700 shadow-sm'
+}
+
+const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
+
+const canCopyEntry = (entry: Record<string, any>): boolean => {
+  if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
+  return !!entryCopyText(entry)
+}
+
+const copyEntryContent = async (entry: Record<string, any>) => {
+  const text = entryCopyText(entry)
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showMessage('success', '已复制消息内容')
+  } catch (_error) {
+    showMessage('error', '复制失败，请稍后重试。')
+  }
+}
+
+const syncMessageListState = () => {
+  const el = messageListRef.value
+  if (!el) return
+  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+  isNearBottom.value = remaining <= 160
+  hasScrollableOverflow.value = el.scrollHeight > el.clientHeight + 8
+}
+
+const scrollMessagesToBottom = async (behavior: ScrollBehavior = 'auto') => {
+  await nextTick()
+  const el = messageListRef.value
+  if (!el) return
+  el.scrollTo({ top: el.scrollHeight, behavior })
+  syncMessageListState()
+}
+
+const scrollToLatest = () => {
+  void scrollMessagesToBottom('smooth')
+}
+
+watch(messageListRef, (element, previous) => {
+  if (previous) previous.removeEventListener('scroll', syncMessageListState)
+  if (element) {
+    element.addEventListener('scroll', syncMessageListState, { passive: true })
+    nextTick(() => {
+      syncMessageListState()
+    })
+  }
+})
+
+watch(
+  [
+    () => props.sessionId,
+    () => props.entries.length,
+    () => props.pendingAssistantContent,
+  ],
+  ([sessionId], [previousSessionId]) => {
+    if (sessionId !== previousSessionId || isNearBottom.value) {
+      void scrollMessagesToBottom('auto')
+      return
+    }
+    nextTick(() => {
+      syncMessageListState()
+    })
+  },
+)
+
+onMounted(() => {
+  nowTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (messageListRef.value) {
+    messageListRef.value.removeEventListener('scroll', syncMessageListState)
+  }
+  if (nowTimer) clearInterval(nowTimer)
+})
+</script>

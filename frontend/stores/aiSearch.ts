@@ -221,7 +221,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const phase = activePhase(this.currentSession)
       const action = pendingAction(this.currentSession)
       return (!isExecutionPhase(phase) && this.streaming)
-        || pendingActionType(this.currentSession) === 'question'
         || !!resumeAction(this.currentSession)?.available
         || action?.actionType === 'human_decision'
     },

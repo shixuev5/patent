@@ -1,57 +1,30 @@
 <template>
-  <section class="space-y-3">
-    <div class="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3">
-      <p class="text-sm font-semibold text-amber-900">待回答问题</p>
-      <p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-amber-900">{{ prompt }}</p>
-      <p v-if="reason" class="mt-2 text-xs text-amber-700">原因：{{ reason }}</p>
-      <p v-if="answerShape" class="mt-1 text-xs text-amber-700">期望答案：{{ answerShape }}</p>
-    </div>
-    <div class="relative">
-      <textarea
-        :value="modelValue"
-        rows="4"
-        class="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 pb-8 text-sm text-slate-900 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
-        placeholder="请输入补充信息。"
-        @input="onInput"
-        @keydown.enter.exact.prevent="onEnter"
-      />
-      <span class="pointer-events-none absolute bottom-3 left-4 text-[11px] text-slate-400">
-        Enter 提交，Shift+Enter 换行
+  <section class="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <p class="text-sm font-semibold text-amber-900">{{ title }}</p>
+        <p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-amber-900">{{ prompt }}</p>
+      </div>
+      <span
+        v-if="pending"
+        class="shrink-0 rounded-full border border-amber-300 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-amber-800"
+      >
+        待补充
       </span>
     </div>
-    <div class="flex justify-end">
-      <button
-        type="button"
-        class="rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-        :disabled="disabled"
-        @click="$emit('submit')"
-      >
-        提交回答
-      </button>
-    </div>
+    <p v-if="pending" class="mt-3 text-xs leading-5 text-amber-800">
+      请直接在下方输入框补充回答。
+    </p>
   </section>
 </template>
 
 <script setup lang="ts">
-const props = defineProps<{
+withDefaults(defineProps<{
   prompt: string
-  reason?: string
-  answerShape?: string
-  modelValue: string
-  disabled: boolean
-}>()
-
-const emit = defineEmits<{
-  'update:modelValue': [value: string]
-  submit: []
-}>()
-
-const onInput = (event: Event) => {
-  emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
-}
-
-const onEnter = (event: KeyboardEvent) => {
-  if (event.isComposing || props.disabled) return
-  emit('submit')
-}
+  title?: string
+  pending?: boolean
+}>(), {
+  title: '待回答问题',
+  pending: false,
+})
 </script>

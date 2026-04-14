@@ -540,12 +540,20 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
         priority_date: Optional[str],
         per_query: int,
     ) -> Dict[str, Any]:
+        if self._provider_in_rate_limit_cooldown(
+            provider="tavily",
+            provider_label="Tavily",
+            query=query,
+        ):
+            return {}
         total_keys = len(self.tavily_api_keys)
         if total_keys == 0:
             return {}
 
+        start_index = self._tavily_key_cursor
+        limit_failures = 0
         for offset in range(total_keys):
-            index = (self._tavily_key_cursor + offset) % total_keys
+            index = (start_index + offset) % total_keys
             api_key = self.tavily_api_keys[index]
             payload = {
                 "api_key": api_key,
@@ -574,6 +582,7 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
                 continue
 
             if self._is_tavily_limit_error(status_code=status_code, data=data, response_text=response_text):
+                limit_failures += 1
                 logger.warning(
                     f"Tavily key 触发限额/限流，切换下一个 key，status={status_code} query={query[:80]}"
                 )
@@ -589,6 +598,12 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
             self._tavily_key_cursor = index
             return data
 
+        if total_keys > 0 and limit_failures == total_keys:
+            self._mark_provider_rate_limit_cooldown(
+                provider="tavily",
+                provider_label="Tavily",
+                reason=f"all_keys_rate_limited total_keys={total_keys}",
+            )
         logger.warning(f"Tavily 所有 key 均不可用，query={query[:80]}")
         return {}
 

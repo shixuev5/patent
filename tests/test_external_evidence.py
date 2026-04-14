@@ -11,6 +11,7 @@ import agents.ai_reply.src.external_evidence as external_evidence_module
 from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
 from agents.ai_reply.src.retrieval_utils import make_query_spec
 from agents.common.retrieval.academic_query_utils import normalize_academic_query
+from agents.common.retrieval.academic_search import AcademicSearchClient
 from agents.common.search_clients.factory import SearchClientFactory
 from agents.common.search_clients.zhihuiya import ZhihuiyaClient
 from agents.common.retrieval.external_rerank_service import (
@@ -37,6 +38,8 @@ class _FakeResponse:
 def _clear_external_env(monkeypatch):
     SearchClientFactory._instances.clear()
     ZhihuiyaClient._account_cooldowns.clear()
+    AcademicSearchClient._provider_cooldowns.clear()
+    AcademicSearchClient._provider_cooldown_log_deadlines.clear()
     for env_name in list(os.environ):
         if env_name.startswith("ZHIHUIYA_ACCOUNTS__"):
             monkeypatch.delenv(env_name, raising=False)
@@ -323,6 +326,40 @@ def test_semanticscholar_requests_are_serialized(monkeypatch):
     assert state["max_active"] == 1
 
 
+def test_semanticscholar_anonymous_rate_limit_enters_cooldown_and_skips_followup(monkeypatch):
+    _clear_external_env(monkeypatch)
+    aggregator = ExternalEvidenceAggregator()
+    calls = []
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(
+            {
+                "url": url,
+                "params": dict(params or {}),
+                "headers": dict(headers or {}),
+            }
+        )
+        return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    first = aggregator._search_semanticscholar(
+        [make_query_spec("query-a", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+    second = aggregator._search_semanticscholar(
+        [make_query_spec("query-b", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert first == []
+    assert second == []
+    assert len(calls) == 1
+
+
+
 def test_crossref_search_normalizes_jats_abstract(monkeypatch):
     aggregator = ExternalEvidenceAggregator()
     monkeypatch.setenv("CROSSREF_MAILTO", "patent@example.com")
@@ -449,6 +486,35 @@ def test_tavily_search_uses_advanced_params(monkeypatch):
     assert captured["json"]["end_date"] == "2024-12-31"
     assert len(results) == 2
     assert results[1]["url"] == "https://example.edu/reference.pdf"
+
+
+def test_tavily_rate_limit_enters_cooldown_and_skips_followup(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("TAVILY_API_KEYS", "tvly-a,tvly-b")
+    aggregator = ExternalEvidenceAggregator()
+    calls = []
+
+    def _fake_post(url, json=None, timeout=None):
+        payload = dict(json or {})
+        calls.append(payload.get("api_key"))
+        return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.post", _fake_post)
+
+    first = aggregator._search_tavily(
+        [make_query_spec("query-a", "web", "reference")],
+        priority_date="2024-12-31",
+        per_query=3,
+    )
+    second = aggregator._search_tavily(
+        [make_query_spec("query-b", "web", "reference")],
+        priority_date="2024-12-31",
+        per_query=3,
+    )
+
+    assert first == []
+    assert second == []
+    assert calls == ["tvly-a", "tvly-b"]
 
 
 def test_external_evidence_module_import_does_not_touch_zhihuiya_factory(monkeypatch):
