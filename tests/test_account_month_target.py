@@ -5,6 +5,7 @@ import importlib
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1129,6 +1130,55 @@ def test_wechat_runtime_natural_language_analysis_routes_to_task(monkeypatch, tm
     assert task.pn == 'CN202410009999.9'
 
 
+def test_wechat_runtime_intent_router_uses_supported_task_kind(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_task_kind.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-task-kind',
+            authing_sub='wx-task-kind',
+            name='微信任务类型用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-task-kind',
+            owner_id='authing:wx-task-kind',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-task-kind',
+            wechat_peer_name='任务类型微信',
+            bound_at=utc_now(),
+        )
+    )
+    monkeypatch.setattr(task_routes, '_enqueue_pipeline_task', lambda *args, **kwargs: None)
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+
+    def _invoke_text_json(*args, **kwargs):
+        assert kwargs['task_kind'] == 'wechat_intent_routing'
+        return {
+            'intent': 'patent_analysis',
+            'confidence': 0.92,
+            'requires_confirmation': False,
+            'extracted': {'patent_number': 'CN202410008888.8'},
+        }
+
+    monkeypatch.setattr(service.llm_service, 'invoke_text_json', _invoke_text_json)
+
+    created = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-task-kind',
+            text='分析专利 CN202410008888.8',
+        )
+    )
+
+    assert created.taskId
+    task = storage.get_task(created.taskId)
+    assert task is not None
+    assert task.task_type == TaskType.PATENT_ANALYSIS.value
+    assert task.pn == 'CN202410008888.8'
+
+
 def test_wechat_runtime_low_confidence_intent_asks_for_confirmation(monkeypatch, tmp_path):
     storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_intent_uncertain.db')
     storage.upsert_authing_user(
@@ -1170,6 +1220,200 @@ def test_wechat_runtime_low_confidence_intent_asks_for_confirmation(monkeypatch,
     )
     assert result.taskId is None
     assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+
+
+def test_wechat_runtime_analysis_flow_natural_language_cancel_clears_context(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_analysis_flow_cancel_intent.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-analysis-flow-cancel',
+            authing_sub='wx-analysis-flow-cancel',
+            name='微信分析流程取消用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-analysis-flow-cancel',
+            owner_id='authing:wx-analysis-flow-cancel',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-cancel',
+            wechat_peer_name='分析流程取消微信',
+            bound_at=utc_now(),
+        )
+    )
+    storage.upsert_wechat_flow_session(
+        'authing:wx-analysis-flow-cancel',
+        TaskType.PATENT_ANALYSIS.value,
+        current_step='await_patent_input',
+        draft_payload={},
+        expires_at=utc_now() + timedelta(hours=12),
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-analysis-flow-cancel',
+            owner_id='authing:wx-analysis-flow-cancel',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='guided_workflow',
+            active_context_session_id='flow-analysis-flow-cancel',
+            active_context_title='AI 分析',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'cancel_or_pause',
+            'confidence': 0.93,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-cancel',
+            text='先别做了',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert '取消当前微信任务收集流程' in (result.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'none'
+    assert storage.get_active_wechat_flow_session('authing:wx-analysis-flow-cancel', TaskType.PATENT_ANALYSIS.value) is None
+
+
+def test_wechat_runtime_analysis_flow_chitchat_does_not_create_task(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_analysis_flow_chitchat.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-analysis-flow-chitchat',
+            authing_sub='wx-analysis-flow-chitchat',
+            name='微信分析流程闲聊用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-analysis-flow-chitchat',
+            owner_id='authing:wx-analysis-flow-chitchat',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-chitchat',
+            wechat_peer_name='分析流程闲聊微信',
+            bound_at=utc_now(),
+        )
+    )
+    storage.upsert_wechat_flow_session(
+        'authing:wx-analysis-flow-chitchat',
+        TaskType.PATENT_ANALYSIS.value,
+        current_step='await_patent_input',
+        draft_payload={},
+        expires_at=utc_now() + timedelta(hours=12),
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-analysis-flow-chitchat',
+            owner_id='authing:wx-analysis-flow-chitchat',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='guided_workflow',
+            active_context_session_id='flow-analysis-flow-chitchat',
+            active_context_title='AI 分析',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'chitchat',
+            'confidence': 0.96,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-chitchat',
+            text='你好',
+        )
+    )
+
+    assert result.taskId is None
+    assert '请发送专利号' in (result.messages[0].text or '')
+    assert storage.list_tasks(owner_id='authing:wx-analysis-flow-chitchat') == []
+
+
+def test_wechat_runtime_analysis_flow_patent_number_still_works_when_route_uncertain(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_analysis_flow_unknown_patent.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-analysis-flow-unknown-patent',
+            authing_sub='wx-analysis-flow-unknown-patent',
+            name='微信分析流程专利号用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-analysis-flow-unknown-patent',
+            owner_id='authing:wx-analysis-flow-unknown-patent',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-unknown-patent',
+            wechat_peer_name='分析流程专利号微信',
+            bound_at=utc_now(),
+        )
+    )
+    storage.upsert_wechat_flow_session(
+        'authing:wx-analysis-flow-unknown-patent',
+        TaskType.PATENT_ANALYSIS.value,
+        current_step='await_patent_input',
+        draft_payload={},
+        expires_at=utc_now() + timedelta(hours=12),
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-analysis-flow-unknown-patent',
+            owner_id='authing:wx-analysis-flow-unknown-patent',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='guided_workflow',
+            active_context_session_id='flow-analysis-flow-unknown-patent',
+            active_context_title='AI 分析',
+        )
+    )
+    monkeypatch.setattr(task_routes, '_enqueue_pipeline_task', lambda *args, **kwargs: None)
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'unknown',
+            'confidence': 0.22,
+            'requires_confirmation': True,
+            'extracted': {},
+        },
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-analysis-flow-unknown-patent',
+            text='CN202410007777.7',
+        )
+    )
+
+    assert result.taskId
+    task = storage.get_task(result.taskId)
+    assert task is not None
+    assert task.task_type == TaskType.PATENT_ANALYSIS.value
+    assert task.pn == 'CN202410007777.7'
 
 
 @pytest.mark.parametrize('text', ['你好', '帮我看看', '这个怎么弄'])
@@ -1571,6 +1815,71 @@ def test_wechat_runtime_exit_search_context_only_clears_context(monkeypatch, tmp
             bot_account_id='bot-1',
             wechat_peer_id='wx-peer-exit-search',
             text='退出检索',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert result.taskId is None
+    assert '退出当前检索上下文' in (result.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'none'
+    assert storage.get_task(task.id) is not None
+
+
+def test_wechat_runtime_search_context_cancel_intent_clears_context(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_search_context_cancel_intent.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search-cancel-intent',
+            authing_sub='wx-search-cancel-intent',
+            name='微信检索退出意图用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search-cancel-intent',
+            owner_id='authing:wx-search-cancel-intent',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-cancel-intent',
+            wechat_peer_name='检索退出意图微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(
+        owner_id='authing:wx-search-cancel-intent',
+        task_type=TaskType.AI_SEARCH.value,
+        title='AI 检索会话 - cancel-intent',
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-search-cancel-intent',
+            owner_id='authing:wx-search-cancel-intent',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='ai_search',
+            active_context_session_id=task.id,
+            active_context_title='退出意图测试',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=manager)
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'cancel_or_pause',
+            'confidence': 0.93,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-cancel-intent',
+            text='先不检索了',
         )
     )
 

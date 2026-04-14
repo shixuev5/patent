@@ -504,7 +504,17 @@ class WeChatRuntimeService:
             )
         route = self._route_general_intent(text=text, attachments=attachments)
         intent = str(route.get("intent") or "").strip()
-        if intent in {TaskType.AI_SEARCH.value, FLOW_ANALYSIS, FLOW_REVIEW, FLOW_REPLY} and intent != flow.flow_type:
+        try:
+            confidence = max(0.0, min(1.0, float(route.get("confidence") or 0.0)))
+        except Exception:
+            confidence = 0.0
+        requires_confirmation = bool(route.get("requires_confirmation"))
+        has_patent_input = bool(attachments) or bool(self._normalize_patent_number_candidate(text))
+        has_reply_input = bool(attachments) or text in {"跳过", "完成对比文件", "开始答复"}
+
+        if intent == "cancel_or_pause":
+            return self.cancel_active_workflow(binding, conversation)
+        if intent in {TaskType.AI_SEARCH.value, FLOW_ANALYSIS, FLOW_REVIEW, FLOW_REPLY, LIST_SEARCH_SESSIONS_INTENT} and intent != flow.flow_type:
             self._set_pending_conversation_action(
                 conversation,
                 {
@@ -520,6 +530,22 @@ class WeChatRuntimeService:
                 session_type=flow.flow_type,
                 flow_session_id=flow.flow_session_id,
                 messages=[self._text(f"当前正在进行{self._intent_display_label(flow.flow_type)}材料收集。回复“切换”可转到{self._intent_display_label(intent)}，回复“继续当前”保留当前流程。")],
+            )
+        if intent == "chitchat":
+            return ConversationResponse(
+                session_type=flow.flow_type,
+                flow_session_id=flow.flow_session_id,
+                messages=[self._text(self._guided_flow_hint_text(flow))],
+            )
+        if intent in {"unknown", ""} or requires_confirmation or confidence < 0.55:
+            if flow.flow_type in {FLOW_ANALYSIS, FLOW_REVIEW} and has_patent_input:
+                return await self._handle_patent_task_flow(binding, flow, text, attachments)
+            if flow.flow_type == FLOW_REPLY and has_reply_input:
+                return await self._handle_reply_flow(binding, flow, text, attachments)
+            return ConversationResponse(
+                session_type=flow.flow_type,
+                flow_session_id=flow.flow_session_id,
+                messages=[self._text(self._guided_flow_hint_text(flow))],
             )
         if flow.flow_type in {FLOW_ANALYSIS, FLOW_REVIEW}:
             return await self._handle_patent_task_flow(binding, flow, text, attachments)
@@ -569,6 +595,12 @@ class WeChatRuntimeService:
             return ConversationResponse(messages=[self._text(f"当前在检索《{active_context.title or session_id}》。回复“切换”可转到{self._intent_display_label(intent)}，回复“继续当前”保留当前检索。")])
         if intent == LIST_SEARCH_SESSIONS_INTENT:
             return self.list_recent_ai_search_sessions_response(binding, conversation, current_session_id=session_id)
+        if intent == "cancel_or_pause":
+            self.pause_active_search_context(conversation)
+            return ConversationResponse(
+                messages=[self._text("已退出当前检索上下文，检索会话仍然保留。")],
+                effect=ConversationEffect(clear_active_context=True),
+            )
         if intent == "chitchat":
             return ConversationResponse(messages=[self._text(self._search_context_hint_text(active_context.title))])
         return await self.send_ai_search_message(binding, conversation, session_id=session_id, text=text, attachments=attachments, route=route)
@@ -1101,7 +1133,7 @@ class WeChatRuntimeService:
                         "content": f'输入文本: "{normalized_text}"\n是否带附件: {"true" if attachments else "false"}\n仅返回 JSON。',
                     },
                 ],
-                task_kind="wechat_intent_routing_v1",
+                task_kind="wechat_intent_routing",
                 temperature=0.0,
                 max_tokens=256,
             )
@@ -1142,11 +1174,30 @@ class WeChatRuntimeService:
     def _intent_display_label(self, intent: str) -> str:
         mapping = {
             TaskType.AI_SEARCH.value: "AI 检索",
+            LIST_SEARCH_SESSIONS_INTENT: "查看检索会话",
             FLOW_ANALYSIS: "AI 分析",
             FLOW_REVIEW: "AI 审查",
             FLOW_REPLY: "AI 答复",
         }
         return mapping.get(str(intent or "").strip(), str(intent or "").strip() or "新任务")
+
+    def _guided_flow_hint_text(self, flow: WeChatFlowSession) -> str:
+        if flow.flow_type in {FLOW_ANALYSIS, FLOW_REVIEW}:
+            return "请发送专利号，或上传 1 份 PDF 文件。"
+        step = str(flow.current_step or "").strip() or "await_office_action"
+        if step == "await_office_action":
+            return "请先上传审查意见通知书。"
+        if step == "await_response":
+            return "请上传意见陈述书。"
+        if step == "await_previous_claims":
+            return "请上传上一版权利要求书，或回复“跳过”。"
+        if step == "await_current_claims":
+            return "请上传当前版权利要求书，或回复“跳过”。"
+        if step == "await_comparison_docs":
+            return "请继续上传对比文件，结束时回复“完成对比文件”。"
+        if step == "await_reply_start":
+            return "请回复“开始答复”以创建 AI 答复任务。"
+        return "当前流程状态异常，请回复“取消当前流程”后重试。"
 
     def _serialize_attachments(self, attachments: List[InternalWeChatInboundAttachment]) -> List[Dict[str, Any]]:
         return [
@@ -1233,7 +1284,7 @@ class WeChatRuntimeService:
         text: str,
         attachment: Optional[InternalWeChatInboundAttachment],
     ) -> Any:
-        patent_number = str(text or "").strip().upper() or None
+        patent_number = self._normalize_patent_number_candidate(text)
         if not patent_number and not attachment:
             raise HTTPException(
                 status_code=400,
