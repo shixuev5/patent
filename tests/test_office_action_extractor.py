@@ -34,6 +34,24 @@ def test_extract_latest_notice_section_accepts_bold_title() -> None:
     assert len(result.paragraphs) == 1
 
 
+def test_extract_latest_notice_section_accepts_split_bold_title() -> None:
+    markdown = """
+申请号：202310599076.X
+
+**第****二次审查意见通知书**
+
+申请人于2025年10月27日提交了意见陈述书和经过修改的申请文件，审查员在阅读了上述文件后，对本案继续进行审查，再次提出如下审查意见。
+
+1、权利要求1-10不具备专利法第22条第3款规定的创造性。
+"""
+
+    result = OfficeActionExtractor().extract(markdown)
+
+    assert result.application_number == "202310599076.X"
+    assert result.current_notice_round == 2
+    assert len(result.paragraphs) == 1
+
+
 def test_extract_latest_notice_section_accepts_plain_title() -> None:
     markdown = """
 申请号：202510236679.2

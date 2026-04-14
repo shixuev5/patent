@@ -43,7 +43,7 @@ class OfficeActionExtractor:
     def _extract_latest_notice_section(self, markdown_content: str) -> Tuple[int, str]:
         """提取最新一份审查意见通知书的轮次与正文区段。"""
         chapter_pattern = re.compile(
-            r"(?m)^(?:\s*#+\s*)?(?:\*\*|__)?\s*第\s*([0-9一二三四五六七八九十百零〇两]+)\s*次\s*审\s*查\s*意\s*见\s*通\s*知\s*书\s*(?:\*\*|__)?\s*$"
+            r"(?m)^(?:\s*#+\s*)?[\s*_]*第[\s*_]*([0-9一二三四五六七八九十百零〇两]+)[\s*_]*次[\s*_]*审[\s*_]*查[\s*_]*意[\s*_]*见[\s*_]*通[\s*_]*知[\s*_]*书[\s*_]*$"
         )
         chapter_matches = list(re.finditer(chapter_pattern, markdown_content))
         if not chapter_matches:
