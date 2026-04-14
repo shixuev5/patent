@@ -69,6 +69,7 @@ def test_prepare_lane_queries_includes_gap_seed_fields():
     assert payload["academic_query_text"]
     assert payload["academic_semantic_text"]
     assert payload["crossref_query_text"]
+    assert payload["cutoff_date"] == "2023-10-15"
 
 
 def test_search_academic_openalex_persists_npl_and_dedupes_by_doi(tmp_path, monkeypatch):

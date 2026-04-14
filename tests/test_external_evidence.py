@@ -3,6 +3,8 @@ from __future__ import annotations
 import builtins
 import importlib
 import os
+import threading
+import time
 import requests
 
 import agents.ai_reply.src.external_evidence as external_evidence_module
@@ -273,13 +275,52 @@ def test_semanticscholar_search_uses_expected_fields(monkeypatch):
     )
 
     assert captured["params"]["fields"] == aggregator.semanticscholar_fields
-    assert captured["params"]["publicationDateOrYear"] == ":2024-12-31"
+    assert captured["params"]["year"] == "-2024"
+    assert "publicationDateOrYear" not in captured["params"]
     assert captured["headers"]["x-api-key"] == "s2-key"
     assert len(results) == 1
     assert results[0]["source_type"] == "semanticscholar"
     assert results[0]["venue"] == "NeurIPS"
     assert results[0]["citation_count"] == 123
     assert results[0]["influential_citation_count"] == 11
+
+
+def test_semanticscholar_requests_are_serialized(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    aggregator.semanticscholar_api_keys = ["s2-key-a", "s2-key-b"]
+    barrier = threading.Barrier(2)
+    state = {"active": 0, "max_active": 0}
+    state_lock = threading.Lock()
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        with state_lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.05)
+        with state_lock:
+            state["active"] -= 1
+        return _FakeResponse({"data": []})
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    def _run_query(query_text):
+        barrier.wait(timeout=1.0)
+        return aggregator._search_semanticscholar(
+            [make_query_spec(query_text, "boolean", "anchor")],
+            priority_date="2024-12-31",
+            per_query=2,
+        )
+
+    thread_a = threading.Thread(target=_run_query, args=("query-a",))
+    thread_b = threading.Thread(target=_run_query, args=("query-b",))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=1.0)
+    thread_b.join(timeout=1.0)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert state["max_active"] == 1
 
 
 def test_crossref_search_normalizes_jats_abstract(monkeypatch):
@@ -318,6 +359,7 @@ def test_crossref_search_normalizes_jats_abstract(monkeypatch):
     assert captured["params"]["query.bibliographic"] == "battery separator design"
     assert captured["params"]["filter"] == "until-pub-date:2024-12-31"
     assert captured["params"]["mailto"] == "patent@example.com"
+    assert "language" not in captured["params"]["select"].split(",")
     assert len(results) == 1
     assert results[0]["snippet"] == "Crossref abstract content."
     assert results[0]["source_type"] == "crossref"

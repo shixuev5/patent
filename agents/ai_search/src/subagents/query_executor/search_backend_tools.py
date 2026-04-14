@@ -693,7 +693,7 @@ def build_search_tools(context: Any) -> List[Any]:
             "academic_query_text": academic_query_text,
             "academic_semantic_text": to_semantic_academic_query(academic_query_text),
             "crossref_query_text": to_crossref_bibliographic_query(academic_query_text),
-            "cutoff_date": str(constraints.get("cutoff_date_yyyymmdd") or ""),
+            "cutoff_date": str(constraints.get("effective_cutoff_date") or ""),
             "applicant_terms": constraints.get("applicant_terms") or [],
             "result_limit": int(batch.get("result_limit") or 50),
             "seed_pn": str(batch.get("seed_pn") or batch.get("seed_publication_number") or "").strip().upper(),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from html import unescape
 from typing import Any, Callable, Dict, List, Optional
@@ -126,9 +127,20 @@ def external_id_from_url(url: Any) -> str:
     return parsed.path.rstrip("/").split("/")[-1].strip()
 
 
+def extract_publication_year(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    matched = re.match(r"^(\d{4})", text)
+    if not matched:
+        return ""
+    return matched.group(1)
+
+
 class AcademicSearchClient:
     _CROSSREF_MAX_RETRIES = 3
     _RETRY_BACKOFF_SECONDS = 0.2
+    _semanticscholar_request_lock = threading.Lock()
 
     def __init__(
         self,
@@ -173,7 +185,6 @@ class AcademicSearchClient:
                 "title",
                 "abstract",
                 "container-title",
-                "language",
                 "published-print",
                 "published-online",
                 "issued",
@@ -337,8 +348,10 @@ class AcademicSearchClient:
             "limit": per_query,
             "fields": self.semanticscholar_fields,
         }
-        if priority_date:
-            params["publicationDateOrYear"] = f":{priority_date}"
+        year_ceiling = extract_publication_year(priority_date)
+        if year_ceiling:
+            # Search endpoint accepts coarse year filtering; exact cutoff is enforced client-side.
+            params["year"] = f"-{year_ceiling}"
 
         if not self.semanticscholar_api_keys:
             try:
@@ -359,12 +372,14 @@ class AcademicSearchClient:
             index = (start_index + offset) % total_keys
             headers = {"x-api-key": self.semanticscholar_api_keys[index]}
             try:
-                response = self._request_get(
-                    self.semanticscholar_base_url,
-                    params=params,
-                    headers=headers,
-                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
+                # Semantic Scholar API is effectively single-flight for our workload.
+                with self._semanticscholar_request_lock:
+                    response = self._request_get(
+                        self.semanticscholar_base_url,
+                        params=params,
+                        headers=headers,
+                        timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                    )
                 status_code = int(response.status_code)
                 response_text = str(response.text or "")
                 data = safe_json(response)
