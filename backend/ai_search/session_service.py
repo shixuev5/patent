@@ -19,6 +19,8 @@ from backend.storage import TaskType
 from .models import (
     AI_SEARCH_SESSION_NOT_FOUND_CODE,
     INVALID_SESSION_PHASE_CODE,
+    SESSION_DELETE_BLOCKED_CODE,
+    SESSION_TITLE_REQUIRED_CODE,
     AiSearchCreateSessionResponse,
     AiSearchSessionListResponse,
     AiSearchSessionSummary,
@@ -104,7 +106,14 @@ class AiSearchSessionService:
         if title is not None:
             normalized_title = str(title).strip()
             if not normalized_title:
-                raise HTTPException(status_code=422, detail="会话标题不能为空。")
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": SESSION_TITLE_REQUIRED_CODE,
+                        "message": "会话标题不能为空。",
+                        "suggestion": "你可以换一个更具体的标题后再试。",
+                    },
+                )
             updates["title"] = normalized_title
         if pinned is not None:
             updates["metadata"] = merge_ai_search_meta(task, pinned=bool(pinned))
@@ -120,7 +129,14 @@ class AiSearchSessionService:
         task = self._get_owned_session_task(session_id, owner_id)
         phase = self.facade.agent_runs._current_phase_value(task.id, PHASE_COLLECTING_REQUIREMENTS)
         if phase in ACTIVE_EXECUTION_PHASES:
-            raise HTTPException(status_code=409, detail="检索执行中，请稍后再删除会话。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": SESSION_DELETE_BLOCKED_CODE,
+                    "message": "这个检索还在执行中。",
+                    "suggestion": "你可以等它结束后再删除。",
+                },
+            )
 
         self.facade.task_manager.delete_task(session_id)
         return {"deleted": True}

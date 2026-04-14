@@ -15,6 +15,10 @@ from fastapi import HTTPException
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
+from backend.ai_search.models import (
+    ACTIVE_PLAN_REQUIRED_CODE,
+    PLAN_CONFIRMATION_REQUIRED_CODE,
+)
 from backend.ai_search.service import AiSearchService
 from backend.models import (
     InternalWeChatInboundAttachment,
@@ -38,6 +42,7 @@ from config import settings
 FLOW_ANALYSIS = TaskType.PATENT_ANALYSIS.value
 FLOW_REVIEW = TaskType.AI_REVIEW.value
 FLOW_REPLY = TaskType.AI_REPLY.value
+LIST_SEARCH_SESSIONS_INTENT = "list_search_sessions"
 ACTIVE_FLOW_TYPES = (FLOW_REPLY, FLOW_ANALYSIS, FLOW_REVIEW)
 REPLY_ALLOWED_SUFFIXES = {".pdf", ".doc", ".docx"}
 PATENT_NUMBER_PATTERN = re.compile(r"\b(?:CN|US|EP|WO|JP|KR)?\s?\d{6,}[A-Z0-9.\-/]*\b", re.IGNORECASE)
@@ -51,6 +56,21 @@ CANCEL_SEARCH_TOKENS = ("取消当前检索", "取消这个检索")
 SEARCH_RESUME_TOKENS = ("继续检索", "继续刚才", "继续上次", "恢复检索", "接着检索")
 SEARCH_CONTROL_TOKENS = {"确认计划", "继续检索", "按当前结果完成"}
 CHITCHAT_TOKENS = {"你好", "您好", "谢谢", "多谢", "收到", "好的", "好", "ok", "OK", "嗯嗯"}
+SEARCH_PENDING_CONTEXT_INVALID_CODE = "SEARCH_PENDING_CONTEXT_INVALID"
+SEARCH_DOCUMENT_SELECTION_INVALID_CODE = "SEARCH_DOCUMENT_SELECTION_INVALID"
+WECHAT_FLOW_TYPE_UNSUPPORTED_CODE = "WECHAT_FLOW_TYPE_UNSUPPORTED"
+WECHAT_BINDING_NOT_FOUND_CODE = "WECHAT_BINDING_NOT_FOUND"
+WECHAT_SEARCH_SESSION_NOT_FOUND_CODE = "WECHAT_SEARCH_SESSION_NOT_FOUND"
+WECHAT_ATTACHMENT_COUNT_INVALID_CODE = "WECHAT_ATTACHMENT_COUNT_INVALID"
+WECHAT_ATTACHMENT_PATH_INVALID_CODE = "WECHAT_ATTACHMENT_PATH_INVALID"
+WECHAT_ATTACHMENT_NOT_FOUND_CODE = "WECHAT_ATTACHMENT_NOT_FOUND"
+WECHAT_FILE_SUFFIX_INVALID_CODE = "WECHAT_FILE_SUFFIX_INVALID"
+WECHAT_UPLOAD_SOURCE_NOT_FOUND_CODE = "WECHAT_UPLOAD_SOURCE_NOT_FOUND"
+WECHAT_PATENT_INPUT_REQUIRED_CODE = "WECHAT_PATENT_INPUT_REQUIRED"
+WECHAT_PATENT_INPUT_CONFLICT_CODE = "WECHAT_PATENT_INPUT_CONFLICT"
+WECHAT_TASK_CREATE_FAILED_CODE = "WECHAT_TASK_CREATE_FAILED"
+WECHAT_AI_REPLY_MATERIAL_REQUIRED_CODE = "WECHAT_AI_REPLY_MATERIAL_REQUIRED"
+WECHAT_AI_REPLY_CREATE_FAILED_CODE = "WECHAT_AI_REPLY_CREATE_FAILED"
 
 
 @dataclass
@@ -150,7 +170,14 @@ class WeChatRuntimeService:
     def _require_binding(self, bot_account_id: str, wechat_peer_id: str) -> WeChatBinding:
         binding = self.storage.get_wechat_binding_by_peer(str(bot_account_id or "").strip(), str(wechat_peer_id or "").strip())
         if not binding or str(binding.status or "").strip() != "active":
-            raise HTTPException(status_code=404, detail="未找到已绑定的平台账号。")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": WECHAT_BINDING_NOT_FOUND_CODE,
+                    "message": "还没有找到可用的微信绑定。",
+                    "suggestion": "你可以先在网页里完成绑定后再试。",
+                },
+            )
         return binding
 
     def _touch_binding_inbound(self, binding: WeChatBinding, *, wechat_peer_name: Optional[str]) -> None:
@@ -442,6 +469,8 @@ class WeChatRuntimeService:
         patent_number = self._normalize_patent_number_candidate(extracted.get("patent_number") or text)
         if intent == "chitchat":
             return ConversationResponse(messages=[self._text(self._intent_guidance_text())])
+        if intent == LIST_SEARCH_SESSIONS_INTENT:
+            return self.list_recent_ai_search_sessions_response(binding, conversation)
         if intent == TaskType.AI_SEARCH.value:
             return await self.start_or_resume_ai_search(binding, conversation, text=text, attachments=attachments)
         if intent == FLOW_ANALYSIS:
@@ -496,7 +525,14 @@ class WeChatRuntimeService:
             return await self._handle_patent_task_flow(binding, flow, text, attachments)
         if flow.flow_type == FLOW_REPLY:
             return await self._handle_reply_flow(binding, flow, text, attachments)
-        raise HTTPException(status_code=400, detail="不支持的微信流程类型。")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": WECHAT_FLOW_TYPE_UNSUPPORTED_CODE,
+                "message": "当前流程类型暂不支持。",
+                "suggestion": "你可以回复“取消当前流程”后重新开始。",
+            },
+        )
 
     async def _handle_active_search_context(
         self,
@@ -531,6 +567,8 @@ class WeChatRuntimeService:
                 },
             )
             return ConversationResponse(messages=[self._text(f"当前在检索《{active_context.title or session_id}》。回复“切换”可转到{self._intent_display_label(intent)}，回复“继续当前”保留当前检索。")])
+        if intent == LIST_SEARCH_SESSIONS_INTENT:
+            return self.list_recent_ai_search_sessions_response(binding, conversation, current_session_id=session_id)
         if intent == "chitchat":
             return ConversationResponse(messages=[self._text(self._search_context_hint_text(active_context.title))])
         return await self.send_ai_search_message(binding, conversation, session_id=session_id, text=text, attachments=attachments, route=route)
@@ -623,7 +661,14 @@ class WeChatRuntimeService:
     def cancel_current_search(self, owner_id: str, session_id: str) -> None:
         task = self.storage.get_task(session_id)
         if not task or str(task.owner_id or "") != str(owner_id or "") or str(task.task_type or "") != TaskType.AI_SEARCH.value:
-            raise HTTPException(status_code=404, detail="AI 检索会话不存在。")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": WECHAT_SEARCH_SESSION_NOT_FOUND_CODE,
+                    "message": "没有找到这个检索会话。",
+                    "suggestion": "你可以先让我列出进行中的检索，再选择一个继续。",
+                },
+            )
         metadata = dict(getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {})
         ai_search_meta = dict(metadata.get("ai_search") or {})
         ai_search_meta["current_phase"] = "cancelled"
@@ -703,7 +748,14 @@ class WeChatRuntimeService:
                 if normalized_text == "确认计划":
                     plan_version = int((pending_action or {}).get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or snapshot.run.get("planVersion") or 0)
                     if plan_version <= 0:
-                        raise HTTPException(status_code=409, detail="当前没有可确认的检索计划。")
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "code": PLAN_CONFIRMATION_REQUIRED_CODE,
+                                "message": "现在还没有可确认的计划。",
+                                "suggestion": "你可以先补充要求，等我给出计划后再回复“确认计划”。",
+                            },
+                        )
                     await self.confirm_ai_search_plan(session_id, binding.owner_id, plan_version)
                 elif normalized_text == "继续检索":
                     await self.continue_ai_search(session_id, binding.owner_id)
@@ -714,7 +766,14 @@ class WeChatRuntimeService:
             elif action_type == "question":
                 question_id = str((pending_action or {}).get("questionId") or (pending_action or {}).get("question_id") or "").strip()
                 if not question_id:
-                    raise HTTPException(status_code=409, detail="当前追问缺少 questionId。")
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": SEARCH_PENDING_CONTEXT_INVALID_CODE,
+                            "message": "刚才那条追问信息有点不完整。",
+                            "suggestion": "你可以把补充说明再发一次试试。",
+                        },
+                    )
                 await self.answer_ai_search_question(session_id, binding.owner_id, question_id, normalized_text)
             elif action_type == "plan_confirmation" and normalized_text and not self._is_affirmative(normalized_text):
                 await self.send_freeform_ai_search_message(session_id, binding.owner_id, normalized_text)
@@ -778,10 +837,24 @@ class WeChatRuntimeService:
                 if document_id:
                     selected_ids.append(document_id)
         if not selected_ids:
-            raise HTTPException(status_code=400, detail="未识别到有效的候选文献编号。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": SEARCH_DOCUMENT_SELECTION_INVALID_CODE,
+                    "message": "我还没识别出你要选哪几篇。",
+                    "suggestion": "请按编号回复，比如“选择 1”或“选择 1 3”。",
+                },
+            )
         plan_version = int(snapshot.run.get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or 0)
         if plan_version <= 0:
-            raise HTTPException(status_code=409, detail="当前没有有效计划版本，无法继续。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ACTIVE_PLAN_REQUIRED_CODE,
+                    "message": "现在还没有可继续执行的计划。",
+                    "suggestion": "你可以先补充要求，或者等我先给出计划。",
+                },
+            )
         self.ai_search_service.patch_selected_documents(session_id, owner_id, plan_version, selected_ids, [])
         await self._drain(self.ai_search_service.stream_feature_comparison(session_id, owner_id, plan_version))
 
@@ -800,6 +873,31 @@ class WeChatRuntimeService:
                 }
             )
         return items
+
+    def list_recent_ai_search_sessions_response(
+        self,
+        binding: WeChatBinding,
+        conversation: WeChatConversationSession,
+        *,
+        current_session_id: Optional[str] = None,
+    ) -> ConversationResponse:
+        sessions = self.list_recent_ai_search_sessions(binding.owner_id)
+        if not sessions:
+            return ConversationResponse(messages=[self._text("我帮你看了一下，目前还没有进行中的检索任务。要是你想新开一个检索，直接告诉我主题就行。")])
+        options = sessions[:3]
+        self._set_pending_conversation_action(
+            conversation,
+            {
+                "type": "choose_search_session",
+                "options": options,
+            },
+        )
+        lines = ["我帮你看了一下，现在有以下进行中的检索："]
+        for index, item in enumerate(options, start=1):
+            suffix = "（当前）" if current_session_id and item["session_id"] == current_session_id else ""
+            lines.append(f"{index}. {item['title']}{suffix}")
+        lines.append("回复编号就能继续对应检索，例如“1”或“选择 1”。")
+        return ConversationResponse(messages=[self._text("\n".join(lines))])
 
     async def _handle_patent_task_flow(
         self,
@@ -842,7 +940,7 @@ class WeChatRuntimeService:
             return ConversationResponse(
                 session_type=flow.flow_type,
                 flow_session_id=flow.flow_session_id,
-                messages=[self._text(str(exc.detail))],
+                messages=[self._text(self._detail_to_text(exc.detail))],
             )
 
     async def _handle_reply_flow(
@@ -915,21 +1013,42 @@ class WeChatRuntimeService:
             except HTTPException as exc:
                 if task:
                     self.task_manager.fail_task(task.id, f"微信创建 AI 答复任务失败：{exc.detail}")
-                return ConversationResponse(session_type=FLOW_REPLY, flow_session_id=flow.flow_session_id, messages=[self._text(str(exc.detail))])
+                return ConversationResponse(session_type=FLOW_REPLY, flow_session_id=flow.flow_session_id, messages=[self._text(self._detail_to_text(exc.detail))])
         return ConversationResponse(session_type=FLOW_REPLY, flow_session_id=flow.flow_session_id, messages=[self._text("当前流程状态异常，请回复“取消当前流程”后重试。")])
 
     def _single_attachment(self, attachments: List[InternalWeChatInboundAttachment], label: str) -> Dict[str, Any]:
         if len(attachments) != 1:
-            raise HTTPException(status_code=400, detail=f"{label}当前只支持上传 1 份文件。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_ATTACHMENT_COUNT_INVALID_CODE,
+                    "message": f"{label}当前只支持上传 1 份文件。",
+                    "suggestion": "你可以只保留一份文件后重新发送。",
+                },
+            )
         return self._attachment_to_dict(attachments[0], label)
 
     def _attachment_to_dict(self, attachment: InternalWeChatInboundAttachment, label: str) -> Dict[str, Any]:
         stored_path = str(attachment.storedPath or "").strip()
         if not stored_path:
-            raise HTTPException(status_code=400, detail=f"{label}文件路径无效。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_ATTACHMENT_PATH_INVALID_CODE,
+                    "message": f"{label}文件路径无效。",
+                    "suggestion": "你可以重新上传一次文件。",
+                },
+            )
         path = Path(stored_path)
         if not path.exists() or not path.is_file():
-            raise HTTPException(status_code=400, detail=f"{label}文件不存在。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_ATTACHMENT_NOT_FOUND_CODE,
+                    "message": f"{label}文件不存在。",
+                    "suggestion": "你可以重新上传一次文件。",
+                },
+            )
         return {
             "filename": str(attachment.filename or path.name).strip() or path.name,
             "stored_path": str(path),
@@ -946,22 +1065,6 @@ class WeChatRuntimeService:
             return {"intent": "chitchat", "confidence": 0.95, "requires_confirmation": False, "extracted": {}}
         if self._is_search_cancel(normalized_text) or self._is_search_exit(normalized_text) or self._is_flow_cancel(normalized_text):
             return {"intent": "cancel_or_pause", "confidence": 0.98, "requires_confirmation": False, "extracted": {}}
-
-        lower = normalized_text.lower()
-        heuristics = [
-            (TaskType.AI_SEARCH.value, ["检索", "现有技术", "prior art", "找专利", "检索一下", "查新"]),
-            (FLOW_REPLY, ["答复", "审查意见", "oa", "office action"]),
-            (FLOW_REVIEW, ["审查", "review"]),
-            (FLOW_ANALYSIS, ["分析", "analysis", "拆解"]),
-        ]
-        for intent, tokens in heuristics:
-            if any(token in lower for token in tokens):
-                return {
-                    "intent": intent,
-                    "confidence": 0.9,
-                    "requires_confirmation": False,
-                    "extracted": {"patent_number": self._normalize_patent_number_candidate(normalized_text)},
-                }
         try:
             response = self.llm_service.invoke_text_json(
                 [
@@ -971,21 +1074,23 @@ class WeChatRuntimeService:
 
 把用户输入路由为以下 intent 之一：
 1. {TaskType.AI_SEARCH.value}: 专利检索、找对比文献、查现有技术、继续检索
-2. {FLOW_ANALYSIS}: 专利分析、技术方案解读
-3. {FLOW_REVIEW}: 专利审查、找撰写问题、质量评估
-4. {FLOW_REPLY}: 审查意见答复、OA 答复、意见陈述书
-5. cancel_or_pause: 退出/暂停/取消当前上下文
-6. chitchat: 寒暄、感谢、收到
-7. unknown: 信息不足，无法安全判断
+2. {LIST_SEARCH_SESSIONS_INTENT}: 询问自己有哪些进行中的检索任务、列出检索会话、查看最近检索
+3. {FLOW_ANALYSIS}: 专利分析、技术方案解读
+4. {FLOW_REVIEW}: 专利审查、找撰写问题、质量评估
+5. {FLOW_REPLY}: 审查意见答复、OA 答复、意见陈述书
+6. cancel_or_pause: 退出/暂停/取消当前上下文
+7. chitchat: 寒暄、感谢、收到
+8. unknown: 信息不足，无法安全判断
 
 规则：
+- “有哪些正在进行的检索任务”“列出我的检索会话”这类查询优先判为 {LIST_SEARCH_SESSIONS_INTENT}，不能新建检索。
 - 单个附件或单个专利号但无明确动作时，优先 unknown。
 - 低把握时返回 requires_confirmation=true。
 - 仅当文本中出现明确专利号时提取 patent_number，否则为 null。
 
 输出格式：
 {{
-  "intent": "<{TaskType.AI_SEARCH.value}|{FLOW_ANALYSIS}|{FLOW_REVIEW}|{FLOW_REPLY}|cancel_or_pause|chitchat|unknown>",
+  "intent": "<{TaskType.AI_SEARCH.value}|{LIST_SEARCH_SESSIONS_INTENT}|{FLOW_ANALYSIS}|{FLOW_REVIEW}|{FLOW_REPLY}|cancel_or_pause|chitchat|unknown>",
   "confidence": <0到1浮点数>,
   "requires_confirmation": <boolean>,
   "extracted": {{"patent_number": "<string或null>"}}
@@ -1001,7 +1106,7 @@ class WeChatRuntimeService:
                 max_tokens=256,
             )
             intent = str(response.get("intent") or "unknown").strip()
-            if intent not in {TaskType.AI_SEARCH.value, FLOW_ANALYSIS, FLOW_REVIEW, FLOW_REPLY, "cancel_or_pause", "chitchat", "unknown"}:
+            if intent not in {TaskType.AI_SEARCH.value, LIST_SEARCH_SESSIONS_INTENT, FLOW_ANALYSIS, FLOW_REVIEW, FLOW_REPLY, "cancel_or_pause", "chitchat", "unknown"}:
                 intent = "unknown"
             try:
                 confidence = max(0.0, min(1.0, float(response.get("confidence") or 0.0)))
@@ -1093,12 +1198,26 @@ class WeChatRuntimeService:
         suffix = Path(str(filename or "")).suffix.lower()
         if suffix not in allowed:
             allowed_text = "/".join(sorted(allowed))
-            raise HTTPException(status_code=400, detail=f"{label}仅支持 {allowed_text} 格式。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_FILE_SUFFIX_INVALID_CODE,
+                    "message": f"{label}仅支持 {allowed_text} 格式。",
+                    "suggestion": "你可以换成支持的文件格式后再发。",
+                },
+            )
 
     def _copy_attachment_to_task(self, *, task_id: str, source_path: str, subdir: str, prefix: str, original_name: str) -> str:
         source = Path(str(source_path or "").strip())
         if not source.exists() or not source.is_file():
-            raise HTTPException(status_code=400, detail=f"微信上传文件不存在：{source}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_UPLOAD_SOURCE_NOT_FOUND_CODE,
+                    "message": "我这边没有找到刚才上传的文件。",
+                    "suggestion": "你可以重新上传一次文件。",
+                },
+            )
         target_dir = settings.UPLOAD_DIR / task_id / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         safe_name = Path(original_name or source.name).name
@@ -1116,9 +1235,23 @@ class WeChatRuntimeService:
     ) -> Any:
         patent_number = str(text or "").strip().upper() or None
         if not patent_number and not attachment:
-            raise HTTPException(status_code=400, detail="必须提供专利号或上传 PDF 文件。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_PATENT_INPUT_REQUIRED_CODE,
+                    "message": "需要提供专利号或上传 PDF 文件。",
+                    "suggestion": "你可以二选一发给我。",
+                },
+            )
         if patent_number and attachment:
-            raise HTTPException(status_code=400, detail="请二选一：发送专利号，或上传 PDF 文件。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_PATENT_INPUT_CONFLICT_CODE,
+                    "message": "专利号和 PDF 不需要同时发。",
+                    "suggestion": "你可以二选一重新发送。",
+                },
+            )
 
         task = self.task_manager.create_task(
             owner_id=owner_id,
@@ -1166,13 +1299,27 @@ class WeChatRuntimeService:
         except Exception as exc:
             for saved in saved_paths:
                 _cleanup_path(saved)
-            raise HTTPException(status_code=500, detail=f"创建任务失败：{exc}") from exc
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": WECHAT_TASK_CREATE_FAILED_CODE,
+                    "message": f"创建任务失败：{exc}",
+                    "suggestion": "你可以稍后再试一次。",
+                },
+            ) from exc
 
     def _create_ai_reply_task(self, owner_id: str, draft: Dict[str, Any]) -> Any:
         office_action = draft.get("office_action")
         response = draft.get("response")
         if not isinstance(office_action, dict) or not isinstance(response, dict):
-            raise HTTPException(status_code=400, detail="AI 答复任务缺少必需材料。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": WECHAT_AI_REPLY_MATERIAL_REQUIRED_CODE,
+                    "message": "AI 答复任务还缺少必需材料。",
+                    "suggestion": "请先上传审查意见通知书和意见陈述书。",
+                },
+            )
 
         task = self.task_manager.create_task(
             owner_id=owner_id,
@@ -1223,7 +1370,14 @@ class WeChatRuntimeService:
         except Exception as exc:
             for saved in saved_paths:
                 _cleanup_path(saved)
-            raise HTTPException(status_code=500, detail=f"创建 AI 答复任务失败：{exc}") from exc
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": WECHAT_AI_REPLY_CREATE_FAILED_CODE,
+                    "message": f"创建 AI 答复任务失败：{exc}",
+                    "suggestion": "你可以稍后再试一次。",
+                },
+            ) from exc
 
     async def _drain(self, stream: Any) -> None:
         async for _chunk in stream:
@@ -1271,5 +1425,7 @@ class WeChatRuntimeService:
 
     def _detail_to_text(self, detail: Any) -> str:
         if isinstance(detail, dict):
-            return str(detail.get("message") or detail.get("detail") or "请求失败").strip() or "请求失败"
+            message = str(detail.get("message") or detail.get("detail") or "请求失败").strip() or "请求失败"
+            suggestion = str(detail.get("suggestion") or "").strip()
+            return f"{message}\n{suggestion}" if suggestion else message
         return str(detail or "请求失败").strip() or "请求失败"

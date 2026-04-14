@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
+import httpx
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 from dotenv import load_dotenv
 
@@ -24,6 +26,11 @@ API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_POR
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
 LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
+INBOUND_REPLY_WAIT_SECONDS = max(1.0, float(os.getenv("IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS", "8") or "8"))
+INBOUND_REQUEST_TIMEOUT_SECONDS = max(
+    INBOUND_REPLY_WAIT_SECONDS + 1.0,
+    float(os.getenv("IM_GATEWAY_INBOUND_REQUEST_TIMEOUT_SECONDS", "180") or "180"),
+)
 DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(ROOT_DIR / "data" / "im_gateway")))
 BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
@@ -34,6 +41,7 @@ class WeChatGateway:
         self.credential_store = credential_store if credential_store is not None else build_credential_store_from_env(download_dir=DOWNLOAD_DIR)
         self.bot: Any = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     def _build_bot(self) -> Any:
         try:
@@ -130,6 +138,11 @@ class WeChatGateway:
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
+            for task in list(self._background_tasks):
+                task.cancel()
+            for task in list(self._background_tasks):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
             await self.backend.close()
 
     def _submit_login_state(self, *, status: str, qr_url: Optional[str] = None, error_message: Optional[str] = None) -> Optional[Future]:
@@ -211,18 +224,83 @@ class WeChatGateway:
             text=text,
         ):
             return
-        result = await self.backend.post_inbound_message(
-            bot_account_id=bot_account_id,
-            wechat_peer_id=peer_id,
-            wechat_peer_name=peer_name,
-            text=text,
-            attachments=attachments,
+        inbound_task = asyncio.create_task(
+            self.backend.post_inbound_message(
+                bot_account_id=bot_account_id,
+                wechat_peer_id=peer_id,
+                wechat_peer_name=peer_name,
+                text=text,
+                attachments=attachments,
+                timeout_seconds=INBOUND_REQUEST_TIMEOUT_SECONDS,
+            )
         )
+        try:
+            result = await asyncio.wait_for(asyncio.shield(inbound_task), timeout=INBOUND_REPLY_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            await self._send_messages(
+                peer_id=peer_id,
+                incoming_msg=msg,
+                messages=[{"type": "text", "text": self._slow_processing_text()}],
+            )
+            self._track_background_task(
+                asyncio.create_task(
+                    self._deliver_inbound_result_later(
+                        inbound_task=inbound_task,
+                        peer_id=peer_id,
+                        incoming_msg=msg,
+                    )
+                )
+            )
+            return
+        except Exception:
+            if inbound_task.done():
+                with contextlib.suppress(Exception):
+                    inbound_task.result()
+            raise
         await self._send_messages(
             peer_id=peer_id,
             incoming_msg=msg,
             messages=result.get("messages") if isinstance(result.get("messages"), list) else [],
         )
+
+    def _track_background_task(self, task: asyncio.Task[Any]) -> None:
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _deliver_inbound_result_later(self, *, inbound_task: asyncio.Task[Dict[str, Any]], peer_id: str, incoming_msg: Any) -> None:
+        try:
+            result = await inbound_task
+        except httpx.ReadTimeout:
+            await self._send_messages(
+                peer_id=peer_id,
+                incoming_msg=incoming_msg,
+                messages=[{"type": "text", "text": self._slow_processing_timeout_text()}],
+            )
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[im-gateway] async inbound follow-up failed: {exc}")
+            await self._send_messages(
+                peer_id=peer_id,
+                incoming_msg=incoming_msg,
+                messages=[{"type": "text", "text": self._friendly_inbound_failure_text()}],
+            )
+            return
+        await self._send_messages(
+            peer_id=peer_id,
+            incoming_msg=incoming_msg,
+            messages=result.get("messages") if isinstance(result.get("messages"), list) else [],
+        )
+
+    def _slow_processing_text(self) -> str:
+        return "收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。"
+
+    def _slow_processing_timeout_text(self) -> str:
+        return "抱歉，让你久等了。这条消息处理得比预期慢一些，我这边还没拿到最终结果。你先不用重复发送，我会继续留意后续进展。"
+
+    def _friendly_inbound_failure_text(self) -> str:
+        return "抱歉，刚才处理这条消息时出了点小问题。你可以稍后再发一次，我会继续帮你接着看。"
 
     async def _maybe_complete_binding(
         self,
@@ -410,6 +488,7 @@ async def main() -> None:
         backend=BackendClient(
             api_base_url=API_BASE_URL,
             internal_gateway_token=INTERNAL_GATEWAY_TOKEN,
+            inbound_request_timeout_seconds=INBOUND_REQUEST_TIMEOUT_SECONDS,
         )
     )
     await gateway.run()

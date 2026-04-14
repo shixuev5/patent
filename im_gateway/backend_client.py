@@ -7,10 +7,17 @@ import httpx
 
 
 class BackendClient:
-    def __init__(self, *, api_base_url: str, internal_gateway_token: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_base_url: str,
+        internal_gateway_token: str,
+        inbound_request_timeout_seconds: float = 180.0,
+    ) -> None:
         self.api_base_url = api_base_url.rstrip("/")
         self.internal_gateway_token = internal_gateway_token
         self._client = httpx.AsyncClient(timeout=60.0)
+        self.inbound_request_timeout_seconds = max(6.0, float(inbound_request_timeout_seconds or 0.0))
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -55,6 +62,7 @@ class BackendClient:
         wechat_peer_name: Optional[str],
         text: Optional[str],
         attachments: Optional[List[Dict[str, Any]]] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         response = await self._client.post(
             f"{self.api_base_url}/api/internal/wechat/messages",
@@ -66,6 +74,7 @@ class BackendClient:
                 "text": text,
                 "attachments": attachments or [],
             },
+            timeout=max(6.0, float(timeout_seconds or self.inbound_request_timeout_seconds or 0.0)),
         )
         return await self._parse_json(response)
 

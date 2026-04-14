@@ -40,7 +40,22 @@ from backend.storage import TaskType
 from backend.time_utils import utc_now_z
 
 from .models import (
+    ACTIVE_PLAN_REQUIRED_CODE,
+    ANALYSIS_SEED_ALREADY_INITIALIZED_CODE,
+    ANALYSIS_SEED_CONTEXT_MISSING_CODE,
+    ANALYSIS_SEED_REQUIRED_CODE,
+    DOCUMENT_REVIEW_CONFLICT_CODE,
+    DOCUMENT_REVIEW_INVALID_SELECTED_CODE,
+    DOCUMENT_REVIEW_INVALID_SHORTLISTED_CODE,
+    DOCUMENT_REVIEW_SELECTION_REQUIRED_CODE,
+    EXECUTION_QUEUE_APPEND_BLOCKED_CODE,
+    EXECUTION_QUEUE_DELETE_BLOCKED_CODE,
+    EXECUTION_QUEUE_DELETE_FAILED_CODE,
+    EXECUTION_QUEUE_MESSAGE_NOT_FOUND_CODE,
+    HUMAN_DECISION_REQUIRED_CODE,
     INVALID_SESSION_PHASE_CODE,
+    MANUAL_REVIEW_RUN_REQUIRED_CODE,
+    NO_SELECTED_DOCUMENTS_CODE,
     PENDING_QUESTION_EXISTS_CODE,
     PLAN_CONFIRMATION_REQUIRED_CODE,
     RESUME_NOT_AVAILABLE_CODE,
@@ -154,14 +169,28 @@ class AiSearchAgentRunService:
         context = AiSearchAgentContext(self.storage, task.id)
         created = context.append_execution_message_queue(content)
         if not created:
-            raise HTTPException(status_code=409, detail="当前执行轮次不可追加待执行用户消息。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": EXECUTION_QUEUE_APPEND_BLOCKED_CODE,
+                    "message": "当前执行轮次里不能再追加新消息。",
+                    "suggestion": "你可以等当前步骤结束后再试。",
+                },
+            )
         return self._execution_queue_response(task.id, str(created.get("run_id") or ""))
 
     def delete_execution_queue_message(self, session_id: str, owner_id: str, queue_message_id: str) -> AiSearchExecutionQueueResponse:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         item = self.storage.get_ai_search_execution_queue_message(queue_message_id)
         if not item or str(item.get("task_id") or "").strip() != task.id:
-            raise HTTPException(status_code=404, detail="待执行用户消息不存在。")
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": EXECUTION_QUEUE_MESSAGE_NOT_FOUND_CODE,
+                    "message": "这条待执行消息不存在了。",
+                    "suggestion": "你可以刷新后再试，或者直接重新发送。",
+                },
+            )
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
         if phase not in ACTIVE_EXECUTION_PHASES:
@@ -170,10 +199,24 @@ class AiSearchAgentRunService:
                 detail={"code": INVALID_SESSION_PHASE_CODE, "message": "当前阶段不支持删除待执行用户消息。", "phase": phase},
             )
         if str(item.get("status") or "").strip() != "pending":
-            raise HTTPException(status_code=409, detail="该待执行用户消息已进入处理流程，不能删除。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": EXECUTION_QUEUE_DELETE_BLOCKED_CODE,
+                    "message": "这条消息已经进入处理流程了。",
+                    "suggestion": "你可以等当前步骤结束后再看结果。",
+                },
+            )
         context = AiSearchAgentContext(self.storage, task.id)
         if not context.delete_execution_message_queue(queue_message_id):
-            raise HTTPException(status_code=409, detail="删除待执行用户消息失败。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": EXECUTION_QUEUE_DELETE_FAILED_CODE,
+                    "message": "这条待执行消息删除失败了。",
+                    "suggestion": "你可以稍后再试一次。",
+                },
+            )
         run_id = str(item.get("run_id") or "").strip()
         return self._execution_queue_response(task.id, run_id)
 
@@ -265,14 +308,25 @@ class AiSearchAgentRunService:
         if resume_action is None:
             raise HTTPException(
                 status_code=409,
-                detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "当前没有可恢复的失败执行步骤。"},
+                detail={
+                    "code": RESUME_NOT_AVAILABLE_CODE,
+                    "message": "现在没有需要恢复的步骤。",
+                    "suggestion": "你可以继续补充要求，或者等我下一步提示。",
+                },
             )
         return resume_action
 
     def _require_human_decision_action(self, task: Any) -> Dict[str, Any]:
         pending_action = self.snapshots._pending_action(task, "human_decision")
         if pending_action is None:
-            raise HTTPException(status_code=409, detail="当前不在人工决策状态。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": HUMAN_DECISION_REQUIRED_CODE,
+                    "message": "现在还不用你来决定是否继续。",
+                    "suggestion": "想补充方向或条件的话，直接发给我就行。",
+                },
+            )
         return pending_action
 
     def _build_resume_prompt(self, resume_action: Dict[str, Any]) -> str:
@@ -1234,7 +1288,11 @@ class AiSearchAgentRunService:
         if phase == PHASE_AWAITING_USER_ANSWER and self._pending_action(task.id, expected_type="question"):
             raise HTTPException(
                 status_code=409,
-                detail={"code": PENDING_QUESTION_EXISTS_CODE, "message": "请先回答当前追问。"},
+                detail={
+                    "code": PENDING_QUESTION_EXISTS_CODE,
+                    "message": "我这边还有一个追问没回答。",
+                    "suggestion": "你先直接回复那个问题，我再继续往下检索。",
+                },
             )
         if phase not in self.facade.DEFAULT_MESSAGE_PHASES:
             self.sessions._raise_invalid_phase(phase, "当前阶段不允许发送普通消息。")
@@ -1285,12 +1343,20 @@ class AiSearchAgentRunService:
             if checkpoint_ns and checkpoint_ns != current_checkpoint_ns:
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "恢复点已失效，请刷新后重试。"},
+                    detail={
+                        "code": RESUME_NOT_AVAILABLE_CODE,
+                        "message": "恢复点已经失效了。",
+                        "suggestion": "你可以刷新后再试，或者直接补充新的要求。",
+                    },
                 )
             if checkpoint_id and current_checkpoint_id and checkpoint_id != current_checkpoint_id:
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": RESUME_NOT_AVAILABLE_CODE, "message": "恢复点已失效，请刷新后重试。"},
+                    detail={
+                        "code": RESUME_NOT_AVAILABLE_CODE,
+                        "message": "恢复点已经失效了。",
+                        "suggestion": "你可以刷新后再试，或者直接补充新的要求。",
+                    },
                 )
         self._resolve_pending_action(task.id, expected_type="resume", resolution={"decision": "resume"})
         async for event in self._stream_main_agent_execution(
@@ -1318,7 +1384,11 @@ class AiSearchAgentRunService:
         if pending_question_id != question_id:
             raise HTTPException(
                 status_code=409,
-                detail={"code": PENDING_QUESTION_EXISTS_CODE, "message": "回答的问题已过期。"},
+                detail={
+                    "code": PENDING_QUESTION_EXISTS_CODE,
+                    "message": "刚才那个问题已经过期了。",
+                    "suggestion": "你可以直接重新说明补充信息，我会按最新内容继续。",
+                },
             )
         self.facade._append_message(task.id, "user", "answer", answer, question_id=question_id)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
@@ -1340,7 +1410,11 @@ class AiSearchAgentRunService:
         if phase != PHASE_AWAITING_PLAN_CONFIRMATION:
             raise HTTPException(
                 status_code=409,
-                detail={"code": PLAN_CONFIRMATION_REQUIRED_CODE, "message": "当前没有待确认的检索计划。"},
+                detail={
+                    "code": PLAN_CONFIRMATION_REQUIRED_CODE,
+                    "message": "现在还没有待确认的计划。",
+                    "suggestion": "你可以先补充要求，等我给出计划后再回复“确认计划”。",
+                },
             )
         pending_action = self._require_pending_action(
             task.id,
@@ -1354,7 +1428,11 @@ class AiSearchAgentRunService:
         if pending_plan_version != plan_version or active_plan_version != plan_version:
             raise HTTPException(
                 status_code=409,
-                detail={"code": STALE_PLAN_CONFIRMATION_CODE, "message": "当前计划版本已失效，请刷新后重试。"},
+                detail={
+                    "code": STALE_PLAN_CONFIRMATION_CODE,
+                    "message": "当前计划版本已经失效了。",
+                    "suggestion": "你可以刷新后再试，或者直接告诉我新的修改意见。",
+                },
             )
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
 
@@ -1363,7 +1441,11 @@ class AiSearchAgentRunService:
             if not updated_plan or str(updated_plan.get("status") or "") != "confirmed":
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": PLAN_CONFIRMATION_REQUIRED_CODE, "message": "计划确认未生效，请重试。"},
+                    detail={
+                        "code": PLAN_CONFIRMATION_REQUIRED_CODE,
+                        "message": "这次计划确认还没有生效。",
+                        "suggestion": "你可以稍后再试一次，或者先补充修改意见。",
+                    },
                 )
             return {}
 
@@ -1382,13 +1464,34 @@ class AiSearchAgentRunService:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         if str(meta.get("source_type") or "").strip() != "analysis":
-            raise HTTPException(status_code=409, detail="当前会话不是从 AI 分析创建的检索计划。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ANALYSIS_SEED_REQUIRED_CODE,
+                    "message": "当前会话不是从 AI 分析生成的。",
+                    "suggestion": "你可以回到 AI 分析结果页重新发起检索。",
+                },
+            )
         if str(meta.get("analysis_seed_status") or "").strip() != "pending":
-            raise HTTPException(status_code=409, detail="当前检索计划已生成，不能重复初始化。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ANALYSIS_SEED_ALREADY_INITIALIZED_CODE,
+                    "message": "这个检索计划已经初始化过了。",
+                    "suggestion": "你可以直接继续当前检索。",
+                },
+            )
         phase = str(meta.get("current_phase") or PHASE_DRAFTING_PLAN)
         seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
         if not seed_prompt:
-            raise HTTPException(status_code=409, detail="当前会话缺少 AI 分析种子上下文。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ANALYSIS_SEED_CONTEXT_MISSING_CODE,
+                    "message": "当前会话缺少 AI 分析上下文。",
+                    "suggestion": "你可以重新从 AI 分析结果页发起检索。",
+                },
+            )
 
         run_error: Optional[Dict[str, Any]] = None
         saw_run_completed = False
@@ -1512,7 +1615,14 @@ class AiSearchAgentRunService:
         meta = get_ai_search_meta(task)
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
-            raise HTTPException(status_code=409, detail="当前没有活动计划版本，无法继续检索。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ACTIVE_PLAN_REQUIRED_CODE,
+                    "message": "现在还没有可继续执行的计划。",
+                    "suggestion": "你可以先补充要求，或者等我先给出计划。",
+                },
+            )
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         context = AiSearchAgentContext(self.storage, task.id)
         context.reset_execution_control(plan_version, clear_human_decision=True)
@@ -1539,10 +1649,24 @@ class AiSearchAgentRunService:
         meta = get_ai_search_meta(task)
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
-            raise HTTPException(status_code=409, detail="当前没有活动计划版本，无法按当前结果完成。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": ACTIVE_PLAN_REQUIRED_CODE,
+                    "message": "现在还没有可直接完成的计划。",
+                    "suggestion": "你可以先补充要求，或者等我先给出计划。",
+                },
+            )
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
-            raise HTTPException(status_code=409, detail="当前没有已选对比文献，无法按当前结果完成。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": NO_SELECTED_DOCUMENTS_CODE,
+                    "message": "现在还没有已选文献。",
+                    "suggestion": "你可以先继续筛选，或者告诉我想补充的方向。",
+                },
+            )
 
         termination_reason = self._decision_termination_reason(task)
         feature_comparison = self.artifacts._current_feature_comparison(task, plan_version)
@@ -1598,7 +1722,14 @@ class AiSearchAgentRunService:
         run = self.storage.get_ai_search_run(task_id, plan_version=plan_version)
         run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
         if not run_id:
-            raise HTTPException(status_code=409, detail="当前没有有效执行轮次，无法发起人工送审复核。")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": MANUAL_REVIEW_RUN_REQUIRED_CODE,
+                    "message": "现在还不能发起人工送审复核。",
+                    "suggestion": "你可以先继续当前检索，等执行轮次准备好后再操作。",
+                },
+            )
         batch_id = uuid.uuid4().hex
         self.storage.create_ai_search_batch(
             {
@@ -1637,10 +1768,24 @@ class AiSearchAgentRunService:
         review_ids = [str(item).strip() for item in (review_document_ids or []) if str(item).strip()]
         remove_ids = [str(item).strip() for item in (remove_document_ids or []) if str(item).strip()]
         if not review_ids and not remove_ids:
-            raise HTTPException(status_code=400, detail="请至少选择一篇待送审或待移出的文献。")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": DOCUMENT_REVIEW_SELECTION_REQUIRED_CODE,
+                    "message": "你还没有选中文献。",
+                    "suggestion": "请至少选一篇要送审或移出的文献。",
+                },
+            )
         overlap_ids = set(review_ids) & set(remove_ids)
         if overlap_ids:
-            raise HTTPException(status_code=400, detail=f"同一篇文献不能同时送审和移出：{', '.join(sorted(overlap_ids))}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": DOCUMENT_REVIEW_CONFLICT_CODE,
+                    "message": f"同一篇文献不能同时送审和移出：{', '.join(sorted(overlap_ids))}",
+                    "suggestion": "你可以把送审和移出的文献重新分开选择。",
+                },
+            )
 
         documents = self.storage.list_ai_search_documents(task.id, plan_version)
         documents_by_id = {
@@ -1659,9 +1804,23 @@ class AiSearchAgentRunService:
             if str((documents_by_id.get(document_id) or {}).get("stage") or "") != "selected"
         ]
         if invalid_review_ids:
-            raise HTTPException(status_code=409, detail=f"仅允许送审当前 shortlisted 文献：{', '.join(sorted(invalid_review_ids))}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": DOCUMENT_REVIEW_INVALID_SHORTLISTED_CODE,
+                    "message": f"仅允许送审当前 shortlisted 文献：{', '.join(sorted(invalid_review_ids))}",
+                    "suggestion": "你可以先确认这些文献是否还在 shortlisted 列表里。",
+                },
+            )
         if invalid_remove_ids:
-            raise HTTPException(status_code=409, detail=f"仅允许移出当前 selected 文献：{', '.join(sorted(invalid_remove_ids))}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": DOCUMENT_REVIEW_INVALID_SELECTED_CODE,
+                    "message": f"仅允许移出当前 selected 文献：{', '.join(sorted(invalid_remove_ids))}",
+                    "suggestion": "你可以先确认这些文献是否还在 selected 列表里。",
+                },
+            )
 
         previous_assistant = self.snapshots._latest_assistant_chat(task.id)
         initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
