@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union
 from loguru import logger
 
 from config import settings
+from ..schema.ddl_utils import relax_column_ddl_for_add_column
 from ..models import TaskType
 from ..schema.shared_schema import REQUIRED_COLUMNS, SQLITE_CREATE_TABLES_SQL
 
@@ -46,7 +47,16 @@ class SQLiteBackend:
             existing_columns = self._get_existing_columns(table_name)
             for column_name, ddl in required_columns:
                 if column_name not in existing_columns:
-                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+                    add_column_ddl = relax_column_ddl_for_add_column(ddl)
+                    if add_column_ddl != " ".join(str(ddl).split()).strip():
+                        logger.warning(
+                            "Relaxing SQLite ADD COLUMN DDL for {}.{}: {} -> {}",
+                            table_name,
+                            column_name,
+                            ddl,
+                            add_column_ddl,
+                        )
+                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {add_column_ddl}")
         for sql in deferred_statements:
             conn.execute(sql)
         patent_analysis_columns = self._get_existing_columns("patent_analyses")

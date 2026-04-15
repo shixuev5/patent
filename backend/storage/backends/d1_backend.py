@@ -19,6 +19,7 @@ from ..schema.d1_schema import (
     D1_SCHEMA_META_TABLE,
     D1_SCHEMA_META_TABLE_SQL,
 )
+from ..schema.ddl_utils import relax_column_ddl_for_add_column
 from ..schema.shared_schema import (
     REQUIRED_COLUMNS,
 )
@@ -186,17 +187,22 @@ class D1Backend:
             existing_columns = self._get_existing_columns(table_name)
             for column_name, ddl in required_columns:
                 if column_name not in existing_columns:
-                    self._request(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+                    add_column_ddl = relax_column_ddl_for_add_column(ddl)
+                    if add_column_ddl != " ".join(str(ddl).split()).strip():
+                        logger.warning(
+                            "Relaxing D1 ADD COLUMN DDL for {}.{}: {} -> {}",
+                            table_name,
+                            column_name,
+                            ddl,
+                            add_column_ddl,
+                        )
+                    self._request(f"ALTER TABLE {table_name} ADD COLUMN {add_column_ddl}")
                     added_columns += 1
                     touched_tables.append(table_name)
         for sql in index_statements:
             self._request(sql)
-        patent_analysis_columns = self._get_existing_columns("patent_analyses")
-        if "sha256" in patent_analysis_columns:
-            self._request(self.EXTRA_INDEX_SQL[0])
-        user_columns = self._get_existing_columns("users")
-        if "role" in user_columns:
-            self._request(self.EXTRA_INDEX_SQL[1])
+        for sql in self.EXTRA_INDEX_SQL:
+            self._request(sql)
         self._request(
             "UPDATE tasks SET task_type = ? WHERE task_type IS NULL OR task_type = ''",
             [TaskType.PATENT_ANALYSIS.value],

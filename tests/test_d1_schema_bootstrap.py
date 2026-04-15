@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 from backend.storage import D1TaskStorage
+from backend.storage.schema.ddl_utils import relax_column_ddl_for_add_column
+
+
+def test_relax_column_ddl_for_add_column_removes_incompatible_constraints():
+    assert relax_column_ddl_for_add_column("peer_id TEXT NOT NULL") == "peer_id TEXT"
+    assert relax_column_ddl_for_add_column("authing_sub TEXT NOT NULL UNIQUE") == "authing_sub TEXT"
+    assert relax_column_ddl_for_add_column("owner_id TEXT PRIMARY KEY") == "owner_id TEXT"
+    assert (
+        relax_column_ddl_for_add_column("status TEXT NOT NULL DEFAULT 'pending'")
+        == "status TEXT NOT NULL DEFAULT 'pending'"
+    )
 
 
 def test_d1_init_database_skips_full_bootstrap_when_schema_version_matches(monkeypatch):
@@ -65,3 +76,47 @@ def test_d1_init_database_adds_missing_columns_before_indexes(monkeypatch):
     assert index_sql in request_calls
     assert request_calls.index(alter_sql) < request_calls.index(index_sql)
     assert schema_updates == [(D1TaskStorage.SCHEMA_META_KEY, "schema-v2")]
+
+
+def test_d1_init_database_relaxes_incompatible_add_column_constraints(monkeypatch):
+    storage = object.__new__(D1TaskStorage)
+    request_calls: list[str] = []
+
+    existing_columns = {
+        table: {name for name, _ in required}
+        for table, required in D1TaskStorage.REQUIRED_COLUMNS.items()
+    }
+    existing_columns["wechat_conversation_sessions"] = {
+        name
+        for name, _ in D1TaskStorage.REQUIRED_COLUMNS["wechat_conversation_sessions"]
+        if name != "peer_id"
+    }
+
+    monkeypatch.setattr(storage, "_ensure_schema_meta_table", lambda: None)
+    monkeypatch.setattr(storage, "_schema_bootstrap_version", lambda: "schema-v3")
+    monkeypatch.setattr(storage, "_get_schema_meta_value", lambda key: None)
+    monkeypatch.setattr(
+        storage,
+        "_get_existing_columns",
+        lambda table: set(existing_columns.get(table, set())),
+    )
+
+    def _request(sql, params=None):
+        request_calls.append(str(sql).strip())
+        normalized = " ".join(str(sql).split())
+        if normalized.startswith("ALTER TABLE wechat_conversation_sessions ADD COLUMN peer_id TEXT"):
+            existing_columns["wechat_conversation_sessions"].add("peer_id")
+        return {}
+
+    monkeypatch.setattr(storage, "_request", _request)
+    monkeypatch.setattr(storage, "_set_schema_meta_value", lambda key, value: None)
+
+    storage._init_database()
+
+    alter_sql = "ALTER TABLE wechat_conversation_sessions ADD COLUMN peer_id TEXT"
+    index_sql = "CREATE UNIQUE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_binding_peer ON wechat_conversation_sessions(binding_id, peer_id)"
+    alter_calls = [sql for sql in request_calls if sql.startswith("ALTER TABLE")]
+
+    assert alter_sql in request_calls
+    assert all("peer_id TEXT NOT NULL" not in sql for sql in alter_calls)
+    assert request_calls.index(alter_sql) < request_calls.index(index_sql)
