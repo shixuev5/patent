@@ -231,19 +231,19 @@
         v-else
         :binding-status="wechatIntegration?.bindingStatus || 'unbound'"
         :binding="wechatIntegration?.binding || null"
-        :bind-session="wechatIntegration?.bindSession || null"
+        :login-session="wechatIntegration?.loginSession || null"
         :push-task-completed="pushTaskCompletedInput"
         :push-task-failed="pushTaskFailedInput"
         :push-ai-search-pending-action="pushAiSearchPendingActionInput"
         :saving-settings="savingWechatSettings"
-        :starting-bind-session="startingWechatBindSession"
+        :starting-login-session="startingWechatLoginSession"
         :disconnecting="disconnectingWechat"
         :error-message="wechatIntegrationErrorMessage"
         @update:push-task-completed="pushTaskCompletedInput = $event"
         @update:push-task-failed="pushTaskFailedInput = $event"
         @update:push-ai-search-pending-action="pushAiSearchPendingActionInput = $event"
         @save-settings="saveWechatSettings"
-        @start-bind-session="startWechatBindSession"
+        @start-login-session="startWechatLoginSession"
         @disconnect="disconnectWechat"
       />
     </section>
@@ -286,7 +286,7 @@ const authStore = useAuthStore()
 const taskStore = useTaskStore()
 const usageNowTs = ref(Date.now())
 let usageCountdownTimer: ReturnType<typeof setInterval> | null = null
-let wechatBindPollTimer: ReturnType<typeof setInterval> | null = null
+let wechatLoginPollTimer: ReturnType<typeof setInterval> | null = null
 const EMAIL_PATTERN = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}$/i
 
 const now = new Date()
@@ -299,7 +299,7 @@ const savingDisplayName = ref(false)
 const savingAvatar = ref(false)
 const savingNotificationSettings = ref(false)
 const savingWechatSettings = ref(false)
-const startingWechatBindSession = ref(false)
+const startingWechatLoginSession = ref(false)
 const disconnectingWechat = ref(false)
 const pageReady = ref(false)
 const errorMessage = ref('')
@@ -847,10 +847,10 @@ const syncWechatIntegrationForm = (nextIntegration: AccountWeChatIntegration | n
   pushAiSearchPendingActionInput.value = !!nextIntegration?.binding?.pushAiSearchPendingAction
 }
 
-const stopWechatBindPolling = () => {
-  if (wechatBindPollTimer) {
-    clearInterval(wechatBindPollTimer)
-    wechatBindPollTimer = null
+const stopWechatLoginPolling = () => {
+  if (wechatLoginPollTimer) {
+    clearInterval(wechatLoginPollTimer)
+    wechatLoginPollTimer = null
   }
 }
 
@@ -1107,62 +1107,62 @@ const saveWechatSettings = async () => {
   }
 }
 
-const startWechatBindSession = async () => {
+const startWechatLoginSession = async () => {
   wechatIntegrationErrorMessage.value = ''
-  startingWechatBindSession.value = true
+  startingWechatLoginSession.value = true
   try {
     const token = await getAuthToken()
     const response = await requestRaw({
       baseUrl: config.public.apiBaseUrl,
-      path: '/api/account/wechat-integration/bind-session',
+      path: '/api/account/wechat-integration/login-session',
       method: 'POST',
       token,
     })
     if (!response.ok) throw new Error(await toApiError(response))
-    const bindSession = await response.json() as AccountWeChatIntegration['bindSession']
+    const loginSession = await response.json() as AccountWeChatIntegration['loginSession']
     const nextIntegration: AccountWeChatIntegration = {
-      bindingStatus: 'binding',
+      bindingStatus: 'logging_in',
       binding: wechatIntegration.value?.binding || null,
-      bindSession: bindSession || null,
+      loginSession: loginSession || null,
     }
     syncWechatIntegrationForm(nextIntegration)
     setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
   } catch (error) {
-    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '生成绑定二维码失败。'
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '生成微信登录二维码失败。'
   } finally {
-    startingWechatBindSession.value = false
+    startingWechatLoginSession.value = false
   }
 }
 
-const pollWechatBindSession = async () => {
-  const bindSessionId = String(wechatIntegration.value?.bindSession?.bindSessionId || '').trim()
-  if (!bindSessionId) return
+const pollWechatLoginSession = async () => {
+  const loginSessionId = String(wechatIntegration.value?.loginSession?.loginSessionId || '').trim()
+  if (!loginSessionId) return
   try {
     const token = await getAuthToken()
     const response = await requestRaw({
       baseUrl: config.public.apiBaseUrl,
-      path: `/api/account/wechat-integration/bind-session/${bindSessionId}`,
+      path: `/api/account/wechat-integration/login-session/${loginSessionId}`,
       method: 'GET',
       token,
     })
     if (!response.ok) throw new Error(await toApiError(response))
-    const nextBindSession = await response.json() as AccountWeChatIntegration['bindSession']
+    const nextLoginSession = await response.json() as AccountWeChatIntegration['loginSession']
     const nextIntegration: AccountWeChatIntegration = {
-      bindingStatus: nextBindSession?.status === 'bound' ? 'bound' : 'binding',
+      bindingStatus: nextLoginSession?.status === 'online' ? 'bound' : 'logging_in',
       binding: wechatIntegration.value?.binding || null,
-      bindSession: nextBindSession || null,
+      loginSession: nextLoginSession || null,
     }
     syncWechatIntegrationForm(nextIntegration)
-    const nextStatus = String(nextBindSession?.status || '').trim()
-    if (!['pending', 'scanned'].includes(nextStatus)) {
-      stopWechatBindPolling()
+    const nextStatus = String(nextLoginSession?.status || '').trim()
+    if (!['pending', 'qr_ready', 'scanned'].includes(nextStatus)) {
+      stopWechatLoginPolling()
     }
-    if (nextStatus === 'bound') {
+    if (nextStatus === 'online') {
       await fetchWechatIntegration(token)
     }
   } catch (error) {
-    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '轮询绑定状态失败。'
-    stopWechatBindPolling()
+    wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '轮询微信登录状态失败。'
+    stopWechatLoginPolling()
   }
 }
 
@@ -1181,7 +1181,7 @@ const disconnectWechat = async () => {
     const nextIntegration = await response.json() as AccountWeChatIntegration
     syncWechatIntegrationForm(nextIntegration)
     setCachedQueryData(getAccountWechatIntegrationQueryKey(), nextIntegration)
-    stopWechatBindPolling()
+    stopWechatLoginPolling()
     taskStore.showGlobalNotice('success', '微信绑定已解除。')
   } catch (error) {
     wechatIntegrationErrorMessage.value = error instanceof Error ? error.message : '解绑微信失败。'
@@ -1348,7 +1348,7 @@ const loadData = async (loadProfile: boolean) => {
       jobs.push(fetchWechatIntegration(token))
     } else {
       syncWechatIntegrationForm(null)
-      stopWechatBindPolling()
+      stopWechatLoginPolling()
       if (activeTab.value === 'wechat') activeTab.value = 'overview'
     }
     await Promise.all(jobs)
@@ -1382,20 +1382,20 @@ watch(hasWechatTab, (value) => {
   if (value) return
   if (activeTab.value === 'wechat') activeTab.value = 'overview'
   syncWechatIntegrationForm(null)
-  stopWechatBindPolling()
+  stopWechatLoginPolling()
 })
 
 watch(
   () => ({
-    bindSessionId: String(wechatIntegration.value?.bindSession?.bindSessionId || '').trim(),
-    status: String(wechatIntegration.value?.bindSession?.status || '').trim(),
+    loginSessionId: String(wechatIntegration.value?.loginSession?.loginSessionId || '').trim(),
+    status: String(wechatIntegration.value?.loginSession?.status || '').trim(),
   }),
-  ({ bindSessionId, status }) => {
-    stopWechatBindPolling()
-    if (!bindSessionId) return
-    if (!['pending', 'scanned'].includes(status)) return
-    wechatBindPollTimer = setInterval(() => {
-      void pollWechatBindSession()
+  ({ loginSessionId, status }) => {
+    stopWechatLoginPolling()
+    if (!loginSessionId) return
+    if (!['pending', 'qr_ready', 'scanned'].includes(status)) return
+    wechatLoginPollTimer = setInterval(() => {
+      void pollWechatLoginSession()
     }, 4000)
   },
 )
@@ -1413,7 +1413,7 @@ onUnmounted(() => {
     clearInterval(usageCountdownTimer)
     usageCountdownTimer = null
   }
-  stopWechatBindPolling()
+  stopWechatLoginPolling()
 })
 </script>
 

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import inspect
 import os
-import re
-from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import unquote
 
 import httpx
@@ -16,7 +14,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 from dotenv import load_dotenv
 
 from .backend_client import BackendClient
-from .credential_store import R2CredentialStore, build_credential_store_from_env
+from .credential_store import (
+    R2CredentialStore,
+    build_owner_credential_store_from_env,
+    owner_credential_local_path,
+)
 
 load_dotenv(ROOT_DIR / ".env")
 
@@ -32,246 +34,267 @@ INBOUND_REQUEST_TIMEOUT_SECONDS = max(
     float(os.getenv("IM_GATEWAY_INBOUND_REQUEST_TIMEOUT_SECONDS", "180") or "180"),
 )
 DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(ROOT_DIR / "data" / "im_gateway")))
-BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{8}$")
 
 
-class WeChatGateway:
-    def __init__(self, *, backend: BackendClient, credential_store: Optional[R2CredentialStore] = None) -> None:
+def _owner_token(owner_id: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(owner_id or "").strip())
+    token = token.strip("-_")
+    return token or "owner"
+
+
+@dataclass
+class OwnerRuntimeTarget:
+    owner_id: str
+    account_id: Optional[str] = None
+    login_session_id: Optional[str] = None
+
+
+class AccountRuntime:
+    def __init__(
+        self,
+        *,
+        owner_id: str,
+        backend: BackendClient,
+        download_dir: Path,
+        background_task_tracker: Callable[[asyncio.Task[Any]], None],
+    ) -> None:
+        self.owner_id = str(owner_id or "").strip()
         self.backend = backend
-        self.credential_store = credential_store if credential_store is not None else build_credential_store_from_env(download_dir=DOWNLOAD_DIR)
+        self.download_dir = Path(download_dir) / _owner_token(self.owner_id)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.local_credential_path = owner_credential_local_path(download_dir=download_dir, owner_id=self.owner_id)
+        self.credential_store = build_owner_credential_store_from_env(download_dir=download_dir, owner_id=self.owner_id)
+        self._track_background_task = background_task_tracker
+
         self.bot: Any = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self.task: Optional[asyncio.Task[Any]] = None
+        self.current_account_id: Optional[str] = None
+        self.current_wechat_user_id: Optional[str] = None
+        self.desired_account_id: Optional[str] = None
+        self.desired_login_session_id: Optional[str] = None
+        self._attempt_login_session_id: Optional[str] = None
+        self._stop_requested = False
+        self._login_terminal_state_reported = False
+
+    async def apply_target(self, target: OwnerRuntimeTarget) -> None:
+        target_account_id = str(target.account_id or "").strip() or None
+        target_login_session_id = str(target.login_session_id or "").strip() or None
+
+        login_session_changed = target_login_session_id != self.desired_login_session_id
+        account_changed = target_account_id != self.desired_account_id
+        needs_restart = False
+        clear_credentials = False
+
+        self.desired_account_id = target_account_id
+        self.desired_login_session_id = target_login_session_id
+
+        if target_login_session_id and login_session_changed:
+            needs_restart = True
+            clear_credentials = True
+        elif account_changed and self.current_account_id and target_account_id and target_account_id != self.current_account_id:
+            needs_restart = True
+
+        if self.task is None or self.task.done():
+            await self.start(clear_credentials=clear_credentials)
+            return
+        if needs_restart:
+            await self.start(clear_credentials=clear_credentials, restart=True)
+
+    async def start(self, *, clear_credentials: bool = False, restart: bool = False) -> None:
+        if restart and self.task and not self.task.done():
+            await self._cancel_task(self.task)
+            self.task = None
+        if self.task is not None and not self.task.done():
+            return
+        if clear_credentials:
+            await self._clear_credentials()
+        self._stop_requested = False
+        self.task = asyncio.create_task(self._run_loop(), name=f"wechat-owner-{_owner_token(self.owner_id)}")
+        self._track_background_task(self.task)
+
+    async def stop(self, *, clear_credentials: bool) -> None:
+        self._stop_requested = True
+        self.desired_login_session_id = None
+        self.desired_account_id = None
+        self._attempt_login_session_id = None
+        if self.task is not None and not self.task.done():
+            await self._cancel_task(self.task)
+        self.task = None
+        self.bot = None
+        self.current_account_id = None
+        self.current_wechat_user_id = None
+        if clear_credentials:
+            await self._clear_credentials()
+
+    async def send_delivery_job(self, job: Dict[str, Any]) -> None:
+        bot = self.bot
+        if bot is None:
+            raise RuntimeError(f"owner {self.owner_id} runtime is offline")
+
+        binding = job.get("binding") if isinstance(job.get("binding"), dict) else {}
+        account_id = str(binding.get("accountId") or "").strip()
+        peer_id = str(binding.get("peerId") or "").strip()
+        if not peer_id:
+            raise RuntimeError("missing peerId")
+        if account_id and self.current_account_id and account_id != self.current_account_id:
+            raise RuntimeError(f"runtime account mismatch: expected {account_id}, got {self.current_account_id}")
+
+        summary = self._build_delivery_text(job)
+        if summary:
+            await bot.send(peer_id, summary)
+
+        task = job.get("task") if isinstance(job.get("task"), dict) else {}
+        download_path = str(task.get("downloadPath") or "").strip()
+        if not download_path:
+            return
+
+        content, _content_type, filename = await self.backend.download_task_artifact(download_path)
+        resolved_name = unquote(str(filename or "").strip()) or "result.bin"
+        send_media = getattr(bot, "send_media", None)
+        if callable(send_media):
+            await send_media(peer_id, {"file": content, "file_name": resolved_name})
+            return
+        await bot.send(peer_id, f"结果文件已生成，但当前网关未启用文件发送能力：{resolved_name}")
+
+    async def _run_loop(self) -> None:
+        while not self._stop_requested:
+            self._attempt_login_session_id = self.desired_login_session_id
+            self._login_terminal_state_reported = False
+            bot = self._build_bot()
+            self.bot = bot
+            self._register_handlers(bot)
+
+            try:
+                force_login = bool(self._attempt_login_session_id)
+                if not force_login and not await self._ensure_credentials_for_restore():
+                    print(f"[im-gateway] owner={self.owner_id} missing credentials, waiting for a new login session")
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                    continue
+
+                print(f"[im-gateway] owner={self.owner_id} waiting for login")
+                creds = await bot.login(force=force_login)
+                await self._persist_credentials_to_remote()
+                self.current_account_id = self._resolve_account_id(bot, creds=creds)
+                self.current_wechat_user_id = str(getattr(creds, "user_id", "") or "").strip() or None
+
+                if self._attempt_login_session_id:
+                    await self._report_login_online(
+                        login_session_id=self._attempt_login_session_id,
+                        account_id=self.current_account_id,
+                        wechat_user_id=self.current_wechat_user_id,
+                    )
+                    self.desired_login_session_id = None
+                    self._attempt_login_session_id = None
+
+                print(f"[im-gateway] owner={self.owner_id} online account={self.current_account_id or '-'}")
+                await bot.start()
+                if not self._stop_requested:
+                    print(f"[im-gateway] owner={self.owner_id} bot loop ended, retrying")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not self._stop_requested:
+                    await self._report_login_failure(exc)
+                    print(f"[im-gateway] owner={self.owner_id} runtime failed: {exc}")
+            finally:
+                await self._close_bot(bot)
+                if self.bot is bot:
+                    self.bot = None
+
+            if self._stop_requested:
+                break
+            await asyncio.sleep(LOGIN_RETRY_SECONDS)
 
     def _build_bot(self) -> Any:
         try:
             from wechatbot import WeChatBot  # type: ignore
-            from wechatbot import client as wechatbot_client  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on optional sdk
             raise RuntimeError(
                 "未安装 wechatbot-sdk，无法启动真实微信网关。请先执行 `pip install wechatbot-sdk`。"
             ) from exc
-        bot = WeChatBot(
-            cred_path=str(self.credential_store.local_path) if self.credential_store else None,
+
+        return WeChatBot(
+            cred_path=str(self.local_credential_path),
             on_qr_url=self._on_qr_url,
             on_scanned=self._on_scanned,
             on_expired=self._on_expired,
             on_error=self._on_error,
         )
-        self._attach_credential_hooks(bot, wechatbot_client=wechatbot_client)
-        return bot
 
-    async def _restore_credentials_from_remote(self) -> None:
-        if not self.credential_store:
-            return
-        restored = await asyncio.to_thread(self.credential_store.restore_local_credentials)
-        if restored:
-            print(f"[im-gateway] restored credentials from R2 -> {getattr(self.credential_store, 'local_path', '-')}")
-        else:
-            print("[im-gateway] no persisted credentials found in R2")
-
-    async def _persist_credentials_to_remote(self) -> None:
-        if not self.credential_store:
-            return
-        persisted = await asyncio.to_thread(self.credential_store.persist_local_credentials)
-        if persisted:
-            print(f"[im-gateway] persisted credentials to R2 -> {getattr(self.credential_store, 'r2_key', '-')}")
-        else:
-            print("[im-gateway] credential persistence skipped: local credential file not found or upload failed")
-
-    def _attach_credential_hooks(self, bot: Any, *, wechatbot_client: Any) -> None:
-        if not self.credential_store or getattr(bot, "_im_gateway_credential_hooks_installed", False):
-            return
-
-        original_login = getattr(bot, "login", None)
-        if callable(original_login):
-            async def login_with_sync(*args: Any, **kwargs: Any) -> Any:
-                result = await original_login(*args, **kwargs)
-                await self._persist_credentials_to_remote()
-                return result
-            bot.login = login_with_sync
-
-        original_clear = getattr(wechatbot_client, "clear_credentials", None)
-        if callable(original_clear) and not getattr(wechatbot_client, "_im_gateway_clear_credentials_wrapped", False):
-            credential_store = self.credential_store
-
-            async def clear_with_remote_sync(path: Path | str | None = None) -> Any:
-                result = await original_clear(path)
-                if credential_store.path_matches(path):
-                    await asyncio.to_thread(credential_store.clear_remote_credentials)
-                return result
-
-            wechatbot_client.clear_credentials = clear_with_remote_sync
-            wechatbot_client._im_gateway_clear_credentials_wrapped = True
-
-        bot._im_gateway_credential_hooks_installed = True
-
-    async def run(self) -> None:
-        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        await self._restore_credentials_from_remote()
-        print("[im-gateway] waiting for backend")
-        await self.backend.wait_until_ready()
-        print("[im-gateway] backend ready")
-        self._loop = asyncio.get_running_loop()
-        poller = asyncio.create_task(self._poll_delivery_jobs())
-        try:
-            while True:
-                self.bot = self._build_bot()
-                self._register_handlers()
-                try:
-                    print("[im-gateway] waiting for login")
-                    self._submit_login_state(status="waiting_for_qr")
-                    await self.bot.login()
-                    print("[im-gateway] login succeeded")
-                    self._submit_login_state(status="online")
-                    await self.bot.start()
-                    print("[im-gateway] bot session ended, restarting login flow")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._submit_login_state(status="error", error_message=str(exc))
-                    print(f"[im-gateway] login loop failed: {exc}. retrying in {LOGIN_RETRY_SECONDS}s")
-                finally:
-                    await self._close_bot()
-                await asyncio.sleep(LOGIN_RETRY_SECONDS)
-        finally:
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            for task in list(self._background_tasks):
-                task.cancel()
-            for task in list(self._background_tasks):
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
-            await self.backend.close()
-
-    def _submit_login_state(self, *, status: str, qr_url: Optional[str] = None, error_message: Optional[str] = None) -> Optional[Future]:
-        if self._loop is None or self._loop.is_closed():
-            return None
-        return asyncio.run_coroutine_threadsafe(
-            self.backend.update_gateway_login_state(
-                status=status,
-                qr_url=qr_url,
-                error_message=error_message,
-            ),
-            self._loop,
-        )
-
-    def _on_qr_url(self, url: str) -> None:
-        print(f"[im-gateway] scan qr: {url}")
-        self._submit_login_state(status="qr_ready", qr_url=str(url or "").strip())
-
-    def _on_scanned(self) -> None:
-        print("[im-gateway] qr scanned")
-        self._submit_login_state(status="scanned")
-
-    def _on_expired(self) -> None:
-        print("[im-gateway] qr expired")
-        self._submit_login_state(status="expired")
-
-    def _on_error(self, exc: Exception) -> None:
-        print(f"[im-gateway] sdk error: {exc}")
-        self._submit_login_state(status="error", error_message=str(exc))
-
-    async def _close_bot(self) -> None:
-        bot, self.bot = self.bot, None
-        if bot is None:
-            return
-        for method_name in ("stop", "close", "aclose"):
-            method = getattr(bot, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                result = method()
-                if inspect.isawaitable(result):
-                    await result
-            except Exception:
-                pass
-            return
-
-    def _register_handlers(self) -> None:
+    def _register_handlers(self, bot: Any) -> None:
         async def _on_message(msg: Any) -> None:  # pragma: no cover - depends on optional sdk
             try:
-                await self._handle_message(msg)
+                await self._handle_message(bot, msg)
             except Exception as exc:
                 error_text = str(exc).strip() or type(exc).__name__
-                print(f"[im-gateway] inbound message failed: {error_text}")
-        self.bot.on_message(_on_message)
+                print(f"[im-gateway] owner={self.owner_id} inbound message failed: {error_text}")
 
-    def _resolve_bot_account_id(self) -> str:
-        credentials = getattr(self.bot, "get_credentials", None)
-        if callable(credentials):
-            try:
-                creds = credentials()
-            except Exception:
-                creds = None
-            account_id = str(getattr(creds, "account_id", "") or "").strip()
-            if account_id:
-                return account_id
-        return str(getattr(self.bot, "self_id", "") or getattr(self.bot, "wxid", "") or "default-bot").strip()
+        bot.on_message(_on_message)
 
-    async def _handle_message(self, msg: Any) -> None:  # pragma: no cover - depends on optional sdk
+    async def _handle_message(self, bot: Any, msg: Any) -> None:  # pragma: no cover - depends on optional sdk
         peer_id = str(getattr(msg, "user_id", "") or getattr(msg, "from_user", "") or "").strip()
-        peer_name = str(getattr(msg, "nickname", "") or getattr(msg, "user_name", "") or "").strip() or None
-        bot_account_id = self._resolve_bot_account_id()
-        text = str(getattr(msg, "text", "") or "").strip() or None
-        attachments = await self._download_attachments(msg)
-        if await self._maybe_complete_binding(
-            incoming_msg=msg,
-            bot_account_id=bot_account_id,
-            peer_id=peer_id,
-            peer_name=peer_name,
-            text=text,
-        ):
+        if not peer_id:
             return
+        bot_account_id = self._resolve_account_id(bot)
+        text = str(getattr(msg, "text", "") or "").strip() or None
+        attachments = await self._download_attachments(bot, msg)
+
         inbound_task = asyncio.create_task(
             self.backend.post_inbound_message(
                 bot_account_id=bot_account_id,
                 wechat_peer_id=peer_id,
-                wechat_peer_name=peer_name,
+                wechat_peer_name=None,
                 text=text,
                 attachments=attachments,
                 timeout_seconds=INBOUND_REQUEST_TIMEOUT_SECONDS,
             )
         )
+        self._track_background_task(inbound_task)
         try:
             result = await asyncio.wait_for(asyncio.shield(inbound_task), timeout=INBOUND_REPLY_WAIT_SECONDS)
         except asyncio.TimeoutError:
             await self._send_messages(
+                bot=bot,
                 peer_id=peer_id,
                 incoming_msg=msg,
                 messages=[{"type": "text", "text": self._slow_processing_text()}],
             )
-            self._track_background_task(
-                asyncio.create_task(
-                    self._deliver_inbound_result_later(
-                        inbound_task=inbound_task,
-                        peer_id=peer_id,
-                        incoming_msg=msg,
-                    )
+            followup = asyncio.create_task(
+                self._deliver_inbound_result_later(
+                    bot=bot,
+                    inbound_task=inbound_task,
+                    peer_id=peer_id,
+                    incoming_msg=msg,
                 )
             )
+            self._track_background_task(followup)
             return
         except Exception:
             if inbound_task.done():
                 with contextlib.suppress(Exception):
                     inbound_task.result()
             raise
+
         await self._send_messages(
+            bot=bot,
             peer_id=peer_id,
             incoming_msg=msg,
             messages=result.get("messages") if isinstance(result.get("messages"), list) else [],
         )
 
-    def _track_background_task(self, task: asyncio.Task[Any]) -> None:
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-
-    async def _deliver_inbound_result_later(self, *, inbound_task: asyncio.Task[Dict[str, Any]], peer_id: str, incoming_msg: Any) -> None:
+    async def _deliver_inbound_result_later(
+        self,
+        *,
+        bot: Any,
+        inbound_task: asyncio.Task[Dict[str, Any]],
+        peer_id: str,
+        incoming_msg: Any,
+    ) -> None:
         try:
             result = await inbound_task
         except httpx.ReadTimeout:
             await self._send_messages(
+                bot=bot,
                 peer_id=peer_id,
                 incoming_msg=incoming_msg,
                 messages=[{"type": "text", "text": self._slow_processing_timeout_text()}],
@@ -280,87 +303,24 @@ class WeChatGateway:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[im-gateway] async inbound follow-up failed: {exc}")
+            print(f"[im-gateway] owner={self.owner_id} async inbound follow-up failed: {exc}")
             await self._send_messages(
+                bot=bot,
                 peer_id=peer_id,
                 incoming_msg=incoming_msg,
                 messages=[{"type": "text", "text": self._friendly_inbound_failure_text()}],
             )
             return
+
         await self._send_messages(
+            bot=bot,
             peer_id=peer_id,
             incoming_msg=incoming_msg,
             messages=result.get("messages") if isinstance(result.get("messages"), list) else [],
         )
 
-    def _slow_processing_text(self) -> str:
-        return "收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。"
-
-    def _slow_processing_timeout_text(self) -> str:
-        return "抱歉，让你久等了。这条消息处理得比预期慢一些，我这边还没拿到最终结果。你先不用重复发送，我会继续留意后续进展。"
-
-    def _friendly_inbound_failure_text(self) -> str:
-        return "抱歉，刚才处理这条消息时出了点小问题。你可以稍后再发一次，我会继续帮你接着看。"
-
-    async def _maybe_complete_binding(
-        self,
-        *,
-        incoming_msg: Any,
-        bot_account_id: str,
-        peer_id: str,
-        peer_name: Optional[str],
-        text: Optional[str],
-    ) -> bool:
-        normalized = str(text or "").strip()
-        if not normalized:
-            return False
-
-        bind_session_id = ""
-        bind_code = ""
-        if normalized.startswith("wechat-bind:"):
-            parts = normalized.split(":", 2)
-            if len(parts) == 3:
-                bind_session_id = parts[1].strip()
-                bind_code = parts[2].strip().upper()
-        else:
-            compact = normalized.replace("绑定", "").replace("bind", "").replace("Bind", "").strip().upper()
-            if BIND_CODE_PATTERN.match(compact):
-                bind_code = compact
-
-        if not bind_code and not bind_session_id:
-            return False
-
-        try:
-            if bind_session_id:
-                await self.backend.complete_bind_session(
-                    bind_session_id=bind_session_id,
-                    bot_account_id=bot_account_id,
-                    wechat_peer_id=peer_id,
-                    wechat_peer_name=peer_name,
-                )
-            else:
-                await self.backend.complete_bind_session_by_code(
-                    bind_code=bind_code,
-                    bot_account_id=bot_account_id,
-                    wechat_peer_id=peer_id,
-                    wechat_peer_name=peer_name,
-                )
-            await self._send_messages(
-                peer_id=peer_id,
-                incoming_msg=incoming_msg,
-                messages=self._build_binding_success_messages(),
-            )
-            return True
-        except Exception as exc:
-            await self._send_messages(
-                peer_id=peer_id,
-                incoming_msg=incoming_msg,
-                messages=[{"type": "text", "text": f"绑定失败：{exc}"}],
-            )
-            return True
-
-    async def _download_attachments(self, msg: Any) -> List[Dict[str, Any]]:  # pragma: no cover - depends on optional sdk
-        download = getattr(self.bot, "download", None)
+    async def _download_attachments(self, bot: Any, msg: Any) -> List[Dict[str, Any]]:  # pragma: no cover - depends on optional sdk
+        download = getattr(bot, "download", None)
         if not callable(download):
             return []
         try:
@@ -369,23 +329,351 @@ class WeChatGateway:
             return []
         if not media:
             return []
+
         items = media if isinstance(media, list) else [media]
         attachments: List[Dict[str, Any]] = []
         for index, item in enumerate(items, start=1):
-            filename = str(getattr(item, "file_name", "") or getattr(item, "filename", "") or f"wechat_upload_{index}").strip()
             content = getattr(item, "data", None) or getattr(item, "content", None)
             if content is None:
                 continue
-            target = DOWNLOAD_DIR / filename
+            file_name = str(getattr(item, "file_name", "") or getattr(item, "filename", "") or "").strip()
+            suffix = Path(file_name).suffix or self._default_download_suffix(str(getattr(item, "type", "") or "file"))
+            resolved_name = file_name or f"wechat_upload_{index}{suffix}"
+            target = self.download_dir / f"{asyncio.get_running_loop().time():.6f}_{index}_{Path(resolved_name).name}"
             target.write_bytes(content if isinstance(content, (bytes, bytearray)) else bytes(content))
             attachments.append(
                 {
-                    "filename": filename,
+                    "filename": Path(resolved_name).name,
                     "storedPath": str(target),
                     "contentType": str(getattr(item, "content_type", "") or getattr(item, "mime_type", "") or "").strip() or None,
                 }
             )
         return attachments
+
+    async def _send_messages(
+        self,
+        *,
+        bot: Any,
+        peer_id: str,
+        incoming_msg: Any,
+        messages: List[Dict[str, Any]],
+    ) -> None:  # pragma: no cover - depends on optional sdk
+        for item in messages:
+            message_type = str(item.get("type") or "text").strip()
+            if message_type == "file":
+                download_path = str(item.get("downloadPath") or "").strip()
+                if not download_path:
+                    continue
+                try:
+                    content, _content_type, filename = await self.backend.download_task_artifact(download_path)
+                    resolved_name = unquote(str(item.get("fileName") or filename or "").strip()) or "result.bin"
+                    reply_media = getattr(bot, "reply_media", None)
+                    if callable(reply_media):
+                        await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
+                    else:
+                        await bot.send(peer_id, f"文件结果已生成，但当前网关未启用文件发送能力：{resolved_name}")
+                except Exception as exc:
+                    await bot.send(peer_id, f"文件发送失败：{exc}")
+                continue
+
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            reply = getattr(bot, "reply", None)
+            if callable(reply):
+                await reply(incoming_msg, text)
+            else:
+                await bot.send(peer_id, text)
+
+    async def _ensure_credentials_for_restore(self) -> bool:
+        if self._has_local_credentials():
+            return True
+        restored = await self._restore_credentials_from_remote()
+        return restored or self._has_local_credentials()
+
+    async def _restore_credentials_from_remote(self) -> bool:
+        if not self.credential_store:
+            return False
+        restored = await asyncio.to_thread(self.credential_store.restore_local_credentials)
+        if restored:
+            print(f"[im-gateway] owner={self.owner_id} restored credentials from R2")
+        return restored
+
+    async def _persist_credentials_to_remote(self) -> bool:
+        if not self.credential_store:
+            return False
+        persisted = await asyncio.to_thread(self.credential_store.persist_local_credentials)
+        if persisted:
+            print(f"[im-gateway] owner={self.owner_id} persisted credentials to R2")
+        return persisted
+
+    async def _clear_credentials(self) -> None:
+        local_path = self.local_credential_path
+        if self.credential_store is not None:
+            await asyncio.to_thread(self.credential_store.clear_local_credentials)
+            await asyncio.to_thread(self.credential_store.clear_remote_credentials)
+        else:
+            local_path.unlink(missing_ok=True)
+
+    def _has_local_credentials(self) -> bool:
+        if self.credential_store is not None:
+            return self.credential_store.has_local_credentials()
+        return self.local_credential_path.exists() and self.local_credential_path.is_file()
+
+    async def _report_login_online(
+        self,
+        *,
+        login_session_id: str,
+        account_id: Optional[str],
+        wechat_user_id: Optional[str],
+    ) -> None:
+        self._login_terminal_state_reported = True
+        try:
+            await self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="online",
+                account_id=account_id,
+                wechat_user_id=wechat_user_id,
+                wechat_display_name=None,
+            )
+        except Exception as exc:
+            print(f"[im-gateway] owner={self.owner_id} failed to report online state: {exc}")
+
+    async def _report_login_failure(self, exc: Exception) -> None:
+        login_session_id = str(self._attempt_login_session_id or "").strip()
+        if not login_session_id or self._login_terminal_state_reported:
+            return
+        self._login_terminal_state_reported = True
+        try:
+            await self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="failed",
+                error_message=str(exc),
+            )
+        except Exception as report_exc:
+            print(f"[im-gateway] owner={self.owner_id} failed to report login error: {report_exc}")
+
+    def _resolve_account_id(self, bot: Any, *, creds: Any | None = None) -> str:
+        resolved_creds = creds
+        if resolved_creds is None:
+            credentials = getattr(bot, "get_credentials", None)
+            if callable(credentials):
+                with contextlib.suppress(Exception):
+                    resolved_creds = credentials()
+        account_id = str(getattr(resolved_creds, "account_id", "") or "").strip()
+        if account_id:
+            return account_id
+        return str(getattr(bot, "self_id", "") or getattr(bot, "wxid", "") or f"owner-{_owner_token(self.owner_id)}").strip()
+
+    def _on_qr_url(self, url: str) -> None:
+        login_session_id = str(self._attempt_login_session_id or "").strip()
+        print(f"[im-gateway] owner={self.owner_id} scan qr: {url}")
+        if not login_session_id:
+            return
+        task = asyncio.create_task(
+            self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="qr_ready",
+                qr_url=str(url or "").strip() or None,
+            )
+        )
+        self._track_background_task(task)
+
+    def _on_scanned(self) -> None:
+        login_session_id = str(self._attempt_login_session_id or "").strip()
+        print(f"[im-gateway] owner={self.owner_id} qr scanned")
+        if not login_session_id:
+            return
+        task = asyncio.create_task(
+            self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="scanned",
+            )
+        )
+        self._track_background_task(task)
+
+    def _on_expired(self) -> None:
+        login_session_id = str(self._attempt_login_session_id or "").strip()
+        print(f"[im-gateway] owner={self.owner_id} qr expired")
+        if not login_session_id:
+            return
+        self._login_terminal_state_reported = True
+        task = asyncio.create_task(
+            self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="expired",
+            )
+        )
+        self._track_background_task(task)
+
+    def _on_error(self, exc: Exception) -> None:
+        login_session_id = str(self._attempt_login_session_id or "").strip()
+        print(f"[im-gateway] owner={self.owner_id} sdk error: {exc}")
+        if not login_session_id:
+            return
+        self._login_terminal_state_reported = True
+        task = asyncio.create_task(
+            self.backend.update_login_session_state(
+                login_session_id=login_session_id,
+                status="failed",
+                error_message=str(exc),
+            )
+        )
+        self._track_background_task(task)
+
+    @staticmethod
+    async def _cancel_task(task: asyncio.Task[Any]) -> None:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _close_bot(self, bot: Any) -> None:
+        if bot is None:
+            return
+        for method_name in ("stop", "close", "aclose"):
+            method = getattr(bot, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
+            return
+
+    @staticmethod
+    def _default_download_suffix(media_type: str) -> str:
+        mapping = {
+            "image": ".png",
+            "video": ".mp4",
+            "voice": ".silk",
+            "file": ".bin",
+        }
+        return mapping.get(str(media_type or "").strip(), ".bin")
+
+    @staticmethod
+    def _slow_processing_text() -> str:
+        return "收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。"
+
+    @staticmethod
+    def _slow_processing_timeout_text() -> str:
+        return "抱歉，让你久等了。这条消息处理得比预期慢一些，我这边还没拿到最终结果。你先不用重复发送，我会继续留意后续进展。"
+
+    @staticmethod
+    def _friendly_inbound_failure_text() -> str:
+        return "抱歉，刚才处理这条消息时出了点小问题。你可以稍后再发一次，我会继续帮你接着看。"
+
+    @staticmethod
+    def _build_delivery_text(job: Dict[str, Any]) -> str:
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        title = str(payload.get("title") or payload.get("taskId") or "任务").strip()
+        terminal_status = str(payload.get("terminalStatus") or "").strip()
+        error_message = str(payload.get("errorMessage") or "").strip()
+        if terminal_status == "failed":
+            return f"{title} 执行失败。\n{error_message or '请回到网页查看详情。'}"
+        return f"{title} 已完成。"
+
+
+class WeChatGateway:
+    def __init__(self, *, backend: BackendClient) -> None:
+        self.backend = backend
+        self._runtimes: Dict[str, AccountRuntime] = {}
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+    def _track_background_task(self, task: asyncio.Task[Any]) -> None:
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def run(self) -> None:
+        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        print("[im-gateway] waiting for backend")
+        await self.backend.wait_until_ready()
+        print("[im-gateway] backend ready")
+
+        poller = asyncio.create_task(self._poll_delivery_jobs(), name="wechat-delivery-poller")
+        self._track_background_task(poller)
+        await asyncio.sleep(0)
+        try:
+            while True:
+                try:
+                    snapshot = await self.backend.fetch_runtime_snapshot()
+                    await self._reconcile(snapshot)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[im-gateway] reconcile failed: {exc}")
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        finally:
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
+            await self._shutdown_runtimes(clear_credentials=False)
+            for task in list(self._background_tasks):
+                if task.done():
+                    continue
+                task.cancel()
+            for task in list(self._background_tasks):
+                if task.done():
+                    continue
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            await self.backend.close()
+
+    async def _reconcile(self, snapshot: Dict[str, Any]) -> None:
+        desired = self._build_desired_targets(snapshot)
+
+        stale_owner_ids = [owner_id for owner_id in self._runtimes.keys() if owner_id not in desired]
+        for owner_id in stale_owner_ids:
+            runtime = self._runtimes.pop(owner_id, None)
+            if runtime is None:
+                continue
+            await runtime.stop(clear_credentials=True)
+
+        for owner_id, target in desired.items():
+            runtime = self._runtimes.get(owner_id)
+            if runtime is None:
+                runtime = AccountRuntime(
+                    owner_id=owner_id,
+                    backend=self.backend,
+                    download_dir=DOWNLOAD_DIR,
+                    background_task_tracker=self._track_background_task,
+                )
+                self._runtimes[owner_id] = runtime
+            await runtime.apply_target(target)
+
+    def _build_desired_targets(self, snapshot: Dict[str, Any]) -> Dict[str, OwnerRuntimeTarget]:
+        desired: Dict[str, OwnerRuntimeTarget] = {}
+
+        active_bindings = snapshot.get("activeBindings") if isinstance(snapshot, dict) else []
+        for item in active_bindings if isinstance(active_bindings, list) else []:
+            if not isinstance(item, dict):
+                continue
+            owner_id = str(item.get("ownerId") or "").strip()
+            if not owner_id:
+                continue
+            desired[owner_id] = OwnerRuntimeTarget(
+                owner_id=owner_id,
+                account_id=str(item.get("accountId") or "").strip() or None,
+                login_session_id=None,
+            )
+
+        pending_sessions = snapshot.get("pendingLoginSessions") if isinstance(snapshot, dict) else []
+        for item in pending_sessions if isinstance(pending_sessions, list) else []:
+            if not isinstance(item, dict):
+                continue
+            owner_id = str(item.get("ownerId") or "").strip()
+            login_session_id = str(item.get("loginSessionId") or "").strip()
+            if not owner_id or not login_session_id:
+                continue
+            current = desired.get(owner_id)
+            desired[owner_id] = OwnerRuntimeTarget(
+                owner_id=owner_id,
+                account_id=(current.account_id if current else None),
+                login_session_id=login_session_id,
+            )
+
+        return desired
 
     async def _poll_delivery_jobs(self) -> None:
         while True:
@@ -402,88 +690,44 @@ class WeChatGateway:
 
     async def _deliver_job(self, job: Dict[str, Any]) -> None:
         delivery_job_id = str(job.get("deliveryJobId") or "").strip()
-        binding = job.get("binding") if isinstance(job.get("binding"), dict) else {}
-        peer_id = str(binding.get("wechatPeerId") or "").strip()
         try:
-            if not peer_id:
-                raise RuntimeError("missing wechatPeerId")
-            summary = self._build_delivery_text(job)
-            if summary:
-                await self.bot.send(peer_id, summary)
-            task = job.get("task") if isinstance(job.get("task"), dict) else {}
-            download_path = str(task.get("downloadPath") or "").strip()
-            if download_path:
-                try:
-                    content, _content_type, filename = await self.backend.download_task_artifact(download_path)
-                    resolved_name = unquote(str(filename or "").strip()) or "result.bin"
-                    send_media = getattr(self.bot, "send_media", None)
-                    if callable(send_media):
-                        await send_media(peer_id, {"file": content, "file_name": resolved_name})
-                    else:
-                        await self.bot.send(peer_id, f"结果文件已生成，但当前网关未启用文件发送能力：{resolved_name}")
-                except Exception as file_exc:
-                    await self.bot.send(peer_id, f"结果文件发送失败，已回退为文本通知。原因：{file_exc}")
+            runtime = self._runtime_for_job(job)
+            if runtime is None:
+                raise RuntimeError("no active runtime for delivery job")
+            await runtime.send_delivery_job(job)
             await self.backend.complete_delivery_job(delivery_job_id)
         except Exception as exc:
-            await self.backend.fail_delivery_job(delivery_job_id, str(exc))
+            if delivery_job_id:
+                await self.backend.fail_delivery_job(delivery_job_id, str(exc))
 
-    async def _send_messages(self, *, peer_id: str, incoming_msg: Any, messages: List[Dict[str, Any]]) -> None:  # pragma: no cover - depends on optional sdk
-        for item in messages:
-            message_type = str(item.get("type") or "text").strip()
-            if message_type == "file":
-                download_path = str(item.get("downloadPath") or "").strip()
-                if not download_path:
-                    continue
-                try:
-                    content, _content_type, filename = await self.backend.download_task_artifact(download_path)
-                    resolved_name = unquote(str(item.get("fileName") or filename or "").strip()) or "result.bin"
-                    reply_media = getattr(self.bot, "reply_media", None)
-                    if callable(reply_media):
-                        await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
-                    else:
-                        await self.bot.send(peer_id, f"文件结果已生成，但当前网关未启用文件发送能力：{resolved_name}")
-                except Exception as exc:
-                    await self.bot.send(peer_id, f"文件发送失败：{exc}")
-                continue
-            text = str(item.get("text") or "").strip()
-            if text:
-                reply = getattr(self.bot, "reply", None)
-                if callable(reply):
-                    await reply(incoming_msg, text)
-                else:
-                    await self.bot.send(peer_id, text)
+    def _runtime_for_job(self, job: Dict[str, Any]) -> Optional[AccountRuntime]:
+        owner_id = str(job.get("ownerId") or "").strip()
+        binding = job.get("binding") if isinstance(job.get("binding"), dict) else {}
+        account_id = str(binding.get("accountId") or "").strip()
 
-    def _build_delivery_text(self, job: Dict[str, Any]) -> str:
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-        title = str(payload.get("title") or payload.get("taskId") or "任务").strip()
-        terminal_status = str(payload.get("terminalStatus") or "").strip()
-        error_message = str(payload.get("errorMessage") or "").strip()
-        if terminal_status == "failed":
-            return f"{title} 执行失败。\n{error_message or '请回到网页查看详情。'}"
-        return f"{title} 已完成。"
+        if owner_id:
+            runtime = self._runtimes.get(owner_id)
+            if runtime is not None:
+                if not account_id or not runtime.current_account_id or runtime.current_account_id == account_id:
+                    return runtime
 
-    def _build_binding_success_messages(self) -> List[Dict[str, str]]:
-        return [
-            {
-                "type": "text",
-                "text": (
-                    "微信绑定成功\n"
-                    "\n"
-                    "现在可以直接在这里发 AI 检索、专利分析、专利审查和审查意见答复需求。\n\n"
-                    "示例：\n"
-                    "检索：帮我检索固态电池隔膜相关专利\n"
-                    "分析：分析专利 CN117347385A\n"
-                    "审查：帮我审查这个专利\n"
-                    "答复：我要答复审查意见\n\n"
-                    "直接发送你的需求即可。"
-                ),
-            },
-        ]
+        if account_id:
+            for runtime in self._runtimes.values():
+                if runtime.current_account_id == account_id:
+                    return runtime
+
+        return None
+
+    async def _shutdown_runtimes(self, *, clear_credentials: bool) -> None:
+        for owner_id, runtime in list(self._runtimes.items()):
+            await runtime.stop(clear_credentials=clear_credentials)
+            self._runtimes.pop(owner_id, None)
 
 
 async def main() -> None:
     if not INTERNAL_GATEWAY_TOKEN:
         raise RuntimeError("缺少 INTERNAL_GATEWAY_TOKEN，无法启动微信网关。")
+
     gateway = WeChatGateway(
         backend=BackendClient(
             api_base_url=API_BASE_URL,

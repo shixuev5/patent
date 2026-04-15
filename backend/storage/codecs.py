@@ -15,10 +15,10 @@ from .models import (
     TaskType,
     User,
     WeChatBinding,
-    WeChatBindSession,
     WeChatConversationSession,
     WeChatDeliveryJob,
     WeChatFlowSession,
+    WeChatLoginSession,
 )
 
 
@@ -134,8 +134,10 @@ class StorageCodecsMixin:
             owner_id=str(row["owner_id"]),
             status=str(row["status"]),
             bot_account_id=row.get("bot_account_id"),
-            wechat_peer_id=row.get("wechat_peer_id"),
-            wechat_peer_name=row.get("wechat_peer_name"),
+            wechat_user_id=row.get("wechat_user_id"),
+            wechat_display_name=row.get("wechat_display_name"),
+            delivery_peer_id=row.get("delivery_peer_id"),
+            delivery_peer_name=row.get("delivery_peer_name"),
             push_task_completed=bool(row.get("push_task_completed", 1)),
             push_task_failed=bool(row.get("push_task_failed", 1)),
             push_ai_search_pending_action=bool(row.get("push_ai_search_pending_action", 1)),
@@ -147,20 +149,18 @@ class StorageCodecsMixin:
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
         )
 
-    def _row_to_wechat_bind_session(self, row: Dict[str, Any]) -> WeChatBindSession:
-        return WeChatBindSession(
-            bind_session_id=str(row["bind_session_id"]),
+    def _row_to_wechat_login_session(self, row: Dict[str, Any]) -> WeChatLoginSession:
+        return WeChatLoginSession(
+            login_session_id=str(row["login_session_id"]),
             owner_id=str(row["owner_id"]),
             status=str(row["status"]),
-            bind_code=str(row["bind_code"]),
-            qr_payload=str(row["qr_payload"]),
-            qr_svg=str(row["qr_svg"]),
+            qr_url=str(row.get("qr_url") or "").strip() or None,
             expires_at=parse_storage_ts(row["expires_at"], naive_strategy="utc"),
             bot_account_id=row.get("bot_account_id"),
-            wechat_peer_id=row.get("wechat_peer_id"),
-            wechat_peer_name=row.get("wechat_peer_name"),
+            wechat_user_id=row.get("wechat_user_id"),
+            wechat_display_name=row.get("wechat_display_name"),
             error_message=row.get("error_message"),
-            bound_at=parse_storage_ts(row["bound_at"], naive_strategy="utc") if row.get("bound_at") else None,
+            online_at=parse_storage_ts(row["online_at"], naive_strategy="utc") if row.get("online_at") else None,
             created_at=parse_storage_ts(row["created_at"], naive_strategy="utc"),
             updated_at=parse_storage_ts(row["updated_at"], naive_strategy="utc"),
         )
@@ -183,6 +183,8 @@ class StorageCodecsMixin:
             conversation_id=str(row["conversation_id"]),
             owner_id=str(row["owner_id"]),
             binding_id=str(row["binding_id"]),
+            peer_id=str(row["peer_id"]),
+            peer_name=str(row.get("peer_name") or "").strip() or None,
             status=str(row["status"]),
             active_context_kind=str(row.get("active_context_kind") or "none"),
             active_context_session_id=str(row.get("active_context_session_id") or "").strip() or None,

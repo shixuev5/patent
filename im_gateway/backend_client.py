@@ -78,41 +78,34 @@ class BackendClient:
         )
         return await self._parse_json(response)
 
-    async def complete_bind_session(
-        self,
-        *,
-        bind_session_id: str,
-        bot_account_id: str,
-        wechat_peer_id: str,
-        wechat_peer_name: Optional[str],
-    ) -> Dict[str, Any]:
-        response = await self._client.post(
-            f"{self.api_base_url}/api/internal/wechat/bind-sessions/{bind_session_id}/complete",
+    async def fetch_runtime_snapshot(self) -> Dict[str, Any]:
+        response = await self._client.get(
+            f"{self.api_base_url}/api/internal/wechat/runtime-snapshot",
             headers=self._headers,
-            json={
-                "botAccountId": bot_account_id,
-                "wechatPeerId": wechat_peer_id,
-                "wechatPeerName": wechat_peer_name,
-            },
         )
         return await self._parse_json(response)
 
-    async def complete_bind_session_by_code(
+    async def update_login_session_state(
         self,
         *,
-        bind_code: str,
-        bot_account_id: str,
-        wechat_peer_id: str,
-        wechat_peer_name: Optional[str],
+        login_session_id: str,
+        status: str,
+        qr_url: Optional[str] = None,
+        account_id: Optional[str] = None,
+        wechat_user_id: Optional[str] = None,
+        wechat_display_name: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         response = await self._client.post(
-            f"{self.api_base_url}/api/internal/wechat/bind-sessions/complete-by-code",
+            f"{self.api_base_url}/api/internal/wechat/login-sessions/{login_session_id}/state",
             headers=self._headers,
             json={
-                "bindCode": bind_code,
-                "botAccountId": bot_account_id,
-                "wechatPeerId": wechat_peer_id,
-                "wechatPeerName": wechat_peer_name,
+                "status": status,
+                "qrUrl": qr_url,
+                "accountId": account_id,
+                "wechatUserId": wechat_user_id,
+                "wechatDisplayName": wechat_display_name,
+                "errorMessage": error_message,
             },
         )
         return await self._parse_json(response)
@@ -122,24 +115,6 @@ class BackendClient:
             f"{self.api_base_url}/api/internal/wechat/delivery-jobs/claim",
             headers=self._headers,
             json={"limit": limit},
-        )
-        return await self._parse_json(response)
-
-    async def update_gateway_login_state(
-        self,
-        *,
-        status: str,
-        qr_url: Optional[str] = None,
-        error_message: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        response = await self._client.post(
-            f"{self.api_base_url}/api/internal/wechat/gateway/login-state",
-            headers=self._headers,
-            json={
-                "status": status,
-                "qrUrl": qr_url,
-                "errorMessage": error_message,
-            },
         )
         return await self._parse_json(response)
 

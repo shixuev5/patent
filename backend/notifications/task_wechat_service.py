@@ -71,6 +71,15 @@ class TaskWeChatNotificationService:
             self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
             return record
 
+        metadata = getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {}
+        delivery_meta = metadata.get("wechat_delivery") if isinstance(metadata.get("wechat_delivery"), dict) else {}
+        peer_id = str(delivery_meta.get("peer_id") or getattr(binding, "delivery_peer_id", "") or "").strip()
+        peer_name = str(delivery_meta.get("peer_name") or getattr(binding, "delivery_peer_name", "") or "").strip() or None
+        if not peer_id:
+            record = self._save_delivery_record(task_id, normalized_status, task=task, delivery_status="skipped", reason="delivery_peer_missing")
+            self._emit_delivery_log("task_wechat_skipped", task, normalized_status, record)
+            return record
+
         payload = {
             "taskId": str(getattr(task, "id", "") or "").strip(),
             "taskType": str(task_type or getattr(task, "task_type", "") or "").strip(),
@@ -78,6 +87,9 @@ class TaskWeChatNotificationService:
             "terminalStatus": normalized_status,
             "errorMessage": str(error_message or getattr(task, "error_message", "") or "").strip() or None,
             "outputFiles": getattr(task, "metadata", {}).get("output_files") if isinstance(getattr(task, "metadata", {}), dict) else None,
+            "accountId": getattr(binding, "bot_account_id", None),
+            "peerId": peer_id,
+            "peerName": peer_name,
         }
         job = self.storage.create_wechat_delivery_job(
             WeChatDeliveryJob(

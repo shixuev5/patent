@@ -107,8 +107,10 @@ REQUIRED_COLUMNS = {
         ("owner_id", "owner_id TEXT NOT NULL"),
         ("status", "status TEXT NOT NULL"),
         ("bot_account_id", "bot_account_id TEXT"),
-        ("wechat_peer_id", "wechat_peer_id TEXT"),
-        ("wechat_peer_name", "wechat_peer_name TEXT"),
+        ("wechat_user_id", "wechat_user_id TEXT"),
+        ("wechat_display_name", "wechat_display_name TEXT"),
+        ("delivery_peer_id", "delivery_peer_id TEXT"),
+        ("delivery_peer_name", "delivery_peer_name TEXT"),
         ("push_task_completed", "push_task_completed INTEGER NOT NULL DEFAULT 1"),
         ("push_task_failed", "push_task_failed INTEGER NOT NULL DEFAULT 1"),
         ("push_ai_search_pending_action", "push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1"),
@@ -119,19 +121,17 @@ REQUIRED_COLUMNS = {
         ("created_at", "created_at TEXT NOT NULL"),
         ("updated_at", "updated_at TEXT NOT NULL"),
     ],
-    "wechat_bind_sessions": [
-        ("bind_session_id", "bind_session_id TEXT PRIMARY KEY"),
+    "wechat_login_sessions": [
+        ("login_session_id", "login_session_id TEXT PRIMARY KEY"),
         ("owner_id", "owner_id TEXT NOT NULL"),
         ("status", "status TEXT NOT NULL"),
-        ("bind_code", "bind_code TEXT NOT NULL"),
-        ("qr_payload", "qr_payload TEXT NOT NULL"),
-        ("qr_svg", "qr_svg TEXT NOT NULL"),
+        ("qr_url", "qr_url TEXT"),
         ("expires_at", "expires_at TEXT NOT NULL"),
         ("bot_account_id", "bot_account_id TEXT"),
-        ("wechat_peer_id", "wechat_peer_id TEXT"),
-        ("wechat_peer_name", "wechat_peer_name TEXT"),
+        ("wechat_user_id", "wechat_user_id TEXT"),
+        ("wechat_display_name", "wechat_display_name TEXT"),
         ("error_message", "error_message TEXT"),
-        ("bound_at", "bound_at TEXT"),
+        ("online_at", "online_at TEXT"),
         ("created_at", "created_at TEXT NOT NULL"),
         ("updated_at", "updated_at TEXT NOT NULL"),
     ],
@@ -149,7 +149,9 @@ REQUIRED_COLUMNS = {
     "wechat_conversation_sessions": [
         ("conversation_id", "conversation_id TEXT PRIMARY KEY"),
         ("owner_id", "owner_id TEXT NOT NULL"),
-        ("binding_id", "binding_id TEXT NOT NULL UNIQUE"),
+        ("binding_id", "binding_id TEXT NOT NULL"),
+        ("peer_id", "peer_id TEXT NOT NULL"),
+        ("peer_name", "peer_name TEXT"),
         ("status", "status TEXT NOT NULL"),
         ("active_context_kind", "active_context_kind TEXT NOT NULL DEFAULT 'none'"),
         ("active_context_session_id", "active_context_session_id TEXT"),
@@ -331,8 +333,10 @@ CREATE TABLE IF NOT EXISTS wechat_bindings (
     owner_id TEXT NOT NULL,
     status TEXT NOT NULL,
     bot_account_id TEXT,
-    wechat_peer_id TEXT,
-    wechat_peer_name TEXT,
+    wechat_user_id TEXT,
+    wechat_display_name TEXT,
+    delivery_peer_id TEXT,
+    delivery_peer_name TEXT,
     push_task_completed INTEGER NOT NULL DEFAULT 1,
     push_task_failed INTEGER NOT NULL DEFAULT 1,
     push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1,
@@ -344,19 +348,17 @@ CREATE TABLE IF NOT EXISTS wechat_bindings (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS wechat_bind_sessions (
-    bind_session_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS wechat_login_sessions (
+    login_session_id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL,
     status TEXT NOT NULL,
-    bind_code TEXT NOT NULL,
-    qr_payload TEXT NOT NULL,
-    qr_svg TEXT NOT NULL,
+    qr_url TEXT,
     expires_at TEXT NOT NULL,
     bot_account_id TEXT,
-    wechat_peer_id TEXT,
-    wechat_peer_name TEXT,
+    wechat_user_id TEXT,
+    wechat_display_name TEXT,
     error_message TEXT,
-    bound_at TEXT,
+    online_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -376,7 +378,9 @@ CREATE TABLE IF NOT EXISTS wechat_flow_sessions (
 CREATE TABLE IF NOT EXISTS wechat_conversation_sessions (
     conversation_id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL,
-    binding_id TEXT NOT NULL UNIQUE,
+    binding_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,
+    peer_name TEXT,
     status TEXT NOT NULL,
     active_context_kind TEXT NOT NULL DEFAULT 'none',
     active_context_session_id TEXT,
@@ -434,11 +438,13 @@ CREATE INDEX IF NOT EXISTS idx_refresh_sessions_owner_id ON refresh_sessions(own
 CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires_at ON refresh_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_refresh_sessions_revoked_at ON refresh_sessions(revoked_at);
 CREATE INDEX IF NOT EXISTS idx_wechat_bindings_owner_status ON wechat_bindings(owner_id, status);
-CREATE INDEX IF NOT EXISTS idx_wechat_bindings_peer_status ON wechat_bindings(bot_account_id, wechat_peer_id, status);
-CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_owner_status ON wechat_bind_sessions(owner_id, status);
-CREATE INDEX IF NOT EXISTS idx_wechat_bind_sessions_expires_at ON wechat_bind_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_wechat_bindings_account_status ON wechat_bindings(bot_account_id, status);
+CREATE INDEX IF NOT EXISTS idx_wechat_bindings_delivery_peer_status ON wechat_bindings(bot_account_id, delivery_peer_id, status);
+CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_owner_status ON wechat_login_sessions(owner_id, status);
+CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_expires_at ON wechat_login_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_wechat_flow_sessions_owner_type_status ON wechat_flow_sessions(owner_id, flow_type, status);
 CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_owner_status ON wechat_conversation_sessions(owner_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_binding_peer ON wechat_conversation_sessions(binding_id, peer_id);
 CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_context ON wechat_conversation_sessions(active_context_kind, active_context_session_id);
 CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_next_attempt ON wechat_delivery_jobs(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_owner_status ON wechat_delivery_jobs(owner_id, status);

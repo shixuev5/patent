@@ -139,9 +139,9 @@ class WeChatRuntimeService:
         text: Optional[str] = None,
         attachments: Optional[List[InternalWeChatInboundAttachment]] = None,
     ) -> InternalWeChatInboundMessageResponse:
-        binding = self._require_binding(bot_account_id, wechat_peer_id)
-        self._touch_binding_inbound(binding, wechat_peer_name=wechat_peer_name)
-        conversation = self._get_or_create_conversation(binding)
+        binding = self._require_binding(bot_account_id)
+        self._touch_binding_inbound(binding, wechat_peer_id=wechat_peer_id, wechat_peer_name=wechat_peer_name)
+        conversation = self._get_or_create_conversation(binding, wechat_peer_id=wechat_peer_id, wechat_peer_name=wechat_peer_name)
         normalized_text = str(text or "").strip()
         normalized_attachments = [item for item in (attachments or []) if str(item.storedPath or "").strip()]
         self._append_recent_turn(conversation, role="user", text=normalized_text, attachments=normalized_attachments)
@@ -167,8 +167,8 @@ class WeChatRuntimeService:
                     response = await self._handle_general_message(binding, conversation, normalized_text, normalized_attachments)
         return self._finalize_response(binding, conversation, response)
 
-    def _require_binding(self, bot_account_id: str, wechat_peer_id: str) -> WeChatBinding:
-        binding = self.storage.get_wechat_binding_by_peer(str(bot_account_id or "").strip(), str(wechat_peer_id or "").strip())
+    def _require_binding(self, bot_account_id: str) -> WeChatBinding:
+        binding = self.storage.get_wechat_binding_by_account(str(bot_account_id or "").strip())
         if not binding or str(binding.status or "").strip() != "active":
             raise HTTPException(
                 status_code=404,
@@ -180,14 +180,15 @@ class WeChatRuntimeService:
             )
         return binding
 
-    def _touch_binding_inbound(self, binding: WeChatBinding, *, wechat_peer_name: Optional[str]) -> None:
+    def _touch_binding_inbound(self, binding: WeChatBinding, *, wechat_peer_id: str, wechat_peer_name: Optional[str]) -> None:
         updates: Dict[str, Any] = {
             "last_inbound_at": utc_now(),
             "updated_at": utc_now(),
+            "delivery_peer_id": str(wechat_peer_id or "").strip() or None,
         }
         normalized_name = str(wechat_peer_name or "").strip()
         if normalized_name:
-            updates["wechat_peer_name"] = normalized_name
+            updates["delivery_peer_name"] = normalized_name
         self.storage.update_wechat_binding(binding.binding_id, **updates)
 
     def _touch_binding_outbound(self, binding: WeChatBinding) -> None:
@@ -229,14 +230,23 @@ class WeChatRuntimeService:
     def _ai_search_retry_text(self) -> str:
         return "处理检索消息时出现异常，请稍后重试。你也可以重新描述检索目标、核心技术和约束条件。"
 
-    def _get_or_create_conversation(self, binding: WeChatBinding) -> WeChatConversationSession:
-        current = self.storage.get_wechat_conversation_session(binding.binding_id)
+    def _get_or_create_conversation(self, binding: WeChatBinding, *, wechat_peer_id: str, wechat_peer_name: Optional[str]) -> WeChatConversationSession:
+        current = self.storage.get_wechat_conversation_session(binding.binding_id, str(wechat_peer_id or "").strip())
+        if not current:
+            fallback = self.storage.get_wechat_conversation_session(binding.binding_id)
+            if fallback and not str(fallback.peer_id or "").strip():
+                fallback.peer_id = str(wechat_peer_id or "").strip()
+                fallback.peer_name = str(wechat_peer_name or "").strip() or fallback.peer_name
+                return self.storage.upsert_wechat_conversation_session(fallback)
         if current:
+            current.peer_name = str(wechat_peer_name or "").strip() or current.peer_name
             return current
         created = WeChatConversationSession(
             conversation_id=f"wcs-{uuid.uuid4().hex[:12]}",
             owner_id=binding.owner_id,
             binding_id=binding.binding_id,
+            peer_id=str(wechat_peer_id or "").strip(),
+            peer_name=str(wechat_peer_name or "").strip() or None,
             status="active",
         )
         return self.storage.upsert_wechat_conversation_session(created)
@@ -475,11 +485,11 @@ class WeChatRuntimeService:
             return await self.start_or_resume_ai_search(binding, conversation, text=text, attachments=attachments)
         if intent == FLOW_ANALYSIS:
             if attachments or patent_number:
-                return self.start_patent_analysis(binding, text=patent_number or "", attachment=attachments[0] if attachments else None)
+                return self.start_patent_analysis(binding, conversation, text=patent_number or "", attachment=attachments[0] if attachments else None)
             return self.begin_guided_flow(binding, conversation, FLOW_ANALYSIS)
         if intent == FLOW_REVIEW:
             if attachments or patent_number:
-                return self.start_ai_review(binding, text=patent_number or "", attachment=attachments[0] if attachments else None)
+                return self.start_ai_review(binding, conversation, text=patent_number or "", attachment=attachments[0] if attachments else None)
             return self.begin_guided_flow(binding, conversation, FLOW_REVIEW)
         if intent == FLOW_REPLY:
             return self.begin_ai_reply_workflow(binding, conversation)
@@ -539,18 +549,18 @@ class WeChatRuntimeService:
             )
         if intent in {"unknown", ""} or requires_confirmation or confidence < 0.55:
             if flow.flow_type in {FLOW_ANALYSIS, FLOW_REVIEW} and has_patent_input:
-                return await self._handle_patent_task_flow(binding, flow, text, attachments)
+                return await self._handle_patent_task_flow(binding, conversation, flow, text, attachments)
             if flow.flow_type == FLOW_REPLY and has_reply_input:
-                return await self._handle_reply_flow(binding, flow, text, attachments)
+                return await self._handle_reply_flow(binding, conversation, flow, text, attachments)
             return ConversationResponse(
                 session_type=flow.flow_type,
                 flow_session_id=flow.flow_session_id,
                 messages=[self._text(self._guided_flow_hint_text(flow))],
             )
         if flow.flow_type in {FLOW_ANALYSIS, FLOW_REVIEW}:
-            return await self._handle_patent_task_flow(binding, flow, text, attachments)
+            return await self._handle_patent_task_flow(binding, conversation, flow, text, attachments)
         if flow.flow_type == FLOW_REPLY:
-            return await self._handle_reply_flow(binding, flow, text, attachments)
+            return await self._handle_reply_flow(binding, conversation, flow, text, attachments)
         raise HTTPException(
             status_code=400,
             detail={
@@ -608,11 +618,18 @@ class WeChatRuntimeService:
     def start_patent_analysis(
         self,
         binding: WeChatBinding,
+        conversation: WeChatConversationSession,
         *,
         text: str,
         attachment: Optional[InternalWeChatInboundAttachment],
     ) -> ConversationResponse:
-        task = self._create_patent_or_review_task(binding.owner_id, FLOW_ANALYSIS, text=text, attachment=attachment)
+        task = self._create_patent_or_review_task(
+            binding.owner_id,
+            FLOW_ANALYSIS,
+            text=text,
+            attachment=attachment,
+            delivery_meta=self._wechat_delivery_metadata(binding, conversation),
+        )
         return ConversationResponse(
             session_type=FLOW_ANALYSIS,
             task_id=task.id,
@@ -622,11 +639,18 @@ class WeChatRuntimeService:
     def start_ai_review(
         self,
         binding: WeChatBinding,
+        conversation: WeChatConversationSession,
         *,
         text: str,
         attachment: Optional[InternalWeChatInboundAttachment],
     ) -> ConversationResponse:
-        task = self._create_patent_or_review_task(binding.owner_id, FLOW_REVIEW, text=text, attachment=attachment)
+        task = self._create_patent_or_review_task(
+            binding.owner_id,
+            FLOW_REVIEW,
+            text=text,
+            attachment=attachment,
+            delivery_meta=self._wechat_delivery_metadata(binding, conversation),
+        )
         return ConversationResponse(
             session_type=FLOW_REVIEW,
             task_id=task.id,
@@ -823,7 +847,7 @@ class WeChatRuntimeService:
                 "微信 AI 检索处理失败 owner_id={} binding_id={} peer_id={} text={!r}",
                 binding.owner_id,
                 binding.binding_id,
-                binding.wechat_peer_id,
+                conversation.peer_id,
                 text,
             )
             return ConversationResponse(
@@ -934,6 +958,7 @@ class WeChatRuntimeService:
     async def _handle_patent_task_flow(
         self,
         binding: WeChatBinding,
+        conversation: WeChatConversationSession,
         flow: WeChatFlowSession,
         text: str,
         attachments: List[InternalWeChatInboundAttachment],
@@ -953,7 +978,13 @@ class WeChatRuntimeService:
 
         task = None
         try:
-            task = self._create_patent_or_review_task(binding.owner_id, flow.flow_type, text=text, attachment=attachments[0] if attachments else None)
+            task = self._create_patent_or_review_task(
+                binding.owner_id,
+                flow.flow_type,
+                text=text,
+                attachment=attachments[0] if attachments else None,
+                delivery_meta=self._wechat_delivery_metadata(binding, conversation),
+            )
             self.storage.resolve_wechat_flow_session(binding.owner_id, flow.flow_type, status="completed")
             prompt = (
                 f"已创建{'AI 分析' if flow.flow_type == FLOW_ANALYSIS else 'AI 审查'}任务：{task.id}\n"
@@ -978,6 +1009,7 @@ class WeChatRuntimeService:
     async def _handle_reply_flow(
         self,
         binding: WeChatBinding,
+        conversation: WeChatConversationSession,
         flow: WeChatFlowSession,
         text: str,
         attachments: List[InternalWeChatInboundAttachment],
@@ -1034,7 +1066,7 @@ class WeChatRuntimeService:
                 return ConversationResponse(session_type=FLOW_REPLY, flow_session_id=flow.flow_session_id, messages=[self._text("请回复“开始答复”以创建 AI 答复任务。")])
             task = None
             try:
-                task = self._create_ai_reply_task(binding.owner_id, draft)
+                task = self._create_ai_reply_task(binding.owner_id, draft, delivery_meta=self._wechat_delivery_metadata(binding, conversation))
                 self.storage.resolve_wechat_flow_session(binding.owner_id, FLOW_REPLY, status="completed")
                 return ConversationResponse(
                     session_type=FLOW_REPLY,
@@ -1276,6 +1308,14 @@ class WeChatRuntimeService:
         shutil.copy2(source, target)
         return str(target)
 
+    def _wechat_delivery_metadata(self, binding: WeChatBinding, conversation: WeChatConversationSession) -> Dict[str, Optional[str]]:
+        return {
+            "account_id": str(binding.bot_account_id or "").strip() or None,
+            "peer_id": str(conversation.peer_id or "").strip() or None,
+            "peer_name": str(conversation.peer_name or "").strip() or None,
+            "conversation_id": str(conversation.conversation_id or "").strip() or None,
+        }
+
     def _create_patent_or_review_task(
         self,
         owner_id: str,
@@ -1283,6 +1323,7 @@ class WeChatRuntimeService:
         *,
         text: str,
         attachment: Optional[InternalWeChatInboundAttachment],
+        delivery_meta: Optional[Dict[str, Optional[str]]] = None,
     ) -> Any:
         patent_number = self._normalize_patent_number_candidate(text)
         if not patent_number and not attachment:
@@ -1311,6 +1352,8 @@ class WeChatRuntimeService:
             title=patent_number or Path(str(attachment.filename if attachment else "")).stem or ("AI 审查任务" if task_type == FLOW_REVIEW else "AI 分析任务"),
         )
         metadata: Dict[str, Any] = {"task_type": task_type, "input_files": []}
+        if isinstance(delivery_meta, dict) and delivery_meta:
+            metadata["wechat_delivery"] = delivery_meta
         upload_file_path: Optional[str] = None
         saved_paths: List[str] = []
         try:
@@ -1359,7 +1402,7 @@ class WeChatRuntimeService:
                 },
             ) from exc
 
-    def _create_ai_reply_task(self, owner_id: str, draft: Dict[str, Any]) -> Any:
+    def _create_ai_reply_task(self, owner_id: str, draft: Dict[str, Any], *, delivery_meta: Optional[Dict[str, Optional[str]]] = None) -> Any:
         office_action = draft.get("office_action")
         response = draft.get("response")
         if not isinstance(office_action, dict) or not isinstance(response, dict):
@@ -1409,7 +1452,10 @@ class WeChatRuntimeService:
                 if isinstance(item, dict):
                     input_files.append(copy_item(item, "comparison_doc", f"comparison_{index}"))
 
-            self.storage.update_task(task.id, metadata={"task_type": FLOW_REPLY, "input_files": input_files})
+            task_metadata: Dict[str, Any] = {"task_type": FLOW_REPLY, "input_files": input_files}
+            if isinstance(delivery_meta, dict) and delivery_meta:
+                task_metadata["wechat_delivery"] = delivery_meta
+            self.storage.update_task(task.id, metadata=task_metadata)
             from backend.routes.tasks import _enqueue_pipeline_task
 
             _enqueue_pipeline_task(task, input_files=input_files)

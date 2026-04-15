@@ -94,6 +94,16 @@ class R2CredentialStore:
     def clear_remote_credentials(self) -> bool:
         return bool(self.r2_storage.delete_key(self.r2_key))
 
+    def has_local_credentials(self) -> bool:
+        return self.local_path.exists() and self.local_path.is_file()
+
+    def clear_local_credentials(self) -> bool:
+        try:
+            self.local_path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+
     def path_matches(self, path: Path | str | None) -> bool:
         if path is None:
             return False
@@ -105,9 +115,24 @@ class R2CredentialStore:
         return target == local
 
 
-def build_credential_store_from_env(*, download_dir: Path) -> Optional[R2CredentialStore]:
-    r2_key = str(os.getenv("IM_GATEWAY_CRED_R2_KEY", "") or "").strip()
-    if not r2_key:
+def _owner_token(owner_id: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(owner_id or "").strip())
+    token = token.strip("-_")
+    return token or "owner"
+
+
+def owner_credential_local_path(*, download_dir: Path, owner_id: str) -> Path:
+    local_root_text = str(os.getenv("IM_GATEWAY_CRED_PATH", "") or "").strip()
+    local_root = Path(local_root_text) if local_root_text else (download_dir / "credentials")
+    return local_root / _owner_token(owner_id) / "credentials.json"
+
+
+def build_owner_credential_store_from_env(*, download_dir: Path, owner_id: str) -> Optional[R2CredentialStore]:
+    r2_prefix = str(os.getenv("IM_GATEWAY_CRED_R2_PREFIX", "") or "").strip()
+    owner_slug = _owner_token(owner_id)
+    local_path = owner_credential_local_path(download_dir=download_dir, owner_id=owner_id)
+
+    if not r2_prefix:
         return None
 
     encryption_secret = os.getenv("IM_GATEWAY_CRED_ENCRYPTION_KEY", "")
@@ -118,8 +143,7 @@ def build_credential_store_from_env(*, download_dir: Path) -> Optional[R2Credent
     if not getattr(r2_storage, "enabled", False):
         raise RuntimeError("启用 R2 凭证持久化时必须正确配置 R2_ENABLED/R2_* 环境变量。")
 
-    local_path_text = str(os.getenv("IM_GATEWAY_CRED_PATH", "") or "").strip()
-    local_path = Path(local_path_text) if local_path_text else (download_dir / "credentials.json")
+    r2_key = f"{r2_prefix.rstrip('/')}/{owner_slug}/credentials.enc"
     return R2CredentialStore(
         r2_storage=r2_storage,
         r2_key=r2_key,

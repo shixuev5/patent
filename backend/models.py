@@ -99,9 +99,9 @@ class AccountNotificationSettingsUpdateRequest(BaseModel):
 class AccountWeChatBindingResponse(BaseModel):
     bindingId: str
     status: str
-    botAccountId: Optional[str] = None
-    wechatPeerIdMasked: Optional[str] = None
-    wechatPeerName: Optional[str] = None
+    accountId: Optional[str] = None
+    wechatUserIdMasked: Optional[str] = None
+    wechatDisplayName: Optional[str] = None
     pushTaskCompleted: bool = True
     pushTaskFailed: bool = True
     pushAiSearchPendingAction: bool = True
@@ -111,30 +111,25 @@ class AccountWeChatBindingResponse(BaseModel):
     lastOutboundAt: Optional[str] = None
 
 
-class AccountWeChatBindSessionResponse(BaseModel):
-    bindSessionId: str
+class AccountWeChatLoginSessionResponse(BaseModel):
+    loginSessionId: str
     status: str
-    bindCode: str
-    qrPayload: str
     qrSvg: str
     qrUrl: Optional[str] = None
-    qrScene: Literal["gateway_login", "manual_code"] = "manual_code"
-    gatewayStatus: Optional[str] = None
-    gatewayErrorMessage: Optional[str] = None
-    gatewayUpdatedAt: Optional[str] = None
     expiresAt: str
-    botAccountId: Optional[str] = None
-    wechatPeerName: Optional[str] = None
+    accountId: Optional[str] = None
+    wechatDisplayName: Optional[str] = None
+    wechatUserIdMasked: Optional[str] = None
     errorMessage: Optional[str] = None
-    boundAt: Optional[str] = None
+    onlineAt: Optional[str] = None
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
 
 
 class AccountWeChatIntegrationResponse(BaseModel):
-    bindingStatus: Literal["unbound", "binding", "bound"]
+    bindingStatus: Literal["unbound", "logging_in", "bound"]
     binding: Optional[AccountWeChatBindingResponse] = None
-    bindSession: Optional[AccountWeChatBindSessionResponse] = None
+    loginSession: Optional[AccountWeChatLoginSessionResponse] = None
 
 
 class AccountWeChatIntegrationUpdateRequest(BaseModel):
@@ -143,22 +138,12 @@ class AccountWeChatIntegrationUpdateRequest(BaseModel):
     pushAiSearchPendingAction: bool
 
 
-class InternalWeChatBindSessionCompleteRequest(BaseModel):
-    botAccountId: str
-    wechatPeerId: str
-    wechatPeerName: Optional[str] = None
-
-
-class InternalWeChatBindCodeCompleteRequest(BaseModel):
-    bindCode: str
-    botAccountId: str
-    wechatPeerId: str
-    wechatPeerName: Optional[str] = None
-
-
-class InternalWeChatGatewayLoginStateUpdateRequest(BaseModel):
+class InternalWeChatLoginSessionStateUpdateRequest(BaseModel):
     status: str
     qrUrl: Optional[str] = None
+    accountId: Optional[str] = None
+    wechatUserId: Optional[str] = None
+    wechatDisplayName: Optional[str] = None
     errorMessage: Optional[str] = None
 
 

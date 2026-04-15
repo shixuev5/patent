@@ -17,11 +17,10 @@ from backend.models import (
     AccountNotificationSettingsUpdateRequest,
     AccountProfileUpdateRequest,
     AccountWeChatIntegrationUpdateRequest,
-    InternalWeChatBindCodeCompleteRequest,
-    InternalWeChatBindSessionCompleteRequest,
     InternalWeChatDeliveryJobClaimRequest,
     InternalWeChatDeliveryJobResolveRequest,
     InternalWeChatInboundAttachment,
+    InternalWeChatLoginSessionStateUpdateRequest,
     CurrentUser,
 )
 from backend.notifications.task_wechat_service import TaskWeChatNotificationService
@@ -31,7 +30,6 @@ from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding, WeC
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 from backend.time_utils import utc_now
-from backend.wechat_gateway_state import update_wechat_gateway_login_state
 from backend.wechat_runtime import WeChatRuntimeService
 from config import settings
 from fastapi import HTTPException
@@ -361,7 +359,6 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
     monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
-    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-user')
     storage.upsert_authing_user(
         User(
@@ -375,32 +372,46 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     initial = asyncio.run(account.get_account_wechat_integration(current_user=user))
     assert initial.bindingStatus == 'unbound'
 
-    bind_session = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
-    assert bind_session.status == 'pending'
-    assert bind_session.bindCode
-    assert bind_session.qrScene == 'manual_code'
-    assert bind_session.qrSvg == ''
-    assert bind_session.qrUrl is None
+    login_session = asyncio.run(account.post_account_wechat_login_session(current_user=user))
+    assert login_session.status == 'pending'
+    assert login_session.loginSessionId
+    assert login_session.qrSvg == ''
+    assert login_session.qrUrl is None
 
-    completed = asyncio.run(
-        account.post_internal_wechat_bind_session_complete(
-            bind_session_id=bind_session.bindSessionId,
-            payload=InternalWeChatBindSessionCompleteRequest(
-                botAccountId='bot-1',
-                wechatPeerId='wx-peer-001',
-                wechatPeerName='测试微信',
+    qr_ready = asyncio.run(
+        account.post_internal_wechat_login_session_state(
+            login_session_id=login_session.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(
+                status='qr_ready',
+                qrUrl='https://liteapp.weixin.qq.com/q/test-login-001',
             ),
             _token='internal-test-token',
         )
     )
-    assert completed['binding']['wechatPeerName'] == '测试微信'
+    assert qr_ready['loginSession']['status'] == 'qr_ready'
+    assert qr_ready['loginSession']['qrUrl'] == 'https://liteapp.weixin.qq.com/q/test-login-001'
+
+    completed = asyncio.run(
+        account.post_internal_wechat_login_session_state(
+            login_session_id=login_session.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(
+                status='online',
+                accountId='bot-1',
+                wechatUserId='wx-user-001',
+                wechatDisplayName='测试微信',
+            ),
+            _token='internal-test-token',
+        )
+    )
+    assert completed['binding']['wechatDisplayName'] == '测试微信'
 
     integrated = asyncio.run(account.get_account_wechat_integration(current_user=user))
     assert integrated.bindingStatus == 'bound'
     assert integrated.binding is not None
-    assert integrated.binding.wechatPeerIdMasked is not None
-    assert integrated.bindSession is not None
-    assert integrated.bindSession.status == 'bound'
+    assert integrated.binding.wechatUserIdMasked is not None
+    assert integrated.binding.accountId == 'bot-1'
+    assert integrated.loginSession is not None
+    assert integrated.loginSession.status == 'online'
 
     updated = asyncio.run(
         account.put_account_wechat_integration_settings(
@@ -424,7 +435,6 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
 def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
-    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-refresh-user')
     storage.upsert_authing_user(
         User(
@@ -435,36 +445,32 @@ def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_
         )
     )
 
-    first = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
-    second = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+    first = asyncio.run(account.post_account_wechat_login_session(current_user=user))
+    second = asyncio.run(account.post_account_wechat_login_session(current_user=user))
 
-    assert first.bindSessionId != second.bindSessionId
-    assert first.qrPayload != second.qrPayload
-    assert first.qrScene == 'manual_code'
-    assert second.qrScene == 'manual_code'
-    cancelled = storage.get_wechat_bind_session(first.bindSessionId)
+    assert first.loginSessionId != second.loginSessionId
+    cancelled = storage.get_wechat_login_session(first.loginSessionId)
     assert cancelled is not None
     assert cancelled.status == 'cancelled'
     assert second.status == 'pending'
 
 
-def test_account_wechat_bind_qr_svg_depends_on_payload():
-    first = account._render_qr_svg('wechat-bind:wbs-001:ABCDEF12')
-    second = account._render_qr_svg('wechat-bind:wbs-002:ABCDEF12')
+def test_account_wechat_login_qr_svg_depends_on_qr_url():
+    first = account._render_qr_svg('https://liteapp.weixin.qq.com/q/test-001')
+    second = account._render_qr_svg('https://liteapp.weixin.qq.com/q/test-002')
 
     assert first.startswith('<svg')
     assert '<path' in first
     assert first != second
 
 
-def test_account_wechat_bind_session_prefers_gateway_qr(monkeypatch, tmp_path):
+def test_account_wechat_login_session_is_owner_scoped(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
-    update_wechat_gateway_login_state(
-        status='qr_ready',
-        qr_url='https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=test-qr&bot_type=3',
-    )
+    monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
+
     user = CurrentUser(user_id='authing:wechat-gateway-qr-user')
+    other_user = CurrentUser(user_id='authing:wechat-gateway-qr-user-2')
     storage.upsert_authing_user(
         User(
             owner_id=user.user_id,
@@ -472,20 +478,40 @@ def test_account_wechat_bind_session_prefers_gateway_qr(monkeypatch, tmp_path):
             name='网关二维码用户',
         )
     )
+    storage.upsert_authing_user(
+        User(
+            owner_id=other_user.user_id,
+            authing_sub='wechat-gateway-qr-user-2',
+            name='另一个二维码用户',
+        )
+    )
 
-    bind_session = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+    first = asyncio.run(account.post_account_wechat_login_session(current_user=user))
+    second = asyncio.run(account.post_account_wechat_login_session(current_user=other_user))
+    asyncio.run(
+        account.post_internal_wechat_login_session_state(
+            login_session_id=first.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(
+                status='qr_ready',
+                qrUrl='https://liteapp.weixin.qq.com/q/test-owner-1',
+            ),
+            _token='internal-test-token',
+        )
+    )
 
-    assert bind_session.qrScene == 'gateway_login'
-    assert bind_session.qrUrl == 'https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=test-qr&bot_type=3'
-    assert bind_session.gatewayStatus == 'qr_ready'
-    assert bind_session.qrSvg.startswith('<svg')
+    refreshed_first = asyncio.run(account.get_account_wechat_login_session(first.loginSessionId, current_user=user))
+    refreshed_second = asyncio.run(account.get_account_wechat_login_session(second.loginSessionId, current_user=other_user))
+
+    assert refreshed_first.qrUrl == 'https://liteapp.weixin.qq.com/q/test-owner-1'
+    assert refreshed_first.qrSvg.startswith('<svg')
+    assert refreshed_second.qrUrl is None
+    assert refreshed_second.qrSvg == ''
 
 
-def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
+def test_account_wechat_login_replaces_existing_binding(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
     monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
-    update_wechat_gateway_login_state(status='offline')
     user = CurrentUser(user_id='authing:wechat-code-user')
     storage.upsert_authing_user(
         User(
@@ -496,21 +522,38 @@ def test_account_wechat_bind_session_complete_by_code(monkeypatch, tmp_path):
         )
     )
 
-    bind_session = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='wb-existing',
+            owner_id=user.user_id,
+            status='active',
+            bot_account_id='bot-old',
+            wechat_user_id='wx-old',
+            wechat_display_name='旧账号',
+        )
+    )
+
+    login_session = asyncio.run(account.post_account_wechat_login_session(current_user=user))
+    assert storage.get_wechat_binding_by_owner(user.user_id) is None
+
     completed = asyncio.run(
-        account.post_internal_wechat_bind_session_complete_by_code(
-            payload=InternalWeChatBindCodeCompleteRequest(
-                bindCode=bind_session.bindCode,
-                botAccountId='bot-1',
-                wechatPeerId='wx-peer-by-code',
-                wechatPeerName='扫码微信',
+        account.post_internal_wechat_login_session_state(
+            login_session_id=login_session.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(
+                status='online',
+                accountId='bot-new',
+                wechatUserId='wx-new',
+                wechatDisplayName='新账号',
             ),
             _token='internal-test-token',
         )
     )
-    assert completed['binding']['wechatPeerName'] == '扫码微信'
+    assert completed['binding']['accountId'] == 'bot-new'
+    assert completed['binding']['wechatDisplayName'] == '新账号'
     integrated = asyncio.run(account.get_account_wechat_integration(current_user=user))
     assert integrated.bindingStatus == 'bound'
+    assert integrated.binding is not None
+    assert integrated.binding.accountId == 'bot-new'
 
 
 def _load_im_gateway_main():
@@ -582,123 +625,97 @@ def test_im_gateway_r2_credential_store_roundtrip(tmp_path):
     assert r2_storage.deleted_keys == ['secure/im-gateway/credentials.enc']
 
 
-def test_im_gateway_syncs_r2_credentials_on_login_and_clear(tmp_path):
+def test_account_runtime_clear_credentials_clears_local_and_remote(tmp_path):
     im_gateway_main = _load_im_gateway_main()
     events: list[str] = []
 
     class FakeCredentialStore:
-        def __init__(self, local_path: Path):
-            self.local_path = local_path
+        local_path = tmp_path / 'credentials.json'
 
-        def persist_local_credentials(self):
-            events.append('persist')
+        def clear_local_credentials(self):
+            events.append('clear-local')
             return True
 
         def clear_remote_credentials(self):
             events.append('clear-remote')
             return True
 
-        def path_matches(self, path):
-            return Path(path).resolve() == self.local_path.resolve()
+        def has_local_credentials(self):
+            return False
 
-    class FakeBot:
-        async def login(self, *, force: bool = False):
-            events.append(f'login:{force}')
-            return {'ok': True}
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=SimpleNamespace(),
+        download_dir=tmp_path,
+        background_task_tracker=lambda _task: None,
+    )
+    runtime.credential_store = FakeCredentialStore()
 
-    async def fake_clear_credentials(path=None):
-        events.append(f'clear-local:{Path(path).name}')
+    asyncio.run(runtime._clear_credentials())
 
-    store = FakeCredentialStore(tmp_path / 'credentials.json')
-    gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace(), credential_store=store)
-    bot = FakeBot()
-    client_module = SimpleNamespace(clear_credentials=fake_clear_credentials)
-
-    gateway._attach_credential_hooks(bot, wechatbot_client=client_module)
-
-    asyncio.run(bot.login(force=True))
-    asyncio.run(client_module.clear_credentials(store.local_path))
-
-    assert events == ['login:True', 'persist', 'clear-local:credentials.json', 'clear-remote']
+    assert events == ['clear-local', 'clear-remote']
 
 
-def test_im_gateway_retries_login_after_qr_expiration(monkeypatch):
+def test_account_runtime_reports_expired_login_session(monkeypatch, tmp_path):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
-    monkeypatch.setattr(im_gateway_main, 'LOGIN_RETRY_SECONDS', 1)
-
-    events: list[str] = []
+    updates: list[dict[str, object]] = []
+    background_tasks: list[asyncio.Task[object]] = []
 
     class FakeBackend:
-        async def wait_until_ready(self):
-            events.append('backend:ready')
-
-        async def update_gateway_login_state(self, *, status: str, qr_url=None, error_message=None):
-            events.append(f'state:{status}:{qr_url or ""}:{error_message or ""}')
+        async def update_login_session_state(self, **payload):
+            updates.append(payload)
             return {}
 
-        async def close(self):
-            events.append('backend:close')
-
     class FakeBot:
-        def __init__(self, *, login_error: Exception | None = None, start_error: BaseException | None = None):
-            self.login_error = login_error
-            self.start_error = start_error
-
         def on_message(self, _handler):
-            events.append('handler:registered')
+            return None
 
-        async def login(self):
-            events.append('bot:login')
-            if self.login_error is not None:
-                gateway._on_qr_url('https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc&bot_type=3')
-                gateway._on_expired()
-            if self.login_error is not None:
-                raise self.login_error
+        async def login(self, *, force: bool = False):
+            assert force is True
+            runtime._on_qr_url('https://liteapp.weixin.qq.com/q/expired-login')
+            await asyncio.sleep(0)
+            runtime._on_expired()
+            await asyncio.sleep(0)
+            raise RuntimeError('QR code expired 3 times — login aborted')
 
         async def start(self):
-            events.append('bot:start')
-            if self.start_error is not None:
-                raise self.start_error
+            raise AssertionError('start should not run after login failure')
 
         async def stop(self):
-            events.append('bot:stop')
+            return None
 
-    bots = [
-        FakeBot(login_error=RuntimeError('QR code expired 3 times — login aborted')),
-        FakeBot(start_error=asyncio.CancelledError()),
-    ]
+    async def run_case():
+        runtime = im_gateway_main.AccountRuntime(
+            owner_id='authing:owner-expired',
+            backend=FakeBackend(),
+            download_dir=tmp_path,
+            background_task_tracker=background_tasks.append,
+        )
+        monkeypatch.setattr(runtime, '_build_bot', lambda: FakeBot())
+        monkeypatch.setattr(runtime, '_persist_credentials_to_remote', lambda: asyncio.sleep(0, result=False))
 
-    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+        await runtime.apply_target(
+            im_gateway_main.OwnerRuntimeTarget(
+                owner_id='authing:owner-expired',
+                login_session_id='wls-expired-001',
+            )
+        )
+        await asyncio.sleep(0.05)
+        await runtime.stop(clear_credentials=False)
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
-    def fake_build_bot():
-        return bots.pop(0)
+    asyncio.run(run_case())
 
-    async def fake_poll_delivery_jobs():
-        await asyncio.Event().wait()
-
-    async def fake_sleep(seconds: int):
-        events.append(f'sleep:{seconds}')
-
-    monkeypatch.setattr(gateway, '_build_bot', fake_build_bot)
-    monkeypatch.setattr(gateway, '_poll_delivery_jobs', fake_poll_delivery_jobs)
-    monkeypatch.setattr(im_gateway_main.asyncio, 'sleep', fake_sleep)
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(gateway.run())
-
-    assert events.count('bot:login') == 2
-    assert 'sleep:1' in events
-    assert events.count('bot:stop') == 2
-    assert any(item.startswith('state:qr_ready:https://liteapp.weixin.qq.com/q/7GiQu1?qrcode=abc&bot_type=3:') for item in events)
-    assert any(item.startswith('state:error::QR code expired 3 times') for item in events)
-    assert 'backend:close' in events
+    assert [item['status'] for item in updates] == ['qr_ready', 'expired']
+    assert updates[0]['qr_url'] == 'https://liteapp.weixin.qq.com/q/expired-login'
 
 
 def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     events: list[str] = []
 
@@ -706,52 +723,92 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
         async def wait_until_ready(self):
             events.append('backend:ready')
 
-        async def update_gateway_login_state(self, *, status: str, qr_url=None, error_message=None):
-            events.append(f'state:{status}')
+        async def fetch_runtime_snapshot(self):
+            events.append('snapshot:fetch')
             return {}
 
         async def close(self):
             events.append('backend:close')
 
-    class FakeBot:
-        def on_message(self, _handler):
-            events.append('handler:registered')
-
-        async def login(self):
-            events.append('bot:login')
-            await asyncio.sleep(0)
-
-        async def start(self):
-            events.append('bot:start')
-            raise asyncio.CancelledError()
-
-        async def stop(self):
-            events.append('bot:stop')
-
     gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
-
-    def fake_build_bot():
-        return FakeBot()
 
     async def fake_poll_delivery_jobs():
         events.append('poller:start')
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(gateway, '_build_bot', fake_build_bot)
+    async def fake_reconcile(snapshot):
+        assert snapshot == {}
+        events.append('reconcile')
+
+    async def fake_sleep(seconds: int):
+        if seconds == 0:
+            return None
+        raise asyncio.CancelledError()
+
     monkeypatch.setattr(gateway, '_poll_delivery_jobs', fake_poll_delivery_jobs)
+    monkeypatch.setattr(gateway, '_reconcile', fake_reconcile)
+    monkeypatch.setattr(im_gateway_main.asyncio, 'sleep', fake_sleep)
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(gateway.run())
 
     assert events[0] == 'backend:ready'
-    assert events.index('backend:ready') < events.index('state:waiting_for_qr')
-    assert events.index('backend:ready') < events.index('bot:login')
-    assert events.index('backend:ready') < events.index('poller:start')
+    assert events.index('backend:ready') < events.index('snapshot:fetch')
+    assert events.index('backend:ready') < events.index('reconcile')
+    if 'poller:start' in events:
+        assert events.index('backend:ready') < events.index('poller:start')
+
+
+def test_im_gateway_reconciles_owner_scoped_sessions_and_bindings(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    applied: list[tuple[str, str | None, str | None]] = []
+    stopped: list[tuple[str, bool]] = []
+
+    class FakeRuntime:
+        def __init__(self, *, owner_id: str, backend, download_dir, background_task_tracker):
+            self.owner_id = owner_id
+
+        async def apply_target(self, target):
+            applied.append((self.owner_id, target.account_id, target.login_session_id))
+
+        async def stop(self, *, clear_credentials: bool):
+            stopped.append((self.owner_id, clear_credentials))
+
+    monkeypatch.setattr(im_gateway_main, 'AccountRuntime', FakeRuntime)
+    gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace())
+
+    asyncio.run(
+        gateway._reconcile(
+            {
+                'activeBindings': [
+                    {'ownerId': 'authing:owner-a', 'accountId': 'bot-a'},
+                ],
+                'pendingLoginSessions': [
+                    {'ownerId': 'authing:owner-b', 'loginSessionId': 'wls-b-001'},
+                ],
+            }
+        )
+    )
+    asyncio.run(
+        gateway._reconcile(
+            {
+                'activeBindings': [
+                    {'ownerId': 'authing:owner-b', 'accountId': 'bot-b'},
+                ],
+                'pendingLoginSessions': [],
+            }
+        )
+    )
+
+    assert ('authing:owner-a', 'bot-a', None) in applied
+    assert ('authing:owner-b', None, 'wls-b-001') in applied
+    assert ('authing:owner-b', 'bot-b', None) in applied
+    assert stopped == [('authing:owner-a', True)]
 
 
 def test_im_gateway_uses_sdk_credentials_account_id(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     captured: dict[str, str] = {}
 
@@ -764,11 +821,16 @@ def test_im_gateway_uses_sdk_credentials_account_id(monkeypatch):
         def get_credentials(self):
             return SimpleNamespace(account_id='bot-cred-001')
 
-    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
-    gateway.bot = FakeBot()
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=lambda _task: None,
+    )
 
     asyncio.run(
-        gateway._handle_message(
+        runtime._handle_message(
+            FakeBot(),
             SimpleNamespace(
                 user_id='wx-peer-001',
                 text='hello',
@@ -781,22 +843,15 @@ def test_im_gateway_uses_sdk_credentials_account_id(monkeypatch):
 
 def test_im_gateway_wraps_file_payloads_for_sdk(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     reply_payloads: list[dict[str, object]] = []
     send_payloads: list[dict[str, object]] = []
     sent_texts: list[str] = []
-    completed_jobs: list[str] = []
 
     class FakeBackend:
         async def download_task_artifact(self, _download_path: str):
             return b'file-bytes', 'application/pdf', 'result.pdf'
-
-        async def complete_delivery_job(self, delivery_job_id: str):
-            completed_jobs.append(delivery_job_id)
-
-        async def fail_delivery_job(self, _delivery_job_id: str, _error_message: str):
-            raise AssertionError('delivery job should not fail')
 
     class FakeBot:
         async def send(self, _peer_id: str, text: str):
@@ -808,21 +863,28 @@ def test_im_gateway_wraps_file_payloads_for_sdk(monkeypatch):
         async def reply_media(self, _incoming_msg, payload: dict[str, object]):
             reply_payloads.append(payload)
 
-    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
-    gateway.bot = FakeBot()
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=lambda _task: None,
+    )
+    runtime.bot = FakeBot()
+    runtime.current_account_id = 'bot-001'
 
     asyncio.run(
-        gateway._send_messages(
+        runtime._send_messages(
+            bot=runtime.bot,
             peer_id='wx-peer-001',
             incoming_msg=SimpleNamespace(user_id='wx-peer-001'),
             messages=[{'type': 'file', 'downloadPath': '/download/path', 'fileName': 'custom.pdf'}],
         )
     )
     asyncio.run(
-        gateway._deliver_job(
+        runtime.send_delivery_job(
             {
                 'deliveryJobId': 'job-001',
-                'binding': {'wechatPeerId': 'wx-peer-001'},
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
                 'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
                 'task': {'downloadPath': '/download/path'},
             }
@@ -832,35 +894,73 @@ def test_im_gateway_wraps_file_payloads_for_sdk(monkeypatch):
     assert reply_payloads == [{'file': b'file-bytes', 'file_name': 'custom.pdf'}]
     assert send_payloads == [{'file': b'file-bytes', 'file_name': 'result.pdf'}]
     assert sent_texts[0] == '分析任务 已完成。'
-    assert completed_jobs == ['job-001']
 
 
-def test_im_gateway_binding_success_messages_are_single_text(monkeypatch):
+def test_account_runtime_reports_login_session_updates(monkeypatch, tmp_path):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    updates: list[dict[str, object]] = []
+    background_tasks: list[asyncio.Task[object]] = []
 
-    gateway = im_gateway_main.WeChatGateway(backend=SimpleNamespace())
-    messages = gateway._build_binding_success_messages()
+    class FakeBackend:
+        async def update_login_session_state(self, **payload):
+            updates.append(payload)
+            return {}
 
-    assert len(messages) == 1
-    assert messages[0]['type'] == 'text'
-    text = messages[0]['text']
-    assert '微信绑定成功' in text
-    assert '现在可以直接在这里发 AI 检索、专利分析、专利审查和审查意见答复需求。' in text
-    assert '示例：' in text
-    assert '检索：帮我检索固态电池隔膜相关专利' in text
-    assert '分析：分析专利 CN117347385A' in text
-    assert '审查：帮我审查这个专利' in text
-    assert '答复：我要答复审查意见' in text
-    assert '直接发送你的需求即可。' in text
-    assert '------------' not in text
-    assert '/cancel' not in text
+    class FakeBot:
+        def on_message(self, _handler):
+            return None
+
+        async def login(self, *, force: bool = False):
+            assert force is True
+            runtime._on_qr_url('https://liteapp.weixin.qq.com/q/login-001')
+            await asyncio.sleep(0)
+            runtime._on_scanned()
+            await asyncio.sleep(0)
+            return SimpleNamespace(account_id='bot-001', user_id='wx-user-001')
+
+        async def start(self):
+            raise asyncio.CancelledError()
+
+        async def stop(self):
+            return None
+
+    async def fake_persist():
+        return True
+
+    async def run_case():
+        nonlocal runtime
+        runtime = im_gateway_main.AccountRuntime(
+            owner_id='authing:owner-login',
+            backend=FakeBackend(),
+            download_dir=tmp_path,
+            background_task_tracker=background_tasks.append,
+        )
+        monkeypatch.setattr(runtime, '_build_bot', lambda: FakeBot())
+        monkeypatch.setattr(runtime, '_persist_credentials_to_remote', fake_persist)
+        await runtime.apply_target(
+            im_gateway_main.OwnerRuntimeTarget(
+                owner_id='authing:owner-login',
+                login_session_id='wls-login-001',
+            )
+        )
+        await asyncio.sleep(0.05)
+        await runtime.stop(clear_credentials=False)
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+
+    runtime = None
+    asyncio.run(run_case())
+
+    assert [item['status'] for item in updates] == ['qr_ready', 'scanned', 'online']
+    assert updates[-1]['account_id'] == 'bot-001'
+    assert updates[-1]['wechat_user_id'] == 'wx-user-001'
 
 
 def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     monkeypatch.setattr(im_gateway_main, 'INBOUND_REPLY_WAIT_SECONDS', 0.01)
     monkeypatch.setattr(im_gateway_main, 'INBOUND_REQUEST_TIMEOUT_SECONDS', 5.0)
@@ -868,6 +968,7 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
     backend_started = asyncio.Event()
     allow_finish = asyncio.Event()
     replies: list[str] = []
+    background_tasks: list[asyncio.Task[object]] = []
 
     class FakeBackend:
         async def post_inbound_message(self, **payload):
@@ -879,12 +980,18 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
         async def reply(self, _incoming_msg, text: str):
             replies.append(text)
 
-    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
-    gateway.bot = FakeBot()
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=background_tasks.append,
+    )
+    bot = FakeBot()
 
     async def run_case():
         task = asyncio.create_task(
-            gateway._handle_message(
+            runtime._handle_message(
+                bot,
                 SimpleNamespace(
                     user_id='wx-peer-001',
                     text='帮我检索固态电池隔膜相关专利',
@@ -897,6 +1004,8 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
         assert task.done()
         allow_finish.set()
         await asyncio.sleep(0.03)
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
     asyncio.run(run_case())
 
@@ -908,12 +1017,13 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
 
 def test_im_gateway_sends_timeout_hint_after_slow_background_failure(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
-    monkeypatch.delenv('IM_GATEWAY_CRED_R2_KEY', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     monkeypatch.setattr(im_gateway_main, 'INBOUND_REPLY_WAIT_SECONDS', 0.01)
     monkeypatch.setattr(im_gateway_main, 'INBOUND_REQUEST_TIMEOUT_SECONDS', 0.02)
 
     replies: list[str] = []
+    background_tasks: list[asyncio.Task[object]] = []
 
     class FakeBackend:
         async def post_inbound_message(self, **payload):
@@ -924,17 +1034,25 @@ def test_im_gateway_sends_timeout_hint_after_slow_background_failure(monkeypatch
         async def reply(self, _incoming_msg, text: str):
             replies.append(text)
 
-    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
-    gateway.bot = FakeBot()
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=background_tasks.append,
+    )
+    bot = FakeBot()
 
     async def run_case():
-        await gateway._handle_message(
+        await runtime._handle_message(
+            bot,
             SimpleNamespace(
                 user_id='wx-peer-001',
                 text='帮我检索固态电池隔膜相关专利',
             )
         )
         await asyncio.sleep(0.08)
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
     asyncio.run(run_case())
 

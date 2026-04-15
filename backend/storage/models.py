@@ -70,6 +70,10 @@ class WeChatBinding:
     owner_id: str
     status: str
     bot_account_id: Optional[str] = None
+    wechat_user_id: Optional[str] = None
+    wechat_display_name: Optional[str] = None
+    delivery_peer_id: Optional[str] = None
+    delivery_peer_name: Optional[str] = None
     wechat_peer_id: Optional[str] = None
     wechat_peer_name: Optional[str] = None
     push_task_completed: bool = True
@@ -82,21 +86,25 @@ class WeChatBinding:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
+    def __post_init__(self) -> None:
+        if not self.delivery_peer_id and self.wechat_peer_id:
+            self.delivery_peer_id = self.wechat_peer_id
+        if not self.delivery_peer_name and self.wechat_peer_name:
+            self.delivery_peer_name = self.wechat_peer_name
+
 
 @dataclass
-class WeChatBindSession:
-    bind_session_id: str
+class WeChatLoginSession:
+    login_session_id: str
     owner_id: str
     status: str
-    bind_code: str
-    qr_payload: str
-    qr_svg: str
     expires_at: datetime
+    qr_url: Optional[str] = None
     bot_account_id: Optional[str] = None
-    wechat_peer_id: Optional[str] = None
-    wechat_peer_name: Optional[str] = None
+    wechat_user_id: Optional[str] = None
+    wechat_display_name: Optional[str] = None
     error_message: Optional[str] = None
-    bound_at: Optional[datetime] = None
+    online_at: Optional[datetime] = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -119,7 +127,9 @@ class WeChatConversationSession:
     conversation_id: str
     owner_id: str
     binding_id: str
-    status: str
+    peer_id: str = ""
+    status: str = "active"
+    peer_name: Optional[str] = None
     active_context_kind: str = "none"
     active_context_session_id: Optional[str] = None
     active_context_title: Optional[str] = None

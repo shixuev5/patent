@@ -4,16 +4,16 @@
       <div class="wechat-header">
         <div>
           <h2 class="text-base font-semibold text-slate-900">微信 IM 渠道</h2>
-          <p class="mt-1 text-xs text-slate-500">绑定后可直接在微信发起任务并接收结果回推。</p>
+          <p class="mt-1 text-xs text-slate-500">登录你自己的微信账号后，可直接在微信发起任务并接收结果回推。</p>
         </div>
         <button
           v-if="bindingStatus !== 'bound'"
           type="button"
           class="wechat-primary-btn"
-          :disabled="startingBindSession"
-          @click="emit('startBindSession')"
+          :disabled="startingLoginSession"
+          @click="emit('startLoginSession')"
         >
-          {{ bindButtonLabel }}
+          {{ loginButtonLabel }}
         </button>
       </div>
 
@@ -24,9 +24,9 @@
       <section v-if="bindingStatus === 'bound' && binding" class="wechat-panel">
         <div class="wechat-panel-header">
           <div>
-            <p class="wechat-badge is-bound">已绑定</p>
-            <h3 class="wechat-name">{{ binding.wechatPeerName || '微信私聊身份' }}</h3>
-            <p class="wechat-meta">账号标识 {{ binding.wechatPeerIdMasked || '-' }}<span v-if="binding.boundAt"> · 绑定于 {{ formatTime(binding.boundAt) }}</span></p>
+            <p class="wechat-badge is-bound">已登录</p>
+            <h3 class="wechat-name">{{ binding.wechatDisplayName || '微信账号' }}</h3>
+            <p class="wechat-meta">账号标识 {{ binding.wechatUserIdMasked || '-' }}<span v-if="binding.boundAt"> · 登录于 {{ formatTime(binding.boundAt) }}</span></p>
           </div>
           <button
             type="button"
@@ -91,16 +91,16 @@
         </div>
       </section>
 
-      <section v-else-if="bindSession" class="wechat-panel">
+      <section v-else-if="loginSession" class="wechat-panel">
         <div class="wechat-bind-grid">
           <div class="wechat-qr-stage">
-            <template v-if="showsGatewayQr">
-              <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
+            <template v-if="showsQr">
+              <div class="wechat-qr-box" v-html="loginSession.qrSvg" />
             </template>
             <template v-else>
               <div class="wechat-qr-box wechat-qr-box-empty">
-                <p class="wechat-copy-text">当前未提供可扫码入口</p>
-                <p class="wechat-step-helper">请先进入接入微信号聊天窗口，再发送右侧绑定码完成绑定。</p>
+                <p class="wechat-copy-text">正在准备微信登录二维码</p>
+                <p class="wechat-step-helper">{{ statusHelperText }}</p>
               </div>
             </template>
             <div class="wechat-qr-meta">
@@ -111,7 +111,7 @@
           <div class="wechat-bind-copy">
             <div class="wechat-steps">
               <div
-                v-for="step in bindSteps"
+                v-for="step in loginSteps"
                 :key="step.title"
                 class="wechat-step-card"
               >
@@ -119,7 +119,6 @@
                 <div class="wechat-step-content">
                   <p class="wechat-step-title">{{ step.title }}</p>
                   <p class="wechat-copy-text">{{ step.description }}</p>
-                  <p v-if="step.code" class="wechat-step-code">{{ step.code }}</p>
                   <p v-if="step.helper" class="wechat-step-helper">{{ step.helper }}</p>
                 </div>
               </div>
@@ -130,24 +129,22 @@
         <div class="wechat-phone-preview">
           <div class="wechat-phone-header">
             <span class="wechat-phone-dot" />
-            <span>首次对话示例</span>
+            <span>登录完成后</span>
           </div>
           <div class="wechat-phone-body">
-            <div class="wechat-bubble is-system">请发送绑定码完成网页账号绑定。</div>
-            <div class="wechat-bubble is-user">{{ bindSession.bindCode }}</div>
-            <div class="wechat-bubble is-system wechat-bubble-multiline">{{ bindingSuccessWelcomeText }}</div>
+            <div class="wechat-bubble is-system wechat-bubble-multiline">{{ postLoginWelcomeText }}</div>
             <div class="wechat-bubble is-user">帮我检索固态电池隔膜相关专利</div>
             <div class="wechat-bubble is-system">收到，我会先整理检索计划。</div>
           </div>
         </div>
-        <p v-if="bindSession.gatewayStatus === 'expired'" class="wechat-inline-tip">二维码刚过期，页面刷新后会显示新二维码。</p>
-        <p v-else-if="bindSession.gatewayStatus === 'error'" class="wechat-inline-tip">接入微信号正在重连：{{ bindSession.gatewayErrorMessage || '请稍后重试。' }}</p>
-        <p v-if="bindSession.errorMessage" class="wechat-error-inline">{{ bindSession.errorMessage }}</p>
+        <p v-if="loginSession.status === 'expired'" class="wechat-inline-tip">二维码已过期，请重新生成登录二维码。</p>
+        <p v-else-if="loginSession.status === 'failed'" class="wechat-inline-tip">微信登录失败：{{ loginSession.errorMessage || '请稍后重试。' }}</p>
+        <p v-if="loginSession.errorMessage" class="wechat-error-inline">{{ loginSession.errorMessage }}</p>
       </section>
 
       <section v-else class="wechat-panel wechat-empty">
         <p class="wechat-copy-title">尚未绑定微信</p>
-        <p class="wechat-copy-text">点击上方按钮生成绑定入口。当前仅支持 1 个网页账号绑定 1 个微信私聊身份。</p>
+        <p class="wechat-copy-text">点击上方按钮登录你自己的微信账号。当前仅支持 1 个网页账号绑定 1 个微信账号。</p>
       </section>
 
       <section class="wechat-panel">
@@ -178,17 +175,17 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { AccountWeChatBindSession, AccountWeChatBinding } from '~/types/account'
+import type { AccountWeChatBinding, AccountWeChatLoginSession } from '~/types/account'
 
 const props = defineProps<{
-  bindingStatus: 'unbound' | 'binding' | 'bound'
+  bindingStatus: 'unbound' | 'logging_in' | 'bound'
   binding: AccountWeChatBinding | null
-  bindSession: AccountWeChatBindSession | null
+  loginSession: AccountWeChatLoginSession | null
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
   pushAiSearchPendingAction: boolean
   savingSettings: boolean
-  startingBindSession: boolean
+  startingLoginSession: boolean
   disconnecting: boolean
   errorMessage: string
 }>()
@@ -198,12 +195,12 @@ const emit = defineEmits<{
   'update:pushTaskFailed': [value: boolean]
   'update:pushAiSearchPendingAction': [value: boolean]
   saveSettings: []
-  startBindSession: []
+  startLoginSession: []
   disconnect: []
 }>()
 
 const expiresText = computed(() => {
-  const text = String(props.bindSession?.expiresAt || '').trim()
+  const text = String(props.loginSession?.expiresAt || '').trim()
   if (!text) return ''
   const expiresAt = new Date(text)
   if (Number.isNaN(expiresAt.getTime())) return ''
@@ -213,44 +210,40 @@ const expiresText = computed(() => {
   return `${remainingMinutes} 分钟后过期`
 })
 
-const bindButtonLabel = computed(() => {
-  if (props.startingBindSession) return '生成中...'
-  return props.bindSession ? '刷新绑定入口' : '生成绑定入口'
+const loginButtonLabel = computed(() => {
+  if (props.startingLoginSession) return '生成中...'
+  return props.loginSession ? '刷新登录二维码' : '登录我的微信账号'
 })
 
-const showsGatewayQr = computed(() => props.bindSession?.qrScene === 'gateway_login' && !!props.bindSession?.qrSvg)
+const showsQr = computed(() => !!props.loginSession?.qrSvg)
 
-const bindCodeHelperText = computed(() => {
-  if (props.bindSession?.qrScene === 'gateway_login') {
-    return '扫码进入接入微信号后，把这串绑定码发送到聊天窗口即可完成绑定。'
-  }
-  return '请先进入接入微信号聊天窗口，再发送这串绑定码。不要扫描绑定码本身。'
+const statusHelperText = computed(() => {
+  const status = String(props.loginSession?.status || '').trim()
+  if (status === 'pending') return '正在等待网关生成二维码。'
+  if (status === 'scanned') return '二维码已扫描，请在微信中确认登录。'
+  if (status === 'expired') return '二维码已过期，请重新生成。'
+  if (status === 'failed') return props.loginSession?.errorMessage || '登录过程中出现错误。'
+  return '生成后请使用微信扫码，并在手机上确认登录。'
 })
 
-const bindSteps = computed(() => {
-  const usesGatewayQr = props.bindSession?.qrScene === 'gateway_login'
+const loginSteps = computed(() => {
   return [
     {
       index: '1',
-      title: usesGatewayQr ? '微信扫码进入接入号' : '进入接入微信号',
-      description: usesGatewayQr
-        ? '用微信扫一扫左侧二维码，进入接入微信号。'
-        : '先通过已提供的接入入口进入聊天窗口，再继续下面两步。',
-      code: '',
-      helper: '',
+      title: '扫码登录微信账号',
+      description: '使用微信扫一扫左侧二维码，并在手机上确认登录。',
+      helper: statusHelperText.value,
     },
     {
       index: '2',
-      title: '发送绑定码',
-      description: '把下面这串绑定码发送到聊天窗口，完成网页账号绑定。',
-      code: props.bindSession?.bindCode || '',
-      helper: bindCodeHelperText.value,
+      title: '自动完成绑定',
+      description: '登录成功后，网页账号会自动绑定到当前微信账号，无需再发送绑定码。',
+      helper: '',
     },
     {
       index: '3',
       title: '发送第一条任务消息',
       description: '绑定成功后，直接发任务，例如“帮我检索固态电池隔膜相关专利”。',
-      code: '',
       helper: '',
     },
   ]
@@ -279,9 +272,10 @@ const usageScenes = [
   },
 ] as const
 
-const bindingSuccessWelcomeText = [
-  '微信绑定成功',
+const postLoginWelcomeText = [
+  '微信登录成功',
   '',
+  '当前网页账号已自动绑定到这个微信账号。',
   '现在可以直接在这里发 AI 检索、专利分析、专利审查和审查意见答复需求。',
   '',
   '示例：',

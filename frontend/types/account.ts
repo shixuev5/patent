@@ -32,9 +32,9 @@ export interface AccountNotificationSettingsUpdateRequest {
 export interface AccountWeChatBinding {
   bindingId: string
   status: string
-  botAccountId?: string | null
-  wechatPeerIdMasked?: string | null
-  wechatPeerName?: string | null
+  accountId?: string | null
+  wechatUserIdMasked?: string | null
+  wechatDisplayName?: string | null
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
   pushAiSearchPendingAction: boolean
@@ -44,30 +44,25 @@ export interface AccountWeChatBinding {
   lastOutboundAt?: string | null
 }
 
-export interface AccountWeChatBindSession {
-  bindSessionId: string
+export interface AccountWeChatLoginSession {
+  loginSessionId: string
   status: string
-  bindCode: string
-  qrPayload: string
   qrSvg: string
   qrUrl?: string | null
-  qrScene: 'gateway_login' | 'manual_code'
-  gatewayStatus?: string | null
-  gatewayErrorMessage?: string | null
-  gatewayUpdatedAt?: string | null
   expiresAt: string
-  botAccountId?: string | null
-  wechatPeerName?: string | null
+  accountId?: string | null
+  wechatDisplayName?: string | null
+  wechatUserIdMasked?: string | null
   errorMessage?: string | null
-  boundAt?: string | null
+  onlineAt?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
 
 export interface AccountWeChatIntegration {
-  bindingStatus: 'unbound' | 'binding' | 'bound'
+  bindingStatus: 'unbound' | 'logging_in' | 'bound'
   binding?: AccountWeChatBinding | null
-  bindSession?: AccountWeChatBindSession | null
+  loginSession?: AccountWeChatLoginSession | null
 }
 
 export interface AccountWeChatIntegrationUpdateRequest {
