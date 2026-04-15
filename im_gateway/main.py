@@ -477,7 +477,7 @@ class AccountRuntime:
     def _on_qr_url(self, url: str) -> None:
         login_session_id = str(self._attempt_login_session_id or "").strip()
         print(f"[im-gateway] owner={self.owner_id} scan qr: {url}")
-        if not login_session_id:
+        if not login_session_id or self._login_terminal_state_reported:
             return
         task = asyncio.create_task(
             self.backend.update_login_session_state(
@@ -491,7 +491,7 @@ class AccountRuntime:
     def _on_scanned(self) -> None:
         login_session_id = str(self._attempt_login_session_id or "").strip()
         print(f"[im-gateway] owner={self.owner_id} qr scanned")
-        if not login_session_id:
+        if not login_session_id or self._login_terminal_state_reported:
             return
         task = asyncio.create_task(
             self.backend.update_login_session_state(

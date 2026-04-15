@@ -635,8 +635,18 @@ async def post_internal_wechat_login_session_state(
     if not session:
         raise HTTPException(status_code=404, detail="login session not found")
     session = _expire_login_session_if_needed(session)
-    if not session or session.status in {"expired", "failed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="login session is not active")
+    if not session:
+        raise HTTPException(status_code=404, detail="login session not found")
+    if session.status in {"expired", "failed", "cancelled"}:
+        return {
+            "ignored": True,
+            "loginSession": _build_wechat_login_session_response(session).model_dump(),
+        }
+    if session.status == "online" and payload.status != "online":
+        return {
+            "ignored": True,
+            "loginSession": _build_wechat_login_session_response(session).model_dump(),
+        }
 
     now_dt = utc_now()
     updated_session = task_manager.storage.update_wechat_login_session(

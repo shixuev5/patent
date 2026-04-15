@@ -50,6 +50,7 @@ MAX_RECENT_TURNS = 8
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
 YES_TOKENS = {"是", "好的", "好", "切换", "开始吧", "确认", "可以", "行", "yes", "ok"}
 NO_TOKENS = {"否", "不用", "算了", "继续当前", "不要切换", "先不切换", "no"}
+PENDING_ESCAPE_TOKENS = {"取消", "取消选择", "退出选择", "退出", "返回", "返回上一步", "算了", "先这样", "不用了", "/cancel"}
 EXIT_SEARCH_TOKENS = ("退出检索", "暂停检索", "暂停这个检索", "回到普通对话", "离开检索")
 CANCEL_FLOW_TOKENS = ("取消当前流程", "取消流程", "先别做了")
 CANCEL_SEARCH_TOKENS = ("取消当前检索", "取消这个检索")
@@ -371,6 +372,8 @@ class WeChatRuntimeService:
         if not pending:
             return None
         pending_type = str(pending.get("type") or "").strip()
+        if self._is_pending_escape(text):
+            return self._pending_escape_response(binding, conversation, pending)
         if pending_type == "switch_context":
             if self._is_affirmative(text):
                 self._clear_pending_conversation_action(conversation)
@@ -390,15 +393,12 @@ class WeChatRuntimeService:
                     attachments=stored_attachments,
                 )
             if self._is_negative(text):
-                self._clear_pending_conversation_action(conversation)
-                current_context = self._active_context(conversation)
-                label = "当前流程" if current_context.kind == "guided_workflow" else "当前检索"
-                return ConversationResponse(messages=[self._text(f"已保留{label}。")])
-            return ConversationResponse(messages=[self._text("当前有未完成的上下文切换。回复“切换”或“继续当前”即可。")])
+                return self._pending_escape_response(binding, conversation, pending)
+            return ConversationResponse(messages=[self._text("当前有未完成的上下文切换。回复“切换”或“继续当前”即可；如放弃这次切换，可回复“取消”或“返回”。")])
         if pending_type == "choose_search_session":
             selected = self._resolve_session_selection(pending, text)
             if not selected:
-                return ConversationResponse(messages=[self._text("请按编号选择要继续的检索，例如“1”或“选择 1”。")])
+                return ConversationResponse(messages=[self._text("请按编号选择要继续的检索，例如“1”或“选择 1”；如不想继续选择，可回复“取消”或“返回”。")])
             self._clear_pending_conversation_action(conversation)
             snapshot = self.ai_search_service.get_snapshot(selected["session_id"], binding.owner_id)
             title = str(selected.get("title") or snapshot.session.title or "").strip() or None
@@ -427,6 +427,22 @@ class WeChatRuntimeService:
                 )
             )
         return attachments
+
+    def _pending_escape_response(
+        self,
+        binding: WeChatBinding,
+        conversation: WeChatConversationSession,
+        pending: Dict[str, Any],
+    ) -> ConversationResponse:
+        self._clear_pending_conversation_action(conversation)
+        pending_type = str(pending.get("type") or "").strip()
+        if pending_type == "choose_search_session":
+            return ConversationResponse(messages=[self._text("已退出检索选择，可继续当前对话或重新发起检索。")])
+        if pending_type == "switch_context":
+            current_context = self._active_context(conversation)
+            label = "当前流程" if current_context.kind == "guided_workflow" else "当前检索"
+            return ConversationResponse(messages=[self._text(f"已保留{label}。")])
+        return ConversationResponse(messages=[self._text("已取消当前等待操作。")])
 
     def _resolve_session_selection(self, pending: Dict[str, Any], text: str) -> Optional[Dict[str, Any]]:
         options = pending.get("options") if isinstance(pending.get("options"), list) else []
@@ -1249,6 +1265,10 @@ class WeChatRuntimeService:
     def _is_negative(self, text: str) -> bool:
         normalized = str(text or "").strip().lower()
         return normalized in {token.lower() for token in NO_TOKENS}
+
+    def _is_pending_escape(self, text: str) -> bool:
+        normalized = str(text or "").strip().lower()
+        return normalized in {token.lower() for token in PENDING_ESCAPE_TOKENS}
 
     def _is_flow_cancel(self, text: str) -> bool:
         normalized = str(text or "").strip()

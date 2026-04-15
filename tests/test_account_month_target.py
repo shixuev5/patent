@@ -455,6 +455,45 @@ def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_
     assert second.status == 'pending'
 
 
+def test_account_wechat_login_session_terminal_state_update_is_ignored(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
+    monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
+    user = CurrentUser(user_id='authing:wechat-terminal-user')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='wechat-terminal-user',
+            name='终态登录会话用户',
+            email='wechat-terminal@example.com',
+        )
+    )
+
+    login_session = asyncio.run(account.post_account_wechat_login_session(current_user=user))
+    expired = asyncio.run(
+        account.post_internal_wechat_login_session_state(
+            login_session_id=login_session.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(status='expired'),
+            _token='internal-test-token',
+        )
+    )
+    assert expired['loginSession']['status'] == 'expired'
+
+    ignored = asyncio.run(
+        account.post_internal_wechat_login_session_state(
+            login_session_id=login_session.loginSessionId,
+            payload=InternalWeChatLoginSessionStateUpdateRequest(
+                status='qr_ready',
+                qrUrl='https://liteapp.weixin.qq.com/q/should-be-ignored',
+            ),
+            _token='internal-test-token',
+        )
+    )
+    assert ignored['ignored'] is True
+    assert ignored['loginSession']['status'] == 'expired'
+    assert ignored['loginSession']['qrUrl'] is None
+
+
 def test_account_wechat_login_qr_svg_depends_on_qr_url():
     first = account._render_qr_svg('https://liteapp.weixin.qq.com/q/test-001')
     second = account._render_qr_svg('https://liteapp.weixin.qq.com/q/test-002')
@@ -718,6 +757,8 @@ def test_account_runtime_reports_expired_login_session(monkeypatch, tmp_path):
             runtime._on_qr_url('https://liteapp.weixin.qq.com/q/expired-login')
             await asyncio.sleep(0)
             runtime._on_expired()
+            await asyncio.sleep(0)
+            runtime._on_qr_url('https://liteapp.weixin.qq.com/q/late-qr-should-be-ignored')
             await asyncio.sleep(0)
             raise RuntimeError('QR code expired 3 times — login aborted')
 
@@ -2194,6 +2235,367 @@ def test_wechat_runtime_list_search_sessions_then_selects_context(monkeypatch, t
     assert conversation is not None
     assert conversation.active_context_kind == 'ai_search'
     assert conversation.active_context_session_id == second.id
+
+
+@pytest.mark.parametrize(
+    ('text', 'suffix'),
+    [('退出选择', 'exit'), ('取消', 'cancel'), ('返回', 'back'), ('/cancel', 'slash_cancel')],
+)
+def test_wechat_runtime_list_search_sessions_escape_clears_pending(monkeypatch, tmp_path, text, suffix):
+    storage = SQLiteTaskStorage(tmp_path / f'wechat_runtime_list_search_sessions_escape_{suffix}.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-list-search-escape',
+            authing_sub='wx-list-search-escape',
+            name='微信检索列表退出用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-list-search-escape',
+            owner_id='authing:wx-list-search-escape',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-escape',
+            wechat_peer_name='检索列表退出微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    first = manager.create_task(owner_id='authing:wx-list-search-escape', task_type=TaskType.AI_SEARCH.value, title='固态电池隔膜检索')
+    second = manager.create_task(owner_id='authing:wx-list-search-escape', task_type=TaskType.AI_SEARCH.value, title='钠电正极检索')
+    service = WeChatRuntimeService(task_manager=manager)
+
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'list_sessions',
+        lambda owner_id: SimpleNamespace(
+            items=[
+                SimpleNamespace(sessionId=first.id, title='固态电池隔膜检索', status='pending', phase='collecting_requirements', updatedAt='2026-01-02T00:00:00+00:00', createdAt='2026-01-01T00:00:00+00:00'),
+                SimpleNamespace(sessionId=second.id, title='钠电正极检索', status='pending', phase='collecting_requirements', updatedAt='2026-01-03T00:00:00+00:00', createdAt='2026-01-02T00:00:00+00:00'),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'list_search_sessions',
+            'confidence': 0.98,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    listed = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-escape',
+            text='有哪些正在进行的检索任务？',
+        )
+    )
+    assert '进行中的检索' in (listed.messages[0].text or '')
+
+    exited = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-escape',
+            text=text,
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert exited.taskId is None
+    assert exited.sessionType is None
+    assert '已退出检索选择' in (exited.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'none'
+    assert not (conversation.memory or {}).get('pending_action')
+
+
+def test_wechat_runtime_list_search_sessions_invalid_input_mentions_escape(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_list_search_sessions_invalid_input.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-list-search-invalid',
+            authing_sub='wx-list-search-invalid',
+            name='微信检索列表无效输入用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-list-search-invalid',
+            owner_id='authing:wx-list-search-invalid',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-invalid',
+            wechat_peer_name='检索列表无效输入微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    first = manager.create_task(owner_id='authing:wx-list-search-invalid', task_type=TaskType.AI_SEARCH.value, title='固态电池隔膜检索')
+    second = manager.create_task(owner_id='authing:wx-list-search-invalid', task_type=TaskType.AI_SEARCH.value, title='钠电正极检索')
+    service = WeChatRuntimeService(task_manager=manager)
+
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'list_sessions',
+        lambda owner_id: SimpleNamespace(
+            items=[
+                SimpleNamespace(sessionId=first.id, title='固态电池隔膜检索', status='pending', phase='collecting_requirements', updatedAt='2026-01-02T00:00:00+00:00', createdAt='2026-01-01T00:00:00+00:00'),
+                SimpleNamespace(sessionId=second.id, title='钠电正极检索', status='pending', phase='collecting_requirements', updatedAt='2026-01-03T00:00:00+00:00', createdAt='2026-01-02T00:00:00+00:00'),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'list_search_sessions',
+            'confidence': 0.98,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-invalid',
+            text='有哪些正在进行的检索任务？',
+        )
+    )
+
+    invalid = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-list-search-invalid',
+            text='你还能干什么？',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert '取消' in (invalid.messages[0].text or '')
+    assert '返回' in (invalid.messages[0].text or '')
+    assert conversation is not None
+    assert (conversation.memory or {}).get('pending_action')
+
+
+def test_wechat_runtime_switch_context_continue_current_keeps_search(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_switch_context_keep_search.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-switch-context-search',
+            authing_sub='wx-switch-context-search',
+            name='微信切换检索保留用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-switch-context-search',
+            owner_id='authing:wx-switch-context-search',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search',
+            wechat_peer_name='切换检索保留微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(owner_id='authing:wx-switch-context-search', task_type=TaskType.AI_SEARCH.value, title='现有检索')
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-switch-context-search',
+            owner_id='authing:wx-switch-context-search',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='ai_search',
+            active_context_session_id=task.id,
+            active_context_title='现有检索',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=manager)
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': TaskType.PATENT_ANALYSIS.value,
+            'confidence': 0.98,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    prompt = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search',
+            text='帮我分析这个专利',
+        )
+    )
+    assert '回复“切换”可转到AI 分析' in (prompt.messages[0].text or '')
+
+    kept = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search',
+            text='继续当前',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert '已保留当前检索' in (kept.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'ai_search'
+    assert conversation.active_context_session_id == task.id
+    assert not (conversation.memory or {}).get('pending_action')
+
+
+@pytest.mark.parametrize(('text', 'suffix'), [('取消', 'cancel'), ('返回', 'back')])
+def test_wechat_runtime_switch_context_escape_keeps_search(monkeypatch, tmp_path, text, suffix):
+    storage = SQLiteTaskStorage(tmp_path / f'wechat_runtime_switch_context_escape_search_{suffix}.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-switch-context-search-escape',
+            authing_sub='wx-switch-context-search-escape',
+            name='微信切换检索退出用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-switch-context-search-escape',
+            owner_id='authing:wx-switch-context-search-escape',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search-escape',
+            wechat_peer_name='切换检索退出微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(owner_id='authing:wx-switch-context-search-escape', task_type=TaskType.AI_SEARCH.value, title='现有检索')
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-switch-context-search-escape',
+            owner_id='authing:wx-switch-context-search-escape',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='ai_search',
+            active_context_session_id=task.id,
+            active_context_title='现有检索',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=manager)
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': TaskType.PATENT_ANALYSIS.value,
+            'confidence': 0.98,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search-escape',
+            text='帮我分析这个专利',
+        )
+    )
+
+    kept = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-search-escape',
+            text=text,
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert '已保留当前检索' in (kept.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'ai_search'
+    assert conversation.active_context_session_id == task.id
+    assert not (conversation.memory or {}).get('pending_action')
+
+
+def test_wechat_runtime_switch_context_escape_keeps_workflow(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_switch_context_escape_workflow.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-switch-context-workflow-escape',
+            authing_sub='wx-switch-context-workflow-escape',
+            name='微信切换流程退出用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-switch-context-workflow-escape',
+            owner_id='authing:wx-switch-context-workflow-escape',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-workflow-escape',
+            wechat_peer_name='切换流程退出微信',
+            bound_at=utc_now(),
+        )
+    )
+    storage.upsert_wechat_flow_session(
+        'authing:wx-switch-context-workflow-escape',
+        TaskType.PATENT_ANALYSIS.value,
+        current_step='await_patent_input',
+        draft_payload={},
+        expires_at=utc_now() + timedelta(hours=12),
+    )
+    storage.upsert_wechat_conversation_session(
+        WeChatConversationSession(
+            conversation_id='wcs-switch-context-workflow-escape',
+            owner_id='authing:wx-switch-context-workflow-escape',
+            binding_id=binding.binding_id,
+            status='active',
+            active_context_kind='guided_workflow',
+            active_context_session_id='flow-switch-context-workflow-escape',
+            active_context_title='AI 分析',
+        )
+    )
+    service = WeChatRuntimeService(task_manager=PipelineTaskManager(storage))
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': TaskType.AI_SEARCH.value,
+            'confidence': 0.98,
+            'requires_confirmation': False,
+            'extracted': {},
+        },
+    )
+
+    prompt = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-workflow-escape',
+            text='我要检索固态电池隔膜',
+        )
+    )
+    assert '回复“切换”可转到AI 检索' in (prompt.messages[0].text or '')
+
+    kept = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-switch-context-workflow-escape',
+            text='返回',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    active_flow = storage.get_active_wechat_flow_session('authing:wx-switch-context-workflow-escape', TaskType.PATENT_ANALYSIS.value)
+    assert '已保留当前流程' in (kept.messages[0].text or '')
+    assert conversation is not None
+    assert conversation.active_context_kind == 'guided_workflow'
+    assert active_flow is not None
+    assert not (conversation.memory or {}).get('pending_action')
 
 
 def test_wechat_runtime_continue_search_without_human_decision_includes_next_step(monkeypatch, tmp_path):
