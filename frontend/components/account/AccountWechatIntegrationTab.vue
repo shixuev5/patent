@@ -94,7 +94,15 @@
       <section v-else-if="bindSession" class="wechat-panel">
         <div class="wechat-bind-grid">
           <div class="wechat-qr-stage">
-            <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
+            <template v-if="showsGatewayQr">
+              <div class="wechat-qr-box" v-html="bindSession.qrSvg" />
+            </template>
+            <template v-else>
+              <div class="wechat-qr-box wechat-qr-box-empty">
+                <p class="wechat-copy-text">当前未提供可扫码入口</p>
+                <p class="wechat-step-helper">请先进入接入微信号聊天窗口，再发送右侧绑定码完成绑定。</p>
+              </div>
+            </template>
             <div class="wechat-qr-meta">
               <p v-if="expiresText" class="wechat-qr-expire">{{ expiresText }}</p>
             </div>
@@ -139,7 +147,7 @@
 
       <section v-else class="wechat-panel wechat-empty">
         <p class="wechat-copy-title">尚未绑定微信</p>
-        <p class="wechat-copy-text">点击上方按钮生成绑定二维码。当前仅支持 1 个网页账号绑定 1 个微信私聊身份。</p>
+        <p class="wechat-copy-text">点击上方按钮生成绑定入口。当前仅支持 1 个网页账号绑定 1 个微信私聊身份。</p>
       </section>
 
       <section class="wechat-panel">
@@ -207,14 +215,16 @@ const expiresText = computed(() => {
 
 const bindButtonLabel = computed(() => {
   if (props.startingBindSession) return '生成中...'
-  return props.bindSession ? '刷新绑定二维码' : '生成绑定二维码'
+  return props.bindSession ? '刷新绑定入口' : '生成绑定入口'
 })
+
+const showsGatewayQr = computed(() => props.bindSession?.qrScene === 'gateway_login' && !!props.bindSession?.qrSvg)
 
 const bindCodeHelperText = computed(() => {
   if (props.bindSession?.qrScene === 'gateway_login') {
     return '扫码进入接入微信号后，把这串绑定码发送到聊天窗口即可完成绑定。'
   }
-  return '不方便扫码时，也可以直接把这串绑定码发给接入微信号。'
+  return '请先进入接入微信号聊天窗口，再发送这串绑定码。不要扫描绑定码本身。'
 })
 
 const bindSteps = computed(() => {
@@ -225,7 +235,7 @@ const bindSteps = computed(() => {
       title: usesGatewayQr ? '微信扫码进入接入号' : '进入接入微信号',
       description: usesGatewayQr
         ? '用微信扫一扫左侧二维码，进入接入微信号。'
-        : '先用微信打开接入微信号入口，再继续下面两步。',
+        : '先通过已提供的接入入口进入聊天窗口，再继续下面两步。',
       code: '',
       helper: '',
     },
@@ -456,6 +466,13 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
   border-radius: 1.1rem;
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
   padding: 1rem;
+}
+
+.wechat-qr-box-empty {
+  min-height: 15rem;
+  flex-direction: column;
+  gap: 0.55rem;
+  text-align: center;
 }
 
 .wechat-qr-box :deep(svg) {

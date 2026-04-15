@@ -51,7 +51,7 @@ export interface AccountWeChatBindSession {
   qrPayload: string
   qrSvg: string
   qrUrl?: string | null
-  qrScene: 'gateway_login' | 'bind_payload'
+  qrScene: 'gateway_login' | 'manual_code'
   gatewayStatus?: string | null
   gatewayErrorMessage?: string | null
   gatewayUpdatedAt?: string | null

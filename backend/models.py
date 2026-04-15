@@ -118,7 +118,7 @@ class AccountWeChatBindSessionResponse(BaseModel):
     qrPayload: str
     qrSvg: str
     qrUrl: Optional[str] = None
-    qrScene: Literal["gateway_login", "bind_payload"] = "bind_payload"
+    qrScene: Literal["gateway_login", "manual_code"] = "manual_code"
     gatewayStatus: Optional[str] = None
     gatewayErrorMessage: Optional[str] = None
     gatewayUpdatedAt: Optional[str] = None

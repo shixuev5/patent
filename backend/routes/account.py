@@ -197,15 +197,16 @@ def _build_wechat_binding_response(binding: WeChatBinding) -> AccountWeChatBindi
 def _build_wechat_bind_session_response(session: WeChatBindSession) -> AccountWeChatBindSessionResponse:
     gateway_state = get_wechat_gateway_login_state()
     qr_url = gateway_state.qr_url
-    qr_scene = "gateway_login" if gateway_state.status == "qr_ready" and qr_url else "bind_payload"
-    qr_svg = _render_qr_svg(qr_url if qr_scene == "gateway_login" and qr_url else session.qr_payload)
+    has_gateway_qr = gateway_state.status == "qr_ready" and bool(qr_url)
+    qr_scene = "gateway_login" if has_gateway_qr else "manual_code"
+    qr_svg = _render_qr_svg(qr_url) if has_gateway_qr and qr_url else ""
     return AccountWeChatBindSessionResponse(
         bindSessionId=session.bind_session_id,
         status=session.status,
         bindCode=session.bind_code,
         qrPayload=session.qr_payload,
         qrSvg=qr_svg,
-        qrUrl=qr_url,
+        qrUrl=qr_url if has_gateway_qr else None,
         qrScene=qr_scene,
         gatewayStatus=gateway_state.status,
         gatewayErrorMessage=_sanitize_profile_text(gateway_state.error_message),

@@ -378,7 +378,9 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     bind_session = asyncio.run(account.post_account_wechat_bind_session(current_user=user))
     assert bind_session.status == 'pending'
     assert bind_session.bindCode
-    assert bind_session.qrSvg.startswith('<svg')
+    assert bind_session.qrScene == 'manual_code'
+    assert bind_session.qrSvg == ''
+    assert bind_session.qrUrl is None
 
     completed = asyncio.run(
         account.post_internal_wechat_bind_session_complete(
@@ -438,6 +440,8 @@ def test_account_wechat_bind_session_refreshes_pending_session(monkeypatch, tmp_
 
     assert first.bindSessionId != second.bindSessionId
     assert first.qrPayload != second.qrPayload
+    assert first.qrScene == 'manual_code'
+    assert second.qrScene == 'manual_code'
     cancelled = storage.get_wechat_bind_session(first.bindSessionId)
     assert cancelled is not None
     assert cancelled.status == 'cancelled'
