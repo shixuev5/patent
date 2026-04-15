@@ -69,7 +69,7 @@ class R2CredentialStore:
         return cipher.decrypt_and_verify(ciphertext, tag)
 
     def restore_local_credentials(self) -> bool:
-        payload = self.r2_storage.get_bytes(self.r2_key)
+        payload = self.r2_storage.get_bytes(self.r2_key, log_missing=False)
         if not payload:
             return False
         content = self._decrypt(payload)

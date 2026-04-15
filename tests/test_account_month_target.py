@@ -585,9 +585,11 @@ def test_im_gateway_r2_credential_store_roundtrip(tmp_path):
         def __init__(self):
             self.payload: bytes | None = None
             self.deleted_keys: list[str] = []
+            self.get_bytes_calls: list[tuple[str, bool]] = []
 
-        def get_bytes(self, key: str):
+        def get_bytes(self, key: str, *, log_missing: bool = True):
             assert key == 'secure/im-gateway/credentials.enc'
+            self.get_bytes_calls.append((key, log_missing))
             return self.payload
 
         def put_bytes(self, key: str, content: bytes, content_type: str = 'application/octet-stream'):
@@ -620,13 +622,16 @@ def test_im_gateway_r2_credential_store_roundtrip(tmp_path):
     local_path.unlink()
     assert store.restore_local_credentials() is True
     assert local_path.read_bytes() == expected
+    assert r2_storage.get_bytes_calls == [('secure/im-gateway/credentials.enc', False)]
 
     assert store.clear_remote_credentials() is True
     assert r2_storage.deleted_keys == ['secure/im-gateway/credentials.enc']
 
 
-def test_account_runtime_clear_credentials_clears_local_and_remote(tmp_path):
+def test_account_runtime_clear_credentials_clears_local_and_remote(monkeypatch, tmp_path):
     im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
     events: list[str] = []
 
     class FakeCredentialStore:
@@ -654,6 +659,42 @@ def test_account_runtime_clear_credentials_clears_local_and_remote(tmp_path):
     asyncio.run(runtime._clear_credentials())
 
     assert events == ['clear-local', 'clear-remote']
+
+
+def test_account_runtime_logs_missing_credentials_only_once(monkeypatch, tmp_path):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    monkeypatch.setattr(im_gateway_main, 'POLL_INTERVAL_SECONDS', 0.01)
+    printed: list[str] = []
+    attempts = 0
+
+    class FakeBot:
+        def on_message(self, _handler):
+            return None
+
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-missing',
+        backend=SimpleNamespace(),
+        download_dir=tmp_path,
+        background_task_tracker=lambda _task: None,
+    )
+
+    async def fake_ensure_credentials_for_restore():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 3:
+            runtime._stop_requested = True
+        return False
+
+    monkeypatch.setattr(runtime, '_build_bot', lambda: FakeBot())
+    monkeypatch.setattr(runtime, '_ensure_credentials_for_restore', fake_ensure_credentials_for_restore)
+    monkeypatch.setattr('builtins.print', lambda message: printed.append(message))
+
+    asyncio.run(runtime._run_loop())
+
+    assert attempts == 3
+    assert printed == ['[im-gateway] owner=authing:owner-missing missing credentials, waiting for a new login session']
 
 
 def test_account_runtime_reports_expired_login_session(monkeypatch, tmp_path):
@@ -687,6 +728,7 @@ def test_account_runtime_reports_expired_login_session(monkeypatch, tmp_path):
             return None
 
     async def run_case():
+        nonlocal runtime
         runtime = im_gateway_main.AccountRuntime(
             owner_id='authing:owner-expired',
             backend=FakeBackend(),
@@ -707,6 +749,7 @@ def test_account_runtime_reports_expired_login_session(monkeypatch, tmp_path):
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
 
+    runtime = None
     asyncio.run(run_case())
 
     assert [item['status'] for item in updates] == ['qr_ready', 'expired']

@@ -75,6 +75,7 @@ class AccountRuntime:
         self._attempt_login_session_id: Optional[str] = None
         self._stop_requested = False
         self._login_terminal_state_reported = False
+        self._missing_credentials_reported = False
 
     async def apply_target(self, target: OwnerRuntimeTarget) -> None:
         target_account_id = str(target.account_id or "").strip() or None
@@ -117,6 +118,7 @@ class AccountRuntime:
         self.desired_login_session_id = None
         self.desired_account_id = None
         self._attempt_login_session_id = None
+        self._missing_credentials_reported = False
         if self.task is not None and not self.task.done():
             await self._cancel_task(self.task)
         self.task = None
@@ -167,10 +169,11 @@ class AccountRuntime:
             try:
                 force_login = bool(self._attempt_login_session_id)
                 if not force_login and not await self._ensure_credentials_for_restore():
-                    print(f"[im-gateway] owner={self.owner_id} missing credentials, waiting for a new login session")
+                    self._report_missing_credentials_waiting()
                     await asyncio.sleep(POLL_INTERVAL_SECONDS)
                     continue
 
+                self._missing_credentials_reported = False
                 print(f"[im-gateway] owner={self.owner_id} waiting for login")
                 creds = await bot.login(force=force_login)
                 await self._persist_credentials_to_remote()
@@ -406,6 +409,12 @@ class AccountRuntime:
         if persisted:
             print(f"[im-gateway] owner={self.owner_id} persisted credentials to R2")
         return persisted
+
+    def _report_missing_credentials_waiting(self) -> None:
+        if self._missing_credentials_reported:
+            return
+        print(f"[im-gateway] owner={self.owner_id} missing credentials, waiting for a new login session")
+        self._missing_credentials_reported = True
 
     async def _clear_credentials(self) -> None:
         local_path = self.local_credential_path

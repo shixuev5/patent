@@ -109,7 +109,7 @@ class R2Storage:
         date_prefix = datetime.utcnow().strftime("%Y/%m/%d")
         return f"avatar/{date_prefix}/{user_id}-{fname}"
 
-    def get_bytes(self, key: str) -> Optional[bytes]:
+    def get_bytes(self, key: str, *, log_missing: bool = True) -> Optional[bytes]:
         if not self.enabled or not self.client:
             return None
         try:
@@ -124,7 +124,8 @@ class R2Storage:
                 exc.response.get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
             )
             if str(error_code) in {"NoSuchKey", "404"}:
-                logger.debug(f"[R2] 文件不存在，key={key}")
+                if log_missing:
+                    logger.debug(f"[R2] 文件不存在，key={key}")
                 return None
             logger.warning(f"[R2] 读取失败，key={key}，错误：{exc}")
             return None
