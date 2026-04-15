@@ -4,7 +4,7 @@ AI search API models and route error codes.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,7 @@ class AiSearchSessionSummary(BaseModel):
     title: str
     status: str
     phase: str
+    activityState: Literal["running", "paused", "none"] = "none"
     sourceTaskId: Optional[str] = None
     sourceType: Optional[str] = None
     pinned: bool = False
@@ -110,6 +111,21 @@ class AiSearchExecutionQueueResponse(BaseModel):
     items: List[AiSearchExecutionQueueMessage]
 
 
+class AiSearchArtifactAttachment(BaseModel):
+    attachmentId: str
+    kind: str
+    name: str
+    downloadUrl: str
+    mediaType: str
+    sizeBytes: int
+    createdAt: str
+    isPrimary: bool = False
+
+
+class AiSearchArtifactsPayload(BaseModel):
+    attachments: List[AiSearchArtifactAttachment] = Field(default_factory=list)
+
+
 class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
     run: Dict[str, Any]
@@ -118,5 +134,5 @@ class AiSearchSnapshotResponse(BaseModel):
     plan: Dict[str, Any]
     retrieval: Dict[str, Any]
     analysis: Dict[str, Any]
-    artifacts: Dict[str, Any]
+    artifacts: AiSearchArtifactsPayload = Field(default_factory=AiSearchArtifactsPayload)
     analysisSeed: Optional[Dict[str, Any]] = None

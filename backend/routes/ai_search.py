@@ -57,6 +57,15 @@ async def get_ai_search_session(
     return service.get_snapshot(session_id, current_user.user_id)
 
 
+@router.get("/api/ai-search/sessions/{session_id}/attachments/{attachment_id}/download")
+async def download_ai_search_attachment(
+    session_id: str,
+    attachment_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.download_attachment(session_id, current_user.user_id, attachment_id)
+
+
 @router.patch("/api/ai-search/sessions/{session_id}")
 async def update_ai_search_session(
     session_id: str,

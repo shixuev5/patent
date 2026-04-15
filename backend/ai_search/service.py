@@ -251,6 +251,10 @@ class AiSearchService:
     def delete_session(self, session_id: str, owner_id: str) -> Dict[str, bool]:
         return self.sessions.delete_session(session_id, owner_id)
 
+    def download_attachment(self, session_id: str, owner_id: str, attachment_id: str):
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        return self.artifacts.download_attachment(task, attachment_id)
+
     def _run_main_agent(self, task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False) -> Dict[str, Any]:
         return self.agent_runs._run_main_agent(task_id, thread_id, payload, for_resume=for_resume)
 

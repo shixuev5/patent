@@ -6,10 +6,18 @@ from typing import Any, Dict, List, Optional
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.orchestration.action_runtime import build_pending_action_view, current_pending_action
-from agents.ai_search.src.state import PHASE_COLLECTING_REQUIREMENTS, get_ai_search_meta
+from agents.ai_search.src.state import (
+    ACTIVE_EXECUTION_PHASES,
+    PHASE_AWAITING_HUMAN_DECISION,
+    PHASE_AWAITING_PLAN_CONFIRMATION,
+    PHASE_AWAITING_USER_ANSWER,
+    PHASE_COLLECTING_REQUIREMENTS,
+    PHASE_DRAFTING_PLAN,
+    get_ai_search_meta,
+)
 from backend.time_utils import utc_now_z
 
-from .models import AiSearchSessionSummary, AiSearchSnapshotResponse
+from .models import AiSearchArtifactsPayload, AiSearchSessionSummary, AiSearchSnapshotResponse
 
 
 class AiSearchSnapshotService:
@@ -20,14 +28,28 @@ class AiSearchSnapshotService:
     def storage(self):
         return self.facade.storage
 
+    def _activity_state(self, phase: str) -> str:
+        normalized_phase = str(phase or "").strip()
+        if normalized_phase in ({PHASE_DRAFTING_PLAN} | set(ACTIVE_EXECUTION_PHASES)):
+            return "running"
+        if normalized_phase in {
+            PHASE_AWAITING_USER_ANSWER,
+            PHASE_AWAITING_PLAN_CONFIRMATION,
+            PHASE_AWAITING_HUMAN_DECISION,
+        }:
+            return "paused"
+        return "none"
+
     def _session_summary(self, task: Any) -> AiSearchSessionSummary:
         meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
         return AiSearchSessionSummary(
             sessionId=task.id,
             taskId=task.id,
             title=str(task.title or "未命名 AI 检索会话"),
             status=task.status.value,
-            phase=str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS),
+            phase=phase,
+            activityState=self._activity_state(phase),
             sourceTaskId=str(meta.get("source_task_id") or "").strip() or None,
             sourceType=str(meta.get("source_type") or "").strip() or None,
             pinned=bool(meta.get("pinned")),
@@ -50,11 +72,6 @@ class AiSearchSnapshotService:
         conversation = snapshot.conversation if isinstance(snapshot.conversation, dict) else {}
         messages = conversation.get("messages")
         return messages if isinstance(messages, list) else []
-
-    def _artifact_download_url(self, snapshot: AiSearchSnapshotResponse) -> Optional[str]:
-        artifacts = snapshot.artifacts if isinstance(snapshot.artifacts, dict) else {}
-        value = artifacts.get("downloadUrl")
-        return str(value).strip() if value else None
 
     def _active_run(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)
@@ -272,6 +289,6 @@ class AiSearchSnapshotService:
                 "latestCloseReadResult": gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
                 "latestFeatureCompareResult": feature_comparison,
             },
-            artifacts={"downloadUrl": self.facade.artifacts._snapshot_download_url(task)},
+            artifacts=AiSearchArtifactsPayload(attachments=self.facade.artifacts._snapshot_attachments(task)),
             analysisSeed=self._analysis_seed(task),
         )

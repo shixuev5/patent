@@ -3,16 +3,11 @@
     <section
       v-for="plan in normalizedPlans"
       :key="plan.subPlanId"
-      class="rounded-2xl border border-slate-200 bg-white/80"
+      class="rounded-2xl border border-slate-200/80 bg-white/80"
     >
       <div class="border-b border-slate-100 px-4 py-3">
-        <div class="flex items-center justify-between gap-3">
-          <p class="text-sm font-semibold text-slate-900">方案 {{ plan.index }}</p>
-          <span class="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] font-medium text-cyan-700">
-            5 分主方案
-          </span>
-        </div>
-        <p class="mt-2 text-sm leading-6 text-slate-700">{{ plan.goal }}</p>
+        <p class="text-sm font-semibold text-slate-900">方案 {{ plan.index }}</p>
+        <p class="mt-1 text-[13px] leading-6 text-slate-700">{{ plan.goal }}</p>
       </div>
 
       <div class="space-y-4 px-4 py-4">
@@ -22,23 +17,18 @@
             <div
               v-for="step in plan.steps"
               :key="`${plan.subPlanId}-${step.stepId}`"
-              class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+              class="rounded-2xl bg-slate-50 px-3 py-3"
             >
               <div class="flex flex-wrap items-center gap-2">
                 <p class="text-sm font-semibold text-slate-800">{{ step.title }}</p>
-                <span
-                  class="rounded-full px-2.5 py-1 text-[11px] font-medium"
-                  :class="step.activationMode === 'conditional'
-                    ? 'border border-amber-200 bg-amber-50 text-amber-700'
-                    : 'border border-emerald-200 bg-emerald-50 text-emerald-700'"
-                >
-                  {{ step.activationMode === 'conditional' ? '条件触发' : '立即执行' }}
-                </span>
               </div>
               <p v-if="step.purpose" class="mt-2 text-[13px] leading-6 text-slate-700">
                 {{ step.purpose }}
               </p>
-              <p v-if="step.activationSummary" class="mt-2 text-[12px] leading-5 text-slate-500">
+              <p class="mt-2 text-[12px] leading-5 text-slate-500">
+                {{ step.activationMode === 'conditional' ? '条件触发' : '立即执行' }}
+              </p>
+              <p v-if="step.activationSummary" class="mt-1 text-[12px] leading-5 text-slate-500">
                 触发说明：{{ step.activationSummary }}
               </p>
             </div>

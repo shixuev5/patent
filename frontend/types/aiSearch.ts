@@ -1,9 +1,12 @@
+export type AiSearchActivityState = 'running' | 'paused' | 'none'
+
 export interface AiSearchSessionSummary {
   sessionId: string
   taskId: string
   title: string
   status: string
   phase: string
+  activityState: AiSearchActivityState
   sourceTaskId?: string | null
   sourceType?: string | null
   pinned: boolean
@@ -11,6 +14,21 @@ export interface AiSearchSessionSummary {
   selectedDocumentCount: number
   createdAt?: string | null
   updatedAt?: string | null
+}
+
+export interface AiSearchArtifactAttachment {
+  attachmentId: string
+  kind: string
+  name: string
+  downloadUrl: string
+  mediaType: string
+  sizeBytes: number
+  createdAt: string
+  isPrimary: boolean
+}
+
+export interface AiSearchArtifactsPayload {
+  attachments: AiSearchArtifactAttachment[]
 }
 
 export interface AiSearchRun {
@@ -83,10 +101,7 @@ export interface AiSearchSnapshot {
   }
   retrieval: AiSearchRetrievalState
   analysis: AiSearchAnalysisState
-  artifacts: {
-    downloadUrl?: string | null
-    [key: string]: any
-  }
+  artifacts: AiSearchArtifactsPayload
   analysisSeed?: Record<string, any> | null
 }
 

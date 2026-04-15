@@ -196,6 +196,9 @@ def test_streaming_middleware_emits_tool_events_for_sync_tool_calls():
     assert [event["type"] for event in events] == ["tool.started", "tool.completed"]
     assert events[0]["payload"]["summary"] == "读取规划上下文"
     assert events[0]["payload"]["subagentLabel"] == "检索规划"
+    assert events[0]["payload"]["displayKind"] == "detail"
+    assert events[0]["payload"]["displayGroupKey"] == "planner"
+    assert events[0]["payload"]["dedupeKey"] == "call-tool-1"
 
 
 def test_streaming_middleware_emits_failed_tool_event_for_async_tool_calls():
@@ -218,4 +221,7 @@ def test_streaming_middleware_emits_failed_tool_event_for_async_tool_calls():
 
     assert [event["type"] for event in events] == ["tool.started", "tool.failed"]
     assert events[0]["payload"]["summary"] == "提交执行步骤摘要"
+    assert events[0]["payload"]["displayKind"] == "detail"
+    assert events[0]["payload"]["displayGroupKey"] == "query-executor"
+    assert events[1]["payload"]["dedupeKey"] == "call-tool-2"
     assert events[1]["payload"]["status"] == "failed"

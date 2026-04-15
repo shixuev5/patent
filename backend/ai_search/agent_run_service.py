@@ -18,7 +18,11 @@ from agents.ai_search.src.orchestration.action_runtime import (
     resolve_pending_action,
 )
 from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation, enter_human_decision
-from agents.ai_search.src.runtime import extract_latest_ai_message, format_subagent_label
+from agents.ai_search.src.runtime import (
+    build_process_display_metadata,
+    extract_latest_ai_message,
+    format_subagent_label,
+)
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
     PHASE_AWAITING_HUMAN_DECISION,
@@ -224,6 +228,15 @@ class AiSearchAgentRunService:
         summary = str(payload.get("summary") or payload.get("statusText") or payload.get("label") or payload.get("toolLabel") or "").strip()
         if not summary:
             return
+        process_type = str(payload.get("processType") or "").strip()
+        display_metadata = build_process_display_metadata(
+            process_type=process_type,
+            event_id=str(payload.get("eventId") or "").strip(),
+            subagent_name=str(payload.get("subagentName") or payload.get("name") or "").strip(),
+            tool_name=str(payload.get("toolName") or "").strip(),
+            label=str(payload.get("label") or payload.get("toolLabel") or "").strip(),
+            summary=summary,
+        )
         self.storage.create_ai_search_message(
             {
                 "message_id": uuid.uuid4().hex,
@@ -235,6 +248,7 @@ class AiSearchAgentRunService:
                 "stream_status": "completed",
                 "metadata": {
                     **payload,
+                    **display_metadata,
                     "phase": phase,
                 },
             }
@@ -601,10 +615,24 @@ class AiSearchAgentRunService:
         name = str(payload.get("name") or "").strip()
         label = str(payload.get("label") or "").strip() or format_subagent_label(name)
         default_status = f"{label}执行中。" if event_type == "subagent.started" else f"{label}已完成。"
+        event_id = str(payload.get("eventId") or f"{name}:{'started' if event_type == 'subagent.started' else 'completed'}").strip()
         return {
             "name": name,
             "label": label,
+            "eventId": event_id,
+            "processType": "subagent",
+            "status": "running" if event_type == "subagent.started" else "completed",
             "statusText": str(payload.get("statusText") or "").strip() or default_status,
+            "summary": str(payload.get("summary") or "").strip() or label,
+            "subagentName": str(payload.get("subagentName") or name).strip() or None,
+            "subagentLabel": str(payload.get("subagentLabel") or label).strip() or None,
+            **build_process_display_metadata(
+                process_type="subagent",
+                event_id=event_id,
+                subagent_name=str(payload.get("subagentName") or name).strip(),
+                label=label,
+                summary=str(payload.get("summary") or "").strip() or label,
+            ),
         }
 
     def _run_updated_payload(self, snapshot: AiSearchSnapshotResponse) -> Dict[str, Any]:
@@ -612,7 +640,7 @@ class AiSearchAgentRunService:
             "session": snapshot.session.model_dump(mode="python"),
             "run": snapshot.run if isinstance(snapshot.run, dict) else {},
             "plan": snapshot.plan.get("currentPlan") if isinstance(snapshot.plan, dict) else None,
-            "artifacts": snapshot.artifacts if isinstance(snapshot.artifacts, dict) else {},
+            "artifacts": snapshot.artifacts.model_dump(mode="python"),
         }
 
     def _assistant_started_event(self, session_id: str, phase: str, stream_state: Dict[str, Any], message_id: Optional[str] = None) -> Optional[str]:

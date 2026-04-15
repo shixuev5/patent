@@ -24,29 +24,31 @@
                 class="rounded-2xl border px-4 py-4"
                 :class="entry.card?.severity === 'amber' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'"
               >
-                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div class="space-y-3">
                   <div class="min-w-0">
                     <p class="text-sm font-semibold" :class="entry.card?.severity === 'amber' ? 'text-amber-900' : 'text-slate-900'">
                       {{ entry.card?.title }}
                     </p>
-                    <p class="mt-1 text-xs leading-5" :class="entry.card?.severity === 'amber' ? 'text-amber-800' : 'text-slate-700'">
+                    <p class="mt-1 text-xs leading-6" :class="entry.card?.severity === 'amber' ? 'text-amber-800' : 'text-slate-700'">
                       {{ entry.card?.body }}
                     </p>
-                    <p v-if="resumeLastError" class="mt-2 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-5 text-amber-900">
+                    <p v-if="resumeLastError" class="mt-2 rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-xs leading-6 text-amber-900">
                       上次错误：{{ resumeLastError }}
                     </p>
                     <p v-if="resumeAttemptCount > 0" class="mt-2 text-[11px] text-amber-700">
                       已尝试 {{ resumeAttemptCount }} 次
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-xl bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-                    :disabled="streaming"
-                    @click="$emit('resume-execution')"
-                  >
-                    恢复执行
-                  </button>
+                  <div class="flex justify-end">
+                    <button
+                      type="button"
+                      class="inline-flex items-center justify-center rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      :disabled="streaming"
+                      @click="$emit('resume-execution')"
+                    >
+                      恢复执行
+                    </button>
+                  </div>
                 </div>
               </section>
 
@@ -101,13 +103,10 @@
 
                 <template v-else-if="entry.role === 'assistant' && isPlanMessage(entry)">
                   <div v-if="isLatestPlanMessage(entry)" class="space-y-3">
-                    <div class="flex items-center justify-between gap-3">
-                      <p class="text-[12px] font-semibold tracking-[0.18em] text-slate-400">PLAN</p>
-                      <span class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                        v{{ planVersionOf(entry) || activePlanVersion || '?' }}
-                      </span>
-                    </div>
-                    <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                    <p class="text-[13px] font-semibold text-slate-900">
+                      {{ planTitle(entry) }}
+                    </p>
+                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" fade-rgb="248,250,252" />
                     <AiSearchPlanConfirmationCard
                       v-if="isPendingPlanEntry(entry)"
                       :confirm-disabled="streaming || !confirmationPlanVersion"
@@ -115,16 +114,12 @@
                       @confirm="$emit('confirm-plan')"
                     />
                   </div>
-                  <details v-else class="group">
-                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-700">
-                      <span>历史计划 v{{ planVersionOf(entry) || '?' }}</span>
-                      <span class="text-xs font-medium text-slate-400 group-open:hidden">展开</span>
-                      <span class="hidden text-xs font-medium text-slate-400 group-open:inline">收起</span>
-                    </summary>
-                    <div class="mt-3 border-t border-slate-200 pt-3 text-slate-600">
-                      <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
-                    </div>
-                  </details>
+                  <div class="space-y-3">
+                    <p class="text-[13px] font-semibold text-slate-900">
+                      {{ historicalPlanTitle(entry) }}
+                    </p>
+                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" fade-rgb="248,250,252" />
+                  </div>
                 </template>
 
                 <template v-else-if="entry.role === 'assistant' && isQuestionMessage(entry)">
@@ -159,6 +154,17 @@
                   <ClipboardDocumentIcon class="h-4 w-4" />
                 </button>
               </div>
+              <div
+                v-if="downloadAttachmentsForEntry(entry).length"
+                class="grid max-w-[33rem] grid-cols-1 gap-2 pt-2 sm:grid-cols-2"
+              >
+                <AiSearchDownloadAttachment
+                  v-for="attachment in downloadAttachmentsForEntry(entry)"
+                  :key="attachment.attachmentId"
+                  :attachment="attachment"
+                  @download="$emit('download-result', attachment)"
+                />
+              </div>
             </div>
           </article>
         </template>
@@ -181,12 +187,14 @@
 <script setup lang="ts">
 import { ArrowDownIcon, ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AiSearchDownloadAttachment from '~/components/ai-search/AiSearchDownloadAttachment.vue'
 import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
 import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchProcessLine from '~/components/ai-search/AiSearchProcessLine.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
 import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
+import type { AiSearchArtifactAttachment } from '~/types/aiSearch'
 import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 
 const props = withDefaults(defineProps<{
@@ -200,6 +208,9 @@ const props = withDefaults(defineProps<{
   humanDecisionAction?: Record<string, any> | null
   selectedReviewDocuments?: Array<Record<string, any>>
   reviewCandidateDocuments?: Array<Record<string, any>>
+  phase?: string
+  workspaceTitle?: string
+  attachments?: AiSearchArtifactAttachment[]
   streaming?: boolean
   resumeLastError?: string
   resumeAttemptCount?: number
@@ -214,6 +225,9 @@ const props = withDefaults(defineProps<{
   humanDecisionAction: null,
   selectedReviewDocuments: () => [],
   reviewCandidateDocuments: () => [],
+  phase: '',
+  workspaceTitle: '',
+  attachments: () => [],
   streaming: false,
   resumeLastError: '',
   resumeAttemptCount: 0,
@@ -227,6 +241,7 @@ defineEmits<{
   'remove-selected-document': [documentId: string]
   'continue-search': []
   'complete-current-results': []
+  'download-result': [attachment: AiSearchArtifactAttachment]
 }>()
 
 const { showMessage } = useGlobalMessage()
@@ -275,6 +290,24 @@ const planVersionOf = (entry: Record<string, any>): number => {
   return Number.isFinite(value) ? value : 0
 }
 
+const stripLeadingHeading = (content: string): string => {
+  return content.replace(/^\s{0,3}#{1,6}\s+.+?\n+/, '').trim()
+}
+
+const planTitle = (entry: Record<string, any>): string => {
+  return `检索计划 v${planVersionOf(entry) || props.activePlanVersion || '?'}`
+}
+
+const historicalPlanTitle = (entry: Record<string, any>): string => {
+  return `历史计划 v${planVersionOf(entry) || '?'}`
+}
+
+const planBody = (entry: Record<string, any>): string => {
+  const content = String(entry?.content || '').trim()
+  const normalized = stripLeadingHeading(content)
+  return normalized || content
+}
+
 const isLatestPlanMessage = (entry: Record<string, any>): boolean => {
   return isPlanMessage(entry) && planVersionOf(entry) === props.activePlanVersion
 }
@@ -289,7 +322,6 @@ const isPendingQuestionEntry = (entry: Record<string, any>): boolean => {
   const pendingQuestionId = String(props.pendingQuestion.question_id || props.pendingQuestion.questionId || '').trim()
   return !!entryQuestionId && entryQuestionId === pendingQuestionId
 }
-
 const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
@@ -303,6 +335,19 @@ const entryCopyText = (entry: Record<string, any>): string => String(entry?.cont
 const canCopyEntry = (entry: Record<string, any>): boolean => {
   if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
   return !!entryCopyText(entry)
+}
+
+const downloadAttachmentsForEntry = (entry: Record<string, any>): AiSearchArtifactAttachment[] => {
+  if (String(props.phase || '').trim() !== 'completed') return []
+  const attachments = Array.isArray(props.attachments) ? [...props.attachments] : []
+  if (!attachments.length) return []
+  if (entry.role !== 'assistant' || isPlanMessage(entry) || isQuestionMessage(entry)) return []
+  const assistantEntries = props.entries.filter(item => item.role === 'assistant' && item.entryType !== 'pending-assistant')
+  if (assistantEntries.at(-1)?.id !== entry.id) return []
+  return attachments.sort((left, right) => {
+    if (Boolean(left.isPrimary) !== Boolean(right.isPrimary)) return left.isPrimary ? -1 : 1
+    return String(left.attachmentId || '').localeCompare(String(right.attachmentId || ''))
+  })
 }
 
 const copyEntryContent = async (entry: Record<string, any>) => {

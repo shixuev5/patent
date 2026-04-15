@@ -1,22 +1,39 @@
 <template>
   <article class="flex justify-start">
-    <div class="w-full max-w-full py-1 text-[12px] leading-6 text-slate-500">
-      <div class="rounded-2xl border border-slate-200/80 bg-slate-50/70 px-3 py-2" :class="containerClass">
-        <div class="flex items-start gap-2.5">
-          <span class="mt-1.5 inline-flex h-2 w-2 shrink-0 rounded-full" :class="statusDotClass" />
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <p class="min-w-0 break-words text-[13px] font-medium" :class="titleClass">
-                {{ node.title }}
-              </p>
-              <span class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="statusBadgeClass">
-                {{ statusLabel }}
-              </span>
-            </div>
-          </div>
-        </div>
+    <div class="w-full max-w-full text-[13px] leading-6 text-slate-500">
+      <button
+        v-if="hasChildren"
+        type="button"
+        class="flex w-full items-start gap-2 rounded-xl px-1.5 py-0.5 text-left transition hover:bg-slate-50/80"
+        @click="toggleExpanded"
+      >
+        <span class="inline-flex h-6 w-4 shrink-0 items-center justify-center">
+          <span class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full" :class="statusDotClass" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="inline-flex max-w-full items-center gap-1.5 align-top">
+            <span class="break-words leading-6" :class="titleClass">
+              {{ node.title }}
+            </span>
+            <ChevronRightIcon
+              class="mt-[1px] h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform"
+              :class="{ 'rotate-90': expanded }"
+            />
+          </span>
+        </span>
+      </button>
+      <div v-else class="flex w-full items-start gap-2 px-1.5 py-0.5">
+        <span class="inline-flex h-6 w-4 shrink-0 items-center justify-center">
+          <span class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full" :class="statusDotClass" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block break-words leading-6" :class="titleClass">
+            {{ node.title }}
+          </span>
+        </span>
       </div>
-      <div v-if="children.length" class="mt-2 space-y-1.5 border-l border-slate-200 pl-4">
+
+      <div v-if="hasChildren && expanded" class="ml-4 mt-0 space-y-0">
         <AiSearchProcessLine
           v-for="child in children"
           :key="child.id"
@@ -28,7 +45,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ChevronRightIcon } from '@heroicons/vue/24/outline'
+import { computed, ref, watch } from 'vue'
 
 defineOptions({ name: 'AiSearchProcessLine' })
 
@@ -38,6 +56,9 @@ type ProcessRenderNode = {
   status?: string
   level?: number
   isGroup?: boolean
+  collapsible?: boolean
+  defaultExpanded?: boolean
+  autoCollapseOnTerminal?: boolean
   children?: ProcessRenderNode[]
 }
 
@@ -47,21 +68,42 @@ const props = defineProps<{
 
 const status = computed(() => String(props.node?.status || '').trim())
 const children = computed(() => Array.isArray(props.node?.children) ? props.node.children : [])
-const statusLabel = computed(() => {
-  if (status.value === 'completed') return '已完成'
-  if (status.value === 'failed') return '失败'
-  return '进行中'
-})
+const hasChildren = computed(() => !!children.value.length && props.node?.collapsible !== false)
+const isTerminal = computed(() => status.value === 'completed' || status.value === 'failed')
+const expanded = ref(hasChildren.value ? !!props.node?.defaultExpanded : false)
+
 const statusDotClass = computed(() => {
   if (status.value === 'completed') return 'bg-emerald-400'
   if (status.value === 'failed') return 'bg-rose-400'
   return 'bg-cyan-500'
 })
-const statusBadgeClass = computed(() => {
-  if (status.value === 'completed') return 'bg-emerald-100 text-emerald-700'
-  if (status.value === 'failed') return 'bg-rose-100 text-rose-700'
-  return 'bg-cyan-100 text-cyan-700'
-})
-const titleClass = computed(() => (props.node?.isGroup ? 'text-slate-800' : 'text-slate-700'))
-const containerClass = computed(() => (props.node?.isGroup ? 'bg-slate-50 border-slate-200' : 'bg-white border-slate-200/70'))
+
+const titleClass = computed(() => (
+  props.node?.isGroup
+    ? 'font-medium text-slate-800'
+    : 'font-normal text-slate-700'
+))
+
+const toggleExpanded = () => {
+  if (!hasChildren.value) return
+  expanded.value = !expanded.value
+}
+
+watch(
+  [hasChildren, () => props.node?.defaultExpanded, isTerminal, () => props.node?.autoCollapseOnTerminal],
+  ([nextHasChildren, defaultExpanded, terminal, autoCollapse], [previousHasChildren, previousDefaultExpanded, previousTerminal]) => {
+    if (!nextHasChildren) {
+      expanded.value = false
+      return
+    }
+    if (terminal && autoCollapse !== false) {
+      expanded.value = false
+      return
+    }
+    if (!previousHasChildren || previousTerminal || defaultExpanded !== previousDefaultExpanded) {
+      expanded.value = !!defaultExpanded
+    }
+  },
+  { immediate: true },
+)
 </script>

@@ -19,7 +19,7 @@
             <button
               type="button"
               class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-cyan-700 text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              :disabled="loading"
+              :disabled="loading || mockMode"
               @click="createSession"
             >
               <PlusIcon class="h-3.5 w-3.5" />
@@ -43,7 +43,7 @@
           <button
             type="button"
             class="w-full rounded-lg bg-cyan-700 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            :disabled="loading"
+            :disabled="loading || mockMode"
             @click="createSession"
           >
             新建会话
@@ -119,7 +119,7 @@
                   <template v-else>
                     <p class="truncate whitespace-nowrap text-sm font-semibold text-slate-900" :title="workspaceTitle">{{ workspaceTitle }}</p>
                     <button
-                      v-if="currentSession"
+                      v-if="currentSession && !mockMode"
                       type="button"
                       class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-700 lg:inline-flex"
                       :disabled="currentSessionMutating"
@@ -131,38 +131,24 @@
                     </button>
                   </template>
                 </div>
-                <div class="flex shrink-0 items-center gap-2 lg:hidden">
-                  <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                    {{ activePhaseLabel }}
-                  </span>
-                </div>
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-2 self-center">
               <button
-                v-if="currentSession?.artifacts?.downloadUrl"
-                type="button"
-                class="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
-                @click="downloadCurrentResult"
-              >
-                下载结果
-              </button>
-              <div class="hidden shrink-0 items-center gap-2 lg:flex">
-                <span class="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-                  {{ activePhaseLabel }}
-                </span>
-              </div>
-              <button
                 type="button"
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 lg:hidden"
                 aria-label="新建会话"
-                :disabled="loading"
+                :disabled="loading || mockMode"
                 @click="createSession"
               >
                 <PlusIcon class="h-4 w-4" />
               </button>
             </div>
           </div>
+        </div>
+
+        <div v-if="mockMode" class="border-b border-amber-200 bg-amber-50/70 px-4 py-2 text-[12px] text-amber-800">
+          Mock 数据预览模式。可切换会话查看不同阶段，提交类操作已禁用。访问 `/search?mock_ai_search=1` 开启。
         </div>
 
         <AiSearchConversationView
@@ -176,102 +162,104 @@
           :human-decision-action="humanDecisionAction"
           :selected-review-documents="selectedReviewDocuments"
           :review-candidate-documents="reviewCandidateDocuments"
-          :streaming="streaming"
+          :streaming="streaming || mockMode"
           :resume-last-error="resumeLastError"
           :resume-attempt-count="resumeAttemptCount"
           :pending-assistant-content="pendingAssistantMessage?.content || ''"
+          :phase="activePhase"
+          :workspace-title="workspaceTitle"
+          :attachments="currentSession?.artifacts?.attachments || []"
           @confirm-plan="confirmPlan"
           @resume-execution="resumeExecution"
           @request-document-review="requestDocumentReview"
           @remove-selected-document="removeSelectedDocument"
           @continue-search="continueSearchFromDecision"
           @complete-current-results="completeCurrentResultsFromDecision"
+          @download-result="downloadCurrentResult"
         />
 
         <div v-if="showExecutionPanel" class="border-t border-slate-200">
           <button type="button" class="accordion-toggle" @click="executionPanelOpen = !executionPanelOpen">
             <span class="accordion-title">
               执行进度
-              <span class="accordion-meta">{{ completedExecutionTodoCount }}/{{ executionTodos.length }} 完成</span>
+              <span class="text-[11px] font-normal text-slate-400">{{ completedExecutionTodoCount }}/{{ executionTodos.length }}</span>
             </span>
             <ChevronDownIcon class="accordion-icon" :class="{ 'rotate-180': executionPanelOpen }" />
           </button>
-          <div v-if="executionPanelOpen" class="accordion-body space-y-3">
+          <div v-if="executionPanelOpen" class="accordion-body space-y-2.5">
             <div v-if="!executionTodos.length" class="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">
               计划确认后会在这里显示执行任务拆解和实时状态。
             </div>
-            <div v-else class="rounded-2xl border border-slate-200 bg-white">
-              <div class="flex items-center justify-between border-b border-slate-100 px-3 py-2 text-[11px] text-slate-500">
-                <span>{{ completedExecutionTodoCount }} / {{ executionTodos.length }} 项已完成</span>
-                <span v-if="activeExecutionTodoTitle" class="truncate text-right text-cyan-700">当前：{{ activeExecutionTodoTitle }}</span>
-              </div>
-              <ol class="divide-y divide-slate-100">
+            <div v-else class="space-y-1.5">
+              <p v-if="currentExecutionHint" class="px-0.5 text-[12px] leading-6 text-slate-500">
+                当前进行中：{{ currentExecutionHint }}
+              </p>
+              <ol class="space-y-0">
                 <li
-                v-for="todo in executionTodos"
-                :key="todo.todo_id || todo.title"
-                class="px-3 py-2"
-              >
-                <div class="flex items-center gap-2.5">
-                  <span class="inline-flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full border text-[10px]" :class="todoCheckClass(todo.status)">
-                    <CheckIcon v-if="todo.status === 'completed'" class="h-3.5 w-3.5" />
-                    <XMarkIcon v-else-if="todo.status === 'failed'" class="h-3.5 w-3.5" />
-                    <span v-else-if="todo.status === 'paused'" class="h-1.5 w-1.5 rounded-full bg-amber-600" />
-                    <span v-else-if="todo.status === 'in_progress'" class="h-2 w-2 rounded-full bg-cyan-600" />
-                    <span v-else class="h-2 w-2 rounded-full bg-slate-300" />
-                  </span>
-                  <p class="min-w-0 flex-1 truncate text-[13px] text-slate-800" :class="{ 'line-through text-slate-400': todo.status === 'completed' }">
-                    {{ todo.title || '未命名任务' }}
-                  </p>
-                </div>
-              </li>
-              </ol>
-            </div>
-
-            <div v-if="activeSubagentList.length" class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-              <p class="text-xs font-semibold text-slate-700">当前执行中</p>
-              <div class="mt-2 space-y-2">
-                <div
-                  v-for="item in activeSubagentList"
-                  :key="item.name"
-                  class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-600"
+                  v-for="todo in executionTodos"
+                  :key="todo.todo_id || todo.title"
+                  class="px-0.5 py-0.5"
                 >
-                  <span class="font-medium text-slate-700">{{ item.label }}</span>
-                  <span class="text-slate-400">{{ item.statusText }}</span>
-                </div>
-              </div>
+                  <div class="grid grid-cols-[1.25rem,minmax(0,1fr)] items-center gap-2">
+                    <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center">
+                      <span
+                        v-if="todo.status === 'completed' || todo.status === 'failed'"
+                        class="inline-flex h-4.5 w-4.5 items-center justify-center rounded-full border text-[10px]"
+                        :class="todoCheckClass(todo.status)"
+                      >
+                        <CheckIcon v-if="todo.status === 'completed'" class="h-3.5 w-3.5" />
+                        <XMarkIcon v-else class="h-3.5 w-3.5" />
+                      </span>
+                      <span
+                        v-else-if="todo.status === 'paused'"
+                        class="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400"
+                      />
+                      <span
+                        v-else-if="todo.status === 'in_progress'"
+                        class="inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500"
+                      />
+                      <span
+                        v-else
+                        class="inline-flex h-2.5 w-2.5 rounded-full bg-slate-300"
+                      />
+                    </span>
+                    <p class="min-w-0 flex-1 truncate text-[13px] leading-6 text-slate-800" :class="{ 'line-through text-slate-400': todo.status === 'completed' }">
+                      {{ todo.title || '未命名任务' }}
+                    </p>
+                  </div>
+                </li>
+              </ol>
             </div>
           </div>
         </div>
 
-        <div v-if="queuedExecutionMessages.length" class="border-t border-slate-200 px-4 py-4">
-          <div class="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3">
-            <p class="text-xs font-semibold text-slate-700">待执行用户消息</p>
-            <div class="mt-2 space-y-2">
-              <div
-                v-for="item in queuedExecutionMessages"
-                :key="item.queueMessageId"
-                class="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
+        <div v-if="queuedExecutionMessages.length" class="border-t border-slate-200 px-3 py-2.5">
+          <ol class="space-y-2">
+            <li
+              v-for="(item, index) in queuedExecutionMessages"
+              :key="item.queueMessageId"
+              class="flex items-start gap-2 text-[13px] leading-5 text-slate-700"
+            >
+              <span class="shrink-0 text-slate-400">{{ index + 1 }}.</span>
+              <p class="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                {{ item.content }}
+              </p>
+              <button
+                type="button"
+                class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-rose-600"
+                aria-label="删除待执行用户消息"
+                @click="deleteQueuedExecutionMessage(item.queueMessageId)"
               >
-                <p class="min-w-0 flex-1 whitespace-pre-wrap break-words text-[13px] leading-5 text-slate-700">
-                  {{ item.content }}
-                </p>
-                <button
-                  type="button"
-                  class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-rose-600"
-                  aria-label="删除待执行用户消息"
-                  @click="deleteQueuedExecutionMessage(item.queueMessageId)"
-                >
-                  <XMarkIcon class="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          </div>
+                <XMarkIcon class="h-3.5 w-3.5" />
+              </button>
+            </li>
+          </ol>
         </div>
 
         <div class="border-t border-slate-200 px-4 py-4">
           <AiSearchComposerPanel
             v-model="composer"
-            :disabled="inputDisabled || !currentSession"
+            :disabled="inputDisabled || !currentSession || mockMode"
             :placeholder="inputPlaceholder"
             :can-submit="canSubmitMessage"
             :mode="composerMode"
@@ -341,12 +329,13 @@ import AiSearchConversationView from '~/components/ai-search/AiSearchConversatio
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
 import { useAiSearchComposer } from '~/composables/ai-search/useAiSearchComposer'
 import { useAiSearchConversation } from '~/composables/ai-search/useAiSearchConversation'
+import { buildAiSearchConversationMockState } from '~/mocks/aiSearchConversationMock'
 import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
-import type { AiSearchSessionSummary } from '~/types/aiSearch'
-import { aiSearchPhaseLabel, isAiSearchExecutionPhase } from '~/utils/aiSearch'
+import type { AiSearchArtifactAttachment, AiSearchSessionSummary } from '~/types/aiSearch'
+import { isAiSearchExecutionPhase } from '~/utils/aiSearch'
 
 type SessionGroup = {
   key: string
@@ -369,6 +358,7 @@ const {
   currentSession,
   error,
   loading,
+  mockMode,
   pendingAssistantMessage,
   phaseMarkers,
   sessions,
@@ -410,11 +400,22 @@ const selectedDocuments = computed<Array<Record<string, any>>>(() => currentSess
 const reviewCandidateDocuments = computed<Array<Record<string, any>>>(() => candidateDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_review'))
 const selectedReviewDocuments = computed<Array<Record<string, any>>>(() => selectedDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_remove'))
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
+const hasActiveExecutionWork = computed(() => (
+  executionTodos.value.some((todo) => todo.status === 'in_progress')
+  || activeSubagentList.value.length > 0
+))
 const activeExecutionTodoTitle = computed(() => {
   const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
   const failed = executionTodos.value.find((todo) => todo.status === 'failed')
   const paused = executionTodos.value.find((todo) => todo.status === 'paused')
   return String(inProgress?.title || failed?.title || paused?.title || '').trim()
+})
+const currentExecutionHint = computed(() => {
+  const segments = [
+    activeExecutionTodoTitle.value,
+    activeSubagentList.value.map(item => String(item?.label || '').trim()).filter(Boolean).join('、'),
+  ].filter(Boolean)
+  return segments.join(' · ')
 })
 
 const activePlanVersion = computed(() => {
@@ -433,7 +434,6 @@ const structuredPlanExecutionSpec = computed<Record<string, any> | null>(() => {
   const executionSpec = currentSession.value?.plan?.currentPlan?.executionSpec
   return executionSpec && typeof executionSpec === 'object' ? executionSpec as Record<string, any> : null
 })
-const activePhaseLabel = computed(() => aiSearchPhaseLabel(activePhase.value || 'collecting_requirements'))
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
 const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
@@ -480,6 +480,7 @@ const currentSessionMutating = computed(() => {
   const sessionId = String(currentSession.value?.session.sessionId || '').trim()
   return !!sessionId && aiSearchStore.isSessionMutating(sessionId)
 })
+const shouldUseMockData = computed(() => String(route.query.mock_ai_search || '').trim() === '1')
 const canSubmitHeaderRename = computed(() => {
   const nextTitle = headerTitleDraft.value.trim()
   const currentTitle = String(currentSession.value?.session.title || '').trim()
@@ -515,6 +516,7 @@ const {
 })
 
 const composerHint = computed(() => {
+  if (mockMode.value) return 'Mock 数据预览模式，输入已禁用。'
   if (composerMode.value === 'blocked') return '当前需要先处理上方操作卡，暂不接受普通消息。'
   if (['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase.value || '')) {
     return '执行中补充的消息会在下一个执行节点统一生效。'
@@ -531,11 +533,12 @@ const withTokenQuery = (url: string, token: string): string => {
   return `${url}${separator}token=${encodeURIComponent(token)}`
 }
 
-const downloadCurrentResult = async () => {
-  const rawPath = String(currentSession.value?.artifacts?.downloadUrl || '').trim()
+const downloadCurrentResult = async (attachment: AiSearchArtifactAttachment) => {
+  const rawPath = String(attachment?.downloadUrl || '').trim()
   if (!rawPath) return
-  const rawDownloadUrl = rawPath.startsWith('http') ? rawPath : `${config.public.apiBaseUrl}${rawPath}`
-  const fileTitle = String(currentSession.value?.session.title || currentSession.value?.session.taskId || 'task').trim() || 'task'
+  const rawDownloadUrl = rawPath.startsWith('http') || rawPath.startsWith('data:') || rawPath.startsWith('blob:')
+    ? rawPath
+    : `${config.public.apiBaseUrl}${rawPath}`
 
   try {
     const authed = await taskStore.ensureAuth()
@@ -546,7 +549,7 @@ const downloadCurrentResult = async () => {
     link.href = downloadUrl
     link.target = '_blank'
     link.rel = 'noopener'
-    link.download = `AI 检索结果_${fileTitle}.zip`
+    link.download = String(attachment?.name || 'ai-search-attachment').trim() || 'ai-search-attachment'
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -624,22 +627,6 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
   return { key: `month-${monthLabel}`, label: monthLabel }
 }
 
-const todoStatusLabel = (status?: string): string => {
-  if (status === 'in_progress') return '进行中'
-  if (status === 'completed') return '已完成'
-  if (status === 'failed') return '失败'
-  if (status === 'paused') return '已挂起'
-  return '待执行'
-}
-
-const todoStatusClass = (status?: string): string => {
-  if (status === 'in_progress') return 'border border-cyan-200 bg-cyan-50 text-cyan-700'
-  if (status === 'completed') return 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (status === 'failed') return 'border border-rose-200 bg-rose-50 text-rose-700'
-  if (status === 'paused') return 'border border-amber-200 bg-amber-50 text-amber-700'
-  return 'border border-slate-200 bg-slate-50 text-slate-600'
-}
-
 const todoCheckClass = (status?: string): string => {
   if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-700'
@@ -662,6 +649,10 @@ const toggleSidebar = () => {
 }
 
 const createSession = async () => {
+  if (mockMode.value) {
+    showMessage('info', 'Mock 模式下不创建新会话。')
+    return
+  }
   await aiSearchStore.createSession()
 }
 
@@ -805,6 +796,19 @@ watch(
 )
 
 watch(
+  [hasActiveExecutionWork, () => executionTodos.value.length],
+  ([activeWork, todoCount]) => {
+    if (activeWork) {
+      executionPanelOpen.value = true
+      return
+    }
+    if (todoCount > 0) {
+      executionPanelOpen.value = false
+    }
+  },
+)
+
+watch(
   error,
   (value, previousValue) => {
     const text = String(value || '').trim()
@@ -822,6 +826,15 @@ watch(
 )
 
 onMounted(async () => {
+  if (shouldUseMockData.value) {
+    if (import.meta.client) {
+      const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+      sidebarCollapsed.value = storedCollapsed
+      mobileDrawerOpen.value = false
+    }
+    aiSearchStore.loadMockData(buildAiSearchConversationMockState())
+    return
+  }
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
     await adminUsageStore.fetchAccess(true)
@@ -843,15 +856,11 @@ onMounted(async () => {
 
 <style scoped>
 .accordion-toggle {
-  @apply flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-slate-50;
+  @apply flex w-full items-center justify-between gap-3 px-4 py-2 text-left transition hover:bg-slate-50;
 }
 
 .accordion-title {
-  @apply flex items-center gap-2 text-sm font-semibold text-slate-900;
-}
-
-.accordion-meta {
-  @apply rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-500;
+  @apply flex items-center gap-2 text-[13px] font-semibold text-slate-900;
 }
 
 .accordion-icon {
@@ -864,7 +873,7 @@ onMounted(async () => {
 
 @media (max-width: 1023px) {
   .accordion-toggle {
-    @apply px-3 py-2.5;
+    @apply px-3 py-2;
   }
 
   .accordion-body {

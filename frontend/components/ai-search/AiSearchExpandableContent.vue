@@ -19,7 +19,7 @@
     <div v-if="isOverflowing" class="mt-3 flex justify-end">
       <button
         type="button"
-        class="text-sm font-medium text-slate-500 transition hover:text-slate-700"
+        class="text-sm font-medium text-slate-400 transition hover:text-slate-600"
         @click="expanded = !expanded"
       >
         {{ expanded ? '收起' : '展示更多' }}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, Optional, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -211,6 +212,47 @@ def format_tool_label(name: str) -> str:
     return TOOL_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "工具")
 
 
+_PROCESS_EVENT_SUFFIX_RE = re.compile(r":(?:running|completed|failed|started)$")
+
+
+def normalize_process_dedupe_key(event_id: str, fallback: str) -> str:
+    normalized_event_id = str(event_id or "").strip()
+    if normalized_event_id:
+        dedupe_key = _PROCESS_EVENT_SUFFIX_RE.sub("", normalized_event_id)
+        if dedupe_key:
+            return dedupe_key
+    return str(fallback or "").strip()
+
+
+def build_process_display_metadata(
+    *,
+    process_type: str,
+    event_id: str = "",
+    subagent_name: str = "",
+    tool_name: str = "",
+    label: str = "",
+    summary: str = "",
+) -> Dict[str, Any]:
+    normalized_process_type = str(process_type or "").strip()
+    normalized_group_key = str(subagent_name or "").strip() or None
+    normalized_label = str(label or "").strip()
+    normalized_summary = str(summary or "").strip()
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_process_type == "subagent":
+        fallback = f"subagent:{normalized_group_key or normalized_label or 'unknown'}"
+        return {
+            "displayKind": "group_status",
+            "displayGroupKey": normalized_group_key,
+            "dedupeKey": normalize_process_dedupe_key(event_id, fallback),
+        }
+    fallback = f"tool:{normalized_group_key or 'root'}:{normalized_tool_name or normalized_summary or normalized_label or 'unknown'}"
+    return {
+        "displayKind": "detail",
+        "displayGroupKey": normalized_group_key,
+        "dedupeKey": normalize_process_dedupe_key(event_id, fallback),
+    }
+
+
 def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
     name = str(tool_name or "").strip()
     if name == "advance_workflow":
@@ -251,6 +293,14 @@ def build_tool_event_payload(
         status_text = f"{summary}已完成"
     elif status == "failed":
         status_text = f"{summary}失败"
+    display_metadata = build_process_display_metadata(
+        process_type="tool",
+        event_id=f"{tool_call_id or normalized_tool_name}:{status}",
+        subagent_name=subagent_name or "",
+        tool_name=normalized_tool_name,
+        label=format_tool_label(normalized_tool_name),
+        summary=summary,
+    )
     return {
         "eventId": f"{tool_call_id or normalized_tool_name}:{status}",
         "processType": "tool",
@@ -262,6 +312,7 @@ def build_tool_event_payload(
         "subagentName": subagent_name,
         "subagentLabel": subagent_label,
         "errorMessage": str(error_message or "").strip() or None,
+        **display_metadata,
     }
 
 
@@ -297,6 +348,13 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                     "statusText": f"{label}开始执行",
                     "subagentName": self.role,
                     "subagentLabel": label,
+                    **build_process_display_metadata(
+                        process_type="subagent",
+                        event_id=f"{self.role}:started",
+                        subagent_name=self.role,
+                        label=label,
+                        summary=label,
+                    ),
                 },
             },
         )
@@ -320,6 +378,13 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                     "statusText": f"{label}已完成",
                     "subagentName": self.role,
                     "subagentLabel": label,
+                    **build_process_display_metadata(
+                        process_type="subagent",
+                        event_id=f"{self.role}:completed",
+                        subagent_name=self.role,
+                        label=label,
+                        summary=label,
+                    ),
                 },
             },
         )

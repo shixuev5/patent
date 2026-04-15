@@ -3,12 +3,15 @@ import { requestJson, requestRaw } from '~/utils/apiClient'
 import { useTaskStore } from '~/stores/task'
 import type {
   AiSearchActiveRun,
+  AiSearchActivityState,
+  AiSearchArtifactAttachment,
   AiSearchBatchSummary,
   AiSearchCreateSessionResponse,
   AiSearchExecutionQueueResponse,
   AiSearchPendingAction,
   AiSearchPendingAssistantMessage,
   AiSearchPhaseMarker,
+  AiSearchSessionSummary,
   AiSearchSessionListResponse,
   AiSearchSnapshot,
   AiSearchStreamEvent,
@@ -32,6 +35,12 @@ const phaseToTaskStatus = (phase: string): string => {
   if (phase === 'failed') return 'failed'
   if (phase === 'cancelled') return 'cancelled'
   return 'processing'
+}
+
+const phaseToActivityState = (phase: string): AiSearchActivityState => {
+  if (phase === 'drafting_plan' || EXECUTION_PHASES.includes(String(phase || '').trim())) return 'running'
+  if (phase === 'awaiting_user_answer' || phase === 'awaiting_plan_confirmation' || phase === 'awaiting_human_decision') return 'paused'
+  return 'none'
 }
 
 const isExecutionPhase = (phase: string): boolean => EXECUTION_PHASES.includes(String(phase || '').trim())
@@ -123,6 +132,7 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
     title: String(summary.title || 'AI 检索工作台'),
     status: String(summary.status || 'processing'),
     phase: String(summary.phase || 'collecting_requirements'),
+    activityState: summary.activityState || phaseToActivityState(String(summary.phase || 'collecting_requirements')),
     sourceTaskId: String(summary.sourceTaskId || '').trim() || null,
     sourceType: String(summary.sourceType || '').trim() || null,
     pinned: !!summary.pinned,
@@ -164,7 +174,7 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
     latestFeatureCompareResult: null,
   },
   artifacts: {
-    downloadUrl: null,
+    attachments: [],
   },
   analysisSeed: summary.analysisSeed || null,
 })
@@ -178,6 +188,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     sessionMutationBusyById: {} as Record<string, boolean>,
     loading: false,
     sessionsHydrated: false,
+    mockMode: false,
   }),
 
   getters: {
@@ -218,6 +229,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     inputDisabled(): boolean {
+      if (this.mockMode) return true
       const phase = activePhase(this.currentSession)
       const action = pendingAction(this.currentSession)
       return (!isExecutionPhase(phase) && this.streaming)
@@ -312,6 +324,22 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this.currentSessionId = String(sessionId || '').trim()
     },
 
+    loadMockData(payload: {
+      currentSessionId: string
+      sessions: AiSearchSessionSummary[]
+      snapshotsById: Record<string, AiSearchSnapshot>
+      runtimeById: Record<string, AiSearchSessionRuntime>
+    }) {
+      this.$reset()
+      this.mockMode = true
+      this.sessions = Array.isArray(payload.sessions) ? [...payload.sessions] : []
+      this.sessionSnapshotsById = { ...(payload.snapshotsById || {}) }
+      this.sessionRuntimeById = { ...(payload.runtimeById || {}) }
+      this.currentSessionId = String(payload.currentSessionId || this.sessions[0]?.sessionId || '').trim()
+      this.sessionsHydrated = true
+      this.loading = false
+    },
+
     activateSession(sessionId: string) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
@@ -338,6 +366,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           },
           executionMessageQueue: {
             items: Array.isArray(snapshot.executionMessageQueue?.items) ? snapshot.executionMessageQueue.items : [],
+          },
+          artifacts: {
+            attachments: Array.isArray(snapshot.artifacts?.attachments) ? snapshot.artifacts.attachments : [],
           },
         },
       }
@@ -415,6 +446,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!normalizedPhase) return
       snapshot.session.phase = normalizedPhase
       snapshot.session.status = phaseToTaskStatus(normalizedPhase)
+      snapshot.session.activityState = phaseToActivityState(normalizedPhase)
       snapshot.run = {
         ...(snapshot.run || {}),
         phase: normalizedPhase,
@@ -430,6 +462,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         ...snapshot.session,
         phase: normalizedPhase,
         status: snapshot.session.status,
+        activityState: snapshot.session.activityState,
       })
     },
 
@@ -585,7 +618,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           snapshot.plan = { ...(snapshot.plan || {}), currentPlan: payload.plan || null }
         }
         if (payload?.artifacts) {
-          snapshot.artifacts = { ...(snapshot.artifacts || {}), ...payload.artifacts }
+          snapshot.artifacts = {
+            attachments: Array.isArray(payload.artifacts.attachments) ? payload.artifacts.attachments as AiSearchArtifactAttachment[] : [],
+          }
         }
         return
       }
@@ -788,6 +823,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
+      if (this.mockMode) {
+        if (options.activate !== false) this.activateSession(targetSessionId)
+        return
+      }
       if (options.activate) {
         this.activateSession(targetSessionId)
       }
@@ -818,6 +857,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async init(preferredSessionId: string = '') {
+      if (this.mockMode) {
+        const targetId = String(preferredSessionId || this.currentSessionId || this.sessions[0]?.sessionId || '').trim()
+        if (targetId) this.activateSession(targetId)
+        return
+      }
       await this.fetchSessions()
       const targetId = String(preferredSessionId || this.currentSessionId || this._sortedSessionIds()[0] || '').trim()
       if (targetId) {
@@ -942,6 +986,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const snapshot = this._getSnapshot(sessionId)
       const targetId = String(queueMessageId || '').trim()
       if (!sessionId || !snapshot || !targetId) return
+      if (this.mockMode) {
+        snapshot.executionMessageQueue = {
+          items: (snapshot.executionMessageQueue?.items || []).filter((item) => item.queueMessageId !== targetId),
+        }
+        return
+      }
       this._setRuntimeError(sessionId, '')
       try {
         await this._postJson<AiSearchExecutionQueueResponse>(
@@ -1144,6 +1194,17 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async updateSession(sessionId: string, payload: { title?: string, pinned?: boolean }) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
+      if (this.mockMode) {
+        const index = this.sessions.findIndex((item) => item.sessionId === targetSessionId)
+        if (index >= 0) {
+          this.sessions[index] = { ...this.sessions[index], ...payload }
+        }
+        const snapshot = this._getSnapshot(targetSessionId)
+        if (snapshot) {
+          snapshot.session = { ...snapshot.session, ...payload }
+        }
+        return
+      }
       this._setSessionMutationBusy(targetSessionId, true)
       this._setRuntimeError(targetSessionId, '')
       try {
@@ -1179,6 +1240,17 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async deleteSession(sessionId: string) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
+      if (this.mockMode) {
+        const wasActive = this.currentSessionId === targetSessionId
+        this.sessions = this.sessions.filter((item) => item.sessionId !== targetSessionId)
+        delete this.sessionSnapshotsById[targetSessionId]
+        delete this.sessionRuntimeById[targetSessionId]
+        delete this.sessionMutationBusyById[targetSessionId]
+        if (wasActive) {
+          this.currentSessionId = String(this.sessions[0]?.sessionId || '').trim()
+        }
+        return
+      }
       const wasActive = this.currentSessionId === targetSessionId
       this._setSessionMutationBusy(targetSessionId, true)
       this._setRuntimeError(targetSessionId, '')

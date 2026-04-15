@@ -1293,7 +1293,21 @@ def test_stream_message_persists_process_messages_from_custom_events(monkeypatch
         if event["type"] == "message.created" and event["payload"].get("kind") == "process"
     ]
 
-    assert any(item["content"] == "读取规划上下文" and item["metadata"]["processType"] == "tool" for item in process_messages)
+    assert any(
+        item["content"] == "检索规划"
+        and item["metadata"]["displayKind"] == "group_status"
+        and item["metadata"]["displayGroupKey"] == "planner"
+        and item["metadata"]["dedupeKey"] == "planner"
+        for item in process_messages
+    )
+    assert any(
+        item["content"] == "读取规划上下文"
+        and item["metadata"]["processType"] == "tool"
+        and item["metadata"]["displayKind"] == "detail"
+        and item["metadata"]["displayGroupKey"] == "planner"
+        and item["metadata"]["dedupeKey"] == "call-tool-1"
+        for item in process_messages
+    )
     assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索规划" for event in parsed)
 
 
@@ -1409,7 +1423,10 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     assert snapshot.run["phase"] == "completed"
     assert snapshot.analysis["latestFeatureCompareResult"] is not None
     assert snapshot.analysis["latestFeatureCompareResult"]["feature_comparison_id"] == "ft-new"
-    assert snapshot.artifacts["downloadUrl"] == f"/api/tasks/{created.sessionId}/download"
+    assert [item.attachmentId for item in snapshot.artifacts.attachments] == ["result_bundle", "report_pdf"]
+    assert snapshot.artifacts.attachments[0].downloadUrl == f"/api/ai-search/sessions/{created.sessionId}/attachments/result_bundle/download"
+    assert snapshot.artifacts.attachments[1].attachmentId == "report_pdf"
+    assert snapshot.session.activityState == "none"
     assert documents[0]["document_type"] == "X"
     assert documents[0]["report_row_order"] == 1
     assert task.metadata["output_files"]["bundle_zip"] == str(bundle_path)
@@ -1516,7 +1533,8 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert snapshot.run["phase"] == PHASE_AWAITING_HUMAN_DECISION
-    assert snapshot.artifacts["downloadUrl"] is None
+    assert snapshot.artifacts.attachments == []
+    assert snapshot.session.activityState == "paused"
     assert snapshot.conversation["pendingAction"] is not None
     assert snapshot.conversation["pendingAction"]["actionType"] == "human_decision"
     assert snapshot.conversation["pendingAction"]["selectedCount"] == 1
@@ -1680,7 +1698,10 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert snapshot.run["phase"] == PHASE_COMPLETED
-    assert snapshot.artifacts["downloadUrl"] == f"/api/tasks/{created.sessionId}/download"
+    assert [item.attachmentId for item in snapshot.artifacts.attachments] == ["result_bundle", "report_pdf"]
+    assert snapshot.artifacts.attachments[0].isPrimary is True
+    assert snapshot.artifacts.attachments[1].attachmentId == "report_pdf"
+    assert snapshot.session.activityState == "none"
     assert snapshot.conversation["pendingAction"] is None or snapshot.conversation["pendingAction"]["actionType"] != "human_decision"
     assert any("run.completed" in item for item in events)
 

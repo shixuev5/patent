@@ -45,9 +45,18 @@
           :title="session.title"
           @click="$emit('select', session.sessionId)"
         >
-          <p class="truncate whitespace-nowrap text-[12px] font-semibold leading-5 text-slate-900">
-            {{ session.title }}
-          </p>
+          <div class="flex items-center gap-1.5">
+            <p class="min-w-0 truncate whitespace-nowrap text-[12px] font-semibold leading-5 text-slate-900">
+              {{ session.title }}
+            </p>
+            <span
+              v-if="showActivityIndicator"
+              class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
+              :class="activityIndicatorClass"
+              :aria-label="activityIndicatorLabel"
+              :title="activityIndicatorLabel"
+            />
+          </div>
         </button>
       </div>
 
@@ -124,6 +133,16 @@ const canSubmitRename = computed(() => {
   const nextTitle = draftTitle.value.trim()
   return !!nextTitle && nextTitle !== props.session.title
 })
+const activityState = computed(() => String(props.session.activityState || 'none').trim())
+const showActivityIndicator = computed(() => activityState.value === 'running' || activityState.value === 'paused')
+const activityIndicatorClass = computed(() => (
+  activityState.value === 'running'
+    ? 'bg-cyan-500 animate-pulse'
+    : 'bg-amber-400'
+))
+const activityIndicatorLabel = computed(() => (
+  activityState.value === 'running' ? '进行中' : '已暂停'
+))
 
 const syncDraft = () => {
   draftTitle.value = props.session.title

@@ -1531,10 +1531,10 @@ class WeChatRuntimeService:
                 messages.append(self._text("\n".join(lines)))
             messages.append(self._text("如需继续扩展检索，请回复“继续检索”；如按当前结果结束，请回复“按当前结果完成”。"))
 
-        artifacts = snapshot.artifacts if isinstance(snapshot.artifacts, dict) else {}
-        download_url = str(artifacts.get("downloadUrl") or "").strip()
-        if download_url and str(snapshot.run.get("status") or "").strip() == "completed":
-            messages.append(self._text(f"检索结果已生成，可下载：{download_url}"))
+        attachments = snapshot.artifacts.attachments if snapshot.artifacts else []
+        primary_attachment = next((item for item in attachments if item.isPrimary), attachments[0] if attachments else None)
+        if primary_attachment and str(snapshot.run.get("status") or "").strip() == "completed":
+            messages.append(self._text(f"检索结果已生成，可下载：{primary_attachment.name}\n{primary_attachment.downloadUrl}"))
 
         if not messages:
             messages.append(self._text("请直接描述检索目标、核心技术和约束条件。"))

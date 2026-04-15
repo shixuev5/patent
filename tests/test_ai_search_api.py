@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from fastapi import FastAPI
@@ -457,3 +458,44 @@ def test_execution_message_queue_endpoints_roundtrip(monkeypatch, tmp_path):
 
     assert delete_response.status_code == 200
     assert delete_response.json()["items"] == []
+
+
+def test_attachment_download_endpoint_returns_ai_search_attachment(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    created = client.post("/api/ai-search/sessions")
+    assert created.status_code == 200
+    session_id = created.json()["sessionId"]
+
+    task = service.storage.get_task(session_id)
+    output_dir = Path(task.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = output_dir / "ai_search_result_bundle.zip"
+    bundle_path.write_bytes(b"PK\x03\x04")
+    pdf_path = output_dir / "ai_search_report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    service.storage.update_task(
+        session_id,
+        status="completed",
+        metadata={
+            **(task.metadata if isinstance(task.metadata, dict) else {}),
+            "output_files": {
+                "bundle_zip": str(bundle_path),
+                "pdf": str(pdf_path),
+            },
+        },
+    )
+
+    snapshot_response = client.get(f"/api/ai-search/sessions/{session_id}")
+    assert snapshot_response.status_code == 200
+    attachments = snapshot_response.json()["artifacts"]["attachments"]
+    assert [item["attachmentId"] for item in attachments] == ["result_bundle", "report_pdf"]
+
+    response = client.get(f"/api/ai-search/sessions/{session_id}/attachments/result_bundle/download")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "filename*=" in response.headers["content-disposition"]
+
+    missing = client.get(f"/api/ai-search/sessions/{session_id}/attachments/unknown/download")
+    assert missing.status_code == 404

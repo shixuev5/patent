@@ -32,7 +32,7 @@ const renderedHtml = computed(() => aiSearchMarkdownRenderer.render(String(props
 
 .ai-search-markdown :deep(ul),
 .ai-search-markdown :deep(ol) {
-  @apply my-1.5 pl-4;
+  @apply my-1.5 list-inside pl-0;
 }
 
 .ai-search-markdown :deep(li) {
