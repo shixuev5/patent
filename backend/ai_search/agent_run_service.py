@@ -731,6 +731,8 @@ class AiSearchAgentRunService:
         current_pending = current.conversation.get("pendingAction") if isinstance(current.conversation, dict) else None
         previous_pending = previous.conversation.get("pendingAction") if isinstance(previous.conversation, dict) else None
         if current_pending != previous_pending:
+            if isinstance(current_pending, dict):
+                self.facade.notify_pending_action_required(session_id, current_pending)
             yield self._format_event("pending_action.updated", session_id, phase, current_pending)
         current_candidates = ((current.retrieval.get("documents") or {}).get("candidates")) if isinstance(current.retrieval, dict) else []
         previous_candidates = ((previous.retrieval.get("documents") or {}).get("candidates")) if isinstance(previous.retrieval, dict) else []

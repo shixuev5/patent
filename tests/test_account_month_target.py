@@ -980,6 +980,81 @@ def test_im_gateway_wraps_file_payloads_for_sdk(monkeypatch):
     assert sent_texts[0] == '分析任务 已完成。'
 
 
+def test_im_gateway_formats_pending_action_delivery(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    sent_texts: list[str] = []
+
+    class FakeBot:
+        async def send(self, _peer_id: str, text: str):
+            sent_texts.append(text)
+
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=SimpleNamespace(),
+        download_dir=Path('.'),
+        background_task_tracker=lambda _task: None,
+    )
+    runtime.bot = FakeBot()
+    runtime.current_account_id = 'bot-001'
+
+    asyncio.run(
+        runtime.send_delivery_job(
+            {
+                'deliveryJobId': 'job-question-001',
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+                'payload': {
+                    'title': '隔膜检索',
+                    'pendingActionType': 'question',
+                    'prompt': '请补充核心技术特征',
+                },
+                'task': {},
+            }
+        )
+    )
+
+    assert sent_texts == ['隔膜检索 需要补充信息。\n请补充核心技术特征']
+
+
+def test_account_runtime_sends_typing_indicator_when_supported(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    typing_calls: list[str] = []
+
+    class FakeBackend:
+        async def post_inbound_message(self, **payload):
+            assert payload['bot_account_id'] == 'bot-cred-typing'
+            return {'messages': []}
+
+    class FakeBot:
+        def get_credentials(self):
+            return SimpleNamespace(account_id='bot-cred-typing')
+
+        async def sendTyping(self, peer_id: str):
+            typing_calls.append(peer_id)
+
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-typing',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=lambda _task: None,
+    )
+
+    asyncio.run(
+        runtime._handle_message(
+            FakeBot(),
+            SimpleNamespace(
+                user_id='wx-peer-typing',
+                text='hello',
+            )
+        )
+    )
+
+    assert typing_calls == ['wx-peer-typing']
+
+
 def test_account_runtime_reports_login_session_updates(monkeypatch, tmp_path):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
@@ -1230,6 +1305,71 @@ def test_wechat_runtime_requires_active_binding_with_structured_detail(tmp_path)
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail['code'] == 'WECHAT_BINDING_NOT_FOUND'
     assert '网页里完成绑定' in exc_info.value.detail['suggestion']
+
+
+def test_task_wechat_pending_action_notification_queues_delivery_job(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_pending_action_delivery.db')
+    user = CurrentUser(user_id='authing:wx-pending-action')
+    storage.upsert_authing_user(
+        User(
+            owner_id=user.user_id,
+            authing_sub='wx-pending-action',
+            name='待确认提醒用户',
+        )
+    )
+    storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-pending-action',
+            owner_id=user.user_id,
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-pending',
+            wechat_peer_name='待确认微信',
+            bound_at=utc_now(),
+            push_ai_search_pending_action=True,
+        )
+    )
+    storage.create_task(
+        Task(
+            id='search-task-1',
+            owner_id=user.user_id,
+            task_type=TaskType.AI_SEARCH.value,
+            title='固态电池隔膜检索',
+            status=TaskStatus.PENDING,
+            progress=40,
+            output_dir=str(tmp_path / 'output' / 'search-task-1'),
+            created_at=utc_now(),
+            updated_at=utc_now(),
+            metadata={},
+        )
+    )
+
+    service = TaskWeChatNotificationService(storage=storage)
+    queued = service.notify_ai_search_pending_action(
+        'search-task-1',
+        pending_action={
+            'actionId': 'pa-001',
+            'actionType': 'question',
+            'prompt': '请补充核心技术特征',
+        },
+    )
+    duplicate = service.notify_ai_search_pending_action(
+        'search-task-1',
+        pending_action={
+            'actionId': 'pa-001',
+            'actionType': 'question',
+            'prompt': '请补充核心技术特征',
+        },
+    )
+
+    assert queued['status'] == 'queued'
+    assert duplicate['status'] == 'duplicate'
+
+    jobs = storage.claim_wechat_delivery_jobs(5)
+    assert len(jobs) == 1
+    assert jobs[0].event_type == 'ai_search.pending_action'
+    assert jobs[0].payload['pendingActionType'] == 'question'
+    assert jobs[0].payload['prompt'] == '请补充核心技术特征'
 
 
 def test_wechat_runtime_analysis_flow_creates_task(monkeypatch, tmp_path):
@@ -1905,6 +2045,192 @@ def test_wechat_runtime_ai_search_followup_commands_without_context_return_guida
     assert result.taskId is None
     assert result.sessionType is None
     assert (result.messages[0].text or '') == WECHAT_INTENT_GUIDANCE
+
+
+def test_wechat_runtime_single_pending_search_reply_auto_resumes_context(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_single_pending_reply.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search-pending-single',
+            authing_sub='wx-search-pending-single',
+            name='微信单检索待确认用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search-pending-single',
+            owner_id='authing:wx-search-pending-single',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-pending-single',
+            wechat_peer_name='单检索待确认微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    task = manager.create_task(owner_id='authing:wx-search-pending-single', task_type=TaskType.AI_SEARCH.value, title='隔膜检索')
+    service = WeChatRuntimeService(task_manager=manager)
+    state = {'answered': False}
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'unknown',
+            'confidence': 0.21,
+            'requires_confirmation': True,
+            'extracted': {},
+        },
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'list_sessions',
+        lambda owner_id: SimpleNamespace(
+            items=[
+                SimpleNamespace(sessionId=task.id, title='隔膜检索', status='pending', phase='awaiting_user_answer', updatedAt='2026-01-03T00:00:00+00:00', createdAt='2026-01-01T00:00:00+00:00'),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'get_snapshot',
+        lambda session_id, owner_id: _build_ai_search_snapshot(
+            session_id=session_id,
+            title='隔膜检索',
+            pending_action=None if state['answered'] else {
+                'actionType': 'question',
+                'questionId': 'q-1',
+                'prompt': '请补充核心技术特征',
+            },
+        ),
+    )
+
+    async def _fake_answer(session_id: str, owner_id: str, question_id: str, answer: str):
+        captured.update({'session_id': session_id, 'question_id': question_id, 'answer': answer})
+        state['answered'] = True
+
+    monkeypatch.setattr(service, 'answer_ai_search_question', _fake_answer)
+
+    result = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-pending-single',
+            text='补充一个耐高温涂层特征',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert captured == {
+        'session_id': task.id,
+        'question_id': 'q-1',
+        'answer': '补充一个耐高温涂层特征',
+    }
+    assert result.taskId == task.id
+    assert result.sessionType == TaskType.AI_SEARCH.value
+    assert conversation is not None
+    assert conversation.active_context_kind == 'ai_search'
+    assert conversation.active_context_session_id == task.id
+
+
+def test_wechat_runtime_multiple_pending_search_replies_require_selection_then_replay(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_runtime_multi_pending_reply.db')
+    storage.upsert_authing_user(
+        User(
+            owner_id='authing:wx-search-pending-multi',
+            authing_sub='wx-search-pending-multi',
+            name='微信多检索待确认用户',
+        )
+    )
+    binding = storage.upsert_wechat_binding(
+        WeChatBinding(
+            binding_id='binding-search-pending-multi',
+            owner_id='authing:wx-search-pending-multi',
+            status='active',
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-pending-multi',
+            wechat_peer_name='多检索待确认微信',
+            bound_at=utc_now(),
+        )
+    )
+    manager = PipelineTaskManager(storage)
+    first = manager.create_task(owner_id='authing:wx-search-pending-multi', task_type=TaskType.AI_SEARCH.value, title='检索 A')
+    second = manager.create_task(owner_id='authing:wx-search-pending-multi', task_type=TaskType.AI_SEARCH.value, title='检索 B')
+    service = WeChatRuntimeService(task_manager=manager)
+    answered_sessions: set[str] = set()
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        service.llm_service,
+        'invoke_text_json',
+        lambda *args, **kwargs: {
+            'intent': 'unknown',
+            'confidence': 0.18,
+            'requires_confirmation': True,
+            'extracted': {},
+        },
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'list_sessions',
+        lambda owner_id: SimpleNamespace(
+            items=[
+                SimpleNamespace(sessionId=first.id, title='检索 A', status='pending', phase='awaiting_user_answer', updatedAt='2026-01-02T00:00:00+00:00', createdAt='2026-01-01T00:00:00+00:00'),
+                SimpleNamespace(sessionId=second.id, title='检索 B', status='pending', phase='awaiting_user_answer', updatedAt='2026-01-03T00:00:00+00:00', createdAt='2026-01-02T00:00:00+00:00'),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        service.ai_search_service,
+        'get_snapshot',
+        lambda session_id, owner_id: _build_ai_search_snapshot(
+            session_id=session_id,
+            title='检索 B' if session_id == second.id else '检索 A',
+            pending_action=None if session_id in answered_sessions else {
+                'actionType': 'question',
+                'questionId': f'q-{session_id}',
+                'prompt': '请补充核心技术特征',
+            },
+        ),
+    )
+
+    async def _fake_answer(session_id: str, owner_id: str, question_id: str, answer: str):
+        captured.update({'session_id': session_id, 'question_id': question_id, 'answer': answer})
+        answered_sessions.add(session_id)
+
+    monkeypatch.setattr(service, 'answer_ai_search_question', _fake_answer)
+
+    prompted = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-pending-multi',
+            text='补充一个耐高温涂层特征',
+        )
+    )
+
+    assert prompted.taskId is None
+    assert '多个待确认中的检索' in (prompted.messages[0].text or '')
+    assert '1. 检索 B' in (prompted.messages[0].text or '')
+
+    selected = asyncio.run(
+        service.handle_inbound_message(
+            bot_account_id='bot-1',
+            wechat_peer_id='wx-peer-search-pending-multi',
+            text='1',
+        )
+    )
+
+    conversation = storage.get_wechat_conversation_session(binding.binding_id)
+    assert captured == {
+        'session_id': second.id,
+        'question_id': f'q-{second.id}',
+        'answer': '补充一个耐高温涂层特征',
+    }
+    assert selected.taskId == second.id
+    assert selected.sessionType == TaskType.AI_SEARCH.value
+    assert conversation is not None
+    assert conversation.active_context_kind == 'ai_search'
+    assert conversation.active_context_session_id == second.id
 
 
 def test_wechat_runtime_chitchat_does_not_continue_existing_ai_search_session(tmp_path):

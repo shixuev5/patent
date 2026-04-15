@@ -646,7 +646,7 @@ const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchP
 
   .wechat-actions {
     flex-direction: row;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .wechat-primary-btn,

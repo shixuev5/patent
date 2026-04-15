@@ -28,7 +28,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_POR
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
 LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
-INBOUND_REPLY_WAIT_SECONDS = max(1.0, float(os.getenv("IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS", "8") or "8"))
+INBOUND_REPLY_WAIT_SECONDS = max(1.0, float(os.getenv("IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS", "5") or "5"))
 INBOUND_REQUEST_TIMEOUT_SECONDS = max(
     INBOUND_REPLY_WAIT_SECONDS + 1.0,
     float(os.getenv("IM_GATEWAY_INBOUND_REQUEST_TIMEOUT_SECONDS", "180") or "180"),
@@ -253,6 +253,7 @@ class AccountRuntime:
             )
         )
         self._track_background_task(inbound_task)
+        await self._send_typing_indicator(bot, peer_id)
         try:
             result = await asyncio.wait_for(asyncio.shield(inbound_task), timeout=INBOUND_REPLY_WAIT_SECONDS)
         except asyncio.TimeoutError:
@@ -387,6 +388,29 @@ class AccountRuntime:
                 await reply(incoming_msg, text)
             else:
                 await bot.send(peer_id, text)
+
+    async def _send_typing_indicator(self, bot: Any, peer_id: str) -> None:
+        if not str(peer_id or "").strip():
+            return
+        for method_name in ("send_typing", "sendTyping"):
+            method = getattr(bot, method_name, None)
+            if not callable(method):
+                continue
+            for args, kwargs in (
+                ((peer_id,), {}),
+                ((peer_id, True), {}),
+                ((peer_id,), {"status": 1}),
+                ((peer_id,), {"typing": True}),
+            ):
+                try:
+                    result = method(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        await result
+                    return
+                except TypeError:
+                    continue
+                except Exception:
+                    return
 
     async def _ensure_credentials_for_restore(self) -> bool:
         if self._has_local_credentials():
@@ -578,9 +602,19 @@ class AccountRuntime:
         payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
         title = str(payload.get("title") or payload.get("taskId") or "任务").strip()
         terminal_status = str(payload.get("terminalStatus") or "").strip()
+        pending_action_type = str(payload.get("pendingActionType") or "").strip()
         error_message = str(payload.get("errorMessage") or "").strip()
         if terminal_status == "failed":
             return f"{title} 执行失败。\n{error_message or '请回到网页查看详情。'}"
+        if pending_action_type == "question":
+            prompt = str(payload.get("prompt") or "").strip()
+            return f"{title} 需要补充信息。\n{prompt or '请直接在微信里补充说明，我会继续往下处理。'}"
+        if pending_action_type == "plan_confirmation":
+            return f"{title} 的检索计划已生成。\n请直接在微信里回复“确认计划”，或告诉我你要修改的地方。"
+        if pending_action_type == "human_decision":
+            selected_count = int(payload.get("selectedCount") or 0)
+            summary = f"当前已筛出 {selected_count} 篇候选文献。" if selected_count > 0 else "当前需要你决定下一步。"
+            return f"{title} 需要你的确认。\n{summary} 请直接在微信里回复“继续检索”或“按当前结果完成”。"
         return f"{title} 已完成。"
 
 

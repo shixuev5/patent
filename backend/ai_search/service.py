@@ -18,7 +18,7 @@ from agents.ai_search.src.state import (
     phase_step,
     phase_to_task_status,
 )
-from backend.notifications import build_task_notification_dispatcher
+from backend.notifications import build_task_notification_dispatcher, build_task_wechat_notification_service
 from backend.system_logs import emit_system_log
 from backend.storage import TaskType, get_pipeline_manager
 from backend.task_usage_tracking import (
@@ -132,6 +132,20 @@ class AiSearchService:
             terminal_status=terminal_status,
             task_type=TaskType.AI_SEARCH.value,
             error_message=error_message,
+        )
+
+    def notify_pending_action_required(
+        self,
+        task_id: str,
+        pending_action: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        service = build_task_wechat_notification_service(
+            storage=self.storage,
+            system_log_emitter=self._emit_system_log,
+        )
+        return service.notify_ai_search_pending_action(
+            task_id,
+            pending_action=pending_action,
         )
 
     def _main_agent_progress_poll_seconds(self) -> float:

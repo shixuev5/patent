@@ -408,6 +408,29 @@ class WeChatRuntimeService:
                 messages=self._build_ai_search_messages(snapshot),
                 effect=ConversationEffect(active_context=ActiveContextRef(kind="ai_search", session_id=selected["session_id"], title=title)),
             )
+        if pending_type == "choose_pending_search_session":
+            selected = self._resolve_session_selection(pending, text)
+            if not selected:
+                return ConversationResponse(messages=[self._text("请按编号选择要继续的检索，例如“1”或“选择 1”；如不想继续选择，可回复“取消”或“返回”。")])
+            self._clear_pending_conversation_action(conversation)
+            stored_text = str(pending.get("text") or "").strip()
+            stored_route = pending.get("route") if isinstance(pending.get("route"), dict) else {}
+            stored_attachments = self._attachments_from_payload(pending.get("attachments"))
+            response = await self.send_ai_search_message(
+                binding,
+                conversation,
+                session_id=selected["session_id"],
+                text=stored_text,
+                attachments=stored_attachments,
+                route=stored_route,
+            )
+            response.effect = response.effect or ConversationEffect()
+            response.effect.active_context = ActiveContextRef(
+                kind="ai_search",
+                session_id=selected["session_id"],
+                title=str(selected.get("title") or self._session_title(selected["session_id"], binding.owner_id) or selected["session_id"]).strip() or selected["session_id"],
+            )
+            return response
         return None
 
     def _attachments_from_payload(self, payload: Any) -> List[InternalWeChatInboundAttachment]:
@@ -438,6 +461,8 @@ class WeChatRuntimeService:
         pending_type = str(pending.get("type") or "").strip()
         if pending_type == "choose_search_session":
             return ConversationResponse(messages=[self._text("已退出检索选择，可继续当前对话或重新发起检索。")])
+        if pending_type == "choose_pending_search_session":
+            return ConversationResponse(messages=[self._text("已取消这次检索续接，你也可以稍后重新回复那条确认或补充消息。")])
         if pending_type == "switch_context":
             current_context = self._active_context(conversation)
             label = "当前流程" if current_context.kind == "guided_workflow" else "当前检索"
@@ -471,11 +496,14 @@ class WeChatRuntimeService:
     ) -> ConversationResponse:
         if not text and not attachments:
             return ConversationResponse(messages=[self._text(self._intent_guidance_text())])
+        route = self._route_general_intent(text=text, attachments=attachments)
+        pending_resume = await self._maybe_resume_pending_ai_search(binding, conversation, text=text, attachments=attachments, route=route)
+        if pending_resume is not None:
+            return pending_resume
         if text in SEARCH_CONTROL_TOKENS or text.startswith("选择 ") or text.startswith("送审 "):
             if text == "继续检索" and self.list_recent_ai_search_sessions(binding.owner_id):
                 return await self.start_or_resume_ai_search(binding, conversation, text=text, attachments=attachments)
             return ConversationResponse(messages=[self._text(self._intent_guidance_text())])
-        route = self._route_general_intent(text=text, attachments=attachments)
         return await self._execute_routed_intent(binding, conversation, route=route, text=text, attachments=attachments)
 
     async def _execute_routed_intent(
@@ -945,6 +973,110 @@ class WeChatRuntimeService:
                 }
             )
         return items
+
+    def list_recent_pending_ai_search_sessions(self, owner_id: str) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        for session in self.list_recent_ai_search_sessions(owner_id):
+            pending = self.storage.get_current_ai_search_pending_action(session["session_id"])
+            action_type = ""
+            action_id = ""
+            if isinstance(pending, dict):
+                action_type = str(pending.get("action_type") or "").strip()
+                action_id = str(pending.get("action_id") or "").strip()
+            else:
+                try:
+                    snapshot = self.ai_search_service.get_snapshot(session["session_id"], owner_id)
+                except Exception:
+                    snapshot = None
+                snapshot_pending = snapshot.conversation.get("pendingAction") if snapshot and isinstance(snapshot.conversation, dict) else None
+                if isinstance(snapshot_pending, dict):
+                    action_type = str(snapshot_pending.get("actionType") or snapshot_pending.get("action_type") or "").strip()
+                    action_id = str(snapshot_pending.get("actionId") or snapshot_pending.get("action_id") or "").strip()
+            if not action_type:
+                continue
+            if action_type not in {"question", "plan_confirmation", "human_decision"}:
+                continue
+            items.append(
+                {
+                    "session_id": session["session_id"],
+                    "title": session["title"],
+                    "action_type": action_type,
+                    "action_id": action_id,
+                }
+            )
+        return items
+
+    async def _maybe_resume_pending_ai_search(
+        self,
+        binding: WeChatBinding,
+        conversation: WeChatConversationSession,
+        *,
+        text: str,
+        attachments: List[InternalWeChatInboundAttachment],
+        route: Dict[str, Any],
+    ) -> Optional[ConversationResponse]:
+        normalized_text = str(text or "").strip()
+        if attachments or not normalized_text:
+            return None
+        intent = str(route.get("intent") or "").strip()
+        if intent in {FLOW_ANALYSIS, FLOW_REVIEW, FLOW_REPLY, LIST_SEARCH_SESSIONS_INTENT, "cancel_or_pause"}:
+            return None
+
+        pending_sessions = self.list_recent_pending_ai_search_sessions(binding.owner_id)
+        if not pending_sessions:
+            return None
+
+        followup_candidate = (
+            normalized_text in SEARCH_CONTROL_TOKENS
+            or normalized_text.startswith("选择 ")
+            or normalized_text.startswith("送审 ")
+            or (
+                len(pending_sessions) == 1
+                and pending_sessions[0]["action_type"] in {"question", "plan_confirmation"}
+                and intent != "chitchat"
+            )
+            or (
+                len(pending_sessions) > 1
+                and intent in {"unknown", TaskType.AI_SEARCH.value}
+            )
+        )
+        if not followup_candidate:
+            return None
+
+        if len(pending_sessions) == 1:
+            target = pending_sessions[0]
+            response = await self.send_ai_search_message(
+                binding,
+                conversation,
+                session_id=target["session_id"],
+                text=normalized_text,
+                attachments=[],
+                route=route,
+            )
+            response.effect = response.effect or ConversationEffect()
+            response.effect.active_context = ActiveContextRef(
+                kind="ai_search",
+                session_id=target["session_id"],
+                title=target["title"],
+            )
+            return response
+
+        options = pending_sessions[:3]
+        self._set_pending_conversation_action(
+            conversation,
+            {
+                "type": "choose_pending_search_session",
+                "options": options,
+                "text": normalized_text,
+                "attachments": self._serialize_attachments(attachments),
+                "route": route,
+            },
+        )
+        lines = ["你有多个待确认中的检索，请回复编号，我会把刚才这条消息续接到对应检索："]
+        for index, item in enumerate(options, start=1):
+            lines.append(f"{index}. {item['title']}")
+        lines.append("回复编号即可，例如“1”或“选择 1”。")
+        return ConversationResponse(messages=[self._text("\n".join(lines))])
 
     def list_recent_ai_search_sessions_response(
         self,

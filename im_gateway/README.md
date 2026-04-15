@@ -25,7 +25,7 @@
 - `INTERNAL_GATEWAY_TOKEN`：与后端共享的内部 token
 - `IM_GATEWAY_POLL_INTERVAL_SECONDS`：出站轮询间隔，默认 `8`
 - `IM_GATEWAY_LOGIN_RETRY_SECONDS`：登录/重连失败后的重试间隔，默认 `5`
-- `IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS`：同步等待首条回复的秒数，默认 `8`
+- `IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS`：同步等待首条回复的秒数，默认 `5`
 - `IM_GATEWAY_INBOUND_REQUEST_TIMEOUT_SECONDS`：入站请求后端的总超时，默认 `180`
 - `IM_GATEWAY_DOWNLOAD_DIR`：微信媒体临时下载目录，默认 `<repo>/data/im_gateway`
 - `IM_GATEWAY_CRED_PATH`：本地微信 SDK 凭证根目录；每个 owner 使用 `<root>/<owner>/credentials.json`
