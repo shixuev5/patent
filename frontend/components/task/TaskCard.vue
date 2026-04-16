@@ -18,15 +18,67 @@
       </div>
 
       <div class="task-info">
-        <h4 class="task-title">{{ task.title }}</h4>
-        <div class="task-meta">
-          <span class="task-type">{{ taskTypeLabel }}</span>
-          <span class="task-time">{{ formatTime(task.createdAt) }}</span>
-        </div>
+        <div class="task-top-row">
+          <div class="task-summary">
+            <h4 class="task-title">{{ task.title }}</h4>
+            <div class="task-meta">
+              <span class="task-type">{{ taskTypeLabel }}</span>
+              <span class="task-time">{{ formatTime(task.createdAt) }}</span>
+            </div>
 
-        <div v-if="showPatentNumber" class="task-pn">
-          <span class="pn-label">专利号</span>
-          <code class="pn-value">{{ task.pn }}</code>
+            <div v-if="showPatentNumber" class="task-pn">
+              <span class="pn-label">专利号</span>
+              <code class="pn-value">{{ task.pn }}</code>
+            </div>
+          </div>
+
+          <div class="task-actions" @click.stop>
+            <button
+              v-if="canCreateSearchDraft"
+              class="action-btn search"
+              :disabled="creatingSearchDraft"
+              :title="searchActionTitle"
+              @click="openSearchDraft"
+            >
+              <svg v-if="creatingSearchDraft" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span v-else-if="!hasLinkedSearchSession" class="search-icon-create">
+                <MagnifyingGlassIcon class="h-4 w-4" />
+                <span class="search-icon-plus-badge">
+                  <PlusIcon class="h-2.5 w-2.5" />
+                </span>
+              </span>
+              <MagnifyingGlassIcon v-else class="h-4 w-4" />
+            </button>
+
+            <button
+              v-if="displayStatus === 'completed' && task.downloadUrl"
+              class="action-btn primary"
+              @click="download"
+              title="下载报告"
+              :disabled="taskStore.isDownloading(task.id)"
+            >
+              <svg v-if="taskStore.isDownloading(task.id)" class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <ArrowDownTrayIcon v-else class="w-4 h-4" />
+            </button>
+
+            <button v-if="displayStatus === 'error' && canRetry" class="action-btn secondary" @click="retry" title="重试">
+              <ArrowPathIcon class="w-4 h-4" />
+            </button>
+
+            <button v-if="canCancel" class="action-btn warning" @click="cancel" title="取消">
+              <StopCircleIcon class="w-4 h-4" />
+            </button>
+
+            <button v-if="canDelete" class="action-btn danger" @click="deleteTask" title="删除">
+              <TrashIcon class="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         <div v-if="displayStatus === 'processing' || displayStatus === 'pending'" class="task-progress">
@@ -38,56 +90,8 @@
 
         <div v-else-if="displayStatus === 'error' && task.error" class="task-error">
           <ExclamationCircleIcon class="w-4 h-4 flex-shrink-0" />
-          <span>{{ task.error }}</span>
+          <span class="task-error-text">{{ task.error }}</span>
         </div>
-      </div>
-
-      <div class="task-actions" @click.stop>
-        <button
-          v-if="canCreateSearchDraft"
-          class="action-btn search"
-          :disabled="creatingSearchDraft"
-          :title="searchActionTitle"
-          @click="openSearchDraft"
-        >
-          <svg v-if="creatingSearchDraft" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <span v-else-if="!hasLinkedSearchSession" class="search-icon-create">
-            <MagnifyingGlassIcon class="h-4 w-4" />
-            <span class="search-icon-plus-badge">
-              <PlusIcon class="h-2.5 w-2.5" />
-            </span>
-          </span>
-          <MagnifyingGlassIcon v-else class="h-4 w-4" />
-        </button>
-
-        <button
-          v-if="displayStatus === 'completed' && task.downloadUrl"
-          class="action-btn primary"
-          @click="download"
-          title="下载报告"
-          :disabled="taskStore.isDownloading(task.id)"
-        >
-          <svg v-if="taskStore.isDownloading(task.id)" class="animate-spin w-4 h-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-          <ArrowDownTrayIcon v-else class="w-4 h-4" />
-        </button>
-
-        <button v-if="displayStatus === 'error' && canRetry" class="action-btn secondary" @click="retry" title="重试">
-          <ArrowPathIcon class="w-4 h-4" />
-        </button>
-
-        <button v-if="canCancel" class="action-btn warning" @click="cancel" title="取消">
-          <StopCircleIcon class="w-4 h-4" />
-        </button>
-
-        <button v-if="canDelete" class="action-btn danger" @click="deleteTask" title="删除">
-          <TrashIcon class="w-4 h-4" />
-        </button>
       </div>
     </div>
   </div>
@@ -259,6 +263,12 @@ const deleteTask = () => {
 .task-info {
   @apply flex-1 min-w-0;
 }
+.task-top-row {
+  @apply flex items-start justify-between gap-3;
+}
+.task-summary {
+  @apply min-w-0 flex-1;
+}
 .task-title {
   @apply mb-1 truncate text-sm font-semibold text-slate-900;
 }
@@ -290,7 +300,10 @@ const deleteTask = () => {
   @apply text-xs text-slate-500;
 }
 .task-error {
-  @apply mt-2 flex items-start gap-1.5 text-xs text-rose-700;
+  @apply mt-3 flex items-start gap-1.5 text-xs text-rose-700;
+}
+.task-error-text {
+  @apply min-w-0 whitespace-pre-wrap break-words;
 }
 .task-actions {
   @apply flex flex-shrink-0 items-center gap-1.5;
@@ -329,6 +342,10 @@ const deleteTask = () => {
 @media (max-width: 640px) {
   .task-content {
     @apply gap-3 p-3.5;
+  }
+
+  .task-top-row {
+    @apply gap-2;
   }
 
   .task-icon {

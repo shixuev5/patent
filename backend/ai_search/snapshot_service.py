@@ -60,8 +60,32 @@ class AiSearchSnapshotService:
         )
 
     def _display_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        visible_kinds = {"chat", "question", "answer", "plan_confirmation", "process"}
+        visible_kinds = {"chat", "question", "answer", "plan_confirmation", "assistant_stage_message"}
         return [item for item in messages if str(item.get("kind") or "") in visible_kinds]
+
+    def _process_events(self, task_id: str, *, limit: int = 200) -> List[Dict[str, Any]]:
+        events = self.storage.list_ai_search_stream_events(task_id, after_seq=0)
+        if limit and int(limit) > 0:
+            events = events[-int(limit) :]
+        flattened: List[Dict[str, Any]] = []
+        for item in events:
+            if str(item.get("event_type") or "").strip() != "process.event":
+                continue
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            detail = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            flattened.append(
+                {
+                    **detail,
+                    "seq": int(item.get("seq") or 0),
+                    "createdAt": str(item.get("created_at") or ""),
+                    "runId": str(item.get("run_id") or "").strip() or None,
+                }
+            )
+        return flattened
+
+    def _stream_state(self, task_id: str) -> Dict[str, Any]:
+        latest = self.storage.get_latest_ai_search_stream_event(task_id)
+        return {"lastEventSeq": int(latest.get("seq") or 0) if isinstance(latest, dict) else 0}
 
     def _snapshot_phase(self, snapshot: AiSearchSnapshotResponse) -> str:
         run = snapshot.run if isinstance(snapshot.run, dict) else {}
@@ -273,7 +297,9 @@ class AiSearchSnapshotService:
             conversation={
                 "messages": self._display_messages(messages),
                 "pendingAction": pending_action,
+                "processEvents": self._process_events(task.id),
             },
+            stream=self._stream_state(task.id),
             executionMessageQueue=self._execution_message_queue(task),
             plan={"currentPlan": current_plan},
             retrieval={

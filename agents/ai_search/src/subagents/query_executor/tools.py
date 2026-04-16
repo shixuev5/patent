@@ -11,6 +11,7 @@ from langchain.tools import ToolRuntime
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.orchestration.execution_runtime import build_step_directive
 from agents.ai_search.src.runtime import extract_json_object
+from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 
 
 def build_query_executor_tools(context: Any) -> List[Any]:
@@ -123,4 +124,4 @@ def build_query_executor_tools(context: Any) -> List[Any]:
                 resume_from="run_execution_step",
             )
 
-    return [run_execution_step]
+    return build_stage_log_tools(context, "query-executor") + [run_execution_step]

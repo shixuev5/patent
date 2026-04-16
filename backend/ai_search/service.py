@@ -280,6 +280,10 @@ class AiSearchService:
         ):
             yield event
 
+    async def subscribe_stream(self, session_id: str, owner_id: str, *, after_seq: int = 0) -> AsyncIterator[str]:
+        async for event in self.agent_runs.subscribe_stream(session_id, owner_id, after_seq=after_seq):
+            yield event
+
     async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(
             session_id,

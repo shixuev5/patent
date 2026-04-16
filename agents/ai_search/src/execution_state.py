@@ -15,6 +15,16 @@ ALLOWED_STEP_PHASE_KEYS = {
     "close_read",
     "feature_comparison",
 }
+STEP_PHASE_KEY_ALIASES = {
+    "primary_search": "execute_search",
+    "secondary_search": "execute_search",
+    "supplementary_search": "execute_search",
+    "search": "execute_search",
+    "screen": "coarse_screen",
+    "coarse_screener": "coarse_screen",
+    "close_reader": "close_read",
+    "feature_compare": "feature_comparison",
+}
 ALLOWED_ACTIVATION_MODES = {"immediate", "conditional"}
 
 DEFAULT_EXECUTION_POLICY = {
@@ -100,7 +110,8 @@ def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_
         raise ValueError(
             f"sub_plan `{sub_plan_id}` step `{step_id}` 引用了未定义的 query_blueprints: {', '.join(invalid_refs)}。"
         )
-    phase_key = str(step.get("phase_key") or "execute_search").strip() or "execute_search"
+    phase_key = str(step.get("phase_key") or "execute_search").strip().lower() or "execute_search"
+    phase_key = STEP_PHASE_KEY_ALIASES.get(phase_key, phase_key)
     if phase_key not in ALLOWED_STEP_PHASE_KEYS:
         raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 使用了不支持的 phase_key `{phase_key}`。")
     activation_mode = str(step.get("activation_mode") or "immediate").strip().lower() or "immediate"

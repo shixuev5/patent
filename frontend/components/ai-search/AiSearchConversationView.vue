@@ -5,7 +5,7 @@
         描述检索目标、技术方案、核心效果或约束条件。
       </div>
 
-      <div v-else class="space-y-3">
+      <div v-else class="space-y-2.5">
         <template v-for="entry in entries" :key="entry.id">
           <article v-if="entry.entryType === 'phase'" class="flex items-center gap-3 py-1">
             <span class="h-px flex-1 bg-slate-200/80" />
@@ -71,7 +71,7 @@
             class="group/message flex"
             :class="entry.role === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <div class="max-w-[90%]">
+            <div :class="messageWrapperClass(entry)">
               <div
                 class="text-[13px] leading-5"
                 :class="messageCardClass(entry)"
@@ -86,7 +86,7 @@
                       v-else
                       :content="entry.content"
                       mode="markdown"
-                      fade-rgb="248,250,252"
+                      theme="slate"
                     />
                   </div>
                   <div v-else class="space-y-2.5">
@@ -106,7 +106,7 @@
                     <p class="text-[13px] font-semibold text-slate-900">
                       {{ planTitle(entry) }}
                     </p>
-                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" fade-rgb="248,250,252" />
+                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" theme="slate" />
                     <AiSearchPlanConfirmationCard
                       v-if="isPendingPlanEntry(entry)"
                       :confirm-disabled="streaming || !confirmationPlanVersion"
@@ -114,11 +114,11 @@
                       @confirm="$emit('confirm-plan')"
                     />
                   </div>
-                  <div class="space-y-3">
+                  <div v-else class="space-y-3">
                     <p class="text-[13px] font-semibold text-slate-900">
                       {{ historicalPlanTitle(entry) }}
                     </p>
-                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" fade-rgb="248,250,252" />
+                    <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" theme="slate" />
                   </div>
                 </template>
 
@@ -129,15 +129,19 @@
                   />
                 </template>
 
+                <template v-else-if="entry.role === 'assistant' && isStageMessage(entry)">
+                  <AiSearchExpandableContent :content="entry.content" mode="plaintext" theme="slate" />
+                </template>
+
                 <template v-else-if="entry.role === 'assistant'">
-                  <AiSearchExpandableContent :content="entry.content" mode="markdown" fade-rgb="248,250,252" />
+                  <AiSearchExpandableContent :content="entry.content" mode="markdown" theme="slate" />
                 </template>
 
                 <AiSearchExpandableContent
                   v-else
                   :content="entry.content"
-                  mode="plaintext"
-                  fade-rgb="14,116,144"
+                  :mode="userMessageMode(entry)"
+                  :theme="userMessageTheme(entry)"
                 />
               </div>
               <div
@@ -284,6 +288,7 @@ const isProcessRenderEntry = (entry: Record<string, any>): boolean => String(ent
 const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
 const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
 const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
+const isStageMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'assistant_stage_message'
 
 const planVersionOf = (entry: Record<string, any>): number => {
   const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
@@ -322,17 +327,46 @@ const isPendingQuestionEntry = (entry: Record<string, any>): boolean => {
   const pendingQuestionId = String(props.pendingQuestion.question_id || props.pendingQuestion.questionId || '').trim()
   return !!entryQuestionId && entryQuestionId === pendingQuestionId
 }
+
+const entryMetadata = (entry: Record<string, any>): Record<string, any> => {
+  const value = entry?.metadata
+  return value && typeof value === 'object' ? value as Record<string, any> : {}
+}
+
+const isUserMarkdownEntry = (entry: Record<string, any>): boolean => {
+  if (entry.role !== 'user') return false
+  const metadata = entryMetadata(entry)
+  return (
+    String(metadata.render_mode || '').trim() === 'markdown'
+    || String(metadata.message_variant || '').trim() === 'analysis_seed_context'
+  )
+}
+
+const messageWrapperClass = (entry: Record<string, any>): string => (
+  isStageMessage(entry) ? 'w-full max-w-full' : 'max-w-[90%]'
+)
+
 const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
+  }
+  if (isStageMessage(entry)) {
+    return 'px-1 py-1 text-slate-700'
   }
   if (isQuestionMessage(entry)) return ''
   return 'rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-slate-700 shadow-sm'
 }
 
+const userMessageMode = (entry: Record<string, any>): 'markdown' | 'plaintext' => (
+  isUserMarkdownEntry(entry) ? 'markdown' : 'plaintext'
+)
+
+const userMessageTheme = (_entry: Record<string, any>): 'cyan' => 'cyan'
+
 const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
 
 const canCopyEntry = (entry: Record<string, any>): boolean => {
+  if (isStageMessage(entry)) return false
   if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
   return !!entryCopyText(entry)
 }

@@ -76,7 +76,7 @@ ACTIVE_EXECUTION_PHASES = {
 
 MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     PHASE_COLLECTING_REQUIREMENTS: {
-        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "request_user_question"},
+        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "request_user_question", "write_stage_log"},
         "subagents": {"search-elements"},
     },
     PHASE_DRAFTING_PLAN: {
@@ -88,6 +88,7 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "request_plan_confirmation",
             "advance_workflow",
             "request_user_question",
+            "write_stage_log",
         },
         "subagents": {"search-elements", "plan-prober", "planner"},
     },
@@ -106,23 +107,24 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "start_plan_drafting",
             "advance_workflow",
             "complete_session",
+            "write_stage_log",
         },
         "subagents": {"query-executor"},
     },
     PHASE_COARSE_SCREEN: {
-        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
+        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session", "write_stage_log"},
         "subagents": {"coarse-screener"},
     },
     PHASE_CLOSE_READ: {
-        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
+        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session", "write_stage_log"},
         "subagents": {"close-reader"},
     },
     PHASE_FEATURE_COMPARISON: {
-        "tools": {"get_session_context", "get_execution_context", "complete_session", "advance_workflow", "start_plan_drafting"},
+        "tools": {"get_session_context", "get_execution_context", "complete_session", "advance_workflow", "start_plan_drafting", "write_stage_log"},
         "subagents": {"feature-comparer"},
     },
     PHASE_AWAITING_HUMAN_DECISION: {
-        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "complete_session"},
+        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "complete_session", "write_stage_log"},
         "subagents": set(),
     },
     PHASE_COMPLETED: {
@@ -141,12 +143,13 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
 
 ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     "search-elements": {
-        PHASE_COLLECTING_REQUIREMENTS: {"save_search_elements"},
-        PHASE_DRAFTING_PLAN: {"save_search_elements"},
+        PHASE_COLLECTING_REQUIREMENTS: {"save_search_elements", "write_stage_log"},
+        PHASE_DRAFTING_PLAN: {"save_search_elements", "write_stage_log"},
     },
     "query-executor": {
         PHASE_EXECUTE_SEARCH: {
             "run_execution_step",
+            "write_stage_log",
             "search_trace",
             "search_semantic",
             "search_boolean",
@@ -157,22 +160,29 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     },
     "plan-prober": {
         PHASE_DRAFTING_PLAN: {
+            "write_stage_log",
             "probe_search_semantic",
             "probe_search_boolean",
             "probe_count_boolean",
         },
     },
     "planner": {
-        PHASE_DRAFTING_PLAN: {"commit_plan_draft"},
+        PHASE_DRAFTING_PLAN: {
+            "write_stage_log",
+            "save_plan_review_markdown",
+            "save_plan_execution_overview",
+            "append_plan_sub_plan",
+            "finalize_plan_draft",
+        },
     },
     "coarse-screener": {
-        PHASE_COARSE_SCREEN: {"run_coarse_screen_batch"},
+        PHASE_COARSE_SCREEN: {"run_coarse_screen_batch", "write_stage_log"},
     },
     "close-reader": {
-        PHASE_CLOSE_READ: {"run_close_read_batch", "ls", "read_file", "glob", "grep"},
+        PHASE_CLOSE_READ: {"run_close_read_batch", "write_stage_log", "ls", "read_file", "glob", "grep"},
     },
     "feature-comparer": {
-        PHASE_FEATURE_COMPARISON: {"run_feature_compare"},
+        PHASE_FEATURE_COMPARISON: {"run_feature_compare", "write_stage_log"},
     },
 }
 

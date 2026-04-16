@@ -18,7 +18,7 @@ def build_query_executor_agent(storage: object, task_id: str):
         model=default_model(),
         tools=context.build_query_executor_tools() + build_search_tools(context),
         system_prompt=QUERY_EXECUTOR_SYSTEM_PROMPT,
-        middleware=[build_guard_middleware("query-executor", storage, task_id), build_streaming_middleware("query-executor")],
+        middleware=[build_guard_middleware("query-executor", storage, task_id), build_streaming_middleware("query-executor", context=context)],
         response_format=ExecutionStepSummary,
         backend=StateBackend,
         name=f"ai-search-query-executor-{task_id}",
@@ -33,5 +33,5 @@ def build_query_executor_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": QUERY_EXECUTOR_SYSTEM_PROMPT,
         "model": default_model(),
         "tools": context.build_query_executor_tools() + build_search_tools(context),
-        "middleware": [build_guard_middleware("query-executor", storage, task_id), build_streaming_middleware("query-executor")],
+        "middleware": [build_guard_middleware("query-executor", storage, task_id), build_streaming_middleware("query-executor", context=context)],
     }

@@ -201,7 +201,16 @@ class AiSearchAnalysisSeedService:
                 },
             }
         )
-        self.facade._append_message(task.id, "user", "chat", seed_user_message)
+        self.facade._append_message(
+            task.id,
+            "user",
+            "chat",
+            seed_user_message,
+            metadata={
+                "message_variant": "analysis_seed_context",
+                "render_mode": "markdown",
+            },
+        )
         return self._analysis_seed_response(task, source_task_id=str(analysis_task.id))
 
     def _complete_analysis_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
@@ -222,7 +231,7 @@ class AiSearchAnalysisSeedService:
             )
             assistant_text = extract_latest_ai_message(result["values"])
             active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-            if assistant_text and not bool(result.get("interrupted")):
+            if assistant_text and not bool(result.get("awaiting_user_action")):
                 self.facade._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
         except Exception as exc:
             self.storage.update_task(

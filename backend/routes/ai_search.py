@@ -57,6 +57,19 @@ async def get_ai_search_session(
     return service.get_snapshot(session_id, current_user.user_id)
 
 
+@router.get("/api/ai-search/sessions/{session_id}/events/stream")
+async def subscribe_ai_search_events(
+    session_id: str,
+    after_seq: int = 0,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return StreamingResponse(
+        service.subscribe_stream(session_id, current_user.user_id, after_seq=after_seq),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.get("/api/ai-search/sessions/{session_id}/attachments/{attachment_id}/download")
 async def download_ai_search_attachment(
     session_id: str,

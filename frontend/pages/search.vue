@@ -374,6 +374,7 @@ const executionPanelOpen = ref(true)
 
 const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
+const processEvents = computed(() => currentSession.value?.conversation?.processEvents || [])
 const currentPendingAction = computed<Record<string, any> | null>(() => {
   const value = currentSession.value?.conversation?.pendingAction
   return value && typeof value === 'object' ? value as Record<string, any> : null
@@ -494,6 +495,7 @@ const { conversationRenderEntries } = useAiSearchConversation({
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
+  processEvents,
 })
 
 const {

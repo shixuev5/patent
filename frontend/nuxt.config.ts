@@ -55,11 +55,13 @@ export default defineNuxtConfig({
         { rel: 'manifest', href: '/manifest.webmanifest' },
         { rel: 'apple-touch-icon', href: '/icons/apple-touch-icon.png' },
         { rel: 'preconnect', href: 'https://fonts.loli.net' },
+        { rel: 'preconnect', href: 'https://cdn.jsdelivr.net', crossorigin: '' },
         { rel: 'stylesheet', href: 'https://fonts.loli.net/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Orbitron:wght@500;600;700&display=swap' },
         { rel: 'stylesheet', href: 'https://cdn.authing.co/packages/guard/latest/guard.min.css' },
       ],
       script: [
         { src: 'https://cdn.authing.co/packages/guard/latest/guard.min.js', defer: true },
+        { src: 'https://cdn.jsdelivr.net/npm/echarts@6/dist/echarts.min.js', defer: true, crossorigin: 'anonymous' },
       ],
     },
   },
@@ -133,6 +135,17 @@ export default defineNuxtConfig({
             expiration: {
               maxEntries: 20,
               maxAgeSeconds: 60 * 60 * 24 * 7,
+            },
+          },
+        },
+        {
+          urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/echarts@6\/dist\/echarts\.min\.js$/i,
+          handler: 'StaleWhileRevalidate',
+          options: {
+            cacheName: 'echarts-cdn',
+            expiration: {
+              maxEntries: 4,
+              maxAgeSeconds: 60 * 60 * 24 * 14,
             },
           },
         },

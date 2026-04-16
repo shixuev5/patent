@@ -14,6 +14,24 @@ CREATE TABLE IF NOT EXISTS ai_search_messages (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_search_stream_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    session_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    run_id TEXT,
+    event_type TEXT NOT NULL,
+    entity_id TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_search_stream_events_session_seq
+ON ai_search_stream_events(session_id, seq);
+
+CREATE INDEX IF NOT EXISTS idx_ai_search_stream_events_task_seq
+ON ai_search_stream_events(task_id, seq);
+
 CREATE TABLE IF NOT EXISTS ai_search_plans (
     task_id TEXT NOT NULL,
     plan_version INTEGER NOT NULL,

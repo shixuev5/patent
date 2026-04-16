@@ -12,12 +12,13 @@ from agents.ai_search.src.subagents.coarse_screener.schemas import CoarseScreenO
 
 
 def build_coarse_screener_agent(storage: object | None = None, task_id: str = ""):
-    tools = AiSearchAgentContext(storage, task_id).build_coarse_screener_tools() if storage and task_id else []
+    context = AiSearchAgentContext(storage, task_id) if storage and task_id else None
+    tools = context.build_coarse_screener_tools() if context is not None else []
     return create_deep_agent(
         model=default_model(),
         tools=tools,
         system_prompt=COARSE_SCREEN_SYSTEM_PROMPT,
-        middleware=[build_guard_middleware("coarse-screener", storage, task_id), build_streaming_middleware("coarse-screener")],
+        middleware=[build_guard_middleware("coarse-screener", storage, task_id), build_streaming_middleware("coarse-screener", context=context)],
         response_format=CoarseScreenOutput,
         backend=StateBackend,
         name="ai-search-coarse-screener",
@@ -32,5 +33,5 @@ def build_coarse_screener_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": COARSE_SCREEN_SYSTEM_PROMPT,
         "model": default_model(),
         "tools": context.build_coarse_screener_tools(),
-        "middleware": [build_guard_middleware("coarse-screener", storage, task_id), build_streaming_middleware("coarse-screener")],
+        "middleware": [build_guard_middleware("coarse-screener", storage, task_id), build_streaming_middleware("coarse-screener", context=context)],
     }

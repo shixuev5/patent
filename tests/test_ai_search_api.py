@@ -262,7 +262,8 @@ def test_stream_message_endpoint_surfaces_direct_assistant_reply(monkeypatch, tm
         service,
         "_run_main_agent",
         lambda task_id, thread_id, payload, **kwargs: {
-            "interrupted": False,
+            "awaiting_user_action": False,
+            "completion_reason": "completed",
             "values": {"messages": [{"role": "assistant", "content": "你好，请告诉我你的检索目标。"}]},
         },
     )
@@ -307,7 +308,7 @@ def test_stream_message_endpoint_persists_ai_search_usage(monkeypatch, tmp_path)
             total_tokens=18,
             reasoning_tokens=1,
         )
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'awaitingUserAction': False, 'completionReason': 'completed'}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service.agent_runs, "stream_message", _fake_stream_message)
 
@@ -334,7 +335,7 @@ def test_resume_endpoint_streams_resume_run(monkeypatch, tmp_path):
 
     async def _fake_resume(session_id: str, owner_id: str):
         assert owner_id == "guest_ai_search"
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'execute_search', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'execute_search', 'payload': {'awaitingUserAction': False, 'completionReason': 'completed'}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service, "stream_resume", _fake_resume)
 
@@ -379,7 +380,7 @@ def test_analysis_seed_endpoint_streams_seed_run(monkeypatch, tmp_path):
 
     async def _fake_seed(session_id: str, owner_id: str):
         assert owner_id == "guest_ai_search"
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'awaitingUserAction': False, 'completionReason': 'completed'}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service, "stream_analysis_seed", _fake_seed)
 
@@ -398,7 +399,7 @@ def test_handoff_continue_endpoint_streams_continue_run(monkeypatch, tmp_path):
 
     async def _fake_continue(session_id: str, owner_id: str):
         assert owner_id == "guest_ai_search"
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'drafting_plan', 'payload': {'awaitingUserAction': False, 'completionReason': 'completed'}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service, "stream_decision_continue", _fake_continue)
 
@@ -417,7 +418,7 @@ def test_handoff_complete_endpoint_streams_complete_run(monkeypatch, tmp_path):
 
     async def _fake_complete(session_id: str, owner_id: str):
         assert owner_id == "guest_ai_search"
-        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'completed', 'payload': {'interrupted': False}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'run.completed', 'sessionId': session_id, 'taskId': session_id, 'phase': 'completed', 'payload': {'awaitingUserAction': False, 'completionReason': 'completed'}}, ensure_ascii=False)}\n\n"
 
     monkeypatch.setattr(service, "stream_decision_complete", _fake_complete)
 

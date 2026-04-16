@@ -12,12 +12,13 @@ from agents.ai_search.src.subagents.feature_comparer.schemas import FeatureCompa
 
 
 def build_feature_comparer_agent(storage: object | None = None, task_id: str = ""):
-    tools = AiSearchAgentContext(storage, task_id).build_feature_comparer_tools() if storage and task_id else []
+    context = AiSearchAgentContext(storage, task_id) if storage and task_id else None
+    tools = context.build_feature_comparer_tools() if context is not None else []
     return create_deep_agent(
         model=large_model(),
         tools=tools,
         system_prompt=FEATURE_COMPARER_SYSTEM_PROMPT,
-        middleware=[build_guard_middleware("feature-comparer", storage, task_id), build_streaming_middleware("feature-comparer")],
+        middleware=[build_guard_middleware("feature-comparer", storage, task_id), build_streaming_middleware("feature-comparer", context=context)],
         response_format=FeatureCompareOutput,
         backend=StateBackend,
         name="ai-search-feature-comparer",
@@ -32,5 +33,5 @@ def build_feature_comparer_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": FEATURE_COMPARER_SYSTEM_PROMPT,
         "model": large_model(),
         "tools": context.build_feature_comparer_tools(),
-        "middleware": [build_guard_middleware("feature-comparer", storage, task_id), build_streaming_middleware("feature-comparer")],
+        "middleware": [build_guard_middleware("feature-comparer", storage, task_id), build_streaming_middleware("feature-comparer", context=context)],
     }

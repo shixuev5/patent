@@ -92,6 +92,10 @@ export interface AiSearchSnapshot {
   conversation: {
     messages: Array<Record<string, any>>
     pendingAction: AiSearchPendingAction | null
+    processEvents?: Array<Record<string, any>>
+  }
+  stream?: {
+    lastEventSeq?: number
   }
   executionMessageQueue: {
     items: AiSearchQueuedExecutionMessage[]
@@ -127,6 +131,10 @@ export interface AiSearchStreamEvent {
   sessionId: string
   taskId: string
   phase: string
+  seq?: number
+  runId?: string | null
+  entityId?: string | null
+  timestamp?: string | null
   payload: any
 }
 

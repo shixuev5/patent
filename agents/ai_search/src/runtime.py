@@ -57,7 +57,10 @@ TOOL_DISPLAY_LABELS = {
     "advance_workflow": "推进工作流",
     "complete_session": "完成当前检索",
     "save_search_elements": "保存检索要素",
-    "commit_plan_draft": "提交计划草案",
+    "save_plan_review_markdown": "保存计划正文",
+    "save_plan_execution_overview": "保存计划总览",
+    "append_plan_sub_plan": "追加子计划",
+    "finalize_plan_draft": "完成计划草案",
     "probe_search_semantic": "执行语义预检",
     "probe_search_boolean": "执行布尔预检",
     "probe_count_boolean": "统计布尔命中数",
@@ -65,6 +68,7 @@ TOOL_DISPLAY_LABELS = {
     "run_coarse_screen_batch": "执行候选粗筛",
     "run_close_read_batch": "执行重点精读",
     "run_feature_compare": "执行特征对比",
+    "write_stage_log": "更新阶段日志",
 }
 
 READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
@@ -270,6 +274,14 @@ def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
     if name == "run_feature_compare":
         operation = str(args.get("operation") or "load").strip().lower()
         return "提交特征对比结果" if operation == "commit" else "加载特征对比上下文"
+    if name == "save_plan_review_markdown":
+        return "保存计划正文"
+    if name == "save_plan_execution_overview":
+        return "保存计划总览"
+    if name == "append_plan_sub_plan":
+        return "追加子计划"
+    if name == "finalize_plan_draft":
+        return "完成计划草案"
     return format_tool_label(name)
 
 
@@ -327,8 +339,9 @@ def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:
 
 
 class AiSearchStreamingMiddleware(AgentMiddleware):
-    def __init__(self, role: str) -> None:
+    def __init__(self, role: str, *, context: Any | None = None) -> None:
         self.role = str(role or "").strip()
+        self.context = context
 
     def before_agent(self, state: Any, runtime: Any) -> None:
         if not self.role or self.role == "main-agent":
@@ -358,6 +371,13 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 },
             },
         )
+        if self.context is not None:
+            self.context.emit_startup_stage_log(stage_kind=self.role, runtime=runtime)
+            self.context.emit_runtime_stage_checkpoint(
+                stage_kind=self.role,
+                checkpoint="entered_execution",
+                runtime=runtime,
+            )
         return None
 
     def after_agent(self, state: Any, runtime: Any) -> None:
@@ -444,6 +464,13 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 ),
             },
         )
+        if self.context is not None:
+            self.context.emit_runtime_stage_tool_progress(
+                stage_kind=self.role,
+                tool_name=tool_name,
+                tool_result=result,
+                runtime=request.runtime,
+            )
         return result
 
     async def awrap_tool_call(
@@ -500,11 +527,18 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 ),
             },
         )
+        if self.context is not None:
+            self.context.emit_runtime_stage_tool_progress(
+                stage_kind=self.role,
+                tool_name=tool_name,
+                tool_result=result,
+                runtime=request.runtime,
+            )
         return result
 
 
-def build_streaming_middleware(role: str) -> AiSearchStreamingMiddleware:
-    return AiSearchStreamingMiddleware(role)
+def build_streaming_middleware(role: str, *, context: Any | None = None) -> AiSearchStreamingMiddleware:
+    return AiSearchStreamingMiddleware(role, context=context)
 
 
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:

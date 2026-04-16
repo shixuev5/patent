@@ -25,6 +25,7 @@ interface AiSearchSessionRuntime {
   pendingAssistantMessage: AiSearchPendingAssistantMessage | null
   phaseMarkers: AiSearchPhaseMarker[]
   activeSubagentStatuses: Record<string, AiSearchSubagentStatus>
+  lastEventSeq: number
   streaming: boolean
   error: string
 }
@@ -84,6 +85,11 @@ const toMillis = (value?: string | null): number => {
 
 const nowIso = (): string => new Date().toISOString()
 
+const shouldDisplayProcessEvent = (event?: Record<string, any> | null): boolean => {
+  if (!event || typeof event !== 'object') return false
+  return String(event.toolName || '').trim() !== 'write_stage_log'
+}
+
 const pendingAction = (snapshot?: AiSearchSnapshot | null): AiSearchPendingAction | null => {
   const value = snapshot?.conversation?.pendingAction
   return value && typeof value === 'object' ? value as AiSearchPendingAction : null
@@ -119,6 +125,7 @@ const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   pendingAssistantMessage: null,
   phaseMarkers: [],
   activeSubagentStatuses: {},
+  lastEventSeq: 0,
   streaming: false,
   error: '',
 })
@@ -153,6 +160,10 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   conversation: {
     messages: [],
     pendingAction: null,
+    processEvents: [],
+  },
+  stream: {
+    lastEventSeq: 0,
   },
   executionMessageQueue: {
     items: [],
@@ -361,8 +372,14 @@ export const useAiSearchStore = defineStore('aiSearch', {
         [sessionId]: {
           ...snapshot,
           conversation: {
-            ...(snapshot.conversation || { messages: [], pendingAction: null }),
+            ...(snapshot.conversation || { messages: [], pendingAction: null, processEvents: [] }),
             messages: normalizeMessages(snapshot.conversation?.messages),
+            processEvents: Array.isArray(snapshot.conversation?.processEvents)
+              ? snapshot.conversation?.processEvents.filter(item => shouldDisplayProcessEvent(item))
+              : [],
+          },
+          stream: {
+            lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0),
           },
           executionMessageQueue: {
             items: Array.isArray(snapshot.executionMessageQueue?.items) ? snapshot.executionMessageQueue.items : [],
@@ -373,6 +390,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         },
       }
       this._ensureRuntime(sessionId)
+      this._setRuntime(sessionId, { lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0) })
       this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
       if (options.activate !== false) {
         this._setCurrentSessionId(sessionId)
@@ -411,6 +429,23 @@ export const useAiSearchStore = defineStore('aiSearch', {
         }
       }
       snapshot.conversation.messages = [...messages, message]
+    },
+
+    _upsertProcessEvent(sessionId: string, event: Record<string, any>) {
+      const snapshot = this._getSnapshot(sessionId)
+      if (!snapshot) return
+      if (!shouldDisplayProcessEvent(event)) return
+      const current = Array.isArray(snapshot.conversation?.processEvents) ? snapshot.conversation.processEvents : []
+      const seq = Number(event.seq || 0)
+      if (seq > 0) {
+        const index = current.findIndex((item) => Number(item.seq || 0) === seq)
+        if (index >= 0) {
+          current[index] = { ...current[index], ...event }
+          snapshot.conversation.processEvents = [...current]
+          return
+        }
+      }
+      snapshot.conversation.processEvents = [...current, event]
     },
 
     _pushAssistantMessage(sessionId: string, content: string, messageId?: string) {
@@ -553,6 +588,13 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId) return
       const snapshot = this._getSnapshot(sessionId)
       const runtime = this._ensureRuntime(sessionId)
+      const seq = Number(event.seq || 0)
+      if (seq > 0) {
+        runtime.lastEventSeq = Math.max(runtime.lastEventSeq || 0, seq)
+        if (snapshot) {
+          snapshot.stream = { ...(snapshot.stream || {}), lastEventSeq: runtime.lastEventSeq }
+        }
+      }
       const payload = event.payload || {}
       const phase = String(event.phase || payload?.run?.phase || payload?.phase || activePhase(snapshot) || '').trim()
 
@@ -561,6 +603,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
         this._startPendingAssistant(sessionId)
+        runtime.pendingAssistantMessage = null
         this._ensurePhaseMarker(sessionId, phase)
         return
       }
@@ -595,6 +638,49 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
 
       if (!snapshot) return
+
+      if (event.type === 'assistant.stage.started' || event.type === 'assistant.stage.delta' || event.type === 'assistant.stage.completed' || event.type === 'assistant.stage.failed') {
+        const messageId = String(payload?.messageId || '').trim()
+        if (!messageId) return
+        const existingMessages = normalizeMessages(snapshot.conversation?.messages)
+        const index = existingMessages.findIndex((item) => String(item.message_id || '').trim() === messageId)
+        const existing = index >= 0 ? existingMessages[index] : null
+        const nextContent = String(
+          payload?.content
+          || (event.type === 'assistant.stage.delta' ? payload?.content : '')
+          || existing?.content
+          || '',
+        )
+        const nextMessage = {
+          ...(existing || {}),
+          message_id: messageId,
+          role: 'assistant',
+          kind: 'assistant_stage_message',
+          content: nextContent,
+          stream_status: event.type === 'assistant.stage.completed'
+            ? 'completed'
+            : event.type === 'assistant.stage.failed'
+              ? 'failed'
+              : 'running',
+          created_at: String(existing?.created_at || event.timestamp || nowIso()),
+          metadata: {
+            ...(existing?.metadata || {}),
+            stageKind: String(payload?.stageKind || existing?.metadata?.stageKind || '').trim() || null,
+            stageInstanceId: String(payload?.stageInstanceId || existing?.metadata?.stageInstanceId || '').trim() || null,
+            runId: String(payload?.runId || existing?.metadata?.runId || '').trim() || null,
+            planVersion: payload?.planVersion ?? existing?.metadata?.planVersion ?? null,
+            todoId: String(payload?.todoId || existing?.metadata?.todoId || '').trim() || null,
+            batchId: String(payload?.batchId || existing?.metadata?.batchId || '').trim() || null,
+            status: event.type === 'assistant.stage.completed'
+              ? 'completed'
+              : event.type === 'assistant.stage.failed'
+                ? 'failed'
+                : 'running',
+          },
+        }
+        this._pushMessage(sessionId, nextMessage)
+        return
+      }
 
       if (event.type === 'message.created') {
         this._pushMessage(sessionId, payload)
@@ -668,6 +754,34 @@ export const useAiSearchStore = defineStore('aiSearch', {
           activeBatch,
           latestCloseReadResult: payload?.latestCloseReadResult || snapshot.analysis?.latestCloseReadResult || null,
           latestFeatureCompareResult: payload?.latestFeatureCompareResult || snapshot.analysis?.latestFeatureCompareResult || null,
+        }
+        return
+      }
+
+      if (event.type === 'process.event') {
+        this._upsertProcessEvent(sessionId, {
+          ...(payload || {}),
+          seq: seq || payload?.seq || 0,
+          createdAt: event.timestamp || payload?.timestamp || nowIso(),
+        })
+        const processEventType = String(payload?.processEventType || '').trim()
+        const name = String(payload?.subagentName || payload?.name || '').trim()
+        if (processEventType === 'subagent.started' && name) {
+          runtime.activeSubagentStatuses = {
+            ...runtime.activeSubagentStatuses,
+            [name]: {
+              name,
+              label: String(payload?.subagentLabel || payload?.label || formatSubagentName(name)),
+              statusText: String(payload?.statusText || `${formatSubagentName(name)}执行中。`),
+              startedAt: String(event.timestamp || nowIso()),
+            },
+          }
+          return
+        }
+        if (processEventType === 'subagent.completed' && name && runtime.activeSubagentStatuses[name]) {
+          const nextStatuses = { ...runtime.activeSubagentStatuses }
+          delete nextStatuses[name]
+          runtime.activeSubagentStatuses = nextStatuses
         }
         return
       }
@@ -820,7 +934,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean } = {}) {
+    async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean, subscribeIfRunning?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
       if (this.mockMode) {
@@ -846,6 +960,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
         this._applySnapshot(data, options)
         if (options.autoStartSeed !== false) {
           this._triggerAnalysisSeedIfNeeded(targetSessionId)
+        }
+        if (options.subscribeIfRunning !== false && String(data.session?.activityState || '').trim() === 'running') {
+          void this.subscribeToRunningSession(targetSessionId)
         }
       } catch (error: any) {
         this._setRuntimeError(targetSessionId, error?.message || '加载会话失败')
@@ -922,6 +1039,47 @@ export const useAiSearchStore = defineStore('aiSearch', {
       await this._consumeStream(response)
     },
 
+    async _getStream(path: string) {
+      const token = await this._ensureToken()
+      const config = useRuntimeConfig()
+      const response = await requestRaw({
+        baseUrl: config.public.apiBaseUrl,
+        path,
+        method: 'GET',
+        token,
+        headers: {
+          Accept: 'text/event-stream',
+        },
+      })
+      if (!response.ok) {
+        throw new Error(await parseErrorMessage(response))
+      }
+      await this._consumeStream(response)
+    },
+
+    async subscribeToRunningSession(sessionId: string) {
+      const targetSessionId = String(sessionId || '').trim()
+      const snapshot = this._getSnapshot(targetSessionId)
+      const runtime = this._ensureRuntime(targetSessionId)
+      if (!targetSessionId || !snapshot || runtime.streaming) return
+      if (String(snapshot.session?.activityState || '').trim() !== 'running') return
+      const afterSeq = Number(runtime.lastEventSeq || snapshot.stream?.lastEventSeq || 0)
+      this._setStreaming(targetSessionId, true)
+      try {
+        await this._getStream(`/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}/events/stream?after_seq=${encodeURIComponent(String(afterSeq))}`)
+      } catch (error: any) {
+        this._setRuntimeError(targetSessionId, error?.message || '订阅会话流失败')
+      } finally {
+        this._setStreaming(targetSessionId, false)
+        await this.loadSession(targetSessionId, {
+          activate: targetSessionId === this.currentSessionId,
+          silent: true,
+          autoStartSeed: false,
+          subscribeIfRunning: false,
+        })
+      }
+    },
+
     async _postJson<T>(path: string, payload?: Record<string, any>, method: 'POST' | 'DELETE' = 'POST') {
       const token = await this._ensureToken()
       const config = useRuntimeConfig()
@@ -948,7 +1106,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setStreaming(sessionId, true)
       this._pushUserMessage(sessionId, text, 'chat')
       snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
-      this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/messages/stream`,
@@ -1015,7 +1172,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setStreaming(sessionId, true)
       this._pushUserMessage(sessionId, text, 'answer', questionId)
       snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
-      this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/answers/stream`,
@@ -1037,7 +1193,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
       snapshot.conversation = { ...(snapshot.conversation || {}), pendingAction: null }
-      this._startPendingAssistant(sessionId, 'execute_search', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/plan/confirm/stream`,
@@ -1058,7 +1213,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, reviewDocumentIds?.length ? 'close_read' : 'feature_comparison', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/document-review/stream`,
@@ -1083,7 +1237,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, 'feature_comparison', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/feature-comparison/stream`,
@@ -1104,7 +1257,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, activePhase(snapshot), true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/resume/stream`,
@@ -1125,7 +1277,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, 'drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/decision/continue`,
@@ -1151,7 +1302,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
         ...(snapshot.analysisSeed || {}),
         status: 'running',
       }
-      this._startPendingAssistant(targetSessionId, 'drafting_plan', true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(targetSessionId)}/analysis-seed/stream`,
@@ -1176,7 +1326,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
-      this._startPendingAssistant(sessionId, activePhase(snapshot), true)
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/decision/complete`,

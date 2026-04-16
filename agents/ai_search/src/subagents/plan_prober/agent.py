@@ -17,7 +17,7 @@ def build_plan_prober_agent(storage: object, task_id: str):
         model=default_model(),
         tools=context.build_plan_prober_tools(),
         system_prompt=PLAN_PROBER_SYSTEM_PROMPT,
-        middleware=[build_guard_middleware("plan-prober", storage, task_id), build_streaming_middleware("plan-prober")],
+        middleware=[build_guard_middleware("plan-prober", storage, task_id), build_streaming_middleware("plan-prober", context=context)],
         response_format=PlanProbeFindings,
         backend=StateBackend,
         name=f"ai-search-plan-prober-{task_id}",
@@ -32,5 +32,5 @@ def build_plan_prober_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": PLAN_PROBER_SYSTEM_PROMPT,
         "model": default_model(),
         "tools": context.build_plan_prober_tools(),
-        "middleware": [build_guard_middleware("plan-prober", storage, task_id), build_streaming_middleware("plan-prober")],
+        "middleware": [build_guard_middleware("plan-prober", storage, task_id), build_streaming_middleware("plan-prober", context=context)],
     }

@@ -22,6 +22,19 @@ class AiSearchMessagesPlansRepositoryMixin:
             "created_at": row.get("created_at"),
         }
 
+    def _row_to_ai_search_stream_event(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "seq": int(row.get("seq") or 0),
+            "event_id": row.get("event_id"),
+            "session_id": row.get("session_id"),
+            "task_id": row.get("task_id"),
+            "run_id": row.get("run_id"),
+            "event_type": row.get("event_type"),
+            "entity_id": row.get("entity_id"),
+            "payload": self._parse_metadata(row.get("payload_json")),
+            "created_at": row.get("created_at"),
+        }
+
     def create_ai_search_message(self, record: Dict[str, Any]) -> bool:
         payload = {
             "message_id": str(record.get("message_id", "")).strip(),
@@ -60,12 +73,93 @@ class AiSearchMessagesPlansRepositoryMixin:
             )
         ) > 0
 
+    def get_ai_search_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        row = self._fetchone("SELECT * FROM ai_search_messages WHERE message_id = ? LIMIT 1", [message_id])
+        return self._row_to_ai_search_message(row) if row else None
+
+    def update_ai_search_message(self, message_id: str, **kwargs) -> bool:
+        allowed_fields = {
+            "plan_version",
+            "content",
+            "stream_status",
+            "question_id",
+            "metadata",
+            "created_at",
+        }
+        updates = {key: kwargs[key] for key in kwargs if key in allowed_fields}
+        if not updates:
+            return False
+        if "metadata" in updates:
+            updates["metadata"] = self._encode_json_value(updates.get("metadata") or {})
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        result = self._request(
+            f"UPDATE ai_search_messages SET {set_clause} WHERE message_id = ?",
+            [*updates.values(), str(message_id or "").strip()],
+        )
+        return self._changed_rows(result) > 0
+
     def list_ai_search_messages(self, task_id: str) -> List[Dict[str, Any]]:
         rows = self._fetchall(
             "SELECT * FROM ai_search_messages WHERE task_id = ? ORDER BY created_at ASC, message_id ASC",
             [task_id],
         )
         return [self._row_to_ai_search_message(row) for row in rows]
+
+    def append_ai_search_stream_event(self, record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = {
+            "event_id": str(record.get("event_id") or "").strip(),
+            "session_id": str(record.get("session_id") or record.get("task_id") or "").strip(),
+            "task_id": str(record.get("task_id") or record.get("session_id") or "").strip(),
+            "run_id": str(record.get("run_id") or "").strip() or None,
+            "event_type": str(record.get("event_type") or "").strip(),
+            "entity_id": str(record.get("entity_id") or "").strip() or None,
+            "payload_json": self._encode_json_value(record.get("payload") or {}),
+            "created_at": str(record.get("created_at") or utc_now_z()),
+        }
+        if not payload["event_id"] or not payload["session_id"] or not payload["task_id"] or not payload["event_type"]:
+            return None
+        self._request(
+            """
+            INSERT INTO ai_search_stream_events (
+                event_id, session_id, task_id, run_id, event_type, entity_id, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                payload["event_id"],
+                payload["session_id"],
+                payload["task_id"],
+                payload["run_id"],
+                payload["event_type"],
+                payload["entity_id"],
+                payload["payload_json"],
+                payload["created_at"],
+            ],
+        )
+        row = self._fetchone("SELECT * FROM ai_search_stream_events WHERE event_id = ? LIMIT 1", [payload["event_id"]])
+        return self._row_to_ai_search_stream_event(row) if row else None
+
+    def list_ai_search_stream_events(
+        self,
+        session_id: str,
+        *,
+        after_seq: int = 0,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses = ["session_id = ?", "seq > ?"]
+        params: List[Any] = [str(session_id or "").strip(), max(int(after_seq or 0), 0)]
+        sql = f"SELECT * FROM ai_search_stream_events WHERE {' AND '.join(clauses)} ORDER BY seq ASC"
+        if limit is not None and int(limit) > 0:
+            sql = f"{sql} LIMIT ?"
+            params.append(int(limit))
+        rows = self._fetchall(sql, params)
+        return [self._row_to_ai_search_stream_event(row) for row in rows]
+
+    def get_latest_ai_search_stream_event(self, session_id: str) -> Optional[Dict[str, Any]]:
+        row = self._fetchone(
+            "SELECT * FROM ai_search_stream_events WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+            [str(session_id or "").strip()],
+        )
+        return self._row_to_ai_search_stream_event(row) if row else None
 
     def _row_to_ai_search_plan(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {

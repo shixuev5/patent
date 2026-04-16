@@ -1,39 +1,39 @@
 <template>
-  <article class="flex justify-start">
-    <div class="w-full max-w-full text-[13px] leading-6 text-slate-500">
+  <article class="my-[-0.3rem] flex justify-start pl-2">
+    <div class="w-full max-w-full text-[11px] leading-4 text-slate-400">
       <button
         v-if="hasChildren"
         type="button"
-        class="flex w-full items-start gap-2 rounded-xl px-1.5 py-0.5 text-left transition hover:bg-slate-50/80"
+        class="flex w-full items-start gap-1 rounded-lg px-0.5 py-0 text-left transition hover:bg-slate-50/70"
         @click="toggleExpanded"
       >
-        <span class="inline-flex h-6 w-4 shrink-0 items-center justify-center">
+        <span class="inline-flex h-4 w-3 shrink-0 items-center justify-center">
           <span class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full" :class="statusDotClass" />
         </span>
         <span class="min-w-0 flex-1">
-          <span class="inline-flex max-w-full items-center gap-1.5 align-top">
-            <span class="break-words leading-6" :class="titleClass">
+          <span class="inline-flex max-w-full items-center gap-1 align-top">
+            <span class="break-words leading-4" :class="titleClass">
               {{ node.title }}
             </span>
             <ChevronRightIcon
-              class="mt-[1px] h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform"
+              class="mt-[1px] h-3 w-3 shrink-0 text-slate-300 transition-transform"
               :class="{ 'rotate-90': expanded }"
             />
           </span>
         </span>
       </button>
-      <div v-else class="flex w-full items-start gap-2 px-1.5 py-0.5">
-        <span class="inline-flex h-6 w-4 shrink-0 items-center justify-center">
+      <div v-else class="flex w-full items-start gap-1 px-0.5 py-0">
+        <span class="inline-flex h-4 w-3 shrink-0 items-center justify-center">
           <span class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full" :class="statusDotClass" />
         </span>
         <span class="min-w-0 flex-1">
-          <span class="block break-words leading-6" :class="titleClass">
+          <span class="block break-words leading-4" :class="titleClass">
             {{ node.title }}
           </span>
         </span>
       </div>
 
-      <div v-if="hasChildren && expanded" class="ml-4 mt-0 space-y-0">
+      <div v-if="hasChildren && expanded" class="ml-3 mt-0 space-y-0">
         <AiSearchProcessLine
           v-for="child in children"
           :key="child.id"
@@ -73,15 +73,15 @@ const isTerminal = computed(() => status.value === 'completed' || status.value =
 const expanded = ref(hasChildren.value ? !!props.node?.defaultExpanded : false)
 
 const statusDotClass = computed(() => {
-  if (status.value === 'completed') return 'bg-emerald-400'
-  if (status.value === 'failed') return 'bg-rose-400'
-  return 'bg-cyan-500'
+  if (status.value === 'completed') return 'bg-emerald-400/95'
+  if (status.value === 'failed') return 'bg-rose-400/95'
+  return 'bg-cyan-400/95'
 })
 
 const titleClass = computed(() => (
   props.node?.isGroup
-    ? 'font-medium text-slate-800'
-    : 'font-normal text-slate-700'
+    ? 'font-medium text-slate-500'
+    : 'font-normal text-slate-400'
 ))
 
 const toggleExpanded = () => {

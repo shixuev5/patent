@@ -6,7 +6,7 @@
       :style="contentWrapperStyle"
     >
       <div ref="contentInnerRef">
-        <AiSearchMarkdown v-if="mode === 'markdown'" :content="content" />
+        <AiSearchMarkdown v-if="mode === 'markdown'" :content="content" :theme="theme" />
         <p v-else class="whitespace-pre-wrap break-words">{{ content }}</p>
       </div>
       <div
@@ -19,7 +19,8 @@
     <div v-if="isOverflowing" class="mt-3 flex justify-end">
       <button
         type="button"
-        class="text-sm font-medium text-slate-400 transition hover:text-slate-600"
+        class="text-sm font-medium transition"
+        :class="expandButtonClass"
         @click="expanded = !expanded"
       >
         {{ expanded ? '收起' : '展示更多' }}
@@ -37,11 +38,13 @@ const COLLAPSED_MAX_HEIGHT = 18 * 16
 const props = withDefaults(defineProps<{
   content?: string
   mode?: 'markdown' | 'plaintext'
+  theme?: 'slate' | 'cyan'
   fadeRgb?: string
 }>(), {
   content: '',
   mode: 'markdown',
-  fadeRgb: '248,250,252',
+  theme: 'slate',
+  fadeRgb: '',
 })
 
 const expanded = ref(false)
@@ -54,7 +57,16 @@ const showFadeOverlay = computed(() => isOverflowing.value && !expanded.value)
 const contentWrapperStyle = computed(() => ({
   maxHeight: !isOverflowing.value || expanded.value ? 'none' : `${COLLAPSED_MAX_HEIGHT}px`,
 }))
-const fadeBackground = computed(() => `linear-gradient(to top, rgba(${props.fadeRgb}, 1), rgba(${props.fadeRgb}, 0.96) 45%, rgba(${props.fadeRgb}, 0))`)
+const resolvedFadeRgb = computed(() => {
+  if (String(props.fadeRgb || '').trim()) return props.fadeRgb
+  return props.theme === 'cyan' ? '14,116,144' : '248,250,252'
+})
+const fadeBackground = computed(() => `linear-gradient(to top, rgba(${resolvedFadeRgb.value}, 1), rgba(${resolvedFadeRgb.value}, 0.96) 45%, rgba(${resolvedFadeRgb.value}, 0))`)
+const expandButtonClass = computed(() => (
+  props.theme === 'cyan'
+    ? 'text-white/85 hover:text-white'
+    : 'text-slate-400 hover:text-slate-600'
+))
 
 const measureOverflow = async () => {
   await nextTick()

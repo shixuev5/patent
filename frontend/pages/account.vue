@@ -190,25 +190,7 @@
         :progress-delta-label="progressDeltaLabel"
         :dashboard-title="dashboardTitle"
         :smart-summary="smartSummary"
-        :chart-render-key="chartRenderKey"
-        :chart-width="CHART_WIDTH"
-        :chart-height="CHART_HEIGHT"
-        :padding="PADDING"
-        :y-ticks="yTicks"
-        :week-separators="weekSeparators"
-        :actual-area-path="actualAreaPath"
-        :actual-line-path="actualLinePath"
-        :expected-line-path="expectedLinePath"
-        :hovered-point="hoveredPoint"
-        :hovered-tooltip-x="hoveredTooltipX"
-        :hovered-week-label="hoveredWeekLabel"
-        :actual-points="actualPoints"
-        :week-labels="weekLabels"
         :weekly-breakdown="weeklyBreakdown"
-        :format-percent="formatPercent"
-        :daily-bar-height="dailyBarHeight"
-        :clear-hovered-day="clearHoveredDay"
-        :set-hovered-day="setHoveredDay"
       />
 
       <AccountNotificationTab
@@ -272,15 +254,6 @@ import type {
 } from '~/types/account'
 import type { UsageResponse } from '~/types/usage'
 
-const CHART_WIDTH = 760
-const CHART_HEIGHT = 320
-const PADDING = {
-  top: 14,
-  right: 14,
-  bottom: 34,
-  left: 42,
-}
-
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
 const taskStore = useTaskStore()
@@ -308,7 +281,6 @@ const profileSaveErrorMessage = ref('')
 const notificationSettingsErrorMessage = ref('')
 const wechatIntegrationErrorMessage = ref('')
 const monthTargetInput = ref('0')
-const hoveredDay = ref<number | null>(null)
 const profile = ref<AccountProfile | null>(null)
 const dashboard = ref<AccountDashboard | null>(null)
 const wechatIntegration = ref<AccountWeChatIntegration | null>(null)
@@ -355,13 +327,7 @@ const hasNotificationTab = computed(() => profile.value?.authType === 'authing' 
 const hasWechatTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
 
 const monthDays = computed(() => new Date(parsedYearMonth.value.year, parsedYearMonth.value.month, 0).getDate())
-const visibleDayCount = computed(() => {
-  if (isCurrentMonthSelection.value) return Math.min(monthDays.value, now.getDate())
-  return monthDays.value
-})
-
 const dailySeries = computed(() => dashboard.value?.dailySeries ?? [])
-const visibleDailySeries = computed(() => dailySeries.value.slice(0, visibleDayCount.value))
 const weeklySeries = computed<WeeklyActivityPoint[]>(() => dashboard.value?.weeklySeries ?? [])
 
 const monthTotalCreated = computed(() => dailySeries.value.reduce((sum, item) => sum + item.totalCreated, 0))
@@ -466,99 +432,6 @@ const expectedProgressPercent = computed(() => {
 
 const progressDeltaPercent = computed(() => actualProgressPercent.value - expectedProgressPercent.value)
 
-const plotWidth = computed(() => CHART_WIDTH - PADDING.left - PADDING.right)
-const plotHeight = computed(() => CHART_HEIGHT - PADDING.top - PADDING.bottom)
-
-const xByDay = (day: number): number => {
-  if (monthDays.value <= 1) return PADDING.left + plotWidth.value / 2
-  return PADDING.left + ((day - 1) * plotWidth.value) / (monthDays.value - 1)
-}
-
-const actualCumulativeValues = computed(() => {
-  let running = 0
-  return visibleDailySeries.value.map((item) => {
-    running += item.totalCreated
-    return running
-  })
-})
-
-const expectedCumulativeValues = computed(() => {
-  if (monthTarget.value <= 0) return Array.from({ length: visibleDayCount.value }).fill(0)
-  return Array.from({ length: visibleDayCount.value }, (_item, index) => {
-    const day = index + 1
-    return (monthTarget.value * day) / Math.max(1, monthDays.value)
-  })
-})
-
-const chartMaxY = computed(() => {
-  return Math.max(
-    4,
-    monthTarget.value,
-    ...actualCumulativeValues.value,
-    ...expectedCumulativeValues.value.map((item) => Math.ceil(item)),
-  )
-})
-
-const actualPoints = computed(() => {
-  const maxY = chartMaxY.value || 1
-  return actualCumulativeValues.value.map((value, index) => {
-    const day = index + 1
-    const y = PADDING.top + ((maxY - value) / maxY) * plotHeight.value
-    return {
-      day,
-      x: xByDay(day),
-      y,
-      value,
-      date: visibleDailySeries.value[index]?.date || '',
-    }
-  })
-})
-
-const expectedPoints = computed(() => {
-  const maxY = chartMaxY.value || 1
-  return expectedCumulativeValues.value.map((value, index) => {
-    const day = index + 1
-    const y = PADDING.top + ((maxY - value) / maxY) * plotHeight.value
-    return { day, x: xByDay(day), y }
-  })
-})
-
-const actualLinePath = computed(() => {
-  if (actualPoints.value.length === 0) return ''
-  return actualPoints.value
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
-    .join(' ')
-})
-
-const actualAreaPath = computed(() => {
-  if (actualPoints.value.length === 0) return ''
-  const baseY = CHART_HEIGHT - PADDING.bottom
-  const first = actualPoints.value[0]
-  const last = actualPoints.value[actualPoints.value.length - 1]
-  const linePart = actualPoints.value
-    .map((point) => `L ${point.x} ${point.y}`)
-    .join(' ')
-
-  return `M ${first.x} ${baseY} ${linePart} L ${last.x} ${baseY} Z`
-})
-
-const expectedLinePath = computed(() => {
-  if (expectedPoints.value.length === 0 || monthTarget.value <= 0) return ''
-  return expectedPoints.value
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
-    .join(' ')
-})
-
-const yTicks = computed(() => {
-  const maxY = chartMaxY.value || 1
-  return Array.from({ length: 5 }, (_item, index) => {
-    const ratio = index / 4
-    const value = Math.round(maxY * (1 - ratio))
-    const y = PADDING.top + plotHeight.value * ratio
-    return { value, y }
-  })
-})
-
 const weekRanges = computed(() => {
   return [
     { label: '第1周', start: 1, end: Math.min(7, monthDays.value) },
@@ -566,26 +439,6 @@ const weekRanges = computed(() => {
     { label: '第3周', start: 15, end: Math.min(21, monthDays.value) },
     { label: '第4周', start: 22, end: monthDays.value },
   ]
-})
-
-const weekSeparators = computed(() => {
-  return weekRanges.value
-    .slice(1)
-    .filter((item) => item.start <= monthDays.value)
-    .map((item) => ({
-      label: item.label,
-      x: xByDay(item.start),
-    }))
-})
-
-const weekLabels = computed(() => {
-  return weekRanges.value.map((item) => {
-    const middle = item.start > item.end ? item.end : (item.start + item.end) / 2
-    return {
-      label: item.label,
-      x: xByDay(Math.max(1, middle)),
-    }
-  })
 })
 
 const weekDayCounts = computed(() => {
@@ -654,11 +507,6 @@ const weeklyBreakdown = computed(() => {
       reached: index <= currentWeekIndex.value,
     }
   })
-})
-
-const maxDailyValue = computed(() => {
-  const values = dailySeries.value.map((item) => item.totalCreated)
-  return Math.max(1, ...values)
 })
 
 const displayName = computed(() => {
@@ -744,33 +592,7 @@ const targetInputInvalid = computed(() => {
   return !Number.isInteger(value) || value < 0
 })
 
-const hoveredPoint = computed(() => {
-  if (hoveredDay.value == null) return null
-  return actualPoints.value.find((item) => item.day === hoveredDay.value) || null
-})
-
-const hoveredTooltipX = computed(() => {
-  if (!hoveredPoint.value) return PADDING.left
-  const tooltipWidth = 128
-  const minX = PADDING.left + 4
-  const maxX = CHART_WIDTH - PADDING.right - tooltipWidth - 4
-  return Math.max(minX, Math.min(maxX, hoveredPoint.value.x - tooltipWidth / 2))
-})
-
-const hoveredWeekLabel = computed(() => {
-  if (!hoveredDay.value) return ''
-  const week = Math.min(4, Math.floor((hoveredDay.value - 1) / 7) + 1)
-  return `第${week}周`
-})
-
-const chartRenderKey = computed(() => `${selectedMonth.value}-${visibleDayCount.value}-${monthTotalCreated.value}-${monthTarget.value}`)
-
 const formatPercent = (value: number): string => `${Math.round(value)}%`
-
-const dailyBarHeight = (value: number): number => {
-  const ratio = value / maxDailyValue.value
-  return Math.max(6, Math.round(ratio * 100))
-}
 
 const shiftMonth = (delta: number) => {
   const { year, month } = parsedYearMonth.value
@@ -778,14 +600,6 @@ const shiftMonth = (delta: number) => {
   const key = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`
   if (delta > 0 && key > currentMonthKey) return
   selectedMonth.value = key
-}
-
-const setHoveredDay = (day: number) => {
-  hoveredDay.value = day
-}
-
-const clearHoveredDay = () => {
-  hoveredDay.value = null
 }
 
 const getAuthToken = async (): Promise<string> => {
@@ -1361,7 +1175,6 @@ const loadData = async (loadProfile: boolean) => {
 }
 
 watch(selectedMonth, async () => {
-  hoveredDay.value = null
   targetErrorMessage.value = ''
   if (!pageReady.value) return
   await loadData(false)

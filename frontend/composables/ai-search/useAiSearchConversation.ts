@@ -28,46 +28,47 @@ const toMillis = (value?: string | null): number => {
   return Number.isFinite(ts) ? ts : 0
 }
 
-const isProcessMessage = (entry: ConversationEntryLike): boolean => String(entry.kind || '').trim() === 'process'
+const shouldDefaultExpand = (status: ProcessRenderNode['status']): boolean => status === 'in_progress'
 
-const processMetadata = (entry: ConversationEntryLike): Record<string, any> => {
-  const value = entry?.metadata
-  return value && typeof value === 'object' ? value as Record<string, any> : {}
-}
-
-const processSummary = (entry: ConversationEntryLike): string => {
-  const metadata = processMetadata(entry)
-  return String(metadata.summary || entry.content || metadata.label || metadata.toolLabel || '执行过程').trim()
-}
-
-const normalizedProcessStatus = (entry: ConversationEntryLike): 'in_progress' | 'completed' | 'failed' => {
-  const rawStatus = String(processMetadata(entry).status || '').trim().toLowerCase()
+const processStatus = (event: ConversationEntryLike): ProcessRenderNode['status'] => {
+  const rawStatus = String(event.status || '').trim().toLowerCase()
   if (rawStatus === 'completed') return 'completed'
   if (rawStatus === 'failed') return 'failed'
-  if (rawStatus === 'running') return 'in_progress'
   return 'in_progress'
 }
 
-const processDisplayKind = (entry: ConversationEntryLike): 'group_status' | 'detail' | '' => {
-  const kind = String(processMetadata(entry).displayKind || '').trim()
-  if (kind === 'group_status' || kind === 'detail') return kind
-  return ''
+const baseProcessTitle = (event: ConversationEntryLike): string => {
+  const kind = String(event.displayKind || '').trim()
+  if (kind === 'group_status') {
+    return String(event.subagentLabel || event.label || event.summary || event.statusText || '执行过程').trim()
+  }
+  return String(event.toolLabel || event.summary || event.statusText || event.label || '执行过程').trim()
 }
 
-const processDedupeKey = (entry: ConversationEntryLike): string => {
-  const metadata = processMetadata(entry)
-  return String(metadata.dedupeKey || '').trim()
-}
-
-const processGroupKey = (entry: ConversationEntryLike): string => String(processMetadata(entry).displayGroupKey || '').trim()
-
-const isRenderableProcessMessage = (entry: ConversationEntryLike): boolean => (
-  isProcessMessage(entry)
-  && !!processDisplayKind(entry)
-  && !!processDedupeKey(entry)
+const processSummary = (event: ConversationEntryLike, titleOverride?: string): string => (
+  String(titleOverride || baseProcessTitle(event) || '执行过程').trim()
 )
 
-const shouldDefaultExpand = (status: ProcessRenderNode['status']): boolean => status === 'in_progress'
+const shouldRenderProcessEvent = (event: ConversationEntryLike): boolean => (
+  String(event?.toolName || '').trim() !== 'write_stage_log'
+)
+
+const toProcessNode = (event: ConversationEntryLike, titleOverride?: string): ProcessRenderNode => {
+  const summary = processSummary(event, titleOverride)
+  const status = processStatus(event)
+  const dedupeKey = String(event.dedupeKey || event.eventId || event.seq || summary).trim()
+  return {
+    id: `process-${dedupeKey}`,
+    title: summary,
+    status,
+    level: 0,
+    isGroup: String(event.displayKind || '').trim() === 'group_status',
+    displayKind: String(event.displayKind || '').trim() === 'group_status' ? 'group_status' : 'detail',
+    dedupeKey,
+    defaultExpanded: shouldDefaultExpand(status),
+    autoCollapseOnTerminal: true,
+  }
+}
 
 export const useAiSearchConversation = ({
   messages,
@@ -76,6 +77,7 @@ export const useAiSearchConversation = ({
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
+  processEvents,
 }: {
   messages: { value: Array<Record<string, any>> }
   phaseMarkers: { value: Array<Record<string, any>> }
@@ -83,7 +85,59 @@ export const useAiSearchConversation = ({
   currentPendingAction: { value: Record<string, any> | null }
   resumeActionCard: { value: ConversationActionCard | null }
   humanDecisionCard: { value: ConversationActionCard | null }
+  processEvents: { value: Array<Record<string, any>> }
 }) => {
+  const processRenderEntries = computed<Array<Record<string, any>>>(() => (
+    (() => {
+      const filtered = (Array.isArray(processEvents.value) ? processEvents.value : []).filter(item => shouldRenderProcessEvent(item))
+      const deduped = new Map<string, Record<string, any>>()
+      for (const [index, item] of filtered.entries()) {
+        if (!shouldRenderProcessEvent(item)) continue
+        const dedupeKey = String(item.dedupeKey || item.eventId || item.seq || index).trim() || String(index)
+        const sortKey = toMillis(item.createdAt || item.created_at)
+        const existing = deduped.get(dedupeKey)
+        if (!existing) {
+          deduped.set(dedupeKey, {
+            id: `process-entry-${dedupeKey}`,
+            entryType: 'process-render',
+            sortKey,
+            order: 500 + index,
+            event: item,
+          })
+          continue
+        }
+        existing.event = item
+      }
+
+      const titleTotals = new Map<string, number>()
+      const dedupedEntries = Array.from(deduped.values())
+      for (const entry of dedupedEntries) {
+        const event = entry.event || {}
+        if (String(event.displayKind || '').trim() === 'group_status') continue
+        const title = baseProcessTitle(event)
+        if (!title) continue
+        titleTotals.set(title, (titleTotals.get(title) || 0) + 1)
+      }
+
+      const titleSeen = new Map<string, number>()
+      for (const entry of dedupedEntries) {
+        const event = entry.event || {}
+        const baseTitle = baseProcessTitle(event)
+        let title = baseTitle
+        if (String(event.displayKind || '').trim() !== 'group_status' && baseTitle) {
+          const total = titleTotals.get(baseTitle) || 0
+          if (total > 1) {
+            const nextIndex = (titleSeen.get(baseTitle) || 0) + 1
+            titleSeen.set(baseTitle, nextIndex)
+            title = `${baseTitle} ${nextIndex}/${total}`
+          }
+        }
+        entry.node = toProcessNode(event, title)
+      }
+      return dedupedEntries
+    })()
+  ))
+
   const conversationEntries = computed<Array<Record<string, any>>>(() => {
     const entries: Array<Record<string, any>> = []
     messages.value.forEach((message, index) => {
@@ -149,157 +203,12 @@ export const useAiSearchConversation = ({
     return entries
   })
 
-  const conversationRenderEntries = computed<Array<Record<string, any>>>(() => {
-    const sourceEntries = [...conversationEntries.value, ...pendingActionEntries.value].sort((left, right) => {
+  const conversationRenderEntries = computed<Array<Record<string, any>>>(() => (
+    [...conversationEntries.value, ...processRenderEntries.value, ...pendingActionEntries.value].sort((left, right) => {
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
     })
-
-    const rendered: Array<Record<string, any>> = []
-    const groupEntries = new Map<string, Record<string, any>>()
-    const groupChildren = new Map<string, Record<string, ProcessRenderNode>>()
-    const standaloneProcesses = new Map<string, Record<string, any>>()
-
-    const ensureGroupEntry = (
-      groupKey: string,
-      entry: Record<string, any>,
-      title: string,
-      status: ProcessRenderNode['status'],
-    ): Record<string, any> => {
-      const existingGroup = groupEntries.get(groupKey)
-      if (existingGroup) {
-        existingGroup.node = {
-          ...existingGroup.node,
-          title: title || existingGroup.node.title,
-          status,
-          defaultExpanded: shouldDefaultExpand(status),
-        }
-        return existingGroup
-      }
-      const groupEntry = {
-        id: `process-group-${groupKey}-${entry.id}`,
-        entryType: 'process-render',
-        sortKey: entry.sortKey,
-        order: entry.order,
-        node: {
-          id: `process-node-${groupKey}-${entry.id}`,
-          title: title || '执行过程',
-          status,
-          level: 0,
-          isGroup: true,
-          collapsible: true,
-          defaultExpanded: shouldDefaultExpand(status),
-          autoCollapseOnTerminal: true,
-          displayKind: 'group_status',
-          dedupeKey: groupKey,
-          children: [],
-        } as ProcessRenderNode,
-      }
-      rendered.push(groupEntry)
-      groupEntries.set(groupKey, groupEntry)
-      return groupEntry
-    }
-
-    for (const entry of sourceEntries) {
-      if (isProcessMessage(entry) && !isRenderableProcessMessage(entry)) {
-        continue
-      }
-
-      if (!isProcessMessage(entry)) {
-        rendered.push(entry)
-        continue
-      }
-
-      const metadata = processMetadata(entry)
-      const processStatus = normalizedProcessStatus(entry)
-      const displayKind = processDisplayKind(entry)
-      const dedupeKey = processDedupeKey(entry)
-      const groupKey = processGroupKey(entry)
-
-      if (displayKind === 'group_status') {
-        ensureGroupEntry(
-          groupKey || dedupeKey,
-          entry,
-          String(metadata.label || metadata.subagentLabel || entry.content || '执行过程').trim(),
-          processStatus,
-        )
-        continue
-      }
-
-      if (groupKey) {
-        const groupEntry = ensureGroupEntry(
-          groupKey,
-          entry,
-          String(metadata.subagentLabel || metadata.label || '执行过程').trim(),
-          processStatus,
-        )
-        const existingChildren = groupChildren.get(groupKey) || {}
-        const existingChild = existingChildren[dedupeKey]
-        if (existingChild) {
-          existingChild.title = processSummary(entry)
-          existingChild.status = processStatus
-          existingChild.defaultExpanded = shouldDefaultExpand(processStatus)
-        } else {
-          const childNode: ProcessRenderNode = {
-            id: `process-child-node-${dedupeKey}-${entry.id}`,
-            title: processSummary(entry),
-            status: processStatus,
-            level: 1,
-            displayKind: 'detail',
-            dedupeKey,
-            defaultExpanded: shouldDefaultExpand(processStatus),
-            autoCollapseOnTerminal: true,
-          }
-          ;(groupEntry.node.children as ProcessRenderNode[]).push(childNode)
-          existingChildren[dedupeKey] = childNode
-          groupChildren.set(groupKey, existingChildren)
-        }
-        const childStatuses = (groupEntry.node.children || []).map(child => child.status)
-        const nextGroupStatus: ProcessRenderNode['status'] = childStatuses.includes('failed')
-          ? 'failed'
-          : childStatuses.includes('in_progress')
-            ? 'in_progress'
-            : groupEntry.node.status
-        groupEntry.node = {
-          ...groupEntry.node,
-          status: nextGroupStatus,
-          defaultExpanded: shouldDefaultExpand(nextGroupStatus),
-        }
-        continue
-      }
-
-      const existingStandalone = standaloneProcesses.get(dedupeKey)
-      if (existingStandalone) {
-        existingStandalone.node = {
-          ...existingStandalone.node,
-          title: processSummary(entry),
-          status: processStatus,
-          defaultExpanded: shouldDefaultExpand(processStatus),
-        }
-      } else {
-        const standaloneEntry = {
-          id: `process-standalone-${dedupeKey}-${entry.id}`,
-          entryType: 'process-render',
-          sortKey: entry.sortKey,
-          order: entry.order,
-          node: {
-            id: `process-standalone-node-${dedupeKey}-${entry.id}`,
-            title: processSummary(entry),
-            status: processStatus,
-            level: 0,
-            displayKind: 'detail',
-            dedupeKey,
-            defaultExpanded: shouldDefaultExpand(processStatus),
-            autoCollapseOnTerminal: true,
-          } as ProcessRenderNode,
-        }
-        rendered.push(standaloneEntry)
-        standaloneProcesses.set(dedupeKey, standaloneEntry)
-      }
-    }
-
-    return rendered
-  })
+  ))
 
   return {
     conversationRenderEntries,

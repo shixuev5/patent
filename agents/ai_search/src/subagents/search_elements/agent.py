@@ -15,5 +15,5 @@ def build_search_elements_subagent(storage: object, task_id: str) -> dict:
         "system_prompt": SEARCH_ELEMENTS_SYSTEM_PROMPT,
         "model": large_model(),
         "tools": context.build_search_elements_tools(),
-        "middleware": [build_guard_middleware("search-elements", storage, task_id), build_streaming_middleware("search-elements")],
+        "middleware": [build_guard_middleware("search-elements", storage, task_id), build_streaming_middleware("search-elements", context=context)],
     }

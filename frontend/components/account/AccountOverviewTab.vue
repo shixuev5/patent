@@ -48,115 +48,8 @@
             <p class="m-0 text-sm text-slate-700">{{ smartSummary }}</p>
           </div>
 
-          <div class="chart-wrap" @mouseleave="clearHoveredDay">
-            <svg
-              :key="chartRenderKey"
-              :viewBox="`0 0 ${chartWidth} ${chartHeight}`"
-              preserveAspectRatio="xMidYMid meet"
-              class="h-[22rem] w-full"
-            >
-              <g>
-                <line
-                  v-for="tick in yTicks"
-                  :key="`line-${tick.value}`"
-                  :x1="padding.left"
-                  :x2="chartWidth - padding.right"
-                  :y1="tick.y"
-                  :y2="tick.y"
-                  stroke="#e2e8f0"
-                  stroke-dasharray="2 3"
-                />
-
-                <line
-                  v-for="line in weekSeparators"
-                  :key="`week-sep-${line.label}`"
-                  :x1="line.x"
-                  :x2="line.x"
-                  :y1="padding.top"
-                  :y2="chartHeight - padding.bottom"
-                  stroke="#cbd5e1"
-                  stroke-dasharray="4 4"
-                />
-
-                <text
-                  v-for="tick in yTicks"
-                  :key="`label-${tick.value}`"
-                  :x="padding.left - 8"
-                  :y="tick.y + 4"
-                  text-anchor="end"
-                  font-size="10"
-                  fill="#64748b"
-                >
-                  {{ tick.value }}
-                </text>
-
-                <path v-if="actualAreaPath" :d="actualAreaPath" class="chart-area" />
-                <path v-if="actualLinePath" :d="actualLinePath" class="chart-line" />
-                <path v-if="expectedLinePath" :d="expectedLinePath" class="chart-expected-line" />
-
-                <line
-                  v-if="hoveredPoint"
-                  :x1="hoveredPoint.x"
-                  :x2="hoveredPoint.x"
-                  :y1="padding.top"
-                  :y2="chartHeight - padding.bottom"
-                  stroke="#0891b2"
-                  stroke-width="1.2"
-                  stroke-dasharray="3 3"
-                />
-
-                <circle
-                  v-for="point in actualPoints"
-                  :key="`point-${point.day}`"
-                  :cx="point.x"
-                  :cy="point.y"
-                  r="3.5"
-                  fill="#ffffff"
-                  stroke="#0891b2"
-                  stroke-width="2"
-                  class="chart-point"
-                />
-
-                <circle
-                  v-for="point in actualPoints"
-                  :key="`hit-${point.day}`"
-                  :cx="point.x"
-                  :cy="point.y"
-                  r="8"
-                  fill="transparent"
-                  class="day-hit"
-                  @mouseenter="setHoveredDay(point.day)"
-                />
-
-                <circle
-                  v-if="hoveredPoint"
-                  :cx="hoveredPoint.x"
-                  :cy="hoveredPoint.y"
-                  r="5"
-                  fill="#0891b2"
-                  opacity="0.16"
-                />
-
-                <g v-if="hoveredPoint" :transform="`translate(${hoveredTooltipX}, ${padding.top + 6})`">
-                  <rect width="128" height="46" rx="8" fill="#0f172a" opacity="0.88" />
-                  <text x="8" y="17" font-size="10" fill="#dbeafe">{{ hoveredPoint.date }}</text>
-                  <text x="8" y="31" font-size="10" fill="#e2e8f0">{{ hoveredWeekLabel }}</text>
-                  <text x="8" y="43" font-size="11" fill="#f8fafc">累计 {{ hoveredPoint.value }} 个</text>
-                </g>
-
-                <text
-                  v-for="label in weekLabels"
-                  :key="`x-label-${label.label}`"
-                  :x="label.x"
-                  :y="chartHeight - 10"
-                  text-anchor="middle"
-                  font-size="10"
-                  fill="#64748b"
-                >
-                  {{ label.label }}
-                </text>
-              </g>
-            </svg>
+          <div class="chart-wrap">
+            <div ref="trendChartRef" class="chart-canvas trend-chart" />
           </div>
         </div>
 
@@ -182,54 +75,21 @@
     </article>
 
     <article class="rounded-2xl border border-slate-200 bg-white p-4">
-      <div class="mb-2 flex items-center justify-between">
+      <div class="mb-2 flex items-center justify-between gap-3">
         <h3 class="text-sm font-semibold text-slate-900">最近一个月每日创建</h3>
         <p class="text-xs text-slate-500">按当前月份自然日展示</p>
       </div>
 
-      <div class="daily-strip custom-scrollbar">
-        <div
-          v-for="item in dashboard?.dailySeries ?? []"
-          :key="item.date"
-          class="daily-col"
-        >
-          <div class="daily-bar-wrap">
-            <div class="daily-bar" :style="{ height: `${dailyBarHeight(item.totalCreated)}%` }" />
-          </div>
-          <p class="daily-day">{{ Number(item.date.slice(8, 10)) }}</p>
-        </div>
+      <div class="daily-chart-wrap">
+        <div ref="dailyChartRef" class="chart-canvas daily-chart" />
       </div>
     </article>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AccountDashboard } from '~/types/account'
-
-interface ChartPadding {
-  top: number
-  right: number
-  bottom: number
-  left: number
-}
-
-interface TickItem {
-  value: number
-  y: number
-}
-
-interface WeekLine {
-  label: string
-  x: number
-}
-
-interface HoveredPoint {
-  day: number
-  x: number
-  y: number
-  value: number
-  date: string
-}
 
 interface WeeklyBreakdownItem {
   week: string
@@ -243,7 +103,7 @@ interface WeeklyBreakdownItem {
   reached: boolean
 }
 
-defineProps<{
+const props = defineProps<{
   dashboard: AccountDashboard | null
   refreshing: boolean
   deltaToneClass: string
@@ -254,26 +114,393 @@ defineProps<{
   progressDeltaLabel: string
   dashboardTitle: string
   smartSummary: string
-  chartRenderKey: string
-  chartWidth: number
-  chartHeight: number
-  padding: ChartPadding
-  yTicks: TickItem[]
-  weekSeparators: WeekLine[]
-  actualAreaPath: string
-  actualLinePath: string
-  expectedLinePath: string
-  hoveredPoint: HoveredPoint | null
-  hoveredTooltipX: number
-  hoveredWeekLabel: string
-  actualPoints: HoveredPoint[]
-  weekLabels: WeekLine[]
   weeklyBreakdown: WeeklyBreakdownItem[]
-  formatPercent: (value: number) => string
-  dailyBarHeight: (value: number) => number
-  clearHoveredDay: () => void
-  setHoveredDay: (day: number) => void
 }>()
+
+const trendChartRef = ref<HTMLDivElement | null>(null)
+const dailyChartRef = ref<HTMLDivElement | null>(null)
+type EChartsInstance = {
+  setOption: (option: Record<string, any>, notMerge?: boolean) => void
+  resize: () => void
+  dispose: () => void
+}
+
+type EChartsGlobal = {
+  init: (element: HTMLDivElement) => EChartsInstance
+}
+
+declare global {
+  interface Window {
+    echarts?: EChartsGlobal
+  }
+}
+
+let trendChart: EChartsInstance | null = null
+let dailyChart: EChartsInstance | null = null
+let resizeObserver: ResizeObserver | null = null
+let chartBootstrapTimer: ReturnType<typeof setTimeout> | null = null
+
+const now = new Date()
+
+const monthDays = computed(() => {
+  if (!props.dashboard) return now.getDate()
+  return new Date(props.dashboard.year, props.dashboard.month, 0).getDate()
+})
+
+const isCurrentMonthDashboard = computed(() => (
+  !!props.dashboard
+  && props.dashboard.year === now.getFullYear()
+  && props.dashboard.month === now.getMonth() + 1
+))
+
+const visibleDayCount = computed(() => (
+  isCurrentMonthDashboard.value
+    ? Math.min(monthDays.value, now.getDate())
+    : monthDays.value
+))
+
+const dailySeriesByDay = computed(() => {
+  const series = Array.from({ length: monthDays.value }, (_item, index) => ({
+    date: '',
+    totalCreated: 0,
+    day: index + 1,
+  }))
+  for (const item of props.dashboard?.dailySeries || []) {
+    const day = Number(String(item.date || '').slice(8, 10))
+    if (!Number.isInteger(day) || day < 1 || day > series.length) continue
+    series[day - 1] = {
+      date: item.date,
+      totalCreated: Number(item.totalCreated || 0),
+      day,
+    }
+  }
+  return series
+})
+
+const dayCategories = computed(() => Array.from({ length: monthDays.value }, (_item, index) => String(index + 1)))
+
+const actualCumulativeValues = computed<(number | null)[]>(() => {
+  let running = 0
+  return dailySeriesByDay.value.map((item, index) => {
+    if (index >= visibleDayCount.value) return null
+    running += Number(item.totalCreated || 0)
+    return running
+  })
+})
+
+const expectedCumulativeValues = computed<(number | null)[]>(() => {
+  if (props.monthTarget <= 0) return Array.from({ length: monthDays.value }).fill(null)
+  return Array.from({ length: monthDays.value }, (_item, index) => {
+    if (index >= visibleDayCount.value) return null
+    return Number(((props.monthTarget * (index + 1)) / Math.max(1, monthDays.value)).toFixed(2))
+  })
+})
+
+const chartMaxY = computed(() => {
+  const actual = actualCumulativeValues.value.filter((item): item is number => typeof item === 'number')
+  const expected = expectedCumulativeValues.value.filter((item): item is number => typeof item === 'number').map(item => Math.ceil(item))
+  return Math.max(4, props.monthTarget, ...actual, ...expected)
+})
+
+const weekRanges = computed(() => ([
+  { label: '第1周', start: 1, end: Math.min(7, monthDays.value) },
+  { label: '第2周', start: 8, end: Math.min(14, monthDays.value) },
+  { label: '第3周', start: 15, end: Math.min(21, monthDays.value) },
+  { label: '第4周', start: 22, end: monthDays.value },
+]))
+
+const weekSeparatorDays = computed(() => (
+  weekRanges.value
+    .slice(1)
+    .filter(item => item.start <= monthDays.value)
+    .map(item => item.start)
+))
+
+const weekLabelMap = computed<Record<number, string>>(() => {
+  const mapping: Record<number, string> = {}
+  for (const range of weekRanges.value) {
+    const midpoint = Math.max(range.start, Math.floor((range.start + range.end) / 2))
+    mapping[midpoint] = range.label
+  }
+  return mapping
+})
+
+const dailyTotals = computed(() => dailySeriesByDay.value.map(item => Number(item.totalCreated || 0)))
+
+const echartsGlobal = (): EChartsGlobal | null => {
+  if (typeof window === 'undefined') return null
+  return window.echarts || null
+}
+
+const trendChartOption = computed<Record<string, any>>(() => ({
+  animationDuration: 420,
+  animationDurationUpdate: 220,
+  grid: {
+    left: 14,
+    right: 16,
+    top: 16,
+    bottom: 34,
+    containLabel: true,
+  },
+  tooltip: {
+    trigger: 'axis',
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    borderWidth: 0,
+    textStyle: {
+      color: '#f8fafc',
+      fontSize: 12,
+    },
+    extraCssText: 'border-radius: 12px; box-shadow: 0 12px 28px rgba(15,23,42,0.22);',
+    formatter: (rawParams: any) => {
+      const params = Array.isArray(rawParams) ? rawParams : [rawParams]
+      const day = Number(params[0]?.axisValue || 0)
+      const actual = actualCumulativeValues.value[day - 1]
+      const expected = expectedCumulativeValues.value[day - 1]
+      const item = dailySeriesByDay.value[day - 1]
+      const dateLabel = item?.date || `${props.dashboard?.year ?? now.getFullYear()}-${String(props.dashboard?.month ?? (now.getMonth() + 1)).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      const weekLabel = `第${Math.min(4, Math.floor((Math.max(day, 1) - 1) / 7) + 1)}周`
+      return [
+        `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
+        `<div style="opacity:0.82;margin-bottom:4px;">${weekLabel}</div>`,
+        `<div>实际累计：${actual == null ? '-' : actual} 个</div>`,
+        `<div>预期累计：${expected == null ? '-' : Math.round(expected * 100) / 100} 个</div>`,
+      ].join('')
+    },
+  },
+  xAxis: {
+    type: 'category',
+    boundaryGap: false,
+    data: dayCategories.value,
+    axisTick: { show: false },
+    axisLine: {
+      lineStyle: {
+        color: '#cbd5e1',
+      },
+    },
+    axisLabel: {
+      interval: 0,
+      margin: 12,
+      fontSize: 10,
+      color: '#64748b',
+      formatter: (value: string) => weekLabelMap.value[Number(value)] || '',
+    },
+  },
+  yAxis: {
+    type: 'value',
+    min: 0,
+    max: chartMaxY.value,
+    axisLabel: {
+      color: '#64748b',
+      fontSize: 10,
+    },
+    splitLine: {
+      show: true,
+      lineStyle: {
+        color: '#e2e8f0',
+        type: 'dashed',
+      },
+    },
+  },
+  series: [
+    {
+      name: '实际累计',
+      type: 'line',
+      data: actualCumulativeValues.value,
+      smooth: false,
+      showSymbol: true,
+      symbol: 'circle',
+      symbolSize: 7,
+      connectNulls: false,
+      lineStyle: {
+        width: 3,
+        color: '#0891b2',
+      },
+      itemStyle: {
+        color: '#ffffff',
+        borderColor: '#0891b2',
+        borderWidth: 2,
+      },
+      areaStyle: {
+        color: 'rgba(8, 145, 178, 0.12)',
+      },
+      emphasis: {
+        scale: true,
+      },
+    },
+    {
+      name: '预期累计',
+      type: 'line',
+      data: expectedCumulativeValues.value,
+      smooth: false,
+      showSymbol: false,
+      connectNulls: false,
+      lineStyle: {
+        width: 2,
+        color: '#f59e0b',
+        type: 'dashed',
+      },
+      markLine: {
+        silent: true,
+        symbol: ['none', 'none'],
+        label: {
+          show: false,
+        },
+        lineStyle: {
+          color: '#cbd5e1',
+          type: 'dashed',
+          width: 1,
+        },
+        data: weekSeparatorDays.value.map(day => ({ xAxis: String(day) })),
+      },
+    },
+  ],
+}))
+
+const dailyChartOption = computed<Record<string, any>>(() => ({
+  animationDuration: 360,
+  animationDurationUpdate: 220,
+  grid: {
+    left: 12,
+    right: 12,
+    top: 16,
+    bottom: 26,
+    containLabel: true,
+  },
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: {
+      type: 'shadow',
+    },
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    borderWidth: 0,
+    textStyle: {
+      color: '#f8fafc',
+      fontSize: 12,
+    },
+    extraCssText: 'border-radius: 12px; box-shadow: 0 12px 28px rgba(15,23,42,0.22);',
+    formatter: (rawParams: any) => {
+      const params = Array.isArray(rawParams) ? rawParams : [rawParams]
+      const day = Number(params[0]?.axisValue || 0)
+      const value = dailyTotals.value[day - 1] || 0
+      const item = dailySeriesByDay.value[day - 1]
+      const dateLabel = item?.date || `${props.dashboard?.year ?? now.getFullYear()}-${String(props.dashboard?.month ?? (now.getMonth() + 1)).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      return [
+        `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
+        `<div>当日创建：${value} 个</div>`,
+      ].join('')
+    },
+  },
+  xAxis: {
+    type: 'category',
+    data: dayCategories.value,
+    axisTick: { show: false },
+    axisLine: {
+      lineStyle: {
+        color: '#cbd5e1',
+      },
+    },
+    axisLabel: {
+      color: '#64748b',
+      fontSize: 10,
+      hideOverlap: true,
+      interval: monthDays.value > 21 ? 2 : 0,
+    },
+  },
+  yAxis: {
+    type: 'value',
+    minInterval: 1,
+    axisLabel: {
+      color: '#64748b',
+      fontSize: 10,
+    },
+    splitLine: {
+      show: true,
+      lineStyle: {
+        color: '#e2e8f0',
+      },
+    },
+  },
+  series: [
+    {
+      name: '每日创建',
+      type: 'bar',
+      data: dailyTotals.value,
+      barMaxWidth: 18,
+      itemStyle: {
+        color: '#06b6d4',
+        borderRadius: [6, 6, 2, 2],
+      },
+      emphasis: {
+        itemStyle: {
+          color: '#0891b2',
+        },
+      },
+    },
+  ],
+}))
+
+const initTrendChart = () => {
+  const echarts = echartsGlobal()
+  if (!echarts || !trendChartRef.value) return false
+  if (!trendChart) trendChart = echarts.init(trendChartRef.value)
+  trendChart.setOption(trendChartOption.value, true)
+  trendChart.resize()
+  return true
+}
+
+const initDailyChart = () => {
+  const echarts = echartsGlobal()
+  if (!echarts || !dailyChartRef.value) return false
+  if (!dailyChart) dailyChart = echarts.init(dailyChartRef.value)
+  dailyChart.setOption(dailyChartOption.value, true)
+  dailyChart.resize()
+  return true
+}
+
+const syncCharts = async () => {
+  await nextTick()
+  const trendReady = initTrendChart()
+  const dailyReady = initDailyChart()
+  if (!trendReady || !dailyReady) {
+    if (chartBootstrapTimer) clearTimeout(chartBootstrapTimer)
+    chartBootstrapTimer = setTimeout(() => {
+      void syncCharts()
+    }, 120)
+  }
+}
+
+const resizeCharts = () => {
+  trendChart?.resize()
+  dailyChart?.resize()
+}
+
+const formatPercent = (value: number): string => `${Math.round(value)}%`
+
+watch([trendChartOption, dailyChartOption], () => {
+  void syncCharts()
+})
+
+onMounted(() => {
+  void syncCharts()
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      resizeCharts()
+    })
+    if (trendChartRef.value) resizeObserver.observe(trendChartRef.value)
+    if (dailyChartRef.value) resizeObserver.observe(dailyChartRef.value)
+  }
+  window.addEventListener('resize', resizeCharts)
+})
+
+onBeforeUnmount(() => {
+  if (chartBootstrapTimer) clearTimeout(chartBootstrapTimer)
+  resizeObserver?.disconnect()
+  window.removeEventListener('resize', resizeCharts)
+  trendChart?.dispose()
+  dailyChart?.dispose()
+  trendChart = null
+  dailyChart = null
+})
 </script>
 
 <style scoped>
@@ -314,7 +541,8 @@ defineProps<{
   color: #475569;
 }
 
-.chart-wrap {
+.chart-wrap,
+.daily-chart-wrap {
   overflow: hidden;
   border-radius: 1rem;
   border: 1px solid #e2e8f0;
@@ -322,36 +550,16 @@ defineProps<{
   padding: 0.4rem;
 }
 
-.chart-area {
-  fill: rgba(8, 145, 178, 0.12);
-  animation: fade-in 400ms ease-out;
+.chart-canvas {
+  width: 100%;
 }
 
-.chart-line {
-  fill: none;
-  stroke: #0891b2;
-  stroke-width: 2.5;
-  stroke-dasharray: 1200;
-  stroke-dashoffset: 1200;
-  animation: draw-line 800ms ease-out forwards;
+.trend-chart {
+  height: 22rem;
 }
 
-.chart-expected-line {
-  fill: none;
-  stroke: #f59e0b;
-  stroke-width: 2;
-  stroke-dasharray: 6 4;
-  opacity: 0;
-  animation: fade-in 550ms ease-out 120ms forwards;
-}
-
-.chart-point {
-  opacity: 0;
-  animation: fade-in 450ms ease-out 220ms forwards;
-}
-
-.day-hit {
-  cursor: pointer;
+.daily-chart {
+  height: 15rem;
 }
 
 .week-card {
@@ -368,51 +576,13 @@ defineProps<{
   opacity: 0.5;
 }
 
-.daily-strip {
-  display: grid;
-  grid-template-columns: repeat(31, minmax(1rem, 1fr));
-  gap: 0.35rem;
-  overflow-x: auto;
-  padding-bottom: 0.3rem;
-}
-
-.daily-col {
-  min-width: 1rem;
-}
-
-.daily-bar-wrap {
-  display: flex;
-  height: 4rem;
-  align-items: flex-end;
-}
-
-.daily-bar {
-  width: 100%;
-  border-radius: 0.4rem 0.4rem 0.25rem 0.25rem;
-  background: linear-gradient(180deg, #22d3ee 0%, #0891b2 100%);
-}
-
-.daily-day {
-  margin-top: 0.18rem;
-  text-align: center;
-  font-size: 0.65rem;
-  color: #64748b;
-}
-
-@keyframes draw-line {
-  to {
-    stroke-dashoffset: 0;
+@media (max-width: 640px) {
+  .trend-chart {
+    height: 18rem;
   }
-}
 
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
+  .daily-chart {
+    height: 12.5rem;
   }
 }
 </style>

@@ -128,6 +128,17 @@ def test_normalize_execution_plan_keeps_conditional_activation_fields():
     assert conditional_step["activation_summary"] == "命中主目标或结果过宽时激活。"
 
 
+def test_normalize_execution_plan_coerces_supported_phase_key_aliases():
+    plan = _plan()
+    plan["sub_plans"][0]["retrieval_steps"][0]["phase_key"] = "primary_search"
+    plan["sub_plans"][0]["retrieval_steps"][1]["phase_key"] = "supplementary_search"
+
+    normalized = normalize_execution_plan(plan, {"objective": "检索异常检测方案"})
+
+    assert normalized["sub_plans"][0]["retrieval_steps"][0]["phase_key"] == "execute_search"
+    assert normalized["sub_plans"][0]["retrieval_steps"][1]["phase_key"] == "execute_search"
+
+
 def test_resolve_plan_step_returns_matching_sub_plan_and_step():
     normalized = normalize_execution_plan(_plan(), {})
     sub_plan, step = resolve_plan_step(normalized, "sub_plan_1", "step_1")

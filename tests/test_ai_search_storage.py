@@ -35,6 +35,40 @@ def test_ai_search_storage_roundtrip(tmp_path):
     messages = storage.list_ai_search_messages("task-ai-search")
     assert len(messages) == 1
     assert messages[0]["metadata"]["phase"] == "collecting_requirements"
+    assert storage.update_ai_search_message("msg-1", content="更新后的说明", stream_status="running", metadata={"phase": "drafting_plan"})
+    updated_message = storage.get_ai_search_message("msg-1")
+    assert updated_message is not None
+    assert updated_message["content"] == "更新后的说明"
+    assert updated_message["stream_status"] == "running"
+    assert updated_message["metadata"]["phase"] == "drafting_plan"
+
+    event = storage.append_ai_search_stream_event(
+        {
+            "event_id": "evt-1",
+            "session_id": "task-ai-search",
+            "task_id": "task-ai-search",
+            "run_id": "run-1",
+            "event_type": "assistant.stage.started",
+            "entity_id": "msg-1",
+            "payload": {
+                "type": "assistant.stage.started",
+                "sessionId": "task-ai-search",
+                "taskId": "task-ai-search",
+                "phase": "drafting_plan",
+                "payload": {
+                    "messageId": "msg-1",
+                    "stageKind": "planner",
+                    "stageInstanceId": "planner:plan-1",
+                },
+            },
+        }
+    )
+    assert event is not None
+    assert event["seq"] >= 1
+    listed_events = storage.list_ai_search_stream_events("task-ai-search", after_seq=0)
+    assert listed_events[0]["event_type"] == "assistant.stage.started"
+    assert listed_events[0]["payload"]["payload"]["stageKind"] == "planner"
+    assert storage.get_latest_ai_search_stream_event("task-ai-search")["event_id"] == "evt-1"
 
     assert storage.create_ai_search_plan(
         {

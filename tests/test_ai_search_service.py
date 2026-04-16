@@ -69,6 +69,7 @@ from backend.ai_search.models import (
 import agents.ai_search.src.context as ai_search_context_module
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
+from agents.ai_search.src.runtime import build_streaming_middleware
 from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
@@ -378,7 +379,7 @@ def test_ai_search_usage_accumulates_across_multiple_stream_calls(monkeypatch, t
             total_tokens=15,
             reasoning_tokens=2,
         )
-        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+        yield 'data: {"type":"run.completed","payload":{"awaitingUserAction":false,"completionReason":"completed"}}\n\n'
 
     async def _fake_stream_plan_confirmation(session_id: str, owner_id: str, plan_version: int):
         assert session_id == created.sessionId
@@ -391,7 +392,7 @@ def test_ai_search_usage_accumulates_across_multiple_stream_calls(monkeypatch, t
             total_tokens=30,
             reasoning_tokens=4,
         )
-        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+        yield 'data: {"type":"run.completed","payload":{"awaitingUserAction":false,"completionReason":"completed"}}\n\n'
 
     monkeypatch.setattr(service.agent_runs, "stream_message", _fake_stream_message)
     monkeypatch.setattr(service.agent_runs, "stream_plan_confirmation", _fake_stream_plan_confirmation)
@@ -420,7 +421,7 @@ def test_ai_search_usage_skips_empty_stream_without_existing_record(monkeypatch,
     async def _fake_stream_complete(session_id: str, owner_id: str):
         assert session_id == created.sessionId
         assert owner_id == "guest_ai_search"
-        yield 'data: {"type":"run.completed","payload":{"interrupted":false}}\n\n'
+        yield 'data: {"type":"run.completed","payload":{"awaitingUserAction":false,"completionReason":"completed"}}\n\n'
 
     monkeypatch.setattr(service.agent_runs, "stream_decision_complete", _fake_stream_complete)
 
@@ -544,7 +545,7 @@ def test_stream_message_keeps_unified_flow_without_structured_claim_source(monke
     monkeypatch.setattr(
         service,
         "_run_main_agent",
-        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
+        lambda task_id, thread_id, payload, **kwargs: {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": []}},
     )
 
     asyncio.run(
@@ -594,7 +595,7 @@ def test_stream_resume_continues_failed_execution_todo(monkeypatch, tmp_path):
         service,
         "_run_main_agent",
         lambda task_id, thread_id, payload, **kwargs: (
-            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "继续恢复检索。"}]}}
+            {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": [{"role": "assistant", "content": "继续恢复检索。"}]}}
             if "继续当前失败的 AI 检索执行" in payload["messages"][0]["content"]
             else (_ for _ in ()).throw(AssertionError("unexpected resume payload"))
         ),
@@ -758,7 +759,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
     monkeypatch.setattr(
         service,
         "_run_main_agent",
-        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
+        lambda task_id, thread_id, payload, **kwargs: {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": []}},
     )
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
 
@@ -984,7 +985,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(
         service,
         "_run_main_agent",
-        lambda task_id, thread_id, payload, **kwargs: {"interrupted": False, "values": {"messages": []}},
+        lambda task_id, thread_id, payload, **kwargs: {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": []}},
     )
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: None)
 
@@ -1028,7 +1029,11 @@ def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_
 
     result = service._run_main_agent("task-1", "ai-search-task-1", {"messages": [{"role": "user", "content": "测试"}]})
 
-    assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
+    assert result == {
+        "values": {"messages": [{"role": "assistant", "content": "ok"}]},
+        "awaiting_user_action": False,
+        "completion_reason": "completed",
+    }
     assert fake_agent.state_config is not None
 
 
@@ -1067,7 +1072,11 @@ def test_run_main_agent_reuses_existing_empty_checkpoint_namespace(monkeypatch, 
 
     result = service._run_main_agent("task-2", "ai-search-task-2", {"messages": [{"role": "user", "content": "测试恢复"}]})
 
-    assert result == {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "ok"}]}}
+    assert result == {
+        "values": {"messages": [{"role": "assistant", "content": "ok"}]},
+        "awaiting_user_action": False,
+        "completion_reason": "completed",
+    }
 
 
 def test_main_agent_config_for_resume_targets_latest_interrupt_checkpoint(monkeypatch, tmp_path):
@@ -1212,8 +1221,8 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
             yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
             yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
-            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "search-elements"}})
-            yield ((), "custom", {"type": "subagent.completed", "payload": {"name": "search-elements"}})
+            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            yield ((), "custom", {"type": "subagent.completed", "payload": {"name": "planner"}})
 
         def get_state(self, config):
             return _FakeState()
@@ -1225,11 +1234,30 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
 
     assert [event["type"] for event in parsed].count("phase.changed") == 0
     assert parsed[0]["type"] == "run.started"
-    assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索要素整理" for event in parsed)
-    assert any(event["type"] == "subagent.completed" and event["payload"]["label"] == "检索要素整理" for event in parsed)
+    startup_stage_index = next(
+        index for index, event in enumerate(parsed) if event["type"] == "assistant.stage.started"
+    )
+    subagent_started_index = next(
+        index
+        for index, event in enumerate(parsed)
+        if event["type"] == "process.event" and event["payload"]["processEventType"] == "subagent.started"
+    )
+    assert startup_stage_index < subagent_started_index
+    assert any(
+        event["type"] == "process.event"
+        and event["payload"]["processEventType"] == "subagent.started"
+        and event["payload"]["label"] == "检索规划"
+        for event in parsed
+    )
+    assert any(
+        event["type"] == "process.event"
+        and event["payload"]["processEventType"] == "subagent.completed"
+        and event["payload"]["label"] == "检索规划"
+        for event in parsed
+    )
 
 
-def test_stream_message_persists_process_messages_from_custom_events(monkeypatch, tmp_path):
+def test_stream_message_persists_stage_messages_and_process_events_from_custom_events(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     _set_planner_draft(storage, created.sessionId)
@@ -1245,6 +1273,14 @@ def test_stream_message_persists_process_messages_from_custom_events(monkeypatch
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
             yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            stage_events: list[dict[str, Any]] = []
+            runtime = types.SimpleNamespace(stream_writer=lambda payload: stage_events.append(payload))
+            context = AiSearchAgentContext(storage, created.sessionId)
+            context.write_stage_log(
+                stage_kind="planner",
+                content="我先确认本轮计划的检索主线和关键边界。",
+                runtime=runtime,
+            )
             yield (
                 (),
                 "custom",
@@ -1262,6 +1298,8 @@ def test_stream_message_persists_process_messages_from_custom_events(monkeypatch
                     },
                 },
             )
+            for event in stage_events:
+                yield ((), "custom", event)
             yield (
                 (),
                 "custom",
@@ -1279,6 +1317,16 @@ def test_stream_message_persists_process_messages_from_custom_events(monkeypatch
                     },
                 },
             )
+            completion_events: list[dict[str, Any]] = []
+            completion_runtime = types.SimpleNamespace(stream_writer=lambda payload: completion_events.append(payload))
+            context.write_stage_log(
+                stage_kind="planner",
+                content="计划草案的数据库选择和调整策略已经整理完成。",
+                status="completed",
+                runtime=completion_runtime,
+            )
+            for event in completion_events:
+                yield ((), "custom", event)
 
         def get_state(self, config):
             return _FakeState()
@@ -1287,28 +1335,275 @@ def test_stream_message_persists_process_messages_from_custom_events(monkeypatch
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "开始处理")))
     parsed = _parse_data_events(events)
-    process_messages = [
-        event["payload"]
-        for event in parsed
-        if event["type"] == "message.created" and event["payload"].get("kind") == "process"
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    stage_messages = [
+        item for item in snapshot.conversation["messages"]
+        if item["kind"] == "assistant_stage_message"
     ]
 
     assert any(
-        item["content"] == "检索规划"
-        and item["metadata"]["displayKind"] == "group_status"
-        and item["metadata"]["displayGroupKey"] == "planner"
-        and item["metadata"]["dedupeKey"] == "planner"
-        for item in process_messages
+        event["type"] == "process.event"
+        and event["payload"]["processEventType"] == "subagent.started"
+        and event["payload"]["label"] == "检索规划"
+        for event in parsed
     )
     assert any(
-        item["content"] == "读取规划上下文"
-        and item["metadata"]["processType"] == "tool"
-        and item["metadata"]["displayKind"] == "detail"
-        and item["metadata"]["displayGroupKey"] == "planner"
-        and item["metadata"]["dedupeKey"] == "call-tool-1"
-        for item in process_messages
+        event["type"] == "process.event"
+        and event["payload"]["processEventType"] == "tool.completed"
+        and event["payload"]["summary"] == "读取规划上下文"
+        for event in parsed
     )
-    assert any(event["type"] == "subagent.started" and event["payload"]["label"] == "检索规划" for event in parsed)
+    assert any(
+        event["type"] == "assistant.stage.delta"
+        and event["payload"]["stageKind"] == "planner"
+        and "检索主线" in event["payload"]["content"]
+        for event in parsed
+    )
+    assert stage_messages
+    assert stage_messages[0]["metadata"]["stageKind"] == "planner"
+    assert "数据库选择和调整策略已经整理完成" in stage_messages[0]["content"]
+    assert snapshot.conversation["processEvents"]
+    assert snapshot.conversation["processEvents"][0]["processEventType"] == "subagent.started"
+    assert not any(item.get("toolName") == "write_stage_log" for item in snapshot.conversation["processEvents"])
+    assert snapshot.stream["lastEventSeq"] > 0
+
+
+def test_write_stage_log_creates_new_stage_message_per_call_and_emits_explicit_events(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1))
+    storage.create_ai_search_run(
+        {
+            "run_id": "run-stage-log",
+            "task_id": created.sessionId,
+            "plan_version": 1,
+            "phase": PHASE_DRAFTING_PLAN,
+            "status": TaskStatus.PROCESSING.value,
+        }
+    )
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=1)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    emitted: list[dict[str, Any]] = []
+    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
+
+    first = context.write_stage_log(
+        stage_kind="planner",
+        content="先确认检索主线和数据库边界。",
+        runtime=runtime,
+    )
+    second = context.write_stage_log(
+        stage_kind="planner",
+        content="计划草案已整理完成，待你确认。",
+        status="completed",
+        runtime=runtime,
+    )
+
+    assert first["message_id"] != second["message_id"]
+    first_message = storage.get_ai_search_message(first["message_id"])
+    second_message = storage.get_ai_search_message(second["message_id"])
+    assert first_message is not None
+    assert second_message is not None
+    assert first_message["kind"] == "assistant_stage_message"
+    assert second_message["kind"] == "assistant_stage_message"
+    assert first_message["stream_status"] == "completed"
+    assert second_message["stream_status"] == "completed"
+    assert first_message["metadata"]["stageInstanceId"] == "planner:plan-1"
+    assert second_message["metadata"]["stageInstanceId"] == "planner:plan-1"
+    assert first_message["content"] == "先确认检索主线和数据库边界。"
+    assert second_message["content"] == "计划草案已整理完成，待你确认。"
+    assert [event["type"] for event in emitted] == [
+        "assistant.stage.started",
+        "assistant.stage.delta",
+        "assistant.stage.completed",
+        "snapshot.changed",
+        "assistant.stage.started",
+        "assistant.stage.delta",
+        "assistant.stage.completed",
+        "snapshot.changed",
+    ]
+    assert emitted[0]["payload"]["messageId"] == first["message_id"]
+    assert emitted[1]["payload"]["content"].startswith("先确认检索主线和数据库边界。")
+    assert emitted[6]["payload"]["content"].endswith("计划草案已整理完成，待你确认。")
+
+
+def test_write_stage_log_uses_target_plan_version_before_plan_exists(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    emitted: list[dict[str, Any]] = []
+    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
+
+    result = context.write_stage_log(
+        stage_kind="planner",
+        content="我先整理本轮规划主线和边界。",
+        runtime=runtime,
+    )
+
+    message = storage.get_ai_search_message(result["message_id"])
+    assert message is not None
+    assert message["metadata"]["stageInstanceId"] == "planner:plan-1"
+    assert message["metadata"]["planVersion"] == 1
+    assert emitted[0]["payload"]["stageInstanceId"] == "planner:plan-1"
+    assert emitted[0]["payload"]["planVersion"] == 1
+
+
+def test_subagent_start_emits_immediate_stage_body_and_dedupes(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    storage.create_ai_search_message(
+        {
+            "message_id": "msg-search-elements",
+            "task_id": created.sessionId,
+            "plan_version": None,
+            "role": "assistant",
+            "kind": "search_elements_update",
+            "content": "检索要素已识别。",
+            "stream_status": "completed",
+            "metadata": {
+                "objective": "降低漏报率",
+                "search_elements": [
+                    {"element_name": "异常检测"},
+                    {"element_name": "阈值校正"},
+                ],
+            },
+        }
+    )
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    middleware = build_streaming_middleware("planner", context=context)
+    emitted: list[dict[str, Any]] = []
+    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
+
+    middleware.before_agent({}, runtime)
+    middleware.before_agent({}, runtime)
+
+    stage_messages = [
+        item for item in storage.list_ai_search_messages(created.sessionId) if item.get("kind") == "assistant_stage_message"
+    ]
+    assert len(stage_messages) == 2
+    assert all(item["metadata"]["stageInstanceId"] == "planner:plan-1" for item in stage_messages)
+    assert all(item["metadata"]["planVersion"] == 1 for item in stage_messages)
+    assert "组织这轮检索计划" in stage_messages[0]["content"]
+    assert "已识别 2 个检索要素" in stage_messages[0]["content"]
+    assert stage_messages[0]["metadata"]["runtimeEvent"] == "startup"
+    assert stage_messages[1]["content"] == "开始进入计划草案实际组装，接下来会先落展示正文，再补执行结构和子计划。"
+    assert stage_messages[1]["metadata"]["runtimeCheckpoints"] == ["entered_execution"]
+
+    event_types = [event["type"] for event in emitted]
+    assert event_types.count("subagent.started") == 2
+    assert event_types.count("assistant.stage.started") == 2
+    assert event_types.count("assistant.stage.delta") == 2
+    assert event_types.count("assistant.stage.completed") == 2
+    assert event_types.count("snapshot.changed") == 2
+
+
+def test_main_agent_write_stage_log_uses_current_phase_stage_kind(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    tools = {str(getattr(tool, "__name__", "")): tool for tool in context.build_main_agent_tools()}
+    emitted: list[dict[str, Any]] = []
+    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
+
+    result = json.loads(
+        tools["write_stage_log"](
+            content="我先读取规划上下文，再决定是否需要预检。",
+            runtime=runtime,
+        )
+    )
+
+    message = storage.get_ai_search_message(result["message_id"])
+    assert message is not None
+    assert message["kind"] == "assistant_stage_message"
+    assert message["metadata"]["stageKind"] == "planner"
+    assert message["metadata"]["stageInstanceId"] == "planner:plan-1"
+    assert "我先读取规划上下文" in message["content"]
+    assert [event["type"] for event in emitted] == [
+        "assistant.stage.started",
+        "assistant.stage.delta",
+        "assistant.stage.completed",
+        "snapshot.changed",
+    ]
+
+
+def test_planner_runtime_tool_progress_creates_separate_stage_message(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+    runtime = types.SimpleNamespace(stream_writer=lambda payload: None)
+    first = context.emit_startup_stage_log(stage_kind="planner", runtime=runtime)
+    assert first is not None
+
+    appended = context.emit_runtime_stage_tool_progress(
+        stage_kind="planner",
+        tool_name="append_plan_sub_plan",
+        tool_result={"sub_plan_id": "sub_plan_1", "sub_plan_count": 1},
+        runtime=runtime,
+    )
+
+    assert appended is not None
+    assert appended["message_id"] != first["message_id"]
+    first_message = storage.get_ai_search_message(first["message_id"])
+    appended_message = storage.get_ai_search_message(appended["message_id"])
+    assert first_message is not None
+    assert appended_message is not None
+    assert "组织这轮检索计划" in first_message["content"]
+    assert "已写入子计划 sub_plan_1" in appended_message["content"]
+    assert "当前草案共包含 1 个子计划" in appended_message["content"]
+
+
+def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    first = storage.append_ai_search_stream_event(
+        {
+            "event_id": "evt-replay-1",
+            "session_id": created.sessionId,
+            "task_id": created.sessionId,
+            "run_id": None,
+            "event_type": "assistant.stage.started",
+            "entity_id": "stage-1",
+            "payload": {
+                "type": "assistant.stage.started",
+                "sessionId": created.sessionId,
+                "taskId": created.sessionId,
+                "phase": PHASE_DRAFTING_PLAN,
+                "payload": {"messageId": "stage-1", "stageKind": "planner", "stageInstanceId": "planner:plan-1", "planVersion": 1},
+            },
+        }
+    )
+    second = storage.append_ai_search_stream_event(
+        {
+            "event_id": "evt-replay-2",
+            "session_id": created.sessionId,
+            "task_id": created.sessionId,
+            "run_id": None,
+            "event_type": "assistant.stage.completed",
+            "entity_id": "stage-1",
+            "payload": {
+                "type": "assistant.stage.completed",
+                "sessionId": created.sessionId,
+                "taskId": created.sessionId,
+                "phase": PHASE_DRAFTING_PLAN,
+                "payload": {"messageId": "stage-1", "stageKind": "planner", "stageInstanceId": "planner:plan-1", "planVersion": 1, "content": "done"},
+            },
+        }
+    )
+
+    events = asyncio.run(_collect_stream(service.subscribe_stream(created.sessionId, "guest_ai_search", after_seq=int(first["seq"]))))
+    parsed = _parse_data_events(events)
+
+    assert len(parsed) == 1
+    assert parsed[0]["type"] == "assistant.stage.completed"
+    assert parsed[0]["seq"] == int(second["seq"])
 
 
 def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
@@ -1594,7 +1889,7 @@ def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypa
         service,
         "_run_main_agent",
         lambda task_id, thread_id, payload, **kwargs: (
-            {"interrupted": False, "values": {"messages": [{"role": "assistant", "content": "我会重新起草计划。"}]}}
+            {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": [{"role": "assistant", "content": "我会重新起草计划。"}]}}
             if "人工决策态" in payload["messages"][0]["content"]
             else (_ for _ in ()).throw(AssertionError("unexpected decision continue payload"))
         ),
@@ -2001,6 +2296,22 @@ def test_create_session_from_analysis_seed_embeds_conditional_block_c_strategy(m
     assert retrieval_steps[1]["activation_summary"].startswith("命中 Block B 或结果过宽时")
 
 
+def test_create_session_from_analysis_seed_marks_seed_context_as_markdown(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(storage, owner_id="guest_ai_search", tmp_path=tmp_path)
+
+    created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+    messages = storage.list_ai_search_messages(created.sessionId)
+    seed_context = next(
+        item for item in messages
+        if item["role"] == "user" and item["kind"] == "chat"
+    )
+
+    assert seed_context["metadata"]["message_variant"] == "analysis_seed_context"
+    assert seed_context["metadata"]["render_mode"] == "markdown"
+    assert "## 来源" in seed_context["content"]
+
+
 def test_load_source_patent_data_falls_back_to_r2_when_local_patent_json_missing(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     analysis_task = _create_completed_analysis_task(storage, owner_id="guest_ai_search", tmp_path=tmp_path)
@@ -2132,7 +2443,7 @@ def test_create_session_from_analysis_seeds_plan_confirmation(monkeypatch, tmp_p
             ),
             status=TaskStatus.PAUSED.value,
         )
-        return {"interrupted": True, "values": {"messages": []}}
+        return {"awaiting_user_action": True, "completion_reason": "awaiting_plan_confirmation", "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
     monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
@@ -2212,7 +2523,7 @@ def test_create_session_from_analysis_can_pause_for_missing_information(monkeypa
             ),
             status=TaskStatus.PAUSED.value,
         )
-        return {"interrupted": True, "values": {"messages": []}}
+        return {"awaiting_user_action": True, "completion_reason": "awaiting_user_answer", "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
     monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "还需要你补充一个核心技术要素。")
@@ -2293,7 +2604,7 @@ def test_stream_analysis_seed_advances_seeded_session(monkeypatch, tmp_path):
                 "confirmation_label": "实施此计划",
             },
         )
-        return {"interrupted": True, "values": {"messages": []}}
+        return {"awaiting_user_action": True, "completion_reason": "awaiting_plan_confirmation", "values": {"messages": []}}
 
     monkeypatch.setattr(service, "_run_main_agent", _fake_planning)
     monkeypatch.setattr(ai_search_analysis_seed_service_module, "extract_latest_ai_message", lambda values: "检索计划已生成，请确认计划。")
@@ -2326,10 +2637,9 @@ def test_stream_analysis_seed_failure_notifies_terminal_failure(monkeypatch, tmp
         ),
     )
 
-    events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
+    asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
     task = storage.get_task(created.sessionId)
 
-    assert any('"type":"run.error"' in item for item in events)
     assert task is not None
     assert task.status.value == "failed"
     assert notify_calls == [
@@ -2338,4 +2648,86 @@ def test_stream_analysis_seed_failure_notifies_terminal_failure(monkeypatch, tmp
             "terminal_status": "failed",
             "error_message": "生成 AI 检索计划失败：seed boom",
         }
+    ]
+
+
+def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confirmation(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    analysis_task = _create_completed_analysis_task(
+        storage,
+        owner_id="guest_ai_search",
+        tmp_path=tmp_path,
+        analysis_payload=_build_analysis_payload(include_semantic=False),
+        patent_payload=_build_patent_payload(),
+    )
+    created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
+    plan_record = _plan_record(created.sessionId, plan_version=1, title="基于分析结果的检索计划")
+
+    class _CancelledPlannerAgent:
+        def __init__(self, task_id: str) -> None:
+            self.task_id = task_id
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload["messages"][0]["role"] == "user"
+            assert config["configurable"]["thread_id"] == f"ai-search-{self.task_id}"
+            assert kwargs["stream_mode"] == ["messages", "custom"]
+            task = storage.get_task(self.task_id)
+            storage.update_task(
+                self.task_id,
+                metadata=merge_ai_search_meta(
+                    task,
+                    planner_draft={
+                        "draft_id": "draft-1",
+                        "draft_version": 1,
+                        "phase": PHASE_DRAFTING_PLAN,
+                        "review_markdown": plan_record["review_markdown"],
+                        "execution_spec": plan_record["execution_spec_json"],
+                    },
+                ),
+            )
+            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            stage_events: list[dict[str, Any]] = []
+            runtime = types.SimpleNamespace(stream_writer=lambda payload: stage_events.append(payload))
+            AiSearchAgentContext(storage, self.task_id).write_stage_log(
+                stage_kind="planner",
+                content="我先根据专利分析结果整理检索计划主线。",
+                runtime=runtime,
+            )
+            for event in stage_events:
+                yield ((), "custom", event)
+            raise asyncio.CancelledError()
+
+        def get_state(self, config):
+            raise AssertionError("cancelled run should not read final state")
+
+    monkeypatch.setattr(
+        ai_search_service_module,
+        "build_main_agent",
+        lambda _storage_arg, task_id_arg: _CancelledPlannerAgent(task_id_arg),
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_analysis_seed(created.sessionId, "guest_ai_search")))
+    parsed = _parse_data_events(events)
+
+    task = storage.get_task(created.sessionId)
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    plan = storage.get_ai_search_plan(created.sessionId, 1)
+    ai_meta = (task.metadata or {}).get("ai_search") if task else {}
+
+    assert task is not None
+    assert plan is not None
+    assert ai_meta is not None
+    assert ai_meta.get("analysis_seed_status") == "completed"
+    assert ai_meta.get("planner_draft") is None
+    assert ai_meta.get("active_plan_version") == 1
+    assert any(event["type"] == "assistant.stage.started" for event in parsed)
+    assert snapshot.conversation["pendingAction"] is not None
+    assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
+    assert snapshot.analysisSeed is not None
+    assert snapshot.analysisSeed["status"] == "completed"
+    assert [message["kind"] for message in snapshot.conversation["messages"]] == [
+        "chat",
+        "assistant_stage_message",
+        "plan_confirmation",
     ]

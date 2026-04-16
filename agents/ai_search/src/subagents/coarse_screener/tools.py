@@ -9,6 +9,7 @@ from typing import Any, List
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
+from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 from agents.ai_search.src.stage_limits import DEFAULT_SHORTLIST_LIMIT
 from backend.time_utils import utc_now_z
 
@@ -148,4 +149,4 @@ def build_coarse_screener_tools(context: Any) -> List[Any]:
         except Exception as exc:
             return context.record_todo_failure("coarse_screen", str(exc), current_task="coarse_screen", resume_from="run_coarse_screen_batch")
 
-    return [run_coarse_screen_batch]
+    return build_stage_log_tools(context, "coarse-screener") + [run_coarse_screen_batch]

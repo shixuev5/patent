@@ -1,5 +1,45 @@
 from __future__ import annotations
 
+import sys
+import types
+
+stub_retrieval_pkg = types.ModuleType("agents.common.retrieval")
+stub_retrieval_pkg.__path__ = []
+stub_academic_query_utils = types.ModuleType("agents.common.retrieval.academic_query_utils")
+stub_academic_query_utils.to_crossref_bibliographic_query = lambda *args, **kwargs: ""
+stub_academic_query_utils.to_semantic_academic_query = lambda *args, **kwargs: ""
+stub_academic_search = types.ModuleType("agents.common.retrieval.academic_search")
+
+class _StubAcademicSearchClient:
+    def search_openalex(self, *args, **kwargs):
+        return []
+
+    def search_semanticscholar(self, *args, **kwargs):
+        return []
+
+    def search_crossref(self, *args, **kwargs):
+        return []
+
+stub_academic_search.AcademicSearchClient = _StubAcademicSearchClient
+stub_retrieval_pkg.academic_query_utils = stub_academic_query_utils
+stub_retrieval_pkg.academic_search = stub_academic_search
+stub_search_clients_pkg = types.ModuleType("agents.common.search_clients")
+stub_search_clients_pkg.__path__ = []
+stub_search_clients_factory = types.ModuleType("agents.common.search_clients.factory")
+
+class _StubSearchClientFactory:
+    @staticmethod
+    def get_client(name):
+        raise AssertionError(f"unexpected search client usage in tools contract test: {name}")
+
+stub_search_clients_factory.SearchClientFactory = _StubSearchClientFactory
+stub_search_clients_pkg.factory = stub_search_clients_factory
+sys.modules.setdefault("agents.common.retrieval", stub_retrieval_pkg)
+sys.modules.setdefault("agents.common.retrieval.academic_query_utils", stub_academic_query_utils)
+sys.modules.setdefault("agents.common.retrieval.academic_search", stub_academic_search)
+sys.modules.setdefault("agents.common.search_clients", stub_search_clients_pkg)
+sys.modules.setdefault("agents.common.search_clients.factory", stub_search_clients_factory)
+
 from agents.ai_search.src import main_agent as main_agent_module
 from agents.ai_search.src.main_agent import agent as main_agent_agent_module
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
@@ -38,6 +78,7 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
 
     tool_names = {str(getattr(tool, "__name__", "")) for tool in tools}
     assert tool_names == {
+        "write_stage_log",
         "get_session_context",
         "get_planning_context",
         "get_execution_context",
@@ -79,12 +120,18 @@ def test_specialists_own_domain_tools():
         for tool in feature_comparer_module.build_feature_comparer_subagent(storage, task_id)["tools"]
     }
 
-    assert search_elements_tools == {"save_search_elements"}
-    assert planner_tools == {"commit_plan_draft"}
+    assert search_elements_tools == {"write_stage_log", "save_search_elements"}
+    assert planner_tools == {
+        "write_stage_log",
+        "save_plan_review_markdown",
+        "save_plan_execution_overview",
+        "append_plan_sub_plan",
+        "finalize_plan_draft",
+    }
     assert "run_execution_step" in query_tools
-    assert coarse_tools == {"run_coarse_screen_batch"}
-    assert close_tools == {"run_close_read_batch"}
-    assert feature_tools == {"run_feature_compare"}
+    assert coarse_tools == {"write_stage_log", "run_coarse_screen_batch"}
+    assert close_tools == {"write_stage_log", "run_close_read_batch"}
+    assert feature_tools == {"write_stage_log", "run_feature_compare"}
 
 
 def test_main_agent_prompt_uses_runtime_phase_names():
@@ -96,6 +143,7 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "get_planning_context" in MAIN_AGENT_SYSTEM_PROMPT
     assert "get_execution_context" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "write_stage_log" in MAIN_AGENT_SYSTEM_PROMPT
     assert "advance_workflow" in MAIN_AGENT_SYSTEM_PROMPT
     assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
     assert "缺少申请人、申请日、优先权日时" in MAIN_AGENT_SYSTEM_PROMPT
@@ -116,7 +164,9 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "retrieval_step_refs" in PLAN_PROBER_SYSTEM_PROMPT
     assert "signals" in PLAN_PROBER_SYSTEM_PROMPT
 
-    assert "`commit_plan_draft`" in PLANNER_SYSTEM_PROMPT
+    assert "`save_plan_review_markdown`" in PLANNER_SYSTEM_PROMPT
+    assert "`append_plan_sub_plan`" in PLANNER_SYSTEM_PROMPT
+    assert "`finalize_plan_draft`" in PLANNER_SYSTEM_PROMPT
     assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
     assert "activation_mode" in PLANNER_SYSTEM_PROMPT
     assert "activation_conditions" in PLANNER_SYSTEM_PROMPT

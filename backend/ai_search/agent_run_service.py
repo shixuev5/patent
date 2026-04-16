@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
@@ -18,6 +19,7 @@ from agents.ai_search.src.orchestration.action_runtime import (
     resolve_pending_action,
 )
 from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation, enter_human_decision
+from agents.ai_search.src.orchestration.planning_runtime import publish_planner_draft
 from agents.ai_search.src.runtime import (
     build_process_display_metadata,
     extract_latest_ai_message,
@@ -31,7 +33,9 @@ from agents.ai_search.src.state import (
     PHASE_CLOSE_READ,
     PHASE_COLLECTING_REQUIREMENTS,
     PHASE_COMPLETED,
+    PHASE_COARSE_SCREEN,
     PHASE_DRAFTING_PLAN,
+    PHASE_EXECUTE_SEARCH,
     PHASE_FAILED,
     PHASE_FEATURE_COMPARISON,
     get_ai_search_meta,
@@ -69,6 +73,23 @@ from .models import (
     AiSearchSnapshotResponse,
 )
 
+
+_AWAITING_USER_ACTION_PHASES = {
+    PHASE_AWAITING_PLAN_CONFIRMATION,
+    PHASE_AWAITING_USER_ANSWER,
+    PHASE_AWAITING_HUMAN_DECISION,
+}
+
+_PHASE_STARTUP_STAGE_KIND = {
+    PHASE_COLLECTING_REQUIREMENTS: "search-elements",
+    PHASE_DRAFTING_PLAN: "planner",
+    PHASE_EXECUTE_SEARCH: "query-executor",
+    PHASE_COARSE_SCREEN: "coarse-screener",
+    PHASE_CLOSE_READ: "close-reader",
+    PHASE_FEATURE_COMPARISON: "feature-comparer",
+}
+
+
 class AiSearchAgentRunService:
     def __init__(self, facade: Any) -> None:
         self.facade = facade
@@ -76,6 +97,9 @@ class AiSearchAgentRunService:
         self.snapshots = facade.snapshots
         self.artifacts = facade.artifacts
         self.analysis_seeds = facade.analysis_seeds
+        self._stream_subscribers: Dict[str, set[asyncio.Queue[Optional[Dict[str, Any]]]]] = {}
+        self._stream_tasks: Dict[str, asyncio.Task[Any]] = {}
+        self._stream_lock = asyncio.Lock()
 
     @property
     def storage(self):
@@ -127,13 +151,18 @@ class AiSearchAgentRunService:
     def _run_main_agent(self, task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False) -> Dict[str, Any]:
         agent = self.facade._build_main_agent(self.storage, task_id)
         config = self._main_agent_config(thread_id, for_resume=for_resume)
-        interrupted = False
         for chunk in agent.stream(payload, config):
             if "__interrupt__" in chunk:
-                interrupted = True
+                continue
         state = agent.get_state(self._main_agent_state_config(agent, thread_id))
         values = state.values if state else {}
-        return {"interrupted": interrupted, "values": values}
+        final_phase = str(get_ai_search_meta(self.storage.get_task(task_id)).get("current_phase") or "").strip()
+        completion_payload = self._completion_payload_for_phase(final_phase)
+        return {
+            "values": values,
+            "awaiting_user_action": bool(completion_payload.get("awaitingUserAction")),
+            "completion_reason": str(completion_payload.get("completionReason") or "completed"),
+        }
 
     def _format_event(self, event_type: str, session_id: str, phase: str, payload: Any) -> str:
         message = {
@@ -144,6 +173,189 @@ class AiSearchAgentRunService:
             "payload": payload,
         }
         return f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
+
+    def _completion_payload_for_phase(self, phase: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        normalized_phase = str(phase or "").strip()
+        if normalized_phase == PHASE_AWAITING_PLAN_CONFIRMATION:
+            completion_reason = "awaiting_plan_confirmation"
+        elif normalized_phase == PHASE_AWAITING_USER_ANSWER:
+            completion_reason = "awaiting_user_answer"
+        elif normalized_phase == PHASE_AWAITING_HUMAN_DECISION:
+            completion_reason = "awaiting_human_decision"
+        else:
+            completion_reason = "completed"
+        payload = {
+            "awaitingUserAction": normalized_phase in _AWAITING_USER_ACTION_PHASES,
+            "completionReason": completion_reason,
+        }
+        if isinstance(extra, dict):
+            payload.update(extra)
+        return payload
+
+    def _should_hide_process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+        if event_type not in {"tool.started", "tool.completed", "tool.failed"}:
+            return False
+        return str(payload.get("toolName") or "").strip() == "write_stage_log"
+
+    def _current_run_id(self, task_id: str) -> Optional[str]:
+        run = self.storage.get_ai_search_run(task_id)
+        value = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        return value or None
+
+    def _parse_sse_event(self, raw: str) -> Optional[Dict[str, Any]]:
+        text = str(raw or "")
+        if not text.strip() or text.lstrip().startswith(":"):
+            return None
+        lines = [line for line in text.splitlines() if line.startswith("data: ")]
+        if not lines:
+            return None
+        payload = lines[-1][6:]
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _derive_event_entity_id(self, event: Dict[str, Any]) -> Optional[str]:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        for candidate in (
+            payload.get("messageId"),
+            payload.get("stageInstanceId"),
+            payload.get("eventId"),
+            payload.get("actionId"),
+            payload.get("queueMessageId"),
+        ):
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "run.updated":
+            return str(((payload.get("run") or {}).get("runId")) or "").strip() or self._current_run_id(str(event.get("taskId") or "").strip())
+        return None
+
+    def _normalize_process_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        event_type = str(event.get("type") or "").strip()
+        if event_type not in {"subagent.started", "subagent.completed", "tool.started", "tool.completed", "tool.failed"}:
+            return event
+        payload = dict(event.get("payload") or {})
+        if self._should_hide_process_event(event_type, payload):
+            return {}
+        payload["processEventType"] = event_type
+        return {
+            **event,
+            "type": "process.event",
+            "payload": payload,
+        }
+
+    def _stream_event_to_record(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(event, dict):
+            return None
+        normalized = self._normalize_process_stream_event(event)
+        session_id = str(normalized.get("sessionId") or normalized.get("taskId") or "").strip()
+        task_id = str(normalized.get("taskId") or session_id).strip()
+        if not session_id or not task_id:
+            return None
+        payload = normalized.get("payload") if isinstance(normalized.get("payload"), dict) else {}
+        run_id = str(
+            normalized.get("runId")
+            or payload.get("runId")
+            or ((payload.get("run") or {}).get("runId") if isinstance(payload.get("run"), dict) else "")
+            or self._current_run_id(task_id)
+            or ""
+        ).strip() or None
+        return {
+            "event_id": uuid.uuid4().hex,
+            "session_id": session_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "event_type": str(normalized.get("type") or "").strip(),
+            "entity_id": self._derive_event_entity_id(normalized),
+            "payload": normalized,
+            "created_at": utc_now_z(),
+        }
+
+    def _format_persisted_stream_event(self, row: Dict[str, Any]) -> str:
+        payload = dict(row.get("payload") or {})
+        payload["seq"] = int(row.get("seq") or 0)
+        payload["runId"] = str(row.get("run_id") or payload.get("runId") or "").strip() or None
+        payload["entityId"] = str(row.get("entity_id") or payload.get("entityId") or "").strip() or None
+        payload["timestamp"] = str(row.get("created_at") or payload.get("timestamp") or utc_now_z())
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    async def _broadcast_stream_event(self, session_id: str, row: Dict[str, Any]) -> None:
+        queues = list(self._stream_subscribers.get(session_id, set()))
+        for queue in queues:
+            await queue.put(row)
+
+    async def _run_background_stream(self, session_id: str, producer_factory: Callable[[], AsyncIterator[str]]) -> None:
+        try:
+            async for raw_event in producer_factory():
+                parsed = self._parse_sse_event(raw_event)
+                if not parsed:
+                    continue
+                record = self._stream_event_to_record(parsed)
+                if not record:
+                    continue
+                row = self.storage.append_ai_search_stream_event(record)
+                if not isinstance(row, dict):
+                    continue
+                await self._broadcast_stream_event(session_id, row)
+        finally:
+            async with self._stream_lock:
+                existing = self._stream_tasks.get(session_id)
+                if existing is asyncio.current_task():
+                    self._stream_tasks.pop(session_id, None)
+            queues = list(self._stream_subscribers.get(session_id, set()))
+            for queue in queues:
+                await queue.put(None)
+
+    async def start_background_stream(
+        self,
+        session_id: str,
+        producer_factory: Callable[[], AsyncIterator[str]],
+    ) -> None:
+        async with self._stream_lock:
+            existing = self._stream_tasks.get(session_id)
+            if existing and not existing.done():
+                return
+            self._stream_tasks[session_id] = asyncio.create_task(
+                self._run_background_stream(session_id, producer_factory)
+            )
+
+    async def subscribe_stream(
+        self,
+        session_id: str,
+        owner_id: str,
+        *,
+        after_seq: int = 0,
+    ) -> AsyncIterator[str]:
+        self.sessions._get_owned_session_task(session_id, owner_id)
+        for row in self.storage.list_ai_search_stream_events(session_id, after_seq=max(int(after_seq or 0), 0)):
+            yield self._format_persisted_stream_event(row)
+
+        queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+        self._stream_subscribers.setdefault(session_id, set()).add(queue)
+        try:
+            while True:
+                task = self._stream_tasks.get(session_id)
+                if (not task or task.done()) and queue.empty():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=self.facade._main_agent_progress_poll_seconds())
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if item is None:
+                    if not self._stream_tasks.get(session_id):
+                        break
+                    continue
+                yield self._format_persisted_stream_event(item)
+        finally:
+            subscribers = self._stream_subscribers.get(session_id)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    self._stream_subscribers.pop(session_id, None)
 
     def _execution_queue_response(self, task_id: str, run_id: str) -> AiSearchExecutionQueueResponse:
         items = self.storage.list_ai_search_execution_queue_messages(task_id, run_id, statuses=["pending"])
@@ -253,6 +465,64 @@ class AiSearchAgentRunService:
                 },
             }
         )
+
+    def _fail_open_stage_events(
+        self,
+        task_id: str,
+        phase: str,
+        error_message: str,
+    ) -> List[str]:
+        events: List[str] = []
+        failure_text = str(error_message or "").strip()
+        for message in self.storage.list_ai_search_messages(task_id):
+            if str(message.get("kind") or "").strip() != "assistant_stage_message":
+                continue
+            message_id = str(message.get("message_id") or "").strip()
+            if not message_id:
+                continue
+            if str(message.get("stream_status") or "").strip() in {"completed", "failed"}:
+                continue
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            stage_instance_id = str(metadata.get("stageInstanceId") or "").strip()
+            if not stage_instance_id:
+                continue
+            current_content = str(message.get("content") or "").strip()
+            next_content = current_content
+            if failure_text:
+                separator = "" if not next_content else "\n\n"
+                next_content = f"{next_content}{separator}{failure_text}".strip()
+            descriptor = {
+                "messageId": message_id,
+                "stageKind": str(metadata.get("stageKind") or "").strip(),
+                "stageInstanceId": stage_instance_id,
+                "runId": metadata.get("runId"),
+                "planVersion": metadata.get("planVersion"),
+                "todoId": metadata.get("todoId"),
+                "batchId": metadata.get("batchId"),
+            }
+            self.storage.update_ai_search_message(
+                message_id,
+                content=next_content,
+                stream_status="failed",
+                metadata={
+                    **metadata,
+                    "phase": phase,
+                    "status": "failed",
+                },
+            )
+            events.append(
+                self._format_event(
+                    "assistant.stage.failed",
+                    task_id,
+                    phase,
+                    {
+                        **descriptor,
+                        "content": next_content,
+                        "errorMessage": failure_text or "当前流式轮次执行失败。",
+                    },
+                )
+            )
+        return events
 
     def _stream_error_payload(self, exc: Exception) -> Dict[str, Any]:
         if isinstance(exc, HTTPException):
@@ -488,6 +758,15 @@ class AiSearchAgentRunService:
             run_id=context.active_run_id(active_plan_version),
         )
 
+    def _recover_cancelled_drafting_run(self, task_id: str) -> None:
+        if self._current_phase_value(task_id) != PHASE_DRAFTING_PLAN:
+            return
+
+        context = AiSearchAgentContext(self.storage, task_id)
+        if context.active_plan_version() <= 0 and context.current_planner_draft():
+            publish_planner_draft(context)
+        self._reconcile_drafting_outcome(task_id)
+
     def _resolve_pending_action(
         self,
         task_id: str,
@@ -517,7 +796,6 @@ class AiSearchAgentRunService:
             "assistant_started": False,
             "emitted_phases": emitted_phases,
             "final_values": {},
-            "interrupted": False,
             "known_message_ids": known_message_ids,
             "last_snapshot": snapshot,
             "previous_assistant": str(previous_assistant or "").strip(),
@@ -690,6 +968,49 @@ class AiSearchAgentRunService:
         )
         return events
 
+    def _startup_stage_kind_for_phase(self, phase: str) -> str:
+        return str(_PHASE_STARTUP_STAGE_KIND.get(str(phase or "").strip()) or "").strip()
+
+    async def _emit_phase_startup_stage_events(
+        self,
+        *,
+        task_id: str,
+        owner_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+    ) -> AsyncIterator[str]:
+        stage_kind = self._startup_stage_kind_for_phase(phase)
+        if not stage_kind:
+            return
+        context = AiSearchAgentContext(self.storage, task_id)
+        captured: list[dict[str, Any]] = []
+        runtime = SimpleNamespace(stream_writer=lambda payload: captured.append(payload))
+        created = context.emit_startup_stage_log(stage_kind=stage_kind, runtime=runtime)
+        if not created:
+            return
+        current_phase = self._current_phase_value(task_id, phase)
+        for item in captured:
+            event_type, event_payload = self._normalize_custom_event(item)
+            if not event_type:
+                continue
+            if event_type == "snapshot.changed":
+                snapshot = self.snapshots.get_snapshot(task_id, owner_id)
+                async for event in self._emit_snapshot_diff_events(
+                    stream_state["last_snapshot"],
+                    snapshot,
+                    stream_state=stream_state,
+                ):
+                    yield event
+                stream_state["last_snapshot"] = snapshot
+                continue
+            if event_type in {
+                "assistant.stage.started",
+                "assistant.stage.delta",
+                "assistant.stage.completed",
+                "assistant.stage.failed",
+            } and isinstance(event_payload, dict):
+                yield self._format_event(event_type, task_id, current_phase, dict(event_payload))
+
     async def _emit_snapshot_diff_events(
         self,
         previous: AiSearchSnapshotResponse,
@@ -708,6 +1029,10 @@ class AiSearchAgentRunService:
         for message in self.snapshots._snapshot_messages(current):
             message_id = str(message.get("message_id") or "").strip()
             if message_id and message_id in stream_state["known_message_ids"]:
+                continue
+            if str(message.get("kind") or "").strip() == "assistant_stage_message":
+                if message_id:
+                    stream_state["known_message_ids"].add(message_id)
                 continue
             if message_id:
                 stream_state["known_message_ids"].add(message_id)
@@ -817,7 +1142,6 @@ class AiSearchAgentRunService:
                 current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
                 if event_type in {"subagent.started", "subagent.completed"}:
                     normalized_payload = self._normalize_subagent_payload(event_type, event_payload)
-                    self._append_process_message(task_id, current_phase, normalized_payload)
                     yield self._format_event(
                         event_type,
                         session_id,
@@ -825,8 +1149,14 @@ class AiSearchAgentRunService:
                         normalized_payload,
                     )
                 elif event_type in {"tool.started", "tool.completed", "tool.failed"} and isinstance(event_payload, dict):
-                    self._append_process_message(task_id, current_phase, event_payload)
-                    yield self._format_event(event_type, session_id, current_phase, event_payload)
+                    yield self._format_event(event_type, session_id, current_phase, dict(event_payload))
+                elif event_type in {
+                    "assistant.stage.started",
+                    "assistant.stage.delta",
+                    "assistant.stage.completed",
+                    "assistant.stage.failed",
+                } and isinstance(event_payload, dict):
+                    yield self._format_event(event_type, session_id, current_phase, dict(event_payload))
 
                 snapshot = self.snapshots.get_snapshot(session_id, owner_id)
                 async for event in self._emit_snapshot_diff_events(
@@ -943,10 +1273,19 @@ class AiSearchAgentRunService:
         previous_assistant = self.snapshots._latest_assistant_chat(task.id)
         initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
         stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
+        initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
 
         try:
             agent = self.facade._build_main_agent(self.storage, task.id) if self.facade._uses_default_run_main_agent() else None
             if hasattr(agent, "astream") and callable(getattr(agent, "astream")):
+                yield self._format_event("run.started", task.id, initial_phase, {})
+                async for event in self._emit_phase_startup_stage_events(
+                    task_id=task.id,
+                    owner_id=owner_id,
+                    phase=initial_phase,
+                    stream_state=stream_state,
+                ):
+                    yield event
                 async for event in self._consume_live_agent_stream(
                     session_id=task.id,
                     owner_id=owner_id,
@@ -958,16 +1297,22 @@ class AiSearchAgentRunService:
                     previous_phase=previous_phase,
                     config=self._main_agent_config(thread_id, for_resume=for_resume),
                     forward_model_text=False,
+                    emit_run_started=False,
                 ):
                     yield event
                 state = None
                 if hasattr(agent, "get_state") and hasattr(agent, "checkpointer"):
                     state = agent.get_state(self._main_agent_state_config(agent, thread_id))
                 stream_state["final_values"] = state.values if state is not None else {}
-                stream_state["interrupted"] = bool(getattr(state, "interrupts", None)) if state is not None else False
             else:
-                initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
                 yield self._format_event("run.started", task.id, initial_phase, {})
+                async for event in self._emit_phase_startup_stage_events(
+                    task_id=task.id,
+                    owner_id=owner_id,
+                    phase=initial_phase,
+                    stream_state=stream_state,
+                ):
+                    yield event
                 result = await asyncio.to_thread(
                     self.facade._run_main_agent,
                     task.id,
@@ -976,7 +1321,6 @@ class AiSearchAgentRunService:
                     for_resume=for_resume,
                 )
                 stream_state["final_values"] = result["values"]
-                stream_state["interrupted"] = bool(result["interrupted"])
 
             completion_payload = post_run(stream_state) if post_run else {}
             if not isinstance(completion_payload, dict):
@@ -1006,11 +1350,12 @@ class AiSearchAgentRunService:
             ):
                 yield event
 
+            final_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot))
             yield self._format_event(
                 "run.completed",
                 task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                {"interrupted": stream_state["interrupted"], **completion_payload},
+                final_phase,
+                self._completion_payload_for_phase(final_phase, completion_payload),
             )
         except ExecutionQueueTakeoverRequested as exc:
             handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
@@ -1030,7 +1375,19 @@ class AiSearchAgentRunService:
                 persist_fallback_assistant=True,
             ):
                 yield event
+        except asyncio.CancelledError:
+            try:
+                self._recover_cancelled_drafting_run(task.id)
+            except Exception:
+                pass
+            raise
         except Exception as exc:
+            for event in self._fail_open_stage_events(
+                task.id,
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
+            ):
+                yield event
             yield self._format_event(
                 "run.error",
                 task.id,
@@ -1171,12 +1528,14 @@ class AiSearchAgentRunService:
                     "run.completed",
                     task.id,
                     self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                    {
-                        "interrupted": False,
-                        "featureComparisonId": feature_comparison_id or None,
-                        "recommendedAction": progress.get("recommended_action"),
-                        "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
-                    },
+                    self._completion_payload_for_phase(
+                        final_phase,
+                        {
+                            "featureComparisonId": feature_comparison_id or None,
+                            "recommendedAction": progress.get("recommended_action"),
+                            "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
+                        },
+                    ),
                 )
         except ExecutionQueueTakeoverRequested as exc:
             handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
@@ -1199,6 +1558,12 @@ class AiSearchAgentRunService:
             ):
                 yield event
         except Exception as exc:
+            for event in self._fail_open_stage_events(
+                task.id,
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
+            ):
+                yield event
             yield self._format_event(
                 "run.error",
                 task.id,
@@ -1274,7 +1639,10 @@ class AiSearchAgentRunService:
                     "run.completed",
                     task.id,
                     self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                    {"interrupted": False, "closeRead": True},
+                    self._completion_payload_for_phase(
+                        self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                        {"closeRead": True},
+                    ),
                 )
         except ExecutionQueueTakeoverRequested as exc:
             handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
@@ -1297,6 +1665,12 @@ class AiSearchAgentRunService:
             ):
                 yield event
         except Exception as exc:
+            for event in self._fail_open_stage_events(
+                task.id,
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
+            ):
+                yield event
             yield self._format_event(
                 "run.error",
                 task.id,
@@ -1304,7 +1678,7 @@ class AiSearchAgentRunService:
                 self._stream_error_payload(exc),
             )
 
-    async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
+    async def _stream_message_events(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
@@ -1352,7 +1726,7 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+    async def _stream_resume_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
@@ -1397,7 +1771,7 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
+    async def _stream_answer_events(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
@@ -1433,7 +1807,7 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+    async def _stream_plan_confirmation_events(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
@@ -1490,7 +1864,7 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+    async def _stream_analysis_seed_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         if str(meta.get("source_type") or "").strip() != "analysis":
@@ -1526,25 +1900,37 @@ class AiSearchAgentRunService:
         run_error: Optional[Dict[str, Any]] = None
         saw_run_completed = False
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-        async for event in self._stream_main_agent_execution(
-            task=task,
-            owner_id=owner_id,
-            thread_id=thread_id,
-            payload={"messages": [{"role": "user", "content": seed_prompt}]},
-            previous_phase=phase,
-        ):
-            if event.startswith("data: "):
-                try:
-                    payload = json.loads(event[6:])
-                except Exception:
-                    payload = {}
-                event_type = str(payload.get("type") or "").strip()
-                if event_type == "run.completed":
-                    saw_run_completed = True
-                if event_type == "run.error":
-                    maybe_error = payload.get("payload")
-                    run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索计划失败。"}
-            yield event
+        try:
+            async for event in self._stream_main_agent_execution(
+                task=task,
+                owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": seed_prompt}]},
+                previous_phase=phase,
+            ):
+                if event.startswith("data: "):
+                    try:
+                        payload = json.loads(event[6:])
+                    except Exception:
+                        payload = {}
+                    event_type = str(payload.get("type") or "").strip()
+                    if event_type == "run.completed":
+                        saw_run_completed = True
+                    if event_type == "run.error":
+                        maybe_error = payload.get("payload")
+                        run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索计划失败。"}
+                yield event
+        except asyncio.CancelledError:
+            reconciled_phase = self.analysis_seeds._reconcile_analysis_seed_phase(task.id)
+            if reconciled_phase in {PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_USER_ANSWER}:
+                self.storage.update_task(
+                    task.id,
+                    metadata=merge_ai_search_meta(
+                        self.storage.get_task(task.id),
+                        analysis_seed_status="completed",
+                    ),
+                )
+            raise
 
         reconciled_phase = self.analysis_seeds._reconcile_analysis_seed_phase(task.id)
         if run_error is not None and reconciled_phase in {PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_USER_ANSWER}:
@@ -1633,13 +2019,10 @@ class AiSearchAgentRunService:
                 "run.completed",
                 task.id,
                 self._current_phase_value(task.id, final_phase),
-                {
-                    "interrupted": final_phase in {PHASE_AWAITING_PLAN_CONFIRMATION, PHASE_AWAITING_USER_ANSWER},
-                    "analysisSeed": True,
-                },
+                self._completion_payload_for_phase(final_phase, {"analysisSeed": True}),
             )
 
-    async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+    async def _stream_decision_continue_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         decision_action = self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
@@ -1673,7 +2056,7 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+    async def _stream_decision_complete_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
@@ -1745,7 +2128,10 @@ class AiSearchAgentRunService:
             "run.completed",
             task.id,
             self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-            {"interrupted": False, "completedFromTakeover": True},
+            self._completion_payload_for_phase(
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                {"completedFromTakeover": True},
+            ),
         )
 
     def _create_manual_close_read_batch(self, task_id: str, plan_version: int, document_ids: List[str]) -> str:
@@ -1775,7 +2161,7 @@ class AiSearchAgentRunService:
         self.storage.replace_ai_search_batch_documents(batch_id, run_id, document_ids)
         return batch_id
 
-    async def stream_document_review(
+    async def _stream_document_review_events(
         self,
         session_id: str,
         owner_id: str,
@@ -1966,10 +2352,13 @@ class AiSearchAgentRunService:
             "run.completed",
             task.id,
             self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"])),
-            {"interrupted": False, "documentReview": True},
+            self._completion_payload_for_phase(
+                self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"])),
+                {"documentReview": True},
+            ),
         )
 
-    async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+    async def _stream_feature_comparison_events(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         active_plan_version = int(meta.get("active_plan_version") or 0)
@@ -1992,5 +2381,102 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             plan_version=plan_version,
             previous_phase=previous_phase,
+        ):
+            yield event
+
+    async def _start_and_subscribe(
+        self,
+        session_id: str,
+        owner_id: str,
+        producer_factory: Callable[[], AsyncIterator[str]],
+    ) -> AsyncIterator[str]:
+        latest = self.storage.get_latest_ai_search_stream_event(session_id)
+        after_seq = int(latest.get("seq") or 0) if isinstance(latest, dict) else 0
+        await self.start_background_stream(session_id, producer_factory)
+        async for event in self.subscribe_stream(session_id, owner_id, after_seq=after_seq):
+            yield event
+
+    async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_message_events(session_id, owner_id, content),
+        ):
+            yield event
+
+    async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_resume_events(session_id, owner_id),
+        ):
+            yield event
+
+    async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_answer_events(session_id, owner_id, question_id, answer),
+        ):
+            yield event
+
+    async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_plan_confirmation_events(session_id, owner_id, plan_version),
+        ):
+            yield event
+
+    async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_analysis_seed_events(session_id, owner_id),
+        ):
+            yield event
+
+    async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_decision_continue_events(session_id, owner_id),
+        ):
+            yield event
+
+    async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_decision_complete_events(session_id, owner_id),
+        ):
+            yield event
+
+    async def stream_document_review(
+        self,
+        session_id: str,
+        owner_id: str,
+        plan_version: int,
+        review_document_ids: Optional[List[str]],
+        remove_document_ids: Optional[List[str]],
+    ) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_document_review_events(
+                session_id,
+                owner_id,
+                plan_version,
+                review_document_ids,
+                remove_document_ids,
+            ),
+        ):
+            yield event
+
+    async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+        async for event in self._start_and_subscribe(
+            session_id,
+            owner_id,
+            lambda: self._stream_feature_comparison_events(session_id, owner_id, plan_version),
         ):
             yield event

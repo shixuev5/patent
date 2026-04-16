@@ -130,6 +130,7 @@ class AiSearchSnapshotResponse(BaseModel):
     session: AiSearchSessionSummary
     run: Dict[str, Any]
     conversation: Dict[str, Any]
+    stream: Dict[str, Any] = Field(default_factory=dict)
     executionMessageQueue: Dict[str, Any]
     plan: Dict[str, Any]
     retrieval: Dict[str, Any]
