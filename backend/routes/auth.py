@@ -5,7 +5,7 @@ import hashlib
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Set
+from typing import Any, Set, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -125,20 +125,18 @@ def _extract_primary_role(claims: dict) -> str | None:
     return sorted(roles)[0]
 
 
-def _issue_auth_session(owner_id: str, auth_type: str) -> SessionAuthResponse:
+def _build_auth_session(owner_id: str, auth_type: str) -> Tuple[SessionAuthResponse, RefreshSession]:
     access_token, access_exp = _issue_token(owner_id)
     refresh_token, refresh_hash, refresh_exp = _issue_refresh_token()
     now = utc_now()
-    task_manager.storage.upsert_refresh_session(
-        RefreshSession(
-            token_hash=refresh_hash,
-            owner_id=owner_id,
-            expires_at=datetime.fromtimestamp(refresh_exp, tz=timezone.utc),
-            created_at=now,
-            updated_at=now,
-        )
+    refresh_session = RefreshSession(
+        token_hash=refresh_hash,
+        owner_id=owner_id,
+        expires_at=datetime.fromtimestamp(refresh_exp, tz=timezone.utc),
+        created_at=now,
+        updated_at=now,
     )
-    return SessionAuthResponse(
+    response = SessionAuthResponse(
         access_token=access_token,
         access_expires_at=datetime.fromtimestamp(access_exp, tz=timezone.utc).isoformat(),
         refresh_token=refresh_token,
@@ -146,6 +144,13 @@ def _issue_auth_session(owner_id: str, auth_type: str) -> SessionAuthResponse:
         user_id=owner_id,
         auth_type="authing" if auth_type == "authing" else "guest",
     )
+    return response, refresh_session
+
+
+def _issue_auth_session(owner_id: str, auth_type: str) -> SessionAuthResponse:
+    response, refresh_session = _build_auth_session(owner_id, auth_type)
+    task_manager.storage.upsert_refresh_session(refresh_session)
+    return response
 
 
 @router.post("/api/auth/guest", response_model=GuestAuthResponse)
@@ -218,9 +223,13 @@ async def refresh_auth_session(payload: RefreshTokenRequest):
     if session.revoked_at is not None or session.expires_at <= now:
         raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_INVALID", "message": "refresh token 已失效。"})
 
-    next_session = _issue_auth_session(session.owner_id, auth_type="authing" if session.owner_id.startswith("authing:") else "guest")
-    next_hash = _hash_refresh_token(next_session.refresh_token)
-    task_manager.storage.revoke_refresh_session(token_hash, replaced_by_token_hash=next_hash)
+    next_session, next_refresh_session = _build_auth_session(
+        session.owner_id,
+        auth_type="authing" if session.owner_id.startswith("authing:") else "guest",
+    )
+    rotated = task_manager.storage.rotate_refresh_session(session, next_refresh_session)
+    if not rotated:
+        raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_INVALID", "message": "refresh token 已失效。"})
     return next_session
 
 

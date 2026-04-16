@@ -26,7 +26,7 @@ from backend.models import (
 from backend.notifications.task_wechat_service import TaskWeChatNotificationService
 from backend.routes import account
 from backend.routes import tasks as task_routes
-from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding, WeChatConversationSession
+from backend.storage import Task, TaskStatus, TaskType, User, WeChatBinding, WeChatConversationSession, WeChatDeliveryJob
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 from backend.time_utils import utc_now
@@ -1370,6 +1370,54 @@ def test_task_wechat_pending_action_notification_queues_delivery_job(tmp_path):
     assert jobs[0].event_type == 'ai_search.pending_action'
     assert jobs[0].payload['pendingActionType'] == 'question'
     assert jobs[0].payload['prompt'] == '请补充核心技术特征'
+
+
+def test_claim_wechat_delivery_jobs_skips_stale_rows_when_compare_and_claim_loses_race(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / 'wechat_delivery_claim_race.db')
+    created = storage.create_wechat_delivery_job(
+        WeChatDeliveryJob(
+            delivery_job_id='job-race-1',
+            owner_id='authing:wx-race',
+            binding_id='binding-race',
+            event_type='task.completed',
+            status='pending',
+            payload={'taskId': 'task-race-1'},
+        )
+    )
+    storage.update_wechat_delivery_job(created.delivery_job_id, status='processing')
+
+    original_fetchall = storage._fetchall
+
+    def _stale_fetchall(sql, params=None):
+        normalized = " ".join(str(sql).split())
+        if normalized.startswith("SELECT * FROM wechat_delivery_jobs WHERE status = 'pending'"):
+            return [
+                {
+                    'delivery_job_id': created.delivery_job_id,
+                    'owner_id': created.owner_id,
+                    'binding_id': created.binding_id,
+                    'task_id': created.task_id,
+                    'event_type': created.event_type,
+                    'status': 'pending',
+                    'payload_json': '{"taskId":"task-race-1"}',
+                    'attempt_count': 0,
+                    'max_attempts': 3,
+                    'next_attempt_at': None,
+                    'claimed_at': None,
+                    'completed_at': None,
+                    'failed_at': None,
+                    'last_error': None,
+                    'created_at': created.created_at.isoformat(),
+                    'updated_at': created.updated_at.isoformat(),
+                }
+            ]
+        return original_fetchall(sql, params)
+
+    monkeypatch.setattr(storage, "_fetchall", _stale_fetchall)
+
+    jobs = storage.claim_wechat_delivery_jobs(1)
+
+    assert jobs == []
 
 
 def test_wechat_runtime_analysis_flow_creates_task(monkeypatch, tmp_path):

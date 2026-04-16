@@ -323,10 +323,12 @@ class WeChatRepositoryMixin:
             delivery_job_id = str(row.get("delivery_job_id") or "").strip()
             if not delivery_job_id:
                 continue
-            self._request(
-                "UPDATE wechat_delivery_jobs SET status = 'processing', claimed_at = ?, updated_at = ?, attempt_count = attempt_count + 1 WHERE delivery_job_id = ?",
+            result = self._request(
+                "UPDATE wechat_delivery_jobs SET status = 'processing', claimed_at = ?, updated_at = ?, attempt_count = attempt_count + 1 WHERE delivery_job_id = ? AND status = 'pending'",
                 [now_iso, now_iso, delivery_job_id],
             )
+            if self._changed_rows(result) <= 0:
+                continue
             claimed = self._fetchone("SELECT * FROM wechat_delivery_jobs WHERE delivery_job_id = ?", [delivery_job_id])
             if claimed:
                 jobs.append(self._row_to_wechat_delivery_job(claimed))

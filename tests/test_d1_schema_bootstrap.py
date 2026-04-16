@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import requests
+import pytest
+
 from backend.storage import D1TaskStorage
+from backend.storage.errors import StorageRateLimitedError, StorageUnavailableError
 from backend.storage.schema.ddl_utils import relax_column_ddl_for_add_column
 
 
@@ -120,3 +124,37 @@ def test_d1_init_database_relaxes_incompatible_add_column_constraints(monkeypatc
     assert alter_sql in request_calls
     assert all("peer_id TEXT NOT NULL" not in sql for sql in alter_calls)
     assert request_calls.index(alter_sql) < request_calls.index(index_sql)
+
+
+def test_d1_request_wraps_rate_limit_as_storage_rate_limited(monkeypatch):
+    storage = object.__new__(D1TaskStorage)
+    storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
+    storage.headers = {"Authorization": "Bearer test"}
+    storage.timeout_seconds = 20
+
+    response = requests.Response()
+    response.status_code = 429
+    response.headers["Retry-After"] = "9"
+    response.url = storage.endpoint
+
+    def _raise_http_error(*args, **kwargs):
+        raise requests.exceptions.HTTPError(response=response)
+
+    monkeypatch.setattr(requests, "post", _raise_http_error)
+
+    with pytest.raises(StorageRateLimitedError) as exc_info:
+        storage._request("SELECT 1")
+
+    assert exc_info.value.retry_after_seconds == 9
+
+
+def test_d1_request_wraps_timeout_as_storage_unavailable(monkeypatch):
+    storage = object.__new__(D1TaskStorage)
+    storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
+    storage.headers = {"Authorization": "Bearer test"}
+    storage.timeout_seconds = 20
+
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("timed out")))
+
+    with pytest.raises(StorageUnavailableError):
+        storage._request("SELECT 1")

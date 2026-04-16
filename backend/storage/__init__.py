@@ -3,6 +3,7 @@
 """
 from .facade import D1TaskStorage, SQLiteTaskStorage
 from .interfaces import TaskStorage
+from .errors import StorageError, StorageRateLimitedError, StorageUnavailableError
 from .models import (
     RefreshSession,
     Task,
@@ -24,6 +25,9 @@ __all__ = [
     "D1TaskStorage",
     "TaskStorage",
     "get_task_storage",
+    "StorageError",
+    "StorageUnavailableError",
+    "StorageRateLimitedError",
     # Models
     "Task",
     "TaskStatus",

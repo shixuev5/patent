@@ -20,6 +20,7 @@ class _MemoryStorage:
 def test_request_logging_middleware_skips_success_get_request(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
@@ -43,6 +44,7 @@ def test_request_logging_middleware_skips_success_get_request(tmp_path, monkeypa
 def test_request_logging_middleware_records_success_post_request(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
@@ -72,6 +74,7 @@ def test_request_logging_middleware_records_success_post_request(tmp_path, monke
 def test_request_logging_middleware_skips_get_exception(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
@@ -93,6 +96,7 @@ def test_request_logging_middleware_skips_get_exception(tmp_path, monkeypatch):
 def test_request_logging_middleware_records_post_exception(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
@@ -121,6 +125,7 @@ def test_request_logging_middleware_records_post_exception(tmp_path, monkeypatch
 def test_request_logging_middleware_skips_success_internal_request(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
@@ -142,6 +147,7 @@ def test_request_logging_middleware_skips_success_internal_request(tmp_path, mon
 def test_request_logging_middleware_keeps_internal_request_failures(tmp_path, monkeypatch):
     storage = _MemoryStorage()
     monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "_DB_PERSISTENCE_READY", True)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
     monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")

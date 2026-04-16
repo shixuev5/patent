@@ -91,6 +91,30 @@ class UserRepositoryMixin:
         row = self._fetchone("SELECT * FROM refresh_sessions WHERE token_hash = ?", [normalized])
         return self._row_to_refresh_session(row) if row else None
 
+    def rotate_refresh_session(self, current_session: RefreshSession, next_session: RefreshSession) -> bool:
+        current_token_hash = str(current_session.token_hash or "").strip()
+        current_owner_id = str(current_session.owner_id or "").strip()
+        next_token_hash = str(next_session.token_hash or "").strip()
+        if not current_token_hash or not current_owner_id or not next_token_hash:
+            return False
+        result = self._request(
+            """
+            UPDATE refresh_sessions
+            SET token_hash = ?, expires_at = ?, created_at = ?, updated_at = ?, revoked_at = NULL, replaced_by_token_hash = NULL
+            WHERE token_hash = ? AND owner_id = ? AND revoked_at IS NULL AND expires_at = ?
+            """,
+            [
+                next_token_hash,
+                to_utc_z(next_session.expires_at, naive_strategy="utc"),
+                to_utc_z(next_session.created_at, naive_strategy="utc"),
+                to_utc_z(next_session.updated_at, naive_strategy="utc"),
+                current_token_hash,
+                current_owner_id,
+                to_utc_z(current_session.expires_at, naive_strategy="utc"),
+            ],
+        )
+        return self._changed_rows(result) > 0
+
     def revoke_refresh_session(self, token_hash: str, replaced_by_token_hash: Optional[str] = None) -> bool:
         normalized = str(token_hash or "").strip()
         if not normalized:

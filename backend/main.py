@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
+from backend.error_handlers import register_exception_handlers
 from backend.logging_setup import configure_uvicorn_access_log_filter, setup_logging_utc8
 from backend.system_logs import (
     LazySystemLogStorageProxy,
@@ -61,6 +62,7 @@ app = FastAPI(
     version=VERSION,
     lifespan=lifespan,
 )
+register_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
