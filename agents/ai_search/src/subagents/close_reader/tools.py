@@ -12,7 +12,6 @@ from langchain.tools import ToolRuntime
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT, DEFAULT_SHORTLIST_LIMIT
 from agents.ai_search.src.state import PHASE_CLOSE_READ
-from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt
 from agents.ai_search.src.subagents.close_reader.workspace import (
@@ -393,4 +392,4 @@ def build_close_reader_tools(context: Any) -> List[Any]:
         except Exception as exc:
             return context.record_todo_failure("close_read", str(exc), current_task="close_read", resume_from="run_close_read_batch")
 
-    return build_stage_log_tools(context, "close-reader") + [run_close_read_batch]
+    return [run_close_read_batch]

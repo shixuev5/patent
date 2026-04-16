@@ -78,7 +78,6 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
 
     tool_names = {str(getattr(tool, "__name__", "")) for tool in tools}
     assert tool_names == {
-        "write_stage_log",
         "get_session_context",
         "get_planning_context",
         "get_execution_context",
@@ -120,18 +119,17 @@ def test_specialists_own_domain_tools():
         for tool in feature_comparer_module.build_feature_comparer_subagent(storage, task_id)["tools"]
     }
 
-    assert search_elements_tools == {"write_stage_log", "save_search_elements"}
+    assert search_elements_tools == {"save_search_elements"}
     assert planner_tools == {
-        "write_stage_log",
         "save_plan_review_markdown",
         "save_plan_execution_overview",
         "append_plan_sub_plan",
         "finalize_plan_draft",
     }
     assert "run_execution_step" in query_tools
-    assert coarse_tools == {"write_stage_log", "run_coarse_screen_batch"}
-    assert close_tools == {"write_stage_log", "run_close_read_batch"}
-    assert feature_tools == {"write_stage_log", "run_feature_compare"}
+    assert coarse_tools == {"run_coarse_screen_batch"}
+    assert close_tools == {"run_close_read_batch"}
+    assert feature_tools == {"run_feature_compare"}
 
 
 def test_main_agent_prompt_uses_runtime_phase_names():
@@ -143,7 +141,7 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "get_planning_context" in MAIN_AGENT_SYSTEM_PROMPT
     assert "get_execution_context" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "write_stage_log" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "write_stage_log" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "advance_workflow" in MAIN_AGENT_SYSTEM_PROMPT
     assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
     assert "缺少申请人、申请日、优先权日时" in MAIN_AGENT_SYSTEM_PROMPT

@@ -85,10 +85,7 @@ const toMillis = (value?: string | null): number => {
 
 const nowIso = (): string => new Date().toISOString()
 
-const shouldDisplayProcessEvent = (event?: Record<string, any> | null): boolean => {
-  if (!event || typeof event !== 'object') return false
-  return String(event.toolName || '').trim() !== 'write_stage_log'
-}
+const shouldDisplayProcessEvent = (event?: Record<string, any> | null): boolean => !!event && typeof event === 'object'
 
 const pendingAction = (snapshot?: AiSearchSnapshot | null): AiSearchPendingAction | null => {
   const value = snapshot?.conversation?.pendingAction
@@ -638,49 +635,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
 
       if (!snapshot) return
-
-      if (event.type === 'assistant.stage.started' || event.type === 'assistant.stage.delta' || event.type === 'assistant.stage.completed' || event.type === 'assistant.stage.failed') {
-        const messageId = String(payload?.messageId || '').trim()
-        if (!messageId) return
-        const existingMessages = normalizeMessages(snapshot.conversation?.messages)
-        const index = existingMessages.findIndex((item) => String(item.message_id || '').trim() === messageId)
-        const existing = index >= 0 ? existingMessages[index] : null
-        const nextContent = String(
-          payload?.content
-          || (event.type === 'assistant.stage.delta' ? payload?.content : '')
-          || existing?.content
-          || '',
-        )
-        const nextMessage = {
-          ...(existing || {}),
-          message_id: messageId,
-          role: 'assistant',
-          kind: 'assistant_stage_message',
-          content: nextContent,
-          stream_status: event.type === 'assistant.stage.completed'
-            ? 'completed'
-            : event.type === 'assistant.stage.failed'
-              ? 'failed'
-              : 'running',
-          created_at: String(existing?.created_at || event.timestamp || nowIso()),
-          metadata: {
-            ...(existing?.metadata || {}),
-            stageKind: String(payload?.stageKind || existing?.metadata?.stageKind || '').trim() || null,
-            stageInstanceId: String(payload?.stageInstanceId || existing?.metadata?.stageInstanceId || '').trim() || null,
-            runId: String(payload?.runId || existing?.metadata?.runId || '').trim() || null,
-            planVersion: payload?.planVersion ?? existing?.metadata?.planVersion ?? null,
-            todoId: String(payload?.todoId || existing?.metadata?.todoId || '').trim() || null,
-            batchId: String(payload?.batchId || existing?.metadata?.batchId || '').trim() || null,
-            status: event.type === 'assistant.stage.completed'
-              ? 'completed'
-              : event.type === 'assistant.stage.failed'
-                ? 'failed'
-                : 'running',
-          },
-        }
-        this._pushMessage(sessionId, nextMessage)
-        return
-      }
 
       if (event.type === 'message.created') {
         this._pushMessage(sessionId, payload)

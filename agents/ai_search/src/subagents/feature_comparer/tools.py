@@ -9,7 +9,6 @@ from typing import Any, List
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
-from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.stage_limits import DEFAULT_SELECTED_LIMIT
 from agents.ai_search.src.state import PHASE_FEATURE_COMPARISON
@@ -126,4 +125,4 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                 resume_from="run_feature_compare",
             )
 
-    return build_stage_log_tools(context, "feature-comparer") + [run_feature_compare]
+    return [run_feature_compare]

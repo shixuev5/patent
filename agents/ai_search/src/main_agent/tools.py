@@ -30,32 +30,6 @@ from backend.time_utils import utc_now_z
 
 
 def build_main_agent_tools(context: Any) -> List[Any]:
-    def write_stage_log(
-        content: str,
-        status: str = "completed",
-        append: bool = False,
-        runtime: ToolRuntime = None,
-    ) -> str:
-        """写入当前主控阶段的用户可见工作日志。"""
-        stage_kind = context.default_stage_kind_for_phase()
-        if not stage_kind:
-            raise ValueError("当前 phase 不支持主控阶段日志。")
-        result = context.write_stage_log(
-            stage_kind=stage_kind,
-            content=str(content or ""),
-            status=str(status or "completed"),
-            append=bool(append),
-            runtime=runtime,
-        )
-        return json.dumps(
-            {
-                "message_id": str(result.get("message_id") or "").strip(),
-                "stage_instance_id": str(result.get("stage_instance_id") or "").strip(),
-                "status": str(result.get("status") or "").strip(),
-            },
-            ensure_ascii=False,
-        )
-
     def get_session_context() -> str:
         """读取当前会话级上下文。"""
         return json.dumps(build_session_context(context), ensure_ascii=False)
@@ -231,7 +205,6 @@ def build_main_agent_tools(context: Any) -> List[Any]:
     complete_session_command.__name__ = "complete_session"
 
     return [
-        write_stage_log,
         get_session_context,
         get_planning_context,
         get_execution_context,

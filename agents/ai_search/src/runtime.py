@@ -68,7 +68,6 @@ TOOL_DISPLAY_LABELS = {
     "run_coarse_screen_batch": "执行候选粗筛",
     "run_close_read_batch": "执行重点精读",
     "run_feature_compare": "执行特征对比",
-    "write_stage_log": "更新阶段日志",
 }
 
 READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
@@ -371,13 +370,6 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 },
             },
         )
-        if self.context is not None:
-            self.context.emit_startup_stage_log(stage_kind=self.role, runtime=runtime)
-            self.context.emit_runtime_stage_checkpoint(
-                stage_kind=self.role,
-                checkpoint="entered_execution",
-                runtime=runtime,
-            )
         return None
 
     def after_agent(self, state: Any, runtime: Any) -> None:
@@ -464,13 +456,6 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 ),
             },
         )
-        if self.context is not None:
-            self.context.emit_runtime_stage_tool_progress(
-                stage_kind=self.role,
-                tool_name=tool_name,
-                tool_result=result,
-                runtime=request.runtime,
-            )
         return result
 
     async def awrap_tool_call(
@@ -527,13 +512,6 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
                 ),
             },
         )
-        if self.context is not None:
-            self.context.emit_runtime_stage_tool_progress(
-                stage_kind=self.role,
-                tool_name=tool_name,
-                tool_result=result,
-                runtime=request.runtime,
-            )
         return result
 
 

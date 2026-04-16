@@ -80,15 +80,6 @@ _AWAITING_USER_ACTION_PHASES = {
     PHASE_AWAITING_HUMAN_DECISION,
 }
 
-_PHASE_STARTUP_STAGE_KIND = {
-    PHASE_COLLECTING_REQUIREMENTS: "search-elements",
-    PHASE_DRAFTING_PLAN: "planner",
-    PHASE_EXECUTE_SEARCH: "query-executor",
-    PHASE_COARSE_SCREEN: "coarse-screener",
-    PHASE_CLOSE_READ: "close-reader",
-    PHASE_FEATURE_COMPARISON: "feature-comparer",
-}
-
 
 class AiSearchAgentRunService:
     def __init__(self, facade: Any) -> None:
@@ -193,9 +184,7 @@ class AiSearchAgentRunService:
         return payload
 
     def _should_hide_process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
-        if event_type not in {"tool.started", "tool.completed", "tool.failed"}:
-            return False
-        return str(payload.get("toolName") or "").strip() == "write_stage_log"
+        return False
 
     def _current_run_id(self, task_id: str) -> Optional[str]:
         run = self.storage.get_ai_search_run(task_id)
@@ -472,57 +461,7 @@ class AiSearchAgentRunService:
         phase: str,
         error_message: str,
     ) -> List[str]:
-        events: List[str] = []
-        failure_text = str(error_message or "").strip()
-        for message in self.storage.list_ai_search_messages(task_id):
-            if str(message.get("kind") or "").strip() != "assistant_stage_message":
-                continue
-            message_id = str(message.get("message_id") or "").strip()
-            if not message_id:
-                continue
-            if str(message.get("stream_status") or "").strip() in {"completed", "failed"}:
-                continue
-            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            stage_instance_id = str(metadata.get("stageInstanceId") or "").strip()
-            if not stage_instance_id:
-                continue
-            current_content = str(message.get("content") or "").strip()
-            next_content = current_content
-            if failure_text:
-                separator = "" if not next_content else "\n\n"
-                next_content = f"{next_content}{separator}{failure_text}".strip()
-            descriptor = {
-                "messageId": message_id,
-                "stageKind": str(metadata.get("stageKind") or "").strip(),
-                "stageInstanceId": stage_instance_id,
-                "runId": metadata.get("runId"),
-                "planVersion": metadata.get("planVersion"),
-                "todoId": metadata.get("todoId"),
-                "batchId": metadata.get("batchId"),
-            }
-            self.storage.update_ai_search_message(
-                message_id,
-                content=next_content,
-                stream_status="failed",
-                metadata={
-                    **metadata,
-                    "phase": phase,
-                    "status": "failed",
-                },
-            )
-            events.append(
-                self._format_event(
-                    "assistant.stage.failed",
-                    task_id,
-                    phase,
-                    {
-                        **descriptor,
-                        "content": next_content,
-                        "errorMessage": failure_text or "当前流式轮次执行失败。",
-                    },
-                )
-            )
-        return events
+        return []
 
     def _stream_error_payload(self, exc: Exception) -> Dict[str, Any]:
         if isinstance(exc, HTTPException):
@@ -968,49 +907,6 @@ class AiSearchAgentRunService:
         )
         return events
 
-    def _startup_stage_kind_for_phase(self, phase: str) -> str:
-        return str(_PHASE_STARTUP_STAGE_KIND.get(str(phase or "").strip()) or "").strip()
-
-    async def _emit_phase_startup_stage_events(
-        self,
-        *,
-        task_id: str,
-        owner_id: str,
-        phase: str,
-        stream_state: Dict[str, Any],
-    ) -> AsyncIterator[str]:
-        stage_kind = self._startup_stage_kind_for_phase(phase)
-        if not stage_kind:
-            return
-        context = AiSearchAgentContext(self.storage, task_id)
-        captured: list[dict[str, Any]] = []
-        runtime = SimpleNamespace(stream_writer=lambda payload: captured.append(payload))
-        created = context.emit_startup_stage_log(stage_kind=stage_kind, runtime=runtime)
-        if not created:
-            return
-        current_phase = self._current_phase_value(task_id, phase)
-        for item in captured:
-            event_type, event_payload = self._normalize_custom_event(item)
-            if not event_type:
-                continue
-            if event_type == "snapshot.changed":
-                snapshot = self.snapshots.get_snapshot(task_id, owner_id)
-                async for event in self._emit_snapshot_diff_events(
-                    stream_state["last_snapshot"],
-                    snapshot,
-                    stream_state=stream_state,
-                ):
-                    yield event
-                stream_state["last_snapshot"] = snapshot
-                continue
-            if event_type in {
-                "assistant.stage.started",
-                "assistant.stage.delta",
-                "assistant.stage.completed",
-                "assistant.stage.failed",
-            } and isinstance(event_payload, dict):
-                yield self._format_event(event_type, task_id, current_phase, dict(event_payload))
-
     async def _emit_snapshot_diff_events(
         self,
         previous: AiSearchSnapshotResponse,
@@ -1029,10 +925,6 @@ class AiSearchAgentRunService:
         for message in self.snapshots._snapshot_messages(current):
             message_id = str(message.get("message_id") or "").strip()
             if message_id and message_id in stream_state["known_message_ids"]:
-                continue
-            if str(message.get("kind") or "").strip() == "assistant_stage_message":
-                if message_id:
-                    stream_state["known_message_ids"].add(message_id)
                 continue
             if message_id:
                 stream_state["known_message_ids"].add(message_id)
@@ -1149,13 +1041,6 @@ class AiSearchAgentRunService:
                         normalized_payload,
                     )
                 elif event_type in {"tool.started", "tool.completed", "tool.failed"} and isinstance(event_payload, dict):
-                    yield self._format_event(event_type, session_id, current_phase, dict(event_payload))
-                elif event_type in {
-                    "assistant.stage.started",
-                    "assistant.stage.delta",
-                    "assistant.stage.completed",
-                    "assistant.stage.failed",
-                } and isinstance(event_payload, dict):
                     yield self._format_event(event_type, session_id, current_phase, dict(event_payload))
 
                 snapshot = self.snapshots.get_snapshot(session_id, owner_id)
@@ -1279,13 +1164,6 @@ class AiSearchAgentRunService:
             agent = self.facade._build_main_agent(self.storage, task.id) if self.facade._uses_default_run_main_agent() else None
             if hasattr(agent, "astream") and callable(getattr(agent, "astream")):
                 yield self._format_event("run.started", task.id, initial_phase, {})
-                async for event in self._emit_phase_startup_stage_events(
-                    task_id=task.id,
-                    owner_id=owner_id,
-                    phase=initial_phase,
-                    stream_state=stream_state,
-                ):
-                    yield event
                 async for event in self._consume_live_agent_stream(
                     session_id=task.id,
                     owner_id=owner_id,
@@ -1296,7 +1174,7 @@ class AiSearchAgentRunService:
                     initial_snapshot=initial_snapshot,
                     previous_phase=previous_phase,
                     config=self._main_agent_config(thread_id, for_resume=for_resume),
-                    forward_model_text=False,
+                    forward_model_text=True,
                     emit_run_started=False,
                 ):
                     yield event
@@ -1306,13 +1184,6 @@ class AiSearchAgentRunService:
                 stream_state["final_values"] = state.values if state is not None else {}
             else:
                 yield self._format_event("run.started", task.id, initial_phase, {})
-                async for event in self._emit_phase_startup_stage_events(
-                    task_id=task.id,
-                    owner_id=owner_id,
-                    phase=initial_phase,
-                    stream_state=stream_state,
-                ):
-                    yield event
                 result = await asyncio.to_thread(
                     self.facade._run_main_agent,
                     task.id,

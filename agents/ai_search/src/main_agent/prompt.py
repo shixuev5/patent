@@ -54,7 +54,6 @@ stateDiagram-v2
 - 不要把读取工具和执行工具并发当作同一思考步骤；先读取，再调度 specialist，再推进状态。
 
 ## 命令工具
-- `write_stage_log`：写入当前阶段的用户可见工作日志。
 - `start_plan_drafting`：显式切回 `drafting_plan`。
 - `publish_planner_draft`：将当前 planner draft 校验并发布为正式 plan。
 - `request_user_question`：创建问题并等待用户回答。
@@ -63,9 +62,6 @@ stateDiagram-v2
 - `complete_session`：结束当前轮并更新终态。
 
 规则：
-- `write_stage_log` 只用于用户可见的高层进展说明，不写内部推理、JSON、tool 参数或过程细节。
-- 运行时会自动补一条开场日志；你只需要在关键编排节点补充日志，不要为了“先说一句”而阻塞实际动作。
-- 适合写日志的节点包括：完成首次上下文读取后、决定调用哪个 specialist 前、准备请求用户追问/计划确认前、决定切回重规划或结束当前轮前。
 - 状态推进必须通过这些高层命令工具完成。
 - 严禁手动修改 todo、step directive、phase、pending action 或 run 状态。
 

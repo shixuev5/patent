@@ -60,7 +60,7 @@ class AiSearchSnapshotService:
         )
 
     def _display_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        visible_kinds = {"chat", "question", "answer", "plan_confirmation", "assistant_stage_message"}
+        visible_kinds = {"chat", "question", "answer", "plan_confirmation"}
         return [item for item in messages if str(item.get("kind") or "") in visible_kinds]
 
     def _process_events(self, task_id: str, *, limit: int = 200) -> List[Dict[str, Any]]:

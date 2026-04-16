@@ -6,7 +6,6 @@ import json
 from typing import Any, Dict, List
 
 from agents.common.search_clients.factory import SearchClientFactory
-from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 
 
 def _json_dumps(payload: Dict[str, Any]) -> str:
@@ -65,4 +64,4 @@ def build_plan_prober_tools(_context: Any) -> List[Any]:
                 count = int(info.get("TOTAL") or info.get("total") or 0)
         return _json_dumps({"query_text": str(query_text or "").strip(), "count": count})
 
-    return build_stage_log_tools(_context, "plan-prober") + [probe_search_semantic, probe_search_boolean, probe_count_boolean]
+    return [probe_search_semantic, probe_search_boolean, probe_count_boolean]

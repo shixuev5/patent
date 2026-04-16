@@ -9,7 +9,6 @@ from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.runtime import extract_json_object
 from agents.ai_search.src.state import PHASE_DRAFTING_PLAN
-from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 
 
@@ -31,4 +30,4 @@ def build_search_elements_tools(context: Any) -> List[Any]:
         context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
         return "search elements updated"
 
-    return build_stage_log_tools(context, "search-elements") + [save_search_elements]
+    return [save_search_elements]

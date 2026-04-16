@@ -1170,7 +1170,7 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
     assert events[0].startswith("data: ")
     assert parsed[0]["type"] == "run.started"
     assert any(item.startswith(": keepalive") for item in events)
-    assert not any(event["type"] == "assistant.message.delta" for event in parsed)
+    assert any(event["type"] == "assistant.message.delta" for event in parsed)
     assert any(event["type"] == "assistant.message.completed" for event in parsed)
     assert events[-1].startswith("data: ")
     assert "run.completed" in events[-1]
@@ -1234,15 +1234,17 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
 
     assert [event["type"] for event in parsed].count("phase.changed") == 0
     assert parsed[0]["type"] == "run.started"
-    startup_stage_index = next(
-        index for index, event in enumerate(parsed) if event["type"] == "assistant.stage.started"
-    )
     subagent_started_index = next(
         index
         for index, event in enumerate(parsed)
         if event["type"] == "process.event" and event["payload"]["processEventType"] == "subagent.started"
     )
-    assert startup_stage_index < subagent_started_index
+    subagent_completed_index = next(
+        index
+        for index, event in enumerate(parsed)
+        if event["type"] == "process.event" and event["payload"]["processEventType"] == "subagent.completed"
+    )
+    assert subagent_started_index < subagent_completed_index
     assert any(
         event["type"] == "process.event"
         and event["payload"]["processEventType"] == "subagent.started"
@@ -1273,14 +1275,6 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
             yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
-            stage_events: list[dict[str, Any]] = []
-            runtime = types.SimpleNamespace(stream_writer=lambda payload: stage_events.append(payload))
-            context = AiSearchAgentContext(storage, created.sessionId)
-            context.write_stage_log(
-                stage_kind="planner",
-                content="我先确认本轮计划的检索主线和关键边界。",
-                runtime=runtime,
-            )
             yield (
                 (),
                 "custom",
@@ -1298,8 +1292,6 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
                     },
                 },
             )
-            for event in stage_events:
-                yield ((), "custom", event)
             yield (
                 (),
                 "custom",
@@ -1317,16 +1309,6 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
                     },
                 },
             )
-            completion_events: list[dict[str, Any]] = []
-            completion_runtime = types.SimpleNamespace(stream_writer=lambda payload: completion_events.append(payload))
-            context.write_stage_log(
-                stage_kind="planner",
-                content="计划草案的数据库选择和调整策略已经整理完成。",
-                status="completed",
-                runtime=completion_runtime,
-            )
-            for event in completion_events:
-                yield ((), "custom", event)
 
         def get_state(self, config):
             return _FakeState()
@@ -1336,10 +1318,6 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "开始处理")))
     parsed = _parse_data_events(events)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
-    stage_messages = [
-        item for item in snapshot.conversation["messages"]
-        if item["kind"] == "assistant_stage_message"
-    ]
 
     assert any(
         event["type"] == "process.event"
@@ -1353,106 +1331,17 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
         and event["payload"]["summary"] == "读取规划上下文"
         for event in parsed
     )
-    assert any(
-        event["type"] == "assistant.stage.delta"
-        and event["payload"]["stageKind"] == "planner"
-        and "检索主线" in event["payload"]["content"]
-        for event in parsed
-    )
-    assert stage_messages
-    assert stage_messages[0]["metadata"]["stageKind"] == "planner"
-    assert "数据库选择和调整策略已经整理完成" in stage_messages[0]["content"]
+    assert not any(message["kind"] == "assistant_stage_message" for message in snapshot.conversation["messages"])
     assert snapshot.conversation["processEvents"]
     assert snapshot.conversation["processEvents"][0]["processEventType"] == "subagent.started"
-    assert not any(item.get("toolName") == "write_stage_log" for item in snapshot.conversation["processEvents"])
     assert snapshot.stream["lastEventSeq"] > 0
 
 
-def test_write_stage_log_creates_new_stage_message_per_call_and_emits_explicit_events(monkeypatch, tmp_path):
+def test_subagent_start_emits_process_event_without_stage_message(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
-    storage.create_ai_search_plan(_plan_record(created.sessionId, plan_version=1))
-    storage.create_ai_search_run(
-        {
-            "run_id": "run-stage-log",
-            "task_id": created.sessionId,
-            "plan_version": 1,
-            "phase": PHASE_DRAFTING_PLAN,
-            "status": TaskStatus.PROCESSING.value,
-        }
-    )
-    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=1)
-
     context = AiSearchAgentContext(storage, created.sessionId)
-    emitted: list[dict[str, Any]] = []
-    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
-
-    first = context.write_stage_log(
-        stage_kind="planner",
-        content="先确认检索主线和数据库边界。",
-        runtime=runtime,
-    )
-    second = context.write_stage_log(
-        stage_kind="planner",
-        content="计划草案已整理完成，待你确认。",
-        status="completed",
-        runtime=runtime,
-    )
-
-    assert first["message_id"] != second["message_id"]
-    first_message = storage.get_ai_search_message(first["message_id"])
-    second_message = storage.get_ai_search_message(second["message_id"])
-    assert first_message is not None
-    assert second_message is not None
-    assert first_message["kind"] == "assistant_stage_message"
-    assert second_message["kind"] == "assistant_stage_message"
-    assert first_message["stream_status"] == "completed"
-    assert second_message["stream_status"] == "completed"
-    assert first_message["metadata"]["stageInstanceId"] == "planner:plan-1"
-    assert second_message["metadata"]["stageInstanceId"] == "planner:plan-1"
-    assert first_message["content"] == "先确认检索主线和数据库边界。"
-    assert second_message["content"] == "计划草案已整理完成，待你确认。"
-    assert [event["type"] for event in emitted] == [
-        "assistant.stage.started",
-        "assistant.stage.delta",
-        "assistant.stage.completed",
-        "snapshot.changed",
-        "assistant.stage.started",
-        "assistant.stage.delta",
-        "assistant.stage.completed",
-        "snapshot.changed",
-    ]
-    assert emitted[0]["payload"]["messageId"] == first["message_id"]
-    assert emitted[1]["payload"]["content"].startswith("先确认检索主线和数据库边界。")
-    assert emitted[6]["payload"]["content"].endswith("计划草案已整理完成，待你确认。")
-
-
-def test_write_stage_log_uses_target_plan_version_before_plan_exists(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
-    created = service.create_session("guest_ai_search")
     _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
-
-    context = AiSearchAgentContext(storage, created.sessionId)
-    emitted: list[dict[str, Any]] = []
-    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
-
-    result = context.write_stage_log(
-        stage_kind="planner",
-        content="我先整理本轮规划主线和边界。",
-        runtime=runtime,
-    )
-
-    message = storage.get_ai_search_message(result["message_id"])
-    assert message is not None
-    assert message["metadata"]["stageInstanceId"] == "planner:plan-1"
-    assert message["metadata"]["planVersion"] == 1
-    assert emitted[0]["payload"]["stageInstanceId"] == "planner:plan-1"
-    assert emitted[0]["payload"]["planVersion"] == 1
-
-
-def test_subagent_start_emits_immediate_stage_body_and_dedupes(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
-    created = service.create_session("guest_ai_search")
     storage.create_ai_search_message(
         {
             "message_id": "msg-search-elements",
@@ -1471,9 +1360,6 @@ def test_subagent_start_emits_immediate_stage_body_and_dedupes(monkeypatch, tmp_
             },
         }
     )
-    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
-
-    context = AiSearchAgentContext(storage, created.sessionId)
     middleware = build_streaming_middleware("planner", context=context)
     emitted: list[dict[str, Any]] = []
     runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
@@ -1481,83 +1367,10 @@ def test_subagent_start_emits_immediate_stage_body_and_dedupes(monkeypatch, tmp_
     middleware.before_agent({}, runtime)
     middleware.before_agent({}, runtime)
 
-    stage_messages = [
-        item for item in storage.list_ai_search_messages(created.sessionId) if item.get("kind") == "assistant_stage_message"
-    ]
-    assert len(stage_messages) == 2
-    assert all(item["metadata"]["stageInstanceId"] == "planner:plan-1" for item in stage_messages)
-    assert all(item["metadata"]["planVersion"] == 1 for item in stage_messages)
-    assert "组织这轮检索计划" in stage_messages[0]["content"]
-    assert "已识别 2 个检索要素" in stage_messages[0]["content"]
-    assert stage_messages[0]["metadata"]["runtimeEvent"] == "startup"
-    assert stage_messages[1]["content"] == "开始进入计划草案实际组装，接下来会先落展示正文，再补执行结构和子计划。"
-    assert stage_messages[1]["metadata"]["runtimeCheckpoints"] == ["entered_execution"]
-
+    assert not any(item.get("kind") == "assistant_stage_message" for item in storage.list_ai_search_messages(created.sessionId))
     event_types = [event["type"] for event in emitted]
     assert event_types.count("subagent.started") == 2
-    assert event_types.count("assistant.stage.started") == 2
-    assert event_types.count("assistant.stage.delta") == 2
-    assert event_types.count("assistant.stage.completed") == 2
-    assert event_types.count("snapshot.changed") == 2
-
-
-def test_main_agent_write_stage_log_uses_current_phase_stage_kind(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
-    created = service.create_session("guest_ai_search")
-    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
-
-    context = AiSearchAgentContext(storage, created.sessionId)
-    tools = {str(getattr(tool, "__name__", "")): tool for tool in context.build_main_agent_tools()}
-    emitted: list[dict[str, Any]] = []
-    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
-
-    result = json.loads(
-        tools["write_stage_log"](
-            content="我先读取规划上下文，再决定是否需要预检。",
-            runtime=runtime,
-        )
-    )
-
-    message = storage.get_ai_search_message(result["message_id"])
-    assert message is not None
-    assert message["kind"] == "assistant_stage_message"
-    assert message["metadata"]["stageKind"] == "planner"
-    assert message["metadata"]["stageInstanceId"] == "planner:plan-1"
-    assert "我先读取规划上下文" in message["content"]
-    assert [event["type"] for event in emitted] == [
-        "assistant.stage.started",
-        "assistant.stage.delta",
-        "assistant.stage.completed",
-        "snapshot.changed",
-    ]
-
-
-def test_planner_runtime_tool_progress_creates_separate_stage_message(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
-    created = service.create_session("guest_ai_search")
-    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
-
-    context = AiSearchAgentContext(storage, created.sessionId)
-    runtime = types.SimpleNamespace(stream_writer=lambda payload: None)
-    first = context.emit_startup_stage_log(stage_kind="planner", runtime=runtime)
-    assert first is not None
-
-    appended = context.emit_runtime_stage_tool_progress(
-        stage_kind="planner",
-        tool_name="append_plan_sub_plan",
-        tool_result={"sub_plan_id": "sub_plan_1", "sub_plan_count": 1},
-        runtime=runtime,
-    )
-
-    assert appended is not None
-    assert appended["message_id"] != first["message_id"]
-    first_message = storage.get_ai_search_message(first["message_id"])
-    appended_message = storage.get_ai_search_message(appended["message_id"])
-    assert first_message is not None
-    assert appended_message is not None
-    assert "组织这轮检索计划" in first_message["content"]
-    assert "已写入子计划 sub_plan_1" in appended_message["content"]
-    assert "当前草案共包含 1 个子计划" in appended_message["content"]
+    assert "assistant.stage.started" not in event_types
 
 
 def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
@@ -1569,14 +1382,14 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
             "session_id": created.sessionId,
             "task_id": created.sessionId,
             "run_id": None,
-            "event_type": "assistant.stage.started",
+            "event_type": "process.event",
             "entity_id": "stage-1",
             "payload": {
-                "type": "assistant.stage.started",
+                "type": "process.event",
                 "sessionId": created.sessionId,
                 "taskId": created.sessionId,
                 "phase": PHASE_DRAFTING_PLAN,
-                "payload": {"messageId": "stage-1", "stageKind": "planner", "stageInstanceId": "planner:plan-1", "planVersion": 1},
+                "payload": {"eventId": "planner:started", "processEventType": "subagent.started", "name": "planner", "label": "检索规划"},
             },
         }
     )
@@ -1586,14 +1399,14 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
             "session_id": created.sessionId,
             "task_id": created.sessionId,
             "run_id": None,
-            "event_type": "assistant.stage.completed",
+            "event_type": "process.event",
             "entity_id": "stage-1",
             "payload": {
-                "type": "assistant.stage.completed",
+                "type": "process.event",
                 "sessionId": created.sessionId,
                 "taskId": created.sessionId,
                 "phase": PHASE_DRAFTING_PLAN,
-                "payload": {"messageId": "stage-1", "stageKind": "planner", "stageInstanceId": "planner:plan-1", "planVersion": 1, "content": "done"},
+                "payload": {"eventId": "planner:completed", "processEventType": "subagent.completed", "name": "planner", "label": "检索规划"},
             },
         }
     )
@@ -1602,7 +1415,7 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
     parsed = _parse_data_events(events)
 
     assert len(parsed) == 1
-    assert parsed[0]["type"] == "assistant.stage.completed"
+    assert parsed[0]["type"] == "process.event"
     assert parsed[0]["seq"] == int(second["seq"])
 
 
@@ -2687,15 +2500,6 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
                 ),
             )
             yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
-            stage_events: list[dict[str, Any]] = []
-            runtime = types.SimpleNamespace(stream_writer=lambda payload: stage_events.append(payload))
-            AiSearchAgentContext(storage, self.task_id).write_stage_log(
-                stage_kind="planner",
-                content="我先根据专利分析结果整理检索计划主线。",
-                runtime=runtime,
-            )
-            for event in stage_events:
-                yield ((), "custom", event)
             raise asyncio.CancelledError()
 
         def get_state(self, config):
@@ -2721,13 +2525,12 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
     assert ai_meta.get("analysis_seed_status") == "completed"
     assert ai_meta.get("planner_draft") is None
     assert ai_meta.get("active_plan_version") == 1
-    assert any(event["type"] == "assistant.stage.started" for event in parsed)
+    assert any(event["type"] == "process.event" for event in parsed)
     assert snapshot.conversation["pendingAction"] is not None
     assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
     assert snapshot.analysisSeed is not None
     assert snapshot.analysisSeed["status"] == "completed"
     assert [message["kind"] for message in snapshot.conversation["messages"]] == [
         "chat",
-        "assistant_stage_message",
         "plan_confirmation",
     ]

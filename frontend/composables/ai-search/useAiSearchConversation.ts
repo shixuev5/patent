@@ -49,9 +49,7 @@ const processSummary = (event: ConversationEntryLike, titleOverride?: string): s
   String(titleOverride || baseProcessTitle(event) || '执行过程').trim()
 )
 
-const shouldRenderProcessEvent = (event: ConversationEntryLike): boolean => (
-  String(event?.toolName || '').trim() !== 'write_stage_log'
-)
+const shouldRenderProcessEvent = (event: ConversationEntryLike): boolean => !!event
 
 const toProcessNode = (event: ConversationEntryLike, titleOverride?: string): ProcessRenderNode => {
   const summary = processSummary(event, titleOverride)

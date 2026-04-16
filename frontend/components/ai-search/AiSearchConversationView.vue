@@ -129,10 +129,6 @@
                   />
                 </template>
 
-                <template v-else-if="entry.role === 'assistant' && isStageMessage(entry)">
-                  <AiSearchExpandableContent :content="entry.content" mode="plaintext" theme="slate" />
-                </template>
-
                 <template v-else-if="entry.role === 'assistant'">
                   <AiSearchExpandableContent :content="entry.content" mode="markdown" theme="slate" />
                 </template>
@@ -288,8 +284,6 @@ const isProcessRenderEntry = (entry: Record<string, any>): boolean => String(ent
 const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
 const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
 const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
-const isStageMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'assistant_stage_message'
-
 const planVersionOf = (entry: Record<string, any>): number => {
   const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
   return Number.isFinite(value) ? value : 0
@@ -343,15 +337,12 @@ const isUserMarkdownEntry = (entry: Record<string, any>): boolean => {
 }
 
 const messageWrapperClass = (entry: Record<string, any>): string => (
-  isStageMessage(entry) ? 'w-full max-w-full' : 'max-w-[90%]'
+  'max-w-[90%]'
 )
 
 const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
-  }
-  if (isStageMessage(entry)) {
-    return 'px-1 py-1 text-slate-700'
   }
   if (isQuestionMessage(entry)) return ''
   return 'rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-slate-700 shadow-sm'

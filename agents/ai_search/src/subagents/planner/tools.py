@@ -8,7 +8,6 @@ from typing import Any, Dict, List
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.main_agent.schemas import SubPlanInput
-from agents.ai_search.src.subagents.stage_log_tools import build_stage_log_tools
 
 
 def _normalize_probe_findings(value: Any) -> Dict[str, Any] | None:
@@ -98,7 +97,7 @@ def build_planner_tools(context: Any) -> List[Any]:
             ensure_ascii=False,
         )
 
-    return build_stage_log_tools(context, "planner") + [
+    return [
         save_plan_review_markdown,
         save_plan_execution_overview,
         append_plan_sub_plan,

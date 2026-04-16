@@ -7,7 +7,6 @@ PLAN_PROBER_SYSTEM_PROMPT = """
 
 # 允许工具
 你可以使用以下工具：
-- `write_stage_log`
 你只能使用以下只读预检工具：
 - `probe_count_boolean` (评估布尔检索命中数量)
 - `probe_search_boolean` (抽取少量布尔检索结果看相关性)
@@ -26,10 +25,6 @@ PLAN_PROBER_SYSTEM_PROMPT = """
    - **噪声 (Noise)**：前几篇结果是否明显偏离检索目标？
    - **语言/分类号有效性**：仅用中文/英文，或叠加 IPC/CPC 是否会造成误杀或大量召回无关专利？
 3. **信号聚合**：汇总观察结果，提炼成给 Planner 的具体规划信号，直接输出结果。
-4. **阶段日志**：运行时会自动补一条开场日志；你至少再调用 2 次 `write_stage_log`。
-   - 第一次：说明当前重点验证的风险点。
-   - 第二次：说明预检后的宽窄、噪声或调整建议。
-
 # 输出 JSON 契约 (Data Schema)
 最终输出必须为纯 JSON 对象，并严格对齐 `PlanProbeFindings` 接口：
 - `overall_observation`: 字符串，全局维度的总体评估结论。
@@ -46,5 +41,4 @@ PLAN_PROBER_SYSTEM_PROMPT = """
 1. **零命中处理**：如果某个 Probe 查询结果为 0，这本身就是极具价值的信号。必须明确记录“零结果”，并在 `recommendation` 中建议放宽限制（如去掉某个非核心 Block，或放宽分类号）。
 2. **超大召回量**：如果 `probe_count_boolean` 命中数万或数十万篇，必须在 `impact` 中警告“召回过大”，并建议增加特征 Block 或严格限定字段（如限定 Title/Abstract）。
 3. **验证通过（无异常）**：如果 Probe 结果表现良好（量级适中、相关性高），必须在 `overall_observation` 或相应的 `signals` 中明确说明“验证通过，维持原计划”，切勿为了提建议而强行瞎编建议。
-4. **日志要求**：`write_stage_log` 只能输出归纳后的工作日志，不能粘贴原始 probe JSON 或长篇命中文献清单。
 """.strip()

@@ -143,8 +143,9 @@ let chartBootstrapTimer: ReturnType<typeof setTimeout> | null = null
 const now = new Date()
 
 const monthDays = computed(() => {
-  if (!props.dashboard) return now.getDate()
-  return new Date(props.dashboard.year, props.dashboard.month, 0).getDate()
+  const year = props.dashboard?.year ?? now.getFullYear()
+  const month = props.dashboard?.month ?? (now.getMonth() + 1)
+  return new Date(year, month, 0).getDate()
 })
 
 const isCurrentMonthDashboard = computed(() => (
@@ -357,19 +358,23 @@ const trendChartOption = computed<Record<string, any>>(() => ({
 }))
 
 const dailyChartOption = computed<Record<string, any>>(() => ({
-  animationDuration: 360,
-  animationDurationUpdate: 220,
+  animationDuration: 280,
+  animationDurationUpdate: 180,
   grid: {
-    left: 12,
-    right: 12,
-    top: 16,
-    bottom: 26,
+    left: 2,
+    right: 2,
+    top: 6,
+    bottom: 16,
     containLabel: true,
   },
   tooltip: {
     trigger: 'axis',
     axisPointer: {
-      type: 'shadow',
+      type: 'line',
+      lineStyle: {
+        color: 'rgba(14, 165, 233, 0.18)',
+        width: 1,
+      },
     },
     backgroundColor: 'rgba(15, 23, 42, 0.92)',
     borderWidth: 0,
@@ -394,30 +399,23 @@ const dailyChartOption = computed<Record<string, any>>(() => ({
     type: 'category',
     data: dayCategories.value,
     axisTick: { show: false },
-    axisLine: {
-      lineStyle: {
-        color: '#cbd5e1',
-      },
-    },
+    axisLine: { show: false },
     axisLabel: {
-      color: '#64748b',
-      fontSize: 10,
-      hideOverlap: true,
-      interval: monthDays.value > 21 ? 2 : 0,
+      color: '#94a3b8',
+      fontSize: 9,
+      interval: 0,
+      hideOverlap: false,
     },
   },
   yAxis: {
     type: 'value',
+    min: 0,
     minInterval: 1,
-    axisLabel: {
-      color: '#64748b',
-      fontSize: 10,
-    },
+    show: false,
+    axisLine: { show: false },
+    axisTick: { show: false },
     splitLine: {
-      show: true,
-      lineStyle: {
-        color: '#e2e8f0',
-      },
+      show: false,
     },
   },
   series: [
@@ -425,14 +423,27 @@ const dailyChartOption = computed<Record<string, any>>(() => ({
       name: '每日创建',
       type: 'bar',
       data: dailyTotals.value,
-      barMaxWidth: 18,
+      barWidth: '70%',
+      barMaxWidth: 42,
+      barMinWidth: 18,
+      barMinHeight: 6,
       itemStyle: {
-        color: '#06b6d4',
-        borderRadius: [6, 6, 2, 2],
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 0,
+          y2: 1,
+          colorStops: [
+            { offset: 0, color: '#39c1e6' },
+            { offset: 1, color: '#1499cc' },
+          ],
+        },
+        borderRadius: [10, 10, 10, 10],
       },
       emphasis: {
         itemStyle: {
-          color: '#0891b2',
+          color: '#0369a1',
         },
       },
     },
@@ -550,6 +561,12 @@ onBeforeUnmount(() => {
   padding: 0.4rem;
 }
 
+.daily-chart-wrap {
+  border-color: #e7eef5;
+  background: linear-gradient(180deg, #fcfdff 0%, #ffffff 100%);
+  padding: 0.35rem 0.35rem 0.1rem;
+}
+
 .chart-canvas {
   width: 100%;
 }
@@ -559,7 +576,7 @@ onBeforeUnmount(() => {
 }
 
 .daily-chart {
-  height: 15rem;
+  height: 8.25rem;
 }
 
 .week-card {
@@ -582,7 +599,7 @@ onBeforeUnmount(() => {
   }
 
   .daily-chart {
-    height: 12.5rem;
+    height: 7rem;
   }
 }
 </style>
