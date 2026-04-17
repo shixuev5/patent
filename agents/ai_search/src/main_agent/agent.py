@@ -8,7 +8,8 @@ from deepagents import create_deep_agent
 from deepagents.backends.state import StateBackend
 
 from agents.ai_search.src.checkpointer import AiSearchCheckpointSaver
-from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.runtime_context import AiSearchRuntimeContext
+from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
 from agents.ai_search.src.runtime import build_guard_middleware, large_model
 from agents.ai_search.src.subagents.close_reader import build_close_reader_subagent
@@ -22,13 +23,12 @@ from agents.ai_search.src.subagents.search_elements import build_search_elements
 
 def build_main_agent(storage: Any, task_id: str):
     checkpointer = AiSearchCheckpointSaver(storage)
-    context = AiSearchAgentContext(storage, task_id)
 
     return create_deep_agent(
         model=large_model(),
-        tools=context.build_main_agent_tools(),
+        tools=build_main_agent_tools(),
         system_prompt=MAIN_AGENT_SYSTEM_PROMPT,
-        middleware=[build_guard_middleware("main-agent", storage, task_id)],
+        middleware=[build_guard_middleware()],
         subagents=[
             build_search_elements_subagent(storage, task_id),
             build_plan_prober_subagent(storage, task_id),
@@ -40,5 +40,6 @@ def build_main_agent(storage: Any, task_id: str):
         ],
         checkpointer=checkpointer,
         backend=StateBackend,
+        context_schema=AiSearchRuntimeContext,
         name=f"ai-search-main-agent-{task_id}",
     )

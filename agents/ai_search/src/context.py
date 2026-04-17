@@ -1024,42 +1024,42 @@ class AiSearchAgentContext:
         return build_gap_progress(self, int(plan_version or self.active_plan_version() or 0))
 
     def build_main_agent_tools(self) -> List[Any]:
-        return build_main_agent_tools(self)
+        return build_main_agent_tools()
 
     def build_search_elements_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
 
-        return build_search_elements_tools(self)
+        return build_search_elements_tools()
 
     def build_planner_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.planner.tools import build_planner_tools
 
-        return build_planner_tools(self)
+        return build_planner_tools()
 
     def build_query_executor_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 
-        return build_query_executor_tools(self)
+        return build_query_executor_tools()
 
     def build_plan_prober_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
 
-        return build_plan_prober_tools(self)
+        return build_plan_prober_tools()
 
     def build_coarse_screener_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools
 
-        return build_coarse_screener_tools(self)
+        return build_coarse_screener_tools()
 
     def build_close_reader_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.close_reader.tools import build_close_reader_tools
 
-        return build_close_reader_tools(self)
+        return build_close_reader_tools()
 
     def build_feature_comparer_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.feature_comparer.tools import build_feature_comparer_tools
 
-        return build_feature_comparer_tools(self)
+        return build_feature_comparer_tools()
 
     def execution_todos_from_plan(self, plan_version: int, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         from agents.ai_search.src.execution_state import build_execution_todos

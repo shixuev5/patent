@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.orchestration.execution_runtime import (
@@ -9,6 +10,7 @@ from agents.ai_search.src.orchestration.execution_runtime import (
     build_step_directive,
     evaluate_exhaustion_payload,
 )
+from agents.ai_search.src.runtime_context import build_runtime_context
 from backend.storage import Task, TaskStatus, TaskType
 from backend.storage import SQLiteTaskStorage
 
@@ -132,6 +134,10 @@ def _create_feature_batch(storage: SQLiteTaskStorage, task_id: str, run_id: str,
     return batch_id
 
 
+def _runtime(context: AiSearchAgentContext) -> SimpleNamespace:
+    return SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
+
+
 def _seed_gap_results(storage: SQLiteTaskStorage, task_id: str = "task-gap", *, plan_version: int = 1) -> tuple[str, str]:
     run_id = _create_run(storage, task_id, plan_version=plan_version, phase="feature_comparison")
     feature_batch_id = _create_feature_batch(storage, task_id, run_id, plan_version=plan_version)
@@ -170,11 +176,12 @@ def test_get_planning_context_reads_latest_close_read_and_feature_compare_result
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     get_planning_context = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
     )
 
-    payload = json.loads(get_planning_context())
+    payload = json.loads(get_planning_context(runtime=runtime))
 
     assert payload["gap_context"]["close_read_result"]["limitation_gaps"][0]["limitation_id"] == "1-L2"
     assert payload["gap_context"]["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
@@ -186,11 +193,12 @@ def test_get_planning_context_reports_replan_when_gaps_remain(tmp_path):
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     get_planning_context = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
     )
 
-    payload = json.loads(get_planning_context())
+    payload = json.loads(get_planning_context(runtime=runtime))
 
     assert payload["gap_progress"]["should_continue_search"] is True
     assert payload["gap_progress"]["recommended_action"] == "replan_search"
@@ -393,11 +401,12 @@ def test_complete_session_is_blocked_when_gap_replan_is_required(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     complete_session = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_session"
     )
 
-    payload = json.loads(complete_session(plan_version=1))
+    payload = json.loads(complete_session(plan_version=1, runtime=runtime))
 
     assert payload["blocked"] is True
     assert payload["reason"] == "gap_replan_required"
@@ -425,10 +434,11 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     run_feature_compare = next(
         tool for tool in context.build_feature_comparer_tools() if str(getattr(tool, "__name__", "")) == "run_feature_compare"
     )
-    load_payload = json.loads(run_feature_compare(operation="load", plan_version=1))
+    load_payload = json.loads(run_feature_compare(operation="load", plan_version=1, runtime=runtime))
 
     run_feature_compare(
         operation="commit",
@@ -443,6 +453,7 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
             ensure_ascii=False,
         ),
         plan_version=1,
+        runtime=runtime,
     )
 
     messages = storage.list_ai_search_messages("task-gap")
@@ -476,13 +487,14 @@ def test_advance_workflow_begin_execution_sets_resume_metadata_on_todo(tmp_path)
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     advance_workflow = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "advance_workflow"
     )
     get_execution_context = next(tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_execution_context")
 
-    advance_workflow(action="begin_execution", plan_version=1)
-    payload = json.loads(get_execution_context(plan_version=1))
+    advance_workflow(action="begin_execution", plan_version=1, runtime=runtime)
+    payload = json.loads(get_execution_context(plan_version=1, runtime=runtime))
     todos = context._current_todos()
     execute_todo = next(item for item in todos if item["todo_id"] == "plan_1:sub_plan_1:step_1")
 
@@ -518,25 +530,27 @@ def test_run_execution_step_commit_persists_step_summary(tmp_path):
     storage.update_ai_search_run("task-gap", run_id, active_retrieval_todo_id="plan_1:sub_plan_1:step_1")
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     run_execution_step = next(
         tool for tool in context.build_query_executor_tools() if str(getattr(tool, "__name__", "")) == "run_execution_step"
     )
 
     result = run_execution_step(
-            operation="commit",
-            payload_json=json.dumps(
-                {
-                    "todo_id": "plan_1:sub_plan_1:step_1",
-                    "step_id": "step_1",
-                    "sub_plan_id": "sub_plan_1",
-                    "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
-                    "new_unique_candidates": 2,
-                    "candidate_pool_size": 3,
-                },
-                ensure_ascii=False,
-            ),
-                plan_version=1,
-            )
+        operation="commit",
+        payload_json=json.dumps(
+            {
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "step_id": "step_1",
+                "sub_plan_id": "sub_plan_1",
+                "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
+                "new_unique_candidates": 2,
+                "candidate_pool_size": 3,
+            },
+            ensure_ascii=False,
+        ),
+        plan_version=1,
+        runtime=runtime,
+    )
     summaries = storage.list_ai_search_execution_summaries(run_id)
     assert result == "execution step summary saved"
     assert len(summaries) == 1
@@ -721,10 +735,11 @@ def test_advance_workflow_step_completed_materializes_and_starts_conditional_tod
     )
 
     context = AiSearchAgentContext(storage, "task-gap")
+    runtime = _runtime(context)
     advance_workflow = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "advance_workflow"
     )
-    payload = json.loads(advance_workflow(action="step_completed", plan_version=1))
+    payload = json.loads(advance_workflow(action="step_completed", plan_version=1, runtime=runtime))
     todos = {item["todo_id"]: item for item in context._current_todos()}
 
     assert payload["activated_todo_ids"] == ["plan_1:sub_plan_1:step_2"]

@@ -118,7 +118,14 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
         "subagents": {"close-reader"},
     },
     PHASE_FEATURE_COMPARISON: {
-        "tools": {"get_session_context", "get_execution_context", "complete_session", "advance_workflow", "start_plan_drafting"},
+        "tools": {
+            "get_session_context",
+            "get_execution_context",
+            "complete_session",
+            "advance_workflow",
+            "start_plan_drafting",
+            "request_human_decision",
+        },
         "subagents": {"feature-comparer"},
     },
     PHASE_AWAITING_HUMAN_DECISION: {

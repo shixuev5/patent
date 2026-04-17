@@ -5,11 +5,13 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
 
 stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
 stub_ai_search_agents.build_close_reader_agent = lambda: None
@@ -70,7 +72,7 @@ from backend.ai_search.models import (
 import agents.ai_search.src.context as ai_search_context_module
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
-from agents.ai_search.src.runtime import build_streaming_middleware
+from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
@@ -651,7 +653,8 @@ def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeove
     _seed_execution_queue_message(storage, created.sessionId, str(run.get("run_id") or ""), content="优先关注申请人为华为", ordinal=2)
 
     context = AiSearchAgentContext(storage, created.sessionId)
-    run_execution_step = build_query_executor_tools(context)[0]
+    run_execution_step = build_query_executor_tools()[0]
+    runtime = SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
 
     with pytest.raises(ExecutionQueueTakeoverRequested) as exc_info:
         run_execution_step(
@@ -664,6 +667,7 @@ def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeove
                 },
                 ensure_ascii=False,
             ),
+            runtime=runtime,
         )
 
     exc = exc_info.value
@@ -888,6 +892,42 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
     monkeypatch.setattr(ai_search_service_module, "build_close_reader_agent", lambda *_args, **_kwargs: _FakeCloseReaderAgent())
     monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
 
+    def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert task_id == created.sessionId
+        assert for_resume is False
+        assert "request_human_decision" in payload["messages"][0]["content"]
+        context = AiSearchAgentContext(storage, task_id)
+        context.create_pending_action(
+            "human_decision",
+            {
+                "available": True,
+                "reason": "manual_document_review",
+                "summary": "人工文献复核已完成，请决定继续检索或按当前结果完成。",
+                "roundCount": 2,
+                "noProgressRoundCount": 1,
+                "selectedCount": 1,
+                "recommendedActions": ["continue_search", "complete_current_results"],
+            },
+            run_id=run_id,
+            plan_version=1,
+            source="human_decision_gate",
+        )
+        context.update_task_phase(
+            PHASE_AWAITING_HUMAN_DECISION,
+            active_plan_version=1,
+            run_id=run_id,
+            selected_document_count=1,
+            current_task=None,
+        )
+        return {
+            "awaiting_user_action": True,
+            "completion_reason": "awaiting_human_decision",
+            "values": {"messages": []},
+        }
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_run_main_agent)
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
+
     events = asyncio.run(_collect_stream(service.stream_document_review(created.sessionId, "guest_ai_search", 1, ["doc-2"], ["doc-1"])))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
@@ -952,6 +992,40 @@ def test_stream_document_review_keeps_human_decision_when_selection_becomes_empt
             "recommendedActions": ["continue_search", "complete_current_results"],
         },
     )
+
+    def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert task_id == created.sessionId
+        assert for_resume is False
+        context = AiSearchAgentContext(storage, task_id)
+        context.create_pending_action(
+            "human_decision",
+            {
+                "available": True,
+                "reason": "manual_document_review",
+                "summary": "当前无已选对比文献，请送审候选文献或继续检索。",
+                "roundCount": 1,
+                "noProgressRoundCount": 1,
+                "selectedCount": 0,
+                "recommendedActions": ["continue_search", "complete_current_results"],
+            },
+            run_id=run_id,
+            plan_version=1,
+            source="human_decision_gate",
+        )
+        context.update_task_phase(
+            PHASE_AWAITING_HUMAN_DECISION,
+            active_plan_version=1,
+            run_id=run_id,
+            selected_document_count=0,
+            current_task=None,
+        )
+        return {
+            "awaiting_user_action": True,
+            "completion_reason": "awaiting_human_decision",
+            "values": {"messages": []},
+        }
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_run_main_agent)
 
     events = asyncio.run(_collect_stream(service.stream_document_review(created.sessionId, "guest_ai_search", 1, [], ["doc-1"])))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
@@ -1511,40 +1585,6 @@ def test_stream_message_persists_stage_messages_and_process_events_from_updates(
     assert snapshot.stream["lastEventSeq"] > 0
 
 
-def test_subagent_start_emits_process_event_without_stage_message(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
-    created = service.create_session("guest_ai_search")
-    context = AiSearchAgentContext(storage, created.sessionId)
-    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
-    storage.create_ai_search_message(
-        {
-            "message_id": "msg-search-elements",
-            "task_id": created.sessionId,
-            "plan_version": None,
-            "role": "assistant",
-            "kind": "search_elements_update",
-            "content": "检索要素已识别。",
-            "stream_status": "completed",
-            "metadata": {
-                "objective": "降低漏报率",
-                "search_elements": [
-                    {"element_name": "异常检测"},
-                    {"element_name": "阈值校正"},
-                ],
-            },
-        }
-    )
-    middleware = build_streaming_middleware("planner", context=context)
-    emitted: list[dict[str, Any]] = []
-    runtime = types.SimpleNamespace(stream_writer=lambda payload: emitted.append(payload))
-
-    middleware.before_agent({}, runtime)
-    middleware.before_agent({}, runtime)
-
-    assert not any(item.get("kind") == "assistant_stage_message" for item in storage.list_ai_search_messages(created.sessionId))
-    assert emitted == []
-
-
 def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
@@ -1803,6 +1843,40 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
 
     monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
 
+    def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert task_id == created.sessionId
+        assert for_resume is False
+        context = AiSearchAgentContext(storage, task_id)
+        context.create_pending_action(
+            "human_decision",
+            {
+                "available": True,
+                "reason": "no_progress_limit_reached",
+                "summary": "## 对比结论\n仍需继续检索。",
+                "roundCount": 1,
+                "noProgressRoundCount": 1,
+                "selectedCount": 1,
+                "recommendedActions": ["continue_search", "complete_current_results"],
+            },
+            run_id=run_id,
+            plan_version=1,
+            source="human_decision_gate",
+        )
+        context.update_task_phase(
+            PHASE_AWAITING_HUMAN_DECISION,
+            active_plan_version=1,
+            run_id=run_id,
+            selected_document_count=1,
+            current_task=None,
+        )
+        return {
+            "awaiting_user_action": True,
+            "completion_reason": "awaiting_human_decision",
+            "values": {"messages": []},
+        }
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_run_main_agent)
+
     events = asyncio.run(_collect_stream(service.stream_feature_comparison(created.sessionId, "guest_ai_search", 1)))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
@@ -1864,15 +1938,26 @@ def test_stream_decision_continue_resets_counters_and_restarts_planning(monkeypa
         human_decision_reason="no_progress_limit_reached",
         human_decision_summary="需要人工决策",
     )
-    monkeypatch.setattr(
-        service,
-        "_run_main_agent",
-        lambda task_id, thread_id, payload, **kwargs: (
-            {"awaiting_user_action": False, "completion_reason": "completed", "values": {"messages": [{"role": "assistant", "content": "我会重新起草计划。"}]}}
-            if "人工决策态" in payload["messages"][0]["content"]
-            else (_ for _ in ()).throw(AssertionError("unexpected decision continue payload"))
-        ),
-    )
+    def _fake_continue_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert isinstance(payload, Command)
+        assert getattr(payload, "resume", None) == {"decision": "continue_search"}
+        assert for_resume is True
+        context = AiSearchAgentContext(storage, task_id)
+        context.resolve_pending_action("human_decision", resolution={"decision": "continue_search"})
+        context.reset_execution_control(1, clear_human_decision=True)
+        context.update_task_phase(
+            PHASE_DRAFTING_PLAN,
+            active_plan_version=1,
+            run_id=run_id,
+            current_task=None,
+        )
+        return {
+            "awaiting_user_action": False,
+            "completion_reason": "completed",
+            "values": {"messages": [{"role": "assistant", "content": "我会重新起草计划。"}]},
+        }
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_continue_run_main_agent)
     monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ai_search_agent_run_service_module, "extract_latest_ai_message", lambda values: values["messages"][-1]["content"])
 
@@ -1966,6 +2051,27 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
             ],
         },
     )
+    def _fake_complete_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert isinstance(payload, Command)
+        assert getattr(payload, "resume", None) == {"decision": "complete_current_results"}
+        assert for_resume is True
+        context = AiSearchAgentContext(storage, task_id)
+        context.resolve_pending_action("human_decision", resolution={"decision": "complete_current_results"})
+        context.update_task_phase(
+            PHASE_COMPLETED,
+            active_plan_version=1,
+            run_id=run_id,
+            selected_document_count=1,
+            current_task=None,
+        )
+        return {
+            "awaiting_user_action": False,
+            "completion_reason": "completed",
+            "values": {"messages": [{"role": "assistant", "content": "按当前结果结束。"}]},
+        }
+
+    monkeypatch.setattr(service, "_run_main_agent", _fake_complete_run_main_agent)
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda *_args, **_kwargs: None)
 
     events = asyncio.run(_collect_stream(service.stream_decision_complete(created.sessionId, "guest_ai_search")))
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")

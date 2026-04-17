@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.query_constraints import build_search_constraints, build_query_text, build_semantic_text
 from agents.common.retrieval.academic_query_utils import (
     to_crossref_bibliographic_query,
@@ -255,12 +256,9 @@ def _normalize_result_item(raw_item: Dict[str, Any]) -> Dict[str, Any]:
     return _normalize_patent_result(raw_item)
 
 
-def build_search_tools(context: Any) -> List[Any]:
-    storage = context.storage
-    task_id = context.task_id
-
-    def _existing_documents(plan_version: int) -> Dict[str, Dict[str, Any]]:
-        documents = storage.list_ai_search_documents(task_id, int(plan_version))
+def build_search_tools() -> List[Any]:
+    def _existing_documents(resolved_context: Any, plan_version: int) -> Dict[str, Dict[str, Any]]:
+        documents = resolved_context.storage.list_ai_search_documents(resolved_context.task_id, int(plan_version))
         mapping: Dict[str, Dict[str, Any]] = {}
         for item in documents:
             canonical_id = _normalized_text(item.get("canonical_id")) or build_ai_search_canonical_id(
@@ -276,6 +274,7 @@ def build_search_tools(context: Any) -> List[Any]:
     def _candidate_record(
         existing: Optional[Dict[str, Any]],
         *,
+        resolved_context: Any,
         run_id: str,
         plan_version: int,
         batch_id: str,
@@ -304,7 +303,7 @@ def build_search_tools(context: Any) -> List[Any]:
         document_id = str(existing.get("document_id") or "").strip() if existing else ""
         if not document_id:
             document_id = stable_ai_search_document_id(
-                task_id,
+                resolved_context.task_id,
                 int(plan_version),
                 canonical_id,
                 fallback_seed=pn or _normalized_text(normalized.get("external_id")) or _normalized_text(normalized.get("title")),
@@ -337,7 +336,7 @@ def build_search_tools(context: Any) -> List[Any]:
         return {
             "run_id": run_id,
             "document_id": document_id,
-            "task_id": task_id,
+            "task_id": resolved_context.task_id,
             "plan_version": int(plan_version),
             "source_type": resolved_source_type,
             "external_id": resolved_external_id,
@@ -376,6 +375,7 @@ def build_search_tools(context: Any) -> List[Any]:
     def _persist_search_results(
         raw_result: Any,
         *,
+        runtime: ToolRuntime | None,
         plan_version: int,
         batch_id: str,
         lane_type: str,
@@ -383,10 +383,12 @@ def build_search_tools(context: Any) -> List[Any]:
         step_id: str,
         executed_tool: str,
     ) -> str:
+        resolved_context = resolve_agent_context(runtime)
+        storage = resolved_context.storage
         payload = raw_result if isinstance(raw_result, dict) else {}
         raw_items = payload.get("results") if isinstance(payload.get("results"), list) else []
-        existing_by_canonical = _existing_documents(plan_version)
-        run_id = context.active_run_id(plan_version)
+        existing_by_canonical = _existing_documents(resolved_context, plan_version)
+        run_id = resolved_context.active_run_id(plan_version)
         records: List[Dict[str, Any]] = []
         new_unique_candidates = 0
         deduped_hits = 0
@@ -404,6 +406,7 @@ def build_search_tools(context: Any) -> List[Any]:
                 new_unique_candidates += 1
             record = _candidate_record(
                 existing,
+                resolved_context=resolved_context,
                 run_id=run_id,
                 plan_version=int(plan_version),
                 batch_id=batch_id,
@@ -417,7 +420,7 @@ def build_search_tools(context: Any) -> List[Any]:
                 existing_by_canonical[canonical_id] = record
         if records:
             storage.upsert_ai_search_documents(records)
-        candidate_pool_size = len(storage.list_ai_search_documents(task_id, int(plan_version)))
+        candidate_pool_size = len(storage.list_ai_search_documents(resolved_context.task_id, int(plan_version)))
         return _json_dumps(
             {
                 "lane_type": lane_type,
@@ -447,6 +450,7 @@ def build_search_tools(context: Any) -> List[Any]:
         """
         _ = cutoff_date, applicant_terms
         client = SearchClientFactory.get_client("zhihuiya")
+        resolved_context = resolve_agent_context(runtime)
         if not hasattr(client, "get_similar_patents"):
             return _json_dumps(
                 {
@@ -455,15 +459,16 @@ def build_search_tools(context: Any) -> List[Any]:
                     "executed_tool": "search_trace",
                     "new_unique_candidates": 0,
                     "deduped_hits": 0,
-                    "candidate_pool_size": len(storage.list_ai_search_documents(task_id, int(plan_version))),
+                    "candidate_pool_size": len(resolved_context.storage.list_ai_search_documents(resolved_context.task_id, int(plan_version))),
                     "result_count": 0,
                     "stop_signal": "trace_unavailable",
                 }
             )
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         result = client.get_similar_patents(str(seed_pn or "").strip().upper(), limit=int(limit or 20))
         output = _persist_search_results(
             result,
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="trace",
@@ -471,7 +476,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_trace",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def search_semantic(
@@ -489,7 +494,8 @@ def build_search_tools(context: Any) -> List[Any]:
         调用智慧芽语义检索，并把命中文献写入候选池。
         """
         _ = applicant_terms
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_context = resolve_agent_context(runtime)
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         client = SearchClientFactory.get_client("zhihuiya")
         result = client.search_semantic(
             str(query_text or "").strip(),
@@ -498,6 +504,7 @@ def build_search_tools(context: Any) -> List[Any]:
         )
         output = _persist_search_results(
             result,
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="semantic",
@@ -505,7 +512,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_semantic",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def search_boolean(
@@ -520,13 +527,15 @@ def build_search_tools(context: Any) -> List[Any]:
         """
         调用智慧芽布尔检索，并把命中文献写入候选池。
         """
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_context = resolve_agent_context(runtime)
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         client = SearchClientFactory.get_client("zhihuiya")
         result = client.search(str(query_text or "").strip(), limit=int(limit or 50))
         if not isinstance(result, dict):
             result = {"total": 0, "results": []}
         output = _persist_search_results(
             result,
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="boolean",
@@ -534,7 +543,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_boolean",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def search_academic_openalex(
@@ -548,7 +557,8 @@ def build_search_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """调用 OpenAlex 检索非专文献，并把命中文献写入候选池。"""
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_context = resolve_agent_context(runtime)
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         aggregator = _academic_aggregator()
         results = [
             {**item, "detail_source": "abstract_only"}
@@ -560,6 +570,7 @@ def build_search_tools(context: Any) -> List[Any]:
         ]
         output = _persist_search_results(
             {"results": results},
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="openalex",
@@ -567,7 +578,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_academic_openalex",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def search_academic_semanticscholar(
@@ -581,7 +592,8 @@ def build_search_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """调用 Semantic Scholar 检索非专文献，并把命中文献写入候选池。"""
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_context = resolve_agent_context(runtime)
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         aggregator = _academic_aggregator()
         results = [
             {
@@ -597,6 +609,7 @@ def build_search_tools(context: Any) -> List[Any]:
         ]
         output = _persist_search_results(
             {"results": results},
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="semanticscholar",
@@ -604,7 +617,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_academic_semanticscholar",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def search_academic_crossref(
@@ -618,7 +631,8 @@ def build_search_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """调用 Crossref 检索非专文献，并把命中文献写入候选池。"""
-        resolved_step_id = str(step_id or (context.current_todo() or {}).get("step_id") or "").strip()
+        resolved_context = resolve_agent_context(runtime)
+        resolved_step_id = str(step_id or (resolved_context.current_todo() or {}).get("step_id") or "").strip()
         aggregator = _academic_aggregator()
         results = [
             {**item, "detail_source": "abstract_only"}
@@ -630,6 +644,7 @@ def build_search_tools(context: Any) -> List[Any]:
         ]
         output = _persist_search_results(
             {"results": results},
+            runtime=runtime,
             plan_version=int(plan_version),
             batch_id=batch_id,
             lane_type="crossref",
@@ -637,7 +652,7 @@ def build_search_tools(context: Any) -> List[Any]:
             step_id=resolved_step_id,
             executed_tool="search_academic_crossref",
         )
-        context.notify_snapshot_changed(runtime, reason="documents")
+        resolved_context.notify_snapshot_changed(runtime, reason="documents")
         return output
 
     def count_boolean(query_text: str) -> str:

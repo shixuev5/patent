@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.subagents.query_executor import build_search_tools
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
@@ -17,6 +19,10 @@ class _StubContext:
     def __init__(self):
         self.storage = _StubStorage()
         self.task_id = "task-search-tools"
+
+
+def _runtime(context) -> SimpleNamespace:
+    return SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
 
 
 def _mount_context(tmp_path):
@@ -36,7 +42,7 @@ def _mount_context(tmp_path):
 
 
 def test_prepare_lane_queries_includes_gap_seed_fields():
-    tools = build_search_tools(_StubContext())
+    tools = build_search_tools()
     prepare_lane_queries = next(tool for tool in tools if str(getattr(tool, "__name__", "")) == "prepare_lane_queries")
 
     payload = json.loads(
@@ -74,7 +80,7 @@ def test_prepare_lane_queries_includes_gap_seed_fields():
 
 def test_search_academic_openalex_persists_npl_and_dedupes_by_doi(tmp_path, monkeypatch):
     context, storage = _mount_context(tmp_path)
-    tools = {getattr(tool, "__name__", ""): tool for tool in build_search_tools(context)}
+    tools = {getattr(tool, "__name__", ""): tool for tool in build_search_tools()}
 
     class _FakeAggregator:
         def search_openalex(self, **_kwargs):
@@ -118,6 +124,7 @@ def test_search_academic_openalex_persists_npl_and_dedupes_by_doi(tmp_path, monk
             batch_id="batch-openalex-1",
             query_text="battery thermal management",
             limit=5,
+            runtime=_runtime(context),
         )
     )
     documents = storage.list_ai_search_documents(context.task_id, 1)

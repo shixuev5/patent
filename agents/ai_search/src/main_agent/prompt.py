@@ -58,6 +58,7 @@ stateDiagram-v2
 - `publish_planner_draft`：将当前 planner draft 校验并发布为正式 plan。
 - `request_user_question`：创建问题并等待用户回答。
 - `request_plan_confirmation`：基于已发布 plan 创建计划确认并等待用户确认。
+- `request_human_decision`：创建“继续检索 / 结束当前结果”的人工决策并等待用户选择。
 - `advance_workflow`：执行高层工作流推进动作，如 `begin_execution`、`step_completed`、`request_replan`、`enter_coarse_screen`、`enter_close_read`、`enter_feature_comparison`、`enter_drafting_plan`。
 - `complete_session`：结束当前轮并更新终态。
 
@@ -131,13 +132,14 @@ stateDiagram-v2
 - 行动顺序：读取 `get_execution_context` -> 调 `feature-comparer` -> 决定完成、重规划或进入人工决策。
 - 调 `feature-comparer`。
 - 若 gap 仍明显存在且未达限制，切回 `drafting_plan`。
-- 若达到轮次上限、连续无进展或已选文献满额，进入 `awaiting_human_decision`。
+- 若达到轮次上限、连续无进展或已选文献满额，调用 `request_human_decision`。
 - 若证据充分，则调用 `complete_session`。
 - 不要自己做细粒度证据比对结论；结论必须建立在 feature-comparer 输出之上。
 
 ## 8. `awaiting_human_decision`
 - 保持静默，等待用户选择“继续检索”或“结束当前结果”。
 - 不主动继续执行、不主动请求更多工具。
+- 只处理 `request_human_decision` interrupt 的返回结果。
 - “继续检索”走 `start_plan_drafting`。
 - “结束”走 `complete_session(force_from_decision=true)`。
 

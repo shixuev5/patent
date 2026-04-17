@@ -10,7 +10,8 @@ from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import TodoListMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
-from agents.ai_search.src.runtime import AiSearchGuardMiddleware, AiSearchStreamingMiddleware
+from agents.ai_search.src.runtime import AiSearchGuardMiddleware
+from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -29,9 +30,16 @@ class _StubStorage:
         return self._task
 
 
+def _request(tool_name: str, *, tool_id: str, args: dict | None = None, phase: str | None = None, role: str = "main-agent"):
+    runtime = SimpleNamespace(config={"metadata": {"lc_agent_name": role}})
+    if phase is not None:
+        runtime.context = build_runtime_context(_StubStorage(phase), "task-runtime")
+    return SimpleNamespace(tool_call={"name": tool_name, "id": tool_id, "args": args or {}}, runtime=runtime)
+
+
 def test_planner_blocks_read_file():
-    middleware = AiSearchGuardMiddleware("main-agent")
-    request = SimpleNamespace(tool_call={"name": "read_file", "id": "call-1", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("read_file", tool_id="call-1")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -39,9 +47,9 @@ def test_planner_blocks_read_file():
 
 
 def test_close_reader_blocks_write_file_but_allows_grep():
-    middleware = AiSearchGuardMiddleware("close-reader")
-    blocked_request = SimpleNamespace(tool_call={"name": "write_file", "id": "call-2", "args": {}})
-    allowed_request = SimpleNamespace(tool_call={"name": "grep", "id": "call-3", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    blocked_request = _request("write_file", tool_id="call-2", role="close-reader")
+    allowed_request = _request("grep", tool_id="call-3", role="close-reader")
 
     blocked = middleware.wrap_tool_call(blocked_request, lambda _request: "ok")
     allowed = middleware.wrap_tool_call(allowed_request, lambda _request: "ok")
@@ -51,12 +59,8 @@ def test_close_reader_blocks_write_file_but_allows_grep():
 
 
 def test_main_agent_phase_protocol_blocks_wrong_subagent():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-1",
-    )
-    request = SimpleNamespace(tool_call={"name": "task", "id": "call-4", "args": {"subagent_type": "query-executor"}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("task", tool_id="call-4", args={"subagent_type": "query-executor"}, phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -64,12 +68,8 @@ def test_main_agent_phase_protocol_blocks_wrong_subagent():
 
 
 def test_main_agent_blocks_legacy_tool_outside_phase_policy():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-topic",
-    )
-    request = SimpleNamespace(tool_call={"name": "legacy_planner_tool", "id": "call-topic-1", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("legacy_planner_tool", tool_id="call-topic-1", phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -77,12 +77,8 @@ def test_main_agent_blocks_legacy_tool_outside_phase_policy():
 
 
 def test_main_agent_blocks_removed_subagent_type():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-topic-2",
-    )
-    request = SimpleNamespace(tool_call={"name": "task", "id": "call-topic-2", "args": {"subagent_type": "legacy-search-worker"}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("task", tool_id="call-topic-2", args={"subagent_type": "legacy-search-worker"}, phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -90,12 +86,8 @@ def test_main_agent_blocks_removed_subagent_type():
 
 
 def test_main_agent_allows_named_planner_subagent_call_in_drafting_plan():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-topic-3",
-    )
-    request = SimpleNamespace(tool_call={"name": "planner", "id": "call-topic-3", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("planner", tool_id="call-topic-3", phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -103,12 +95,8 @@ def test_main_agent_allows_named_planner_subagent_call_in_drafting_plan():
 
 
 def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_phase():
-    middleware = AiSearchGuardMiddleware(
-        "query-executor",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-2",
-    )
-    request = SimpleNamespace(tool_call={"name": "search_semantic", "id": "call-5", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("search_semantic", tool_id="call-5", phase=PHASE_DRAFTING_PLAN, role="query-executor")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -116,12 +104,8 @@ def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_pha
 
 
 def test_planner_phase_protocol_blocks_plan_save_tool():
-    middleware = AiSearchGuardMiddleware(
-        "planner",
-        storage=_StubStorage(PHASE_DRAFTING_PLAN),
-        task_id="task-planner",
-    )
-    request = SimpleNamespace(tool_call={"name": "publish_planner_draft", "id": "call-planner-1", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("publish_planner_draft", tool_id="call-planner-1", phase=PHASE_DRAFTING_PLAN, role="planner")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -129,12 +113,8 @@ def test_planner_phase_protocol_blocks_plan_save_tool():
 
 
 def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
-    middleware = AiSearchGuardMiddleware(
-        "close-reader",
-        storage=_StubStorage(PHASE_CLOSE_READ),
-        task_id="task-3",
-    )
-    request = SimpleNamespace(tool_call={"name": "grep", "id": "call-6", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("grep", tool_id="call-6", phase=PHASE_CLOSE_READ, role="ai-search-close-reader-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -142,12 +122,8 @@ def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
 
 
 def test_main_agent_allows_interrupt_tool_resume_in_awaiting_user_answer():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_AWAITING_USER_ANSWER),
-        task_id="task-4",
-    )
-    request = SimpleNamespace(tool_call={"name": "request_user_question", "id": "call-7", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("request_user_question", tool_id="call-7", phase=PHASE_AWAITING_USER_ANSWER, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -155,12 +131,8 @@ def test_main_agent_allows_interrupt_tool_resume_in_awaiting_user_answer():
 
 
 def test_main_agent_allows_interrupt_tool_resume_in_awaiting_plan_confirmation():
-    middleware = AiSearchGuardMiddleware(
-        "main-agent",
-        storage=_StubStorage(PHASE_AWAITING_PLAN_CONFIRMATION),
-        task_id="task-5",
-    )
-    request = SimpleNamespace(tool_call={"name": "request_plan_confirmation", "id": "call-8", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("request_plan_confirmation", tool_id="call-8", phase=PHASE_AWAITING_PLAN_CONFIRMATION, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
@@ -168,8 +140,8 @@ def test_main_agent_allows_interrupt_tool_resume_in_awaiting_plan_confirmation()
 
 
 def test_main_agent_async_tool_guard_blocks_read_file():
-    middleware = AiSearchGuardMiddleware("main-agent")
-    request = SimpleNamespace(tool_call={"name": "read_file", "id": "call-async-1", "args": {}})
+    middleware = AiSearchGuardMiddleware()
+    request = _request("read_file", tool_id="call-async-1")
 
     async def _handler(_request):
         raise AssertionError("handler should not be called for blocked async tools")
@@ -193,33 +165,3 @@ def test_close_reader_subagent_middleware_names_are_unique():
     names = [item.name for item in middleware]
 
     assert len(set(names)) == len(names)
-
-
-def test_streaming_middleware_passes_through_sync_tool_calls():
-    middleware = AiSearchStreamingMiddleware("planner")
-    request = SimpleNamespace(
-        tool_call={"name": "get_planning_context", "id": "call-tool-1", "args": {}},
-        runtime=SimpleNamespace(stream_writer=lambda payload: None),
-    )
-
-    result = middleware.wrap_tool_call(request, lambda _request: "ok")
-
-    assert result == "ok"
-
-
-def test_streaming_middleware_passes_through_async_tool_call_failures():
-    middleware = AiSearchStreamingMiddleware("query-executor")
-    request = SimpleNamespace(
-        tool_call={"name": "run_execution_step", "id": "call-tool-2", "args": {"operation": "commit"}},
-        runtime=SimpleNamespace(stream_writer=lambda payload: None),
-    )
-
-    async def _handler(_request):
-        raise RuntimeError("boom")
-
-    try:
-        asyncio.run(middleware.awrap_tool_call(request, _handler))
-    except RuntimeError as exc:
-        assert str(exc) == "boom"
-    else:
-        raise AssertionError("expected runtime error")

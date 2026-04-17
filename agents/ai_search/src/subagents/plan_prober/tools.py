@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.execution_state import PlanProbeFindings
 from agents.common.search_clients.factory import SearchClientFactory
 
@@ -34,9 +35,7 @@ def _trim_probe_results(raw_items: Any, *, limit: int) -> List[Dict[str, Any]]:
     return items
 
 
-def build_plan_prober_tools(_context: Any) -> List[Any]:
-    context = _context
-
+def build_plan_prober_tools() -> List[Any]:
     def probe_search_semantic(query_text: str, limit: int = 5) -> str:
         """执行非持久化语义预检。"""
         client = SearchClientFactory.get_client("zhihuiya")
@@ -74,8 +73,9 @@ def build_plan_prober_tools(_context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """保存结构化预检信号，供 planner 消费。"""
+        resolved_context = resolve_agent_context(runtime)
         payload = findings.model_dump(mode="python")
-        draft = context.save_planner_probe_findings(payload, runtime=runtime)
+        draft = resolved_context.save_planner_probe_findings(payload, runtime=runtime)
         return _json_dumps(
             {
                 "draft_id": draft.get("draft_id"),

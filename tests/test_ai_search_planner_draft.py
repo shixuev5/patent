@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 import pytest
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
+from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.state import default_ai_search_meta
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
@@ -16,6 +18,10 @@ def _mount_context(tmp_path):
     task = manager.create_task(owner_id="guest_ai_search", task_type="ai_search", title="AI 检索会话")
     storage.update_task(task.id, metadata={"ai_search": default_ai_search_meta(f"ai-search-{task.id}")})
     return AiSearchAgentContext(storage, task.id), storage, task.id
+
+
+def _runtime(context: AiSearchAgentContext) -> SimpleNamespace:
+    return SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
 
 
 def _execution_spec() -> SearchPlanExecutionSpecInput:
@@ -65,6 +71,7 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     context, _storage, _task_id = _mount_context(tmp_path)
     tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+    runtime = _runtime(context)
     spec = _execution_spec()
 
     review_result = context.save_planner_review_markdown("# 检索计划\n\n## 检索目标\n测试目标")
@@ -73,11 +80,12 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
         constraints=spec.constraints,
         execution_policy=spec.execution_policy,
         probe_findings={"signals": [{"type": "semantic_probe", "count": 3}]},
+        runtime=runtime,
     )
-    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
-    payload = json.loads(main_tools["publish_planner_draft"]())
+    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0], runtime=runtime)
+    payload = json.loads(main_tools["publish_planner_draft"](runtime=runtime))
     draft = context.current_planner_draft()
-    fetched = json.loads(main_tools["get_planning_context"]())
+    fetched = json.loads(main_tools["get_planning_context"](runtime=runtime))
 
     assert review_result["draft_id"]
     assert draft == {}
@@ -90,13 +98,14 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     context.clear_planner_draft()
 
     assert context.current_planner_draft() == {}
-    assert json.loads(main_tools["get_planning_context"]())["planner_draft"] == {}
+    assert json.loads(main_tools["get_planning_context"](runtime=runtime))["planner_draft"] == {}
 
 
 def test_publish_planner_draft_normalizes_database_names(tmp_path):
     context, storage, task_id = _mount_context(tmp_path)
     tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+    runtime = _runtime(context)
     spec = _execution_spec().model_copy(deep=True)
     spec.search_scope["databases"] = ["zhihuiya", "openalex", "bad-db", "crossref", "openalex"]
 
@@ -105,9 +114,10 @@ def test_publish_planner_draft_normalizes_database_names(tmp_path):
         search_scope=spec.search_scope,
         constraints=spec.constraints,
         execution_policy=spec.execution_policy,
+        runtime=runtime,
     )
-    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
-    plan_version = json.loads(main_tools["publish_planner_draft"]())["plan_version"]
+    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0], runtime=runtime)
+    plan_version = json.loads(main_tools["publish_planner_draft"](runtime=runtime))["plan_version"]
     plan = storage.get_ai_search_plan(task_id, plan_version)
 
     assert plan is not None
@@ -119,6 +129,7 @@ def test_planner_draft_overview_normalizes_string_probe_findings(tmp_path, probe
     context, storage, task_id = _mount_context(tmp_path)
     tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+    runtime = _runtime(context)
     spec = _execution_spec()
 
     context.save_planner_review_markdown("# 检索计划\n\n## 检索目标\n测试目标")
@@ -128,9 +139,10 @@ def test_planner_draft_overview_normalizes_string_probe_findings(tmp_path, probe
             constraints=spec.constraints,
             execution_policy=spec.execution_policy,
             probe_findings=probe_findings,
+            runtime=runtime,
         )
     )
-    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
+    tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0], runtime=runtime)
 
     draft = context.current_planner_draft()
     assert payload["draft_id"] == draft["draft_id"]
@@ -139,7 +151,7 @@ def test_planner_draft_overview_normalizes_string_probe_findings(tmp_path, probe
     else:
         assert draft["probe_findings"] is None
 
-    plan_version = json.loads(main_tools["publish_planner_draft"]())["plan_version"]
+    plan_version = json.loads(main_tools["publish_planner_draft"](runtime=runtime))["plan_version"]
     plan = storage.get_ai_search_plan(task_id, plan_version)
     assert plan is not None
     assert plan["review_markdown"].startswith("# 检索计划")

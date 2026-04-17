@@ -13,13 +13,14 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.exceptions import ExecutionQueueTakeoverRequested
 from agents.ai_search.src.orchestration.action_runtime import (
     build_pending_action_view,
     current_pending_action,
     resolve_pending_action,
 )
-from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation, enter_human_decision
+from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation
 from agents.ai_search.src.orchestration.planning_runtime import publish_planner_draft
 from agents.ai_search.src.runtime import (
     ALL_AI_SEARCH_SUBAGENTS,
@@ -27,6 +28,7 @@ from agents.ai_search.src.runtime import (
     build_tool_event_payload,
     extract_latest_ai_message,
     format_subagent_label,
+    normalize_ai_search_role,
 )
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
@@ -145,7 +147,14 @@ class AiSearchAgentRunService:
     def _run_main_agent(self, task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False) -> Dict[str, Any]:
         agent = self.facade._build_main_agent(self.storage, task_id)
         config = self._main_agent_config(thread_id, for_resume=for_resume)
-        for chunk in agent.stream(payload, config):
+        runtime_context = build_runtime_context(self.storage, task_id)
+        try:
+            iterator = agent.stream(payload, config, context=runtime_context)
+        except TypeError as exc:
+            if "context" not in str(exc):
+                raise
+            iterator = agent.stream(payload, config)
+        for chunk in iterator:
             if "__interrupt__" in chunk:
                 continue
         state = agent.get_state(self._main_agent_state_config(agent, thread_id))
@@ -620,7 +629,7 @@ class AiSearchAgentRunService:
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
-    def _build_decision_continue_prompt(self, task_id: str, decision_action: Dict[str, Any]) -> str:
+    def _build_human_decision_prompt(self, task_id: str, decision_action: Dict[str, Any]) -> str:
         context = AiSearchAgentContext(self.storage, task_id)
         payload = {
             "decision_reason": decision_action.get("reason"),
@@ -631,9 +640,11 @@ class AiSearchAgentRunService:
             "gap_context": context.latest_gap_context(),
         }
         return (
-            "继续当前 AI 检索，但这不是新的用户需求。"
-            "当前会话已进入人工决策态，请基于现有文献池、gap context 和决策摘要重新起草计划，"
-            "然后请求用户确认，不要直接恢复旧执行步骤。\n\n"
+            "这不是新的用户需求。"
+            "你现在必须立刻调用 `request_human_decision` 发起人工决策 interrupt，"
+            "不要重新检索，不要自己替用户做决定。"
+            "当 interrupt 恢复后：如果用户选择 `continue_search`，就回到 `drafting_plan` 并重新起草计划；"
+            "如果用户选择 `complete_current_results`，就调用 `complete_session(force_from_decision=true)` 结束当前结果。\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -905,17 +916,7 @@ class AiSearchAgentRunService:
         return False
 
     def _normalize_source_agent_name(self, value: Any) -> str:
-        raw = str(value or "").strip().lower()
-        if not raw:
-            return ""
-        if raw in {"main-agent", "main_agent"} or raw.startswith("ai-search-main-agent-"):
-            return "main-agent"
-        if raw in ALL_AI_SEARCH_SUBAGENTS:
-            return raw
-        for candidate in ALL_AI_SEARCH_SUBAGENTS:
-            if raw.startswith(f"ai-search-{candidate}-"):
-                return candidate
-        return ""
+        return normalize_ai_search_role(value)
 
     def _source_role_for_agent(self, source_agent: str) -> str:
         return "main_agent" if str(source_agent or "").strip() == "main-agent" else "subagent"
@@ -1560,13 +1561,25 @@ class AiSearchAgentRunService:
         if emit_run_started:
             yield self._format_event("run.started", session_id, initial_phase, {})
 
-        iterator = agent.astream(
-            payload,
-            config,
-            stream_mode=["updates", "messages", "custom"],
-            subgraphs=True,
-            version="v2",
-        )
+        try:
+            iterator = agent.astream(
+                payload,
+                config,
+                context=build_runtime_context(self.storage, task_id),
+                stream_mode=["updates", "messages", "custom"],
+                subgraphs=True,
+                version="v2",
+            )
+        except TypeError as exc:
+            if "context" not in str(exc):
+                raise
+            iterator = agent.astream(
+                payload,
+                config,
+                stream_mode=["updates", "messages", "custom"],
+                subgraphs=True,
+                version="v2",
+            )
         async for item in self._iterate_stream_with_keepalive(iterator):
             if item is None:
                 yield ": keepalive\n\n"
@@ -1852,32 +1865,9 @@ class AiSearchAgentRunService:
                 final_phase = PHASE_COMPLETED
             selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
             if final_phase == PHASE_AWAITING_HUMAN_DECISION:
-                findings = context.latest_agent_markdown_content("feature-comparer", plan_version=plan_version)
-                summary = (
-                    str(human_decision_summary or "").strip()
-                    or findings
-                    or str(round_evaluation.get("decision_summary") or "").strip()
-                    or "自动检索已停止，需要人工决策。"
-                )
-                enter_human_decision(
-                    context,
-                    reason=(
-                        str(human_decision_reason or "").strip()
-                        or str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip()
-                    ),
-                    summary=summary,
-                )
-                self.facade._append_message(
-                    task.id,
-                    "assistant",
-                    "chat",
-                    summary,
-                    plan_version=plan_version or None,
-                    metadata={"reason": round_evaluation.get("decision_reason"), "kind": "human_decision"},
-                )
                 self.facade._update_phase(
                     task.id,
-                    final_phase,
+                    PHASE_FEATURE_COMPARISON,
                     selected_document_count=selected_count,
                 )
             else:
@@ -1901,6 +1891,36 @@ class AiSearchAgentRunService:
 
             async for event in self._emit_final_message_segments_if_needed(task.id, stream_state):
                 yield event
+
+            if final_phase == PHASE_AWAITING_HUMAN_DECISION:
+                findings = context.latest_agent_markdown_content("feature-comparer", plan_version=plan_version)
+                decision_action = {
+                    "reason": (
+                        str(human_decision_reason or "").strip()
+                        or str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip()
+                    ),
+                    "summary": (
+                        str(human_decision_summary or "").strip()
+                        or findings
+                        or str(round_evaluation.get("decision_summary") or "").strip()
+                        or "自动检索已停止，需要人工决策。"
+                    ),
+                    "roundCount": int(round_evaluation.get("execution_round_count") or 0),
+                    "noProgressRoundCount": int(round_evaluation.get("no_progress_round_count") or 0),
+                    "selectedCount": selected_count,
+                }
+                meta = get_ai_search_meta(self.storage.get_task(task.id))
+                thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+                async for event in self._stream_main_agent_execution(
+                    task=self.storage.get_task(task.id),
+                    owner_id=owner_id,
+                    thread_id=thread_id,
+                    payload={"messages": [{"role": "user", "content": self._build_human_decision_prompt(task.id, decision_action)}]},
+                    previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                    persist_fallback_assistant=True,
+                ):
+                    yield event
+                return
 
             if emit_run_completed:
                 yield self._format_event(
@@ -2388,8 +2408,11 @@ class AiSearchAgentRunService:
 
     async def _stream_decision_continue_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
-        decision_action = self._require_human_decision_action(task)
+        self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or "")
+        if phase != PHASE_AWAITING_HUMAN_DECISION:
+            self.sessions._raise_invalid_phase(phase, "当前没有待处理的人工决策。")
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
             raise HTTPException(
@@ -2401,22 +2424,29 @@ class AiSearchAgentRunService:
                 },
             )
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-        context = AiSearchAgentContext(self.storage, task.id)
-        context.reset_execution_control(plan_version, clear_human_decision=True)
-        self._resolve_pending_action(
-            task.id,
-            expected_type="human_decision",
-            resolution={"decision": "continue_search"},
-        )
-        self.facade._update_phase(task.id, PHASE_DRAFTING_PLAN)
-        prompt = self._build_decision_continue_prompt(task.id, decision_action)
+
+        def _post_run(_: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            pending = self._pending_action(task.id, expected_type="human_decision")
+            if pending is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": HUMAN_DECISION_REQUIRED_CODE,
+                        "message": "人工决策恢复后仍未完成处理。",
+                        "suggestion": "请稍后重试，或检查主控代理是否仍停留在人工决策 interrupt。",
+                    },
+                )
+            return {"resumedFromDecision": True}
+
         async for event in self._stream_main_agent_execution(
-            task=self.storage.get_task(task.id),
+            task=task,
             owner_id=owner_id,
             thread_id=thread_id,
-            payload={"messages": [{"role": "user", "content": prompt}]},
-            previous_phase=PHASE_AWAITING_HUMAN_DECISION,
+            payload=Command(resume={"decision": "continue_search"}),
+            previous_phase=phase,
+            for_resume=True,
             persist_fallback_assistant=True,
+            post_run=_post_run,
         ):
             yield event
 
@@ -2424,6 +2454,9 @@ class AiSearchAgentRunService:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         self._require_human_decision_action(task)
         meta = get_ai_search_meta(task)
+        phase = str(meta.get("current_phase") or "")
+        if phase != PHASE_AWAITING_HUMAN_DECISION:
+            self.sessions._raise_invalid_phase(phase, "当前没有待处理的人工决策。")
         plan_version = int(meta.get("active_plan_version") or 0)
         if plan_version <= 0:
             raise HTTPException(
@@ -2446,57 +2479,35 @@ class AiSearchAgentRunService:
             )
 
         termination_reason = self._decision_termination_reason(task)
-        feature_comparison = self.artifacts._current_feature_comparison(task, plan_version)
-        if feature_comparison is None:
-            self.facade._update_phase(
-                task.id,
-                PHASE_FEATURE_COMPARISON,
-                active_plan_version=plan_version,
-            )
-            async for event in self._stream_feature_agent_execution(
-                task=self.storage.get_task(task.id),
-                owner_id=owner_id,
-                plan_version=plan_version,
-                previous_phase=PHASE_AWAITING_HUMAN_DECISION,
-                force_complete=True,
-                termination_reason=termination_reason,
-            ):
-                yield event
-            return
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
 
-        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
-        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
-        yield self._format_event("run.started", task.id, self.snapshots._snapshot_phase(initial_snapshot), {})
-        self._resolve_pending_action(
-            task.id,
-            expected_type="human_decision",
-            resolution={"decision": "complete_current_results"},
-        )
-        self.facade._update_phase(
-            task.id,
-            PHASE_COMPLETED,
-            active_plan_version=plan_version,
-            selected_document_count=len(selected_documents),
-        )
-        self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
-        await asyncio.to_thread(self.facade.notify_task_terminal_status, task.id, PHASE_COMPLETED)
-        final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-        async for event in self._emit_snapshot_diff_events(
-            stream_state["last_snapshot"],
-            final_snapshot,
-            stream_state=stream_state,
+        def _post_run(_: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            updated_task = self.storage.get_task(task.id)
+            updated_meta = get_ai_search_meta(updated_task)
+            updated_phase = str(updated_meta.get("current_phase") or "")
+            if updated_phase != PHASE_COMPLETED:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": HUMAN_DECISION_REQUIRED_CODE,
+                        "message": "人工决策恢复后还没有完成当前结果。",
+                        "suggestion": "请检查主控代理在恢复后是否调用了 complete_session(force_from_decision=true)。",
+                    },
+                )
+            self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
+            self.facade.notify_task_terminal_status(task.id, PHASE_COMPLETED)
+            return {"completedFromDecision": True}
+
+        async for event in self._stream_main_agent_execution(
+            task=task,
+            owner_id=owner_id,
+            thread_id=thread_id,
+            payload=Command(resume={"decision": "complete_current_results"}),
+            previous_phase=phase,
+            for_resume=True,
+            post_run=_post_run,
         ):
             yield event
-        yield self._format_event(
-            "run.completed",
-            task.id,
-            self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-            self._completion_payload_for_phase(
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                {"completedFromTakeover": True},
-            ),
-        )
 
     def _create_manual_close_read_batch(self, task_id: str, plan_version: int, document_ids: List[str]) -> str:
         run = self.storage.get_ai_search_run(task_id, plan_version=plan_version)
@@ -2689,20 +2700,6 @@ class AiSearchAgentRunService:
             ):
                 yield event
         else:
-            summary = "当前无已选对比文献，请送审候选文献或继续检索。"
-            enter_human_decision(
-                context,
-                reason="manual_document_review",
-                summary=summary,
-            )
-            self.facade._append_message(
-                task.id,
-                "assistant",
-                "chat",
-                summary,
-                plan_version=plan_version or None,
-                metadata={"reason": "manual_document_review", "kind": "human_decision"},
-            )
             final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
                 stream_state["last_snapshot"],
@@ -2711,6 +2708,25 @@ class AiSearchAgentRunService:
             ):
                 yield event
             stream_state["last_snapshot"] = final_snapshot
+            meta = get_ai_search_meta(self.storage.get_task(task.id))
+            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+            decision_action = {
+                "reason": "manual_document_review",
+                "summary": "当前无已选对比文献，请送审候选文献或继续检索。",
+                "roundCount": int((context._run_state(context.active_run(plan_version)) or {}).get("execution_round_count") or 0),
+                "noProgressRoundCount": int((context._run_state(context.active_run(plan_version)) or {}).get("no_progress_round_count") or 0),
+                "selectedCount": 0,
+            }
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
+                owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": self._build_human_decision_prompt(task.id, decision_action)}]},
+                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
+                persist_fallback_assistant=True,
+            ):
+                yield event
+            return
 
         yield self._format_event(
             "run.completed",

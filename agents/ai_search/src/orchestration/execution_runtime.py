@@ -6,6 +6,8 @@ import json
 import uuid
 from typing import Any, Dict, Optional
 
+from langgraph.types import interrupt
+
 from agents.ai_search.src.execution_state import (
     DEFAULT_EXECUTION_POLICY,
     build_execution_todo,
@@ -16,6 +18,7 @@ from agents.ai_search.src.execution_state import (
     resolve_plan_step,
     step_is_activated_by,
 )
+from agents.ai_search.src.orchestration.action_runtime import open_pending_action
 from agents.ai_search.src.orchestration.phase_machine import enter_drafting_plan, phase_from_todo
 from agents.ai_search.src.orchestration.session_views import build_gap_progress
 from agents.ai_search.src.state import (
@@ -364,7 +367,35 @@ def advance_workflow(
         round_evaluation = commit_round_evaluation(context, version, runtime=runtime)
         if bool(round_evaluation.get("should_request_decision")):
             summary = str(round_evaluation.get("decision_summary") or str(reason or "").strip()).strip() or "自动检索已停止，需要人工决策。"
-            enter_human_decision(context, reason=str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(), summary=summary, runtime=runtime)
+            run = context.active_run(version)
+            selected_count = len(context.storage.list_ai_search_documents(context.task_id, version, stages=["selected"])) if version > 0 else 0
+            run_state = context._run_state(run)
+            payload = {
+                "available": True,
+                "reason": str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip(),
+                "summary": summary,
+                "roundCount": int(run_state.get("execution_round_count") or round_evaluation.get("execution_round_count") or 0),
+                "noProgressRoundCount": int(run_state.get("no_progress_round_count") or round_evaluation.get("no_progress_round_count") or 0),
+                "selectedCount": selected_count,
+                "recommendedActions": ["continue_search", "complete_current_results"],
+            }
+            if run:
+                updated_state = {
+                    **run_state,
+                    "human_decision_reason": payload["reason"] or None,
+                    "human_decision_summary": payload["summary"] or None,
+                    "last_exhaustion_reason": payload["reason"] or None,
+                    "last_exhaustion_summary": payload["summary"] or None,
+                }
+                context.storage.update_ai_search_run(
+                    context.task_id,
+                    str(run.get("run_id") or ""),
+                    phase=PHASE_AWAITING_HUMAN_DECISION,
+                    status=phase_to_task_status(PHASE_AWAITING_HUMAN_DECISION),
+                    active_retrieval_todo_id=None,
+                    selected_document_count=selected_count,
+                    human_decision_state=updated_state,
+                )
             context.storage.create_ai_search_message(
                 {
                     "message_id": uuid.uuid4().hex,
@@ -377,7 +408,38 @@ def advance_workflow(
                     "metadata": {"reason": round_evaluation.get("decision_reason"), "kind": "human_decision"},
                 }
             )
-            return {"todo_id": str(current.get("todo_id") or "").strip(), "reason": round_evaluation.get("decision_reason"), "phase": PHASE_AWAITING_HUMAN_DECISION}
+            open_pending_action(
+                context,
+                action_type="human_decision",
+                source="execution_exhaustion",
+                payload=payload,
+                run_id=context.active_run_id(version),
+                plan_version=version,
+                runtime=runtime,
+            )
+            context.update_task_phase(
+                PHASE_AWAITING_HUMAN_DECISION,
+                runtime=runtime,
+                active_plan_version=version,
+                run_id=context.active_run_id(version),
+                selected_document_count=selected_count,
+                current_task=None,
+            )
+            decision = interrupt(payload)
+            normalized_decision = str((decision or {}).get("decision") if isinstance(decision, dict) else decision or "").strip()
+            if normalized_decision not in {"continue_search", "complete_current_results"}:
+                normalized_decision = "continue_search"
+            context.resolve_pending_action(
+                "human_decision",
+                resolution={"decision": normalized_decision},
+                runtime=runtime,
+            )
+            return {
+                "todo_id": str(current.get("todo_id") or "").strip(),
+                "reason": round_evaluation.get("decision_reason"),
+                "decision": normalized_decision,
+                "phase": PHASE_AWAITING_HUMAN_DECISION,
+            }
         todo_id = str(current.get("todo_id") or "").strip()
         context.update_todo(todo_id, "paused", current_task=None, last_error=str(reason or "").strip(), resume_from="await_plan_confirmation", state_updates={"replan_requested_at": utc_now_z()}, runtime=runtime)
         if version > 0:

@@ -146,7 +146,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `updates` 是唯一的 process lifecycle 来源：主 agent 的 `task` tool call 映射为 specialist 的 `process.started` / `process.completed` / `process.failed`，普通工具调用也从 `updates` 推导
 - `messages` 只负责主 agent / specialist 的 Markdown 增量输出
 - `custom` 只保留业务事件，例如 `snapshot.changed`，不再承载 subagent / tool lifecycle
-- specialist 侧的 streaming middleware 现在只保留扩展点，不再自己写 `subagent.*` / `tool.*` 事件
+- specialist 不再挂自定义 streaming middleware，所有 lifecycle 都由 deepagents / langgraph 原生流推导
 
 ## Stable Exports
 

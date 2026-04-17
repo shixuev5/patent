@@ -43,6 +43,7 @@ sys.modules.setdefault("agents.common.search_clients.factory", stub_search_clien
 from agents.ai_search.src import main_agent as main_agent_module
 from agents.ai_search.src.main_agent import agent as main_agent_agent_module
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
+from agents.ai_search.src.runtime_context import AiSearchRuntimeContext
 from agents.ai_search.src.subagents import close_reader as close_reader_module
 from agents.ai_search.src.subagents import coarse_screener as coarse_screener_module
 from agents.ai_search.src.subagents import feature_comparer as feature_comparer_module
@@ -86,9 +87,11 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
         "publish_planner_draft",
         "request_user_question",
         "request_plan_confirmation",
+        "request_human_decision",
         "advance_workflow",
         "complete_session",
     }
+    assert captured.get("context_schema") is AiSearchRuntimeContext
 
 
 def test_specialists_own_domain_tools():

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.runtime_context import build_runtime_context
 from backend.storage import Task, TaskStatus, TaskType
 from backend.storage import SQLiteTaskStorage
 
@@ -56,6 +58,10 @@ def _create_batch(
     return batch_id
 
 
+def _runtime(context: AiSearchAgentContext) -> SimpleNamespace:
+    return SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
+
+
 def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_coarse_validation.db")
     _create_task(storage, "task-coarse", "coarse_screen")
@@ -83,6 +89,7 @@ def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-coarse")
+    runtime = _runtime(context)
     tool = next(tool for tool in context.build_coarse_screener_tools() if tool.__name__ == "run_coarse_screen_batch")
     batch_id = _create_batch(storage, "task-coarse", batch_type="coarse_screen", document_ids=["doc-1", "doc-2"])
 
@@ -91,6 +98,7 @@ def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
             operation="commit",
             plan_version=1,
             payload_json=json.dumps({"batch_id": batch_id, "keep": ["doc-1"], "discard": []}, ensure_ascii=False),
+            runtime=runtime,
         )
     )
 
@@ -118,6 +126,7 @@ def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-close")
+    runtime = _runtime(context)
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
     batch_id = _create_batch(storage, "task-close", batch_type="close_read", document_ids=["doc-1"])
 
@@ -126,6 +135,7 @@ def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
             operation="commit",
             plan_version=1,
             payload_json=json.dumps({"batch_id": batch_id, "selected": ["doc-1"], "rejected": ["doc-1"]}, ensure_ascii=False),
+            runtime=runtime,
         )
     )
 
@@ -154,6 +164,7 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
     )
 
     context = AiSearchAgentContext(storage, "task-align")
+    runtime = _runtime(context)
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
     batch_id = _create_batch(storage, "task-align", batch_type="close_read", document_ids=["doc-1"])
 
@@ -198,7 +209,7 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
         ],
     }
 
-    result = json.loads(tool(operation="commit", plan_version=1, payload_json=json.dumps(payload, ensure_ascii=False)))
+    result = json.loads(tool(operation="commit", plan_version=1, payload_json=json.dumps(payload, ensure_ascii=False), runtime=runtime))
     documents = storage.list_ai_search_documents("task-align", 1, stages=["selected"])
 
     assert result["selected_count"] == 1
@@ -231,9 +242,10 @@ def test_close_read_load_supports_abstract_only_npl_documents(tmp_path):
     )
 
     context = AiSearchAgentContext(storage, "task-close-npl")
+    runtime = _runtime(context)
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
 
-    payload = json.loads(tool(operation="load", plan_version=1))
+    payload = json.loads(tool(operation="load", plan_version=1, runtime=runtime))
 
     assert payload["documents"][0]["source_type"] == "openalex"
     assert payload["documents"][0]["detail_source"] == "abstract_only"

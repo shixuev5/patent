@@ -54,6 +54,7 @@ TOOL_DISPLAY_LABELS = {
     "publish_planner_draft": "发布计划草案",
     "request_user_question": "请求用户补充信息",
     "request_plan_confirmation": "请求确认计划",
+    "request_human_decision": "请求人工决策",
     "advance_workflow": "推进工作流",
     "complete_session": "完成当前检索",
     "save_search_elements": "保存检索要素",
@@ -112,74 +113,88 @@ ROLE_TOOL_POLICIES: dict[str, dict[str, set[str]]] = {
 class AiSearchGuardMiddleware(AgentMiddleware):
     def __init__(
         self,
-        role: str,
-        *,
-        storage: Any = None,
-        task_id: str = "",
-        blocked_tools: Optional[Sequence[str]] = None,
-        allowed_subagents: Optional[Sequence[str]] = None,
     ) -> None:
-        self.role = str(role or "main-agent").strip() or "main-agent"
-        self.storage = storage
-        self.task_id = str(task_id or "").strip()
-        defaults = ROLE_TOOL_POLICIES.get(self.role, ROLE_TOOL_POLICIES["main-agent"])
-        self.blocked_tools = set(blocked_tools or defaults["blocked_tools"])
-        self.allowed_subagents = set(allowed_subagents or defaults["allowed_subagents"])
+        super().__init__()
 
-    def _current_task_state(self) -> str:
-        if self.storage is None or not self.task_id:
+    def _runtime_metadata(self, runtime: Any | None) -> Dict[str, Any]:
+        config = getattr(runtime, "config", None) if runtime is not None else None
+        if isinstance(config, dict):
+            metadata = config.get("metadata")
+            if isinstance(metadata, dict):
+                return metadata
+        return {}
+
+    def _resolved_role(self, runtime: Any | None) -> str:
+        metadata = self._runtime_metadata(runtime)
+        return normalize_ai_search_role(metadata.get("lc_agent_name")) or "main-agent"
+
+    def _role_policy(self, role: str) -> dict[str, set[str]]:
+        return ROLE_TOOL_POLICIES.get(role, ROLE_TOOL_POLICIES["main-agent"])
+
+    def _runtime_storage_and_task_id(self, runtime: Any | None) -> tuple[Any | None, str]:
+        runtime_context = getattr(runtime, "context", None) if runtime is not None else None
+        runtime_storage = getattr(runtime_context, "storage", None)
+        runtime_task_id = str(getattr(runtime_context, "task_id", "") or "").strip()
+        return runtime_storage, runtime_task_id
+
+    def _current_task_state(self, runtime: Any | None = None) -> str:
+        storage, task_id = self._runtime_storage_and_task_id(runtime)
+        if storage is None or not task_id:
             return ""
-        task = self.storage.get_task(self.task_id)
+        task = storage.get_task(task_id)
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
 
-    def _guard_subagent_call(self, request: ToolCallRequest, subagent_type: str) -> ToolMessage | None:
+    def _guard_subagent_call(self, request: ToolCallRequest, subagent_type: str, role: str) -> ToolMessage | None:
         normalized_subagent = str(subagent_type or "").strip()
-        phase = self._current_task_state()
-        if normalized_subagent not in self.allowed_subagents:
+        phase = self._current_task_state(request.runtime)
+        allowed_subagents = self._role_policy(role)["allowed_subagents"]
+        if normalized_subagent not in allowed_subagents:
             return ToolMessage(
-                content=f"子 agent `{normalized_subagent or 'unknown'}` 不允许由 `{self.role}` 调用。",
+                content=f"子 agent `{normalized_subagent or 'unknown'}` 不允许由 `{role}` 调用。",
                 name=str(request.tool_call.get("name") or "task") or "task",
                 tool_call_id=request.tool_call["id"],
             )
-        if phase and self.role == "main-agent":
+        if phase and role == "main-agent":
             allowed_subagents = allowed_main_agent_subagents(phase)
             if normalized_subagent not in allowed_subagents:
                 return ToolMessage(
-                    content=f"子 agent `{normalized_subagent or 'unknown'}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
+                    content=f"子 agent `{normalized_subagent or 'unknown'}` 不能在阶段 `{phase}` 由 `{role}` 调用。",
                     name=str(request.tool_call.get("name") or "task") or "task",
                     tool_call_id=request.tool_call["id"],
                 )
         return None
 
     def _guard_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
+        role = self._resolved_role(request.runtime)
+        policy = self._role_policy(role)
         tool_name = str(request.tool_call.get("name") or "").strip()
-        phase = self._current_task_state()
+        phase = self._current_task_state(request.runtime)
         if tool_name == "task":
             subagent_type = str((request.tool_call.get("args") or {}).get("subagent_type") or "").strip()
-            return self._guard_subagent_call(request, subagent_type)
+            return self._guard_subagent_call(request, subagent_type, role)
         if tool_name in ALL_AI_SEARCH_SUBAGENTS:
-            return self._guard_subagent_call(request, tool_name)
-        if tool_name in self.blocked_tools:
+            return self._guard_subagent_call(request, tool_name, role)
+        if tool_name in policy["blocked_tools"]:
             return ToolMessage(
-                content=f"工具 `{tool_name}` 对 `{self.role}` 不可用。",
+                content=f"工具 `{tool_name}` 对 `{role}` 不可用。",
                 name=tool_name or "blocked_tool",
                 tool_call_id=request.tool_call["id"],
             )
         if phase:
-            if self.role == "main-agent":
+            if role == "main-agent":
                 allowed_tools = allowed_main_agent_tools(phase)
                 if tool_name not in allowed_tools:
                     return ToolMessage(
-                        content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
+                        content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{role}` 调用。",
                         name=tool_name or "phase_blocked_tool",
                         tool_call_id=request.tool_call["id"],
                     )
             else:
-                allowed_tools = allowed_role_tools(self.role, phase)
+                allowed_tools = allowed_role_tools(role, phase)
                 if allowed_tools is not None and tool_name not in allowed_tools:
                     return ToolMessage(
-                        content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
+                        content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{role}` 调用。",
                         name=tool_name or "phase_blocked_tool",
                         tool_call_id=request.tool_call["id"],
                     )
@@ -206,8 +221,22 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         return await handler(request)
 
 
-def build_guard_middleware(role: str, storage: Any = None, task_id: str = "") -> AiSearchGuardMiddleware:
-    return AiSearchGuardMiddleware(role, storage=storage, task_id=task_id)
+def build_guard_middleware() -> AiSearchGuardMiddleware:
+    return AiSearchGuardMiddleware()
+
+
+def normalize_ai_search_role(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in {"main-agent", "main_agent"} or raw.startswith("ai-search-main-agent-"):
+        return "main-agent"
+    if raw in ALL_AI_SEARCH_SUBAGENTS:
+        return raw
+    for candidate in ALL_AI_SEARCH_SUBAGENTS:
+        if raw.startswith(f"ai-search-{candidate}-"):
+            return candidate
+    return ""
 
 
 def format_subagent_label(name: str) -> str:
@@ -340,36 +369,6 @@ def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:
         return
     if callable(writer):
         writer(payload)
-
-
-class AiSearchStreamingMiddleware(AgentMiddleware):
-    def __init__(self, role: str, *, context: Any | None = None) -> None:
-        self.role = str(role or "").strip()
-        self.context = context
-
-    def before_agent(self, state: Any, runtime: Any) -> None:
-        return None
-
-    def after_agent(self, state: Any, runtime: Any) -> None:
-        return None
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler,
-    ) -> ToolMessage | Command[Any]:
-        return handler(request)
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler,
-    ) -> ToolMessage | Command[Any]:
-        return await handler(request)
-
-
-def build_streaming_middleware(role: str, *, context: Any | None = None) -> AiSearchStreamingMiddleware:
-    return AiSearchStreamingMiddleware(role, context=context)
 
 
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:

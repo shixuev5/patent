@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
+from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.main_agent.schemas import SubPlanInput
 
 
@@ -27,7 +28,7 @@ def _normalize_probe_findings(value: Any) -> Dict[str, Any] | None:
     return None
 
 
-def build_planner_tools(context: Any) -> List[Any]:
+def build_planner_tools() -> List[Any]:
     def save_plan_execution_overview(
         search_scope: Dict[str, Any],
         constraints: Dict[str, Any],
@@ -36,7 +37,8 @@ def build_planner_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """保存检索计划顶层结构与可选预检信号。"""
-        draft = context.save_planner_execution_overview(
+        resolved_context = resolve_agent_context(runtime)
+        draft = resolved_context.save_planner_execution_overview(
             search_scope=search_scope if isinstance(search_scope, dict) else {},
             constraints=constraints if isinstance(constraints, dict) else {},
             execution_policy=execution_policy if isinstance(execution_policy, dict) else {},
@@ -56,7 +58,8 @@ def build_planner_tools(context: Any) -> List[Any]:
         runtime: ToolRuntime = None,
     ) -> str:
         """追加或替换一个子计划片段。"""
-        draft = context.append_planner_sub_plan(
+        resolved_context = resolve_agent_context(runtime)
+        draft = resolved_context.append_planner_sub_plan(
             sub_plan.model_dump(mode="python"),
             runtime=runtime,
         )
