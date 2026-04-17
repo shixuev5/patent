@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 from agents.ai_search.src.context import AiSearchAgentContext
@@ -23,6 +24,7 @@ from agents.ai_search.src.orchestration.planning_runtime import publish_planner_
 from agents.ai_search.src.runtime import (
     ALL_AI_SEARCH_SUBAGENTS,
     build_process_display_metadata,
+    build_tool_event_payload,
     extract_latest_ai_message,
     format_subagent_label,
 )
@@ -226,29 +228,26 @@ class AiSearchAgentRunService:
 
     def _normalize_process_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         event_type = str(event.get("type") or "").strip()
-        process_event_types = {
-            "subagent.started": "process.started",
-            "tool.started": "process.started",
-            "subagent.completed": "process.completed",
-            "tool.completed": "process.completed",
-            "tool.failed": "process.failed",
-        }
-        normalized_type = process_event_types.get(event_type)
-        if not normalized_type:
+        if event_type not in {"process.started", "process.completed", "process.failed"}:
             return event
         payload = dict(event.get("payload") or {})
         if self._should_hide_process_event(event_type, payload):
             return {}
-        return {
-            **event,
-            "type": normalized_type,
-            "payload": payload,
-        }
+        return {**event, "payload": payload}
+
+    def _normalize_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(event, dict):
+            return {}
+        normalized = self._normalize_process_stream_event(event)
+        return normalized if isinstance(normalized, dict) else {}
+
+    def _should_persist_stream_event(self, event: Dict[str, Any]) -> bool:
+        return str(event.get("type") or "").strip() != "message.segment.delta"
 
     def _stream_event_to_record(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not isinstance(event, dict):
+        normalized = self._normalize_stream_event(event)
+        if not normalized:
             return None
-        normalized = self._normalize_process_stream_event(event)
         session_id = str(normalized.get("sessionId") or normalized.get("taskId") or "").strip()
         task_id = str(normalized.get("taskId") or session_id).strip()
         if not session_id or not task_id:
@@ -280,10 +279,29 @@ class AiSearchAgentRunService:
         payload["timestamp"] = str(row.get("created_at") or payload.get("timestamp") or utc_now_z())
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    async def _broadcast_stream_event(self, session_id: str, row: Dict[str, Any]) -> None:
+    def _format_live_stream_event(self, event: Dict[str, Any]) -> str:
+        normalized = self._normalize_stream_event(event)
+        if not normalized:
+            return ""
+        payload = dict(normalized)
+        task_id = str(payload.get("taskId") or payload.get("sessionId") or "").strip()
+        run_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        payload["taskId"] = task_id
+        payload["runId"] = str(
+            payload.get("runId")
+            or run_payload.get("runId")
+            or ((run_payload.get("run") or {}).get("runId") if isinstance(run_payload.get("run"), dict) else "")
+            or self._current_run_id(task_id)
+            or ""
+        ).strip() or None
+        payload["entityId"] = self._derive_event_entity_id(payload)
+        payload["timestamp"] = str(payload.get("timestamp") or utc_now_z())
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    async def _broadcast_stream_event(self, session_id: str, item: Dict[str, Any]) -> None:
         queues = list(self._stream_subscribers.get(session_id, set()))
         for queue in queues:
-            await queue.put(row)
+            await queue.put(item)
 
     async def _run_background_stream(self, session_id: str, producer_factory: Callable[[], AsyncIterator[str]]) -> None:
         try:
@@ -291,13 +309,28 @@ class AiSearchAgentRunService:
                 parsed = self._parse_sse_event(raw_event)
                 if not parsed:
                     continue
-                record = self._stream_event_to_record(parsed)
-                if not record:
+                normalized = self._normalize_stream_event(parsed)
+                if not normalized:
                     continue
-                row = self.storage.append_ai_search_stream_event(record)
-                if not isinstance(row, dict):
+                if self._should_persist_stream_event(normalized):
+                    record = self._stream_event_to_record(normalized)
+                    if not record:
+                        continue
+                    row = self.storage.append_ai_search_stream_event(record)
+                    if not isinstance(row, dict):
+                        continue
+                    await self._broadcast_stream_event(
+                        session_id,
+                        {
+                            "formatted": self._format_persisted_stream_event(row),
+                            "seq": int(row.get("seq") or 0),
+                        },
+                    )
                     continue
-                await self._broadcast_stream_event(session_id, row)
+                formatted = self._format_live_stream_event(normalized)
+                if not formatted:
+                    continue
+                await self._broadcast_stream_event(session_id, {"formatted": formatted, "seq": None})
         finally:
             async with self._stream_lock:
                 existing = self._stream_tasks.get(session_id)
@@ -328,11 +361,12 @@ class AiSearchAgentRunService:
         after_seq: int = 0,
     ) -> AsyncIterator[str]:
         self.sessions._get_owned_session_task(session_id, owner_id)
-        for row in self.storage.list_ai_search_stream_events(session_id, after_seq=max(int(after_seq or 0), 0)):
-            yield self._format_persisted_stream_event(row)
-
+        replayed_seq = max(int(after_seq or 0), 0)
         queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
         self._stream_subscribers.setdefault(session_id, set()).add(queue)
+        for row in self.storage.list_ai_search_stream_events(session_id, after_seq=replayed_seq):
+            replayed_seq = max(replayed_seq, int(row.get("seq") or 0))
+            yield self._format_persisted_stream_event(row)
         try:
             while True:
                 task = self._stream_tasks.get(session_id)
@@ -347,7 +381,16 @@ class AiSearchAgentRunService:
                     if not self._stream_tasks.get(session_id):
                         break
                     continue
-                yield self._format_persisted_stream_event(item)
+                item_seq = item.get("seq")
+                if item_seq is not None:
+                    seq_value = int(item_seq or 0)
+                    if seq_value <= replayed_seq:
+                        continue
+                    replayed_seq = seq_value
+                formatted = str(item.get("formatted") or "")
+                if not formatted:
+                    continue
+                yield formatted
         finally:
             subscribers = self._stream_subscribers.get(session_id)
             if subscribers is not None:
@@ -743,6 +786,8 @@ class AiSearchAgentRunService:
             "known_message_ids": known_message_ids,
             "last_snapshot": snapshot,
             "message_segments": {},
+            "pending_process_calls": {},
+            "seen_process_call_ids": set(),
             "previous_assistant": str(previous_assistant or "").strip(),
         }
 
@@ -768,13 +813,18 @@ class AiSearchAgentRunService:
                 namespace, mode, payload = item
             elif len(item) == 2:
                 first, second = item
-                if isinstance(first, str) and first in {"messages", "custom"}:
+                if isinstance(first, str) and first in {"updates", "messages", "custom"}:
                     mode, payload = first, second
-        elif isinstance(item, dict) and len(item) == 1:
-            only_key = next(iter(item.keys()))
-            if only_key in {"messages", "custom"}:
-                mode = str(only_key)
-                payload = item[only_key]
+        elif isinstance(item, dict):
+            if "type" in item and "data" in item:
+                namespace = item.get("ns") or ()
+                mode = str(item.get("type") or "")
+                payload = item.get("data")
+            elif len(item) == 1:
+                only_key = next(iter(item.keys()))
+                if only_key in {"updates", "messages", "custom"}:
+                    mode = str(only_key)
+                    payload = item[only_key]
         return namespace, str(mode or ""), payload
 
     def _is_root_namespace(self, namespace: Any) -> bool:
@@ -870,18 +920,26 @@ class AiSearchAgentRunService:
     def _source_role_for_agent(self, source_agent: str) -> str:
         return "main_agent" if str(source_agent or "").strip() == "main-agent" else "subagent"
 
-    def _message_stream_source_agent(self, namespace: Any, payload: Any) -> Optional[str]:
-        chunk, metadata = self._split_message_payload(payload)
-        if not self._is_model_text_chunk(chunk, metadata):
-            return None
-        agent_name = self._normalize_source_agent_name(metadata.get("lc_agent_name"))
-        if agent_name:
-            return agent_name
+    def _process_source_agent(self, namespace: Any) -> str:
         if self._is_root_namespace(namespace):
             return "main-agent"
         for candidate in ALL_AI_SEARCH_SUBAGENTS:
             if self._namespace_contains_role(namespace, candidate):
                 return candidate
+        return "main-agent"
+
+    def _message_stream_source_agent(self, namespace: Any, payload: Any) -> Optional[str]:
+        chunk, metadata = self._split_message_payload(payload)
+        if not self._is_model_text_chunk(chunk, metadata):
+            return None
+        if self._is_root_namespace(namespace):
+            return "main-agent"
+        for candidate in ALL_AI_SEARCH_SUBAGENTS:
+            if self._namespace_contains_role(namespace, candidate):
+                return candidate
+        agent_name = self._normalize_source_agent_name(metadata.get("lc_agent_name"))
+        if agent_name:
+            return agent_name
         return None
 
     def _extract_message_delta(self, payload: Any) -> str:
@@ -908,6 +966,228 @@ class AiSearchAgentRunService:
         if event_payload is None:
             return event_type, {}
         return event_type, {"value": event_payload}
+
+    def _update_messages(self, payload: Any) -> List[Any]:
+        if not isinstance(payload, dict):
+            return []
+        messages: List[Any] = []
+        for value in payload.values():
+            if isinstance(value, dict):
+                nested = value.get("messages")
+                if isinstance(nested, list):
+                    messages.extend(nested)
+                elif nested is not None:
+                    messages.append(nested)
+            elif isinstance(value, list):
+                messages.extend(value)
+        return messages
+
+    def _message_tool_calls(self, message: Any) -> List[Dict[str, Any]]:
+        if isinstance(message, AIMessage):
+            return [dict(item) for item in message.tool_calls if isinstance(item, dict)]
+        if isinstance(message, dict) and str(message.get("type") or "").strip() == "ai":
+            calls = message.get("tool_calls")
+            if isinstance(calls, list):
+                return [dict(item) for item in calls if isinstance(item, dict)]
+        return []
+
+    def _tool_message_payload(self, message: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(message, ToolMessage):
+            return {
+                "tool_call_id": str(message.tool_call_id or "").strip(),
+                "status": str(message.status or "success").strip() or "success",
+                "content": self._content_to_text(message.content),
+            }
+        if isinstance(message, dict) and str(message.get("type") or "").strip() == "tool":
+            return {
+                "tool_call_id": str(message.get("tool_call_id") or "").strip(),
+                "status": str(message.get("status") or "success").strip() or "success",
+                "content": self._content_to_text(message.get("content")),
+            }
+        return None
+
+    def _build_subagent_process_payload(
+        self,
+        *,
+        subagent_name: str,
+        tool_call_id: str,
+        status: str,
+        error_message: str = "",
+    ) -> Dict[str, Any]:
+        normalized_name = str(subagent_name or "").strip()
+        label = format_subagent_label(normalized_name)
+        normalized_status = str(status or "running").strip() or "running"
+        if normalized_status == "completed":
+            status_text = f"{label}已完成"
+        elif normalized_status == "failed":
+            status_text = f"{label}失败"
+        else:
+            status_text = f"{label}开始执行"
+        event_id = f"{tool_call_id or normalized_name}:{normalized_status}"
+        return {
+            "eventId": event_id,
+            "processType": "subagent",
+            "status": normalized_status,
+            "name": normalized_name,
+            "label": label,
+            "summary": label,
+            "statusText": status_text,
+            "subagentName": normalized_name,
+            "subagentLabel": label,
+            "errorMessage": str(error_message or "").strip() or None,
+            **build_process_display_metadata(
+                process_type="subagent",
+                event_id=event_id,
+                subagent_name=normalized_name,
+                label=label,
+                summary=label,
+            ),
+        }
+
+    def _start_process_call(
+        self,
+        stream_state: Dict[str, Any],
+        *,
+        source_agent: str,
+        tool_call: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        tool_call_id = str(tool_call.get("id") or "").strip()
+        if not tool_call_id:
+            return None
+        seen_process_call_ids = stream_state.setdefault("seen_process_call_ids", set())
+        pending_process_calls = stream_state.setdefault("pending_process_calls", {})
+        if tool_call_id in seen_process_call_ids or tool_call_id in pending_process_calls:
+            return None
+        tool_name = str(tool_call.get("name") or "").strip()
+        args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
+        if tool_name == "task":
+            subagent_name = str(args.get("subagent_type") or "").strip()
+            if subagent_name not in ALL_AI_SEARCH_SUBAGENTS:
+                return None
+            payload = self._build_subagent_process_payload(
+                subagent_name=subagent_name,
+                tool_call_id=tool_call_id,
+                status="running",
+            )
+            pending_process_calls[tool_call_id] = {
+                "processType": "subagent",
+                "subagentName": subagent_name,
+                "toolCallId": tool_call_id,
+            }
+            seen_process_call_ids.add(tool_call_id)
+            return {"event_type": "process.started", "payload": payload}
+        payload = build_tool_event_payload(
+            role=source_agent,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            args=args,
+            status="running",
+        )
+        pending_process_calls[tool_call_id] = {
+            "processType": "tool",
+            "role": source_agent,
+            "toolName": tool_name,
+            "toolCallId": tool_call_id,
+            "args": args,
+        }
+        seen_process_call_ids.add(tool_call_id)
+        return {"event_type": "process.started", "payload": payload}
+
+    def _complete_process_call(self, stream_state: Dict[str, Any], tool_message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        tool_call_id = str(tool_message.get("tool_call_id") or "").strip()
+        if not tool_call_id:
+            return None
+        pending_process_calls = stream_state.setdefault("pending_process_calls", {})
+        pending = pending_process_calls.pop(tool_call_id, None)
+        if not isinstance(pending, dict):
+            return None
+        normalized_status = "failed" if str(tool_message.get("status") or "").strip() == "error" else "completed"
+        error_message = str(tool_message.get("content") or "").strip() if normalized_status == "failed" else ""
+        if str(pending.get("processType") or "").strip() == "subagent":
+            payload = self._build_subagent_process_payload(
+                subagent_name=str(pending.get("subagentName") or "").strip(),
+                tool_call_id=tool_call_id,
+                status=normalized_status,
+                error_message=error_message,
+            )
+        else:
+            payload = build_tool_event_payload(
+                role=str(pending.get("role") or "main-agent").strip() or "main-agent",
+                tool_name=str(pending.get("toolName") or "").strip(),
+                tool_call_id=tool_call_id,
+                args=pending.get("args") if isinstance(pending.get("args"), dict) else {},
+                status=normalized_status,
+                error_message=error_message,
+            )
+        event_type = "process.failed" if normalized_status == "failed" else "process.completed"
+        return {"event_type": event_type, "payload": payload}
+
+    def _process_events_from_update(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        phase: str,
+        namespace: Any,
+        payload: Any,
+        stream_state: Dict[str, Any],
+    ) -> List[str]:
+        events: List[str] = []
+        source_agent = self._process_source_agent(namespace)
+        for message in self._update_messages(payload):
+            for tool_call in self._message_tool_calls(message):
+                started = self._start_process_call(
+                    stream_state,
+                    source_agent=source_agent,
+                    tool_call=tool_call,
+                )
+                if not isinstance(started, dict):
+                    continue
+                started_payload = started.get("payload") if isinstance(started.get("payload"), dict) else {}
+                if str(started_payload.get("processType") or "").strip() == "subagent":
+                    subagent_name = str(started_payload.get("subagentName") or started_payload.get("name") or "").strip()
+                    events.extend(
+                        self._complete_message_segment_if_needed(
+                            task_id,
+                            session_id,
+                            phase,
+                            stream_state,
+                            source_agent="main-agent",
+                        )
+                    )
+                    if subagent_name in ALL_AI_SEARCH_SUBAGENTS:
+                        events.extend(
+                            self._complete_message_segment_if_needed(
+                                task_id,
+                                session_id,
+                                phase,
+                                stream_state,
+                                source_agent=subagent_name,
+                            )
+                        )
+                        self._reset_message_segment_state(stream_state, subagent_name)
+                events.append(self._format_event(str(started.get("event_type") or ""), session_id, phase, started_payload))
+            tool_message = self._tool_message_payload(message)
+            if not isinstance(tool_message, dict):
+                continue
+            completed = self._complete_process_call(stream_state, tool_message)
+            if not isinstance(completed, dict):
+                continue
+            completed_payload = completed.get("payload") if isinstance(completed.get("payload"), dict) else {}
+            if str(completed_payload.get("processType") or "").strip() == "subagent":
+                subagent_name = str(completed_payload.get("subagentName") or completed_payload.get("name") or "").strip()
+                if subagent_name in ALL_AI_SEARCH_SUBAGENTS:
+                    events.extend(
+                        self._complete_message_segment_if_needed(
+                            task_id,
+                            session_id,
+                            phase,
+                            stream_state,
+                            source_agent=subagent_name,
+                        )
+                    )
+            events.append(self._format_event(str(completed.get("event_type") or ""), session_id, phase, completed_payload))
+        return events
 
     def _normalize_subagent_payload(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         name = str(payload.get("name") or "").strip()
@@ -1283,14 +1563,35 @@ class AiSearchAgentRunService:
         iterator = agent.astream(
             payload,
             config,
-            stream_mode=["messages", "custom"],
+            stream_mode=["updates", "messages", "custom"],
             subgraphs=True,
+            version="v2",
         )
         async for item in self._iterate_stream_with_keepalive(iterator):
             if item is None:
                 yield ": keepalive\n\n"
                 continue
             namespace, mode, raw_payload = self._normalize_stream_item(item)
+            if mode == "updates":
+                current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
+                for event in self._process_events_from_update(
+                    task_id=task_id,
+                    session_id=session_id,
+                    phase=current_phase,
+                    namespace=namespace,
+                    payload=raw_payload,
+                    stream_state=stream_state,
+                ):
+                    yield event
+                snapshot = self.snapshots.get_snapshot(session_id, owner_id)
+                async for event in self._emit_snapshot_diff_events(
+                    stream_state["last_snapshot"],
+                    snapshot,
+                    stream_state=stream_state,
+                ):
+                    yield event
+                stream_state["last_snapshot"] = snapshot
+                continue
             if mode == "custom":
                 event_type, event_payload = self._normalize_custom_event(raw_payload)
                 if not event_type:
@@ -1304,66 +1605,6 @@ class AiSearchAgentRunService:
                     ):
                         yield event
                     stream_state["last_snapshot"] = snapshot
-                    continue
-
-                current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
-                if event_type in {"subagent.started", "subagent.completed"}:
-                    normalized_payload = self._normalize_subagent_payload(event_type, event_payload)
-                    subagent_name = str(normalized_payload.get("subagentName") or normalized_payload.get("name") or "").strip()
-                    if event_type == "subagent.started":
-                        for event in self._complete_message_segment_if_needed(
-                            task_id,
-                            session_id,
-                            current_phase,
-                            stream_state,
-                            source_agent="main-agent",
-                        ):
-                            yield event
-                        if subagent_name in ALL_AI_SEARCH_SUBAGENTS:
-                            for event in self._complete_message_segment_if_needed(
-                                task_id,
-                                session_id,
-                                current_phase,
-                                stream_state,
-                                source_agent=subagent_name,
-                            ):
-                                yield event
-                            self._reset_message_segment_state(stream_state, subagent_name)
-                    normalized_event = self._normalize_process_stream_event({"type": event_type, "payload": normalized_payload})
-                    if normalized_event:
-                        yield self._format_event(
-                            str(normalized_event.get("type") or "").strip(),
-                            session_id,
-                            current_phase,
-                            normalized_event.get("payload") if isinstance(normalized_event.get("payload"), dict) else {},
-                        )
-                    if event_type == "subagent.completed" and subagent_name in ALL_AI_SEARCH_SUBAGENTS:
-                        for event in self._complete_message_segment_if_needed(
-                            task_id,
-                            session_id,
-                            current_phase,
-                            stream_state,
-                                source_agent=subagent_name,
-                            ):
-                                yield event
-                elif event_type in {"tool.started", "tool.completed", "tool.failed"} and isinstance(event_payload, dict):
-                    normalized_event = self._normalize_process_stream_event({"type": event_type, "payload": dict(event_payload)})
-                    if normalized_event:
-                        yield self._format_event(
-                            str(normalized_event.get("type") or "").strip(),
-                            session_id,
-                            current_phase,
-                            normalized_event.get("payload") if isinstance(normalized_event.get("payload"), dict) else {},
-                        )
-
-                snapshot = self.snapshots.get_snapshot(session_id, owner_id)
-                async for event in self._emit_snapshot_diff_events(
-                    stream_state["last_snapshot"],
-                    snapshot,
-                    stream_state=stream_state,
-                ):
-                    yield event
-                stream_state["last_snapshot"] = snapshot
                 continue
 
             if mode != "messages":

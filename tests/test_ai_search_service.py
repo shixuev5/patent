@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from langchain_core.messages import AIMessage, ToolMessage
 
 stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
 stub_ai_search_agents.build_close_reader_agent = lambda: None
@@ -1143,7 +1144,8 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "请开始规划"}]}
             assert config["configurable"]["thread_id"].startswith("ai-search-")
-            assert kwargs["stream_mode"] == ["messages", "custom"]
+            assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
+            assert kwargs["version"] == "v2"
             await asyncio.sleep(0.03)
             yield ((), "messages", (_FakeChunk("已生成计划。"), {}))
 
@@ -1192,12 +1194,32 @@ def test_stream_message_emits_planner_message_segments_and_persists_review_markd
             self.checkpointer = object()
 
         async def astream(self, payload, config=None, **kwargs):
-            planner_ns = ("tools:planner-call-1",)
+            planner_ns = ("planner:task-1",)
             planner_meta = {"lc_agent_name": "planner", "langgraph_node": "model"}
-            yield (planner_ns, "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            yield (
+                (),
+                "updates",
+                {
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "task",
+                                        "args": {"subagent_type": "planner"},
+                                        "id": "call-planner-1",
+                                        "type": "tool_call",
+                                    }
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
             yield (planner_ns, "messages", (_FakeChunk("# 检索计划\n\n"), planner_meta))
             yield (planner_ns, "messages", (_FakeChunk("## 检索目标\n测试目标"), planner_meta))
-            yield (planner_ns, "custom", {"type": "subagent.completed", "payload": {"name": "planner"}})
+            yield ((), "updates", {"tools": {"messages": [ToolMessage(content="done", tool_call_id="call-planner-1")]}})
 
         def get_state(self, config):
             return _FakeState()
@@ -1229,6 +1251,50 @@ def test_stream_message_emits_planner_message_segments_and_persists_review_markd
         for event in parsed
     )
     assert planner_draft["review_markdown"] == "# 检索计划\n\n## 检索目标\n测试目标"
+
+
+def test_stream_message_does_not_persist_message_segment_deltas(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
+
+    class _FakeChunk:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "计划已起草完成。"}]}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            planner_ns = ("tools:planner-call-1",)
+            planner_meta = {"lc_agent_name": "planner", "langgraph_node": "model"}
+            yield (planner_ns, "messages", (_FakeChunk("# 检索计划\n\n"), planner_meta))
+            yield (planner_ns, "messages", (_FakeChunk("## 检索目标\n测试目标"), planner_meta))
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+    monkeypatch.setattr(
+        ai_search_agent_run_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+    parsed = _parse_data_events(events)
+    stored_events = storage.list_ai_search_stream_events(created.sessionId, after_seq=0)
+    stored_types = [str(item.get("event_type") or "") for item in stored_events]
+
+    assert any(event["type"] == "message.segment.delta" for event in parsed)
+    assert "message.segment.delta" not in stored_types
+    assert "message.segment.started" in stored_types
+    assert "message.segment.completed" in stored_types
 
 
 def test_stream_message_ignores_root_tool_messages_and_only_streams_model_text(monkeypatch, tmp_path):
@@ -1322,8 +1388,28 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
             yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
             yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
-            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
-            yield ((), "custom", {"type": "subagent.completed", "payload": {"name": "planner"}})
+            yield (
+                (),
+                "updates",
+                {
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "task",
+                                        "args": {"subagent_type": "planner"},
+                                        "id": "call-planner-2",
+                                        "type": "tool_call",
+                                    }
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
+            yield ((), "updates", {"tools": {"messages": [ToolMessage(content="done", tool_call_id="call-planner-2")]}})
 
         def get_state(self, config):
             return _FakeState()
@@ -1352,7 +1438,7 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
     )
 
 
-def test_stream_message_persists_stage_messages_and_process_events_from_custom_events(monkeypatch, tmp_path):
+def test_stream_message_persists_stage_messages_and_process_events_from_updates(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     _set_planner_draft(storage, created.sessionId)
@@ -1367,38 +1453,38 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
 
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
-            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
             yield (
-                (),
-                "custom",
+                ("planner:task-1",),
+                "updates",
                 {
-                    "type": "tool.started",
-                    "payload": {
-                        "eventId": "call-tool-1:running",
-                        "processType": "tool",
-                        "status": "running",
-                        "toolName": "get_planning_context",
-                        "toolLabel": "读取规划上下文",
-                        "summary": "读取规划上下文",
-                        "subagentName": "planner",
-                        "subagentLabel": "检索规划",
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "get_planning_context",
+                                        "args": {},
+                                        "id": "call-tool-1",
+                                        "type": "tool_call",
+                                    }
+                                ],
+                            )
+                        ]
                     },
                 },
             )
             yield (
-                (),
-                "custom",
+                ("planner:task-1",),
+                "updates",
                 {
-                    "type": "tool.completed",
-                    "payload": {
-                        "eventId": "call-tool-1:completed",
-                        "processType": "tool",
-                        "status": "completed",
-                        "toolName": "get_planning_context",
-                        "toolLabel": "读取规划上下文",
-                        "summary": "读取规划上下文",
-                        "subagentName": "planner",
-                        "subagentLabel": "检索规划",
+                    "tools": {
+                        "messages": [
+                            ToolMessage(
+                                content="ok",
+                                tool_call_id="call-tool-1",
+                            )
+                        ]
                     },
                 },
             )
@@ -1412,12 +1498,7 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
     parsed = _parse_data_events(events)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
-    assert any(
-        event["type"] == "process.started"
-        and event["payload"]["processType"] == "subagent"
-        and event["payload"]["label"] == "检索规划"
-        for event in parsed
-    )
+    assert any(event["type"] == "process.started" and event["payload"]["processType"] == "tool" for event in parsed)
     assert any(
         event["type"] == "process.completed"
         and event["payload"]["processType"] == "tool"
@@ -1461,9 +1542,7 @@ def test_subagent_start_emits_process_event_without_stage_message(monkeypatch, t
     middleware.before_agent({}, runtime)
 
     assert not any(item.get("kind") == "assistant_stage_message" for item in storage.list_ai_search_messages(created.sessionId))
-    event_types = [event["type"] for event in emitted]
-    assert event_types.count("subagent.started") == 2
-    assert "assistant.stage.started" not in event_types
+    assert emitted == []
 
 
 def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
@@ -2569,7 +2648,8 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
         async def astream(self, payload, config=None, **kwargs):
             assert payload["messages"][0]["role"] == "user"
             assert config["configurable"]["thread_id"] == f"ai-search-{self.task_id}"
-            assert kwargs["stream_mode"] == ["messages", "custom"]
+            assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
+            assert kwargs["version"] == "v2"
             task = storage.get_task(self.task_id)
             storage.update_task(
                 self.task_id,
@@ -2584,7 +2664,27 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
                     },
                 ),
             )
-            yield ((), "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            yield (
+                (),
+                "updates",
+                {
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "task",
+                                        "args": {"subagent_type": "planner"},
+                                        "id": "call-planner-seed",
+                                        "type": "tool_call",
+                                    }
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
             raise asyncio.CancelledError()
 
         def get_state(self, config):

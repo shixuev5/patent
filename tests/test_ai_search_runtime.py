@@ -195,31 +195,23 @@ def test_close_reader_subagent_middleware_names_are_unique():
     assert len(set(names)) == len(names)
 
 
-def test_streaming_middleware_emits_tool_events_for_sync_tool_calls():
-    events = []
+def test_streaming_middleware_passes_through_sync_tool_calls():
     middleware = AiSearchStreamingMiddleware("planner")
     request = SimpleNamespace(
         tool_call={"name": "get_planning_context", "id": "call-tool-1", "args": {}},
-        runtime=SimpleNamespace(stream_writer=lambda payload: events.append(payload)),
+        runtime=SimpleNamespace(stream_writer=lambda payload: None),
     )
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
     assert result == "ok"
-    assert [event["type"] for event in events] == ["tool.started", "tool.completed"]
-    assert events[0]["payload"]["summary"] == "读取规划上下文"
-    assert events[0]["payload"]["subagentLabel"] == "检索规划"
-    assert events[0]["payload"]["displayKind"] == "detail"
-    assert events[0]["payload"]["displayGroupKey"] == "planner"
-    assert events[0]["payload"]["dedupeKey"] == "call-tool-1"
 
 
-def test_streaming_middleware_emits_failed_tool_event_for_async_tool_calls():
-    events = []
+def test_streaming_middleware_passes_through_async_tool_call_failures():
     middleware = AiSearchStreamingMiddleware("query-executor")
     request = SimpleNamespace(
         tool_call={"name": "run_execution_step", "id": "call-tool-2", "args": {"operation": "commit"}},
-        runtime=SimpleNamespace(stream_writer=lambda payload: events.append(payload)),
+        runtime=SimpleNamespace(stream_writer=lambda payload: None),
     )
 
     async def _handler(_request):
@@ -231,10 +223,3 @@ def test_streaming_middleware_emits_failed_tool_event_for_async_tool_calls():
         assert str(exc) == "boom"
     else:
         raise AssertionError("expected runtime error")
-
-    assert [event["type"] for event in events] == ["tool.started", "tool.failed"]
-    assert events[0]["payload"]["summary"] == "提交执行步骤摘要"
-    assert events[0]["payload"]["displayKind"] == "detail"
-    assert events[0]["payload"]["displayGroupKey"] == "query-executor"
-    assert events[1]["payload"]["dedupeKey"] == "call-tool-2"
-    assert events[1]["payload"]["status"] == "failed"

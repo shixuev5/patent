@@ -129,575 +129,299 @@ const planExecutionSpec = {
   ],
 }
 
-const replayPlanExecutionSpec = {
-  search_scope: {
-    objective: '围绕 CN115541268A 检索可能构成对比文件的现有技术',
-    applicants: ['中车成都机车车辆有限公司'],
-    filing_date: '2022-09-22',
-    priority_date: null,
-    languages: ['zh', 'en'],
-    databases: ['zhihuiya', 'openalex', 'semanticscholar', 'crossref'],
-    excluded_items: [],
+const replayPlanExecutionSpec = JSON.parse(String.raw`{
+  "search_scope": {
+    "objective": "检索可能构成对比文件的现有技术，针对专利 CN115541268A《基于全状态协同感知的轨道交通综合试验数据融合与评估系统》",
+    "applicants": ["中车成都机车车辆有限公司"],
+    "filing_date": "2022-09-22",
+    "priority_date": null,
+    "languages": [],
+    "databases": ["zhihuiya"],
+    "excluded_items": [],
+    "source": {}
   },
-  constraints: {},
-  execution_policy: {
-    dynamic_replanning: true,
-    planner_visibility: 'summary_only',
-    max_rounds: 3,
-    max_selected_documents: 5,
+  "constraints": {
+    "time_range": "2010-2025",
+    "language": ["zh", "en"],
+    "document_type": "patent"
   },
-  sub_plans: [
+  "execution_policy": {
+    "dynamic_replanning": true,
+    "planner_visibility": "step_summary_only",
+    "max_step_attempts": 3,
+    "max_rounds": 3,
+    "max_no_progress_rounds": 2,
+    "max_selected_documents": 5,
+    "decision_on_exhaustion": true
+  },
+  "sub_plans": [
     {
-      sub_plan_id: 'sub_plan_1',
-      title: '轨道交通试验系统 + 数据同步采集',
-      goal: '覆盖轨道交通综合试验系统中的多源数据同步采集现有技术',
-      semantic_query_text: '轨道交通试验系统 同时域 数据同步采集 多源异构 数据融合',
-      search_elements: [
-        { block_id: 'A', element_name: '轨道交通试验系统' },
-        { block_id: 'B1', element_name: '同时域数据同步采集' },
-      ],
-      query_blueprints: [
-        { batch_id: 'bp1_1', goal: 'Block A + Block B1 主检索' },
-        { batch_id: 'bp1_2', goal: 'Block A 宽召回备选' },
-      ],
-      retrieval_steps: [
+      "sub_plan_id": "SP001",
+      "title": "轨道交通试验数据融合与评估系统核心检索",
+      "goal": "检索与轨道交通综合试验数据融合、全状态协同感知、数据同步采集与融合评估相关的现有技术",
+      "semantic_query_text": "轨道交通 试验系统 数据融合 协同感知 同步采集 轨旁车载 数据传输 存储中心 远程仿真",
+      "search_elements": [
         {
-          step_id: 'step_1_1',
-          title: '核心架构主检索',
-          purpose: '锁定试验系统 + 数据同步采集的核心架构方案',
-          feature_combination: 'A+B1+E',
-          language_strategy: '中文优先，必要时补英文',
-          ipc_cpc_mode: '按需辅助',
-          ipc_cpc_codes: ['G01M17/00', 'G06F16/00'],
-          expected_recall: '首轮核心候选池',
-          fallback_action: '放宽至 Block A 宽召回',
-          query_blueprint_refs: ['bp1_1'],
-          phase_key: 'execute_search',
-          activation_mode: 'immediate',
+          "element_name": "轨道交通试验系统",
+          "keywords_zh": ["轨道交通", "铁路", "地铁", "试验系统", "测试系统", "综合试验"],
+          "keywords_en": ["rail transit", "railway", "subway", "test system", "testing system", "comprehensive test"],
+          "block_id": "",
+          "notes": "Block A - 应用场景与系统类型"
         },
         {
-          step_id: 'step_1_2',
-          title: '宽召回备选',
-          purpose: '在主检索过窄时扩大召回',
-          feature_combination: 'A',
-          language_strategy: '中文优先',
-          ipc_cpc_mode: '弱化分类号',
-          ipc_cpc_codes: [],
-          expected_recall: '扩大候选规模',
-          fallback_action: '人工筛噪',
-          query_blueprint_refs: ['bp1_2'],
-          phase_key: 'execute_search',
-          activation_mode: 'conditional',
-          activation_summary: '当首轮召回过窄时激活',
-        },
-      ],
-      classification_hints: [],
-    },
-    {
-      sub_plan_id: 'sub_plan_2',
-      title: '轨旁车载数据融合 + 高速传输存储',
-      goal: '覆盖轨旁与车载数据协同、高速传输与统一存储方向',
-      semantic_query_text: '轨旁 车载 数据融合 高速传输 统一存储 数据中心',
-      search_elements: [
-        { block_id: 'B2', element_name: '轨旁与车载数据融合' },
-        { block_id: 'C', element_name: '高速数据传输与统一存储' },
-      ],
-      query_blueprints: [
-        { batch_id: 'bp2_1', goal: '轨旁车载数据融合主检索' },
-        { batch_id: 'bp2_2', goal: '传输存储方向补检' },
-      ],
-      retrieval_steps: [
-        {
-          step_id: 'step_2_1',
-          title: '车地协同主检索',
-          purpose: '锁定车地协同、轨旁车载融合和传输存储链路',
-          feature_combination: 'B2+C',
-          language_strategy: '中英文并行',
-          ipc_cpc_mode: '按需辅助',
-          ipc_cpc_codes: ['H04L67/00'],
-          expected_recall: '获取车地协同候选',
-          fallback_action: '拆分为轨旁/车载独立检索',
-          query_blueprint_refs: ['bp2_1'],
-          phase_key: 'execute_search',
-          activation_mode: 'immediate',
+          "element_name": "同时域数据同步采集",
+          "keywords_zh": ["同步采集", "同时域", "时间同步", "数据采集", "实时采集", "多源同步"],
+          "keywords_en": ["synchronous acquisition", "simultaneous", "time synchronization", "data acquisition", "real-time acquisition", "multi-source synchronization"],
+          "block_id": "",
+          "notes": "Block B1 - 核心技术特征1"
         },
         {
-          step_id: 'step_2_2',
-          title: '传输存储补检',
-          purpose: '补强统一存储和高速数据通道',
-          feature_combination: 'C',
-          language_strategy: '中文优先',
-          ipc_cpc_mode: '辅助分类号',
-          ipc_cpc_codes: ['G06F16/00'],
-          expected_recall: '补充通信与存储证据',
-          fallback_action: '放宽语义相似表达',
-          query_blueprint_refs: ['bp2_2'],
-          phase_key: 'execute_search',
-          activation_mode: 'conditional',
-          activation_summary: '当主检索缺少传输或存储证据时激活',
-        },
-      ],
-      classification_hints: [],
-    },
-    {
-      sub_plan_id: 'sub_plan_3',
-      title: '远程仿真控制 + 信息孤岛突破',
-      goal: '覆盖远程仿真控制、数据整合和信息孤岛突破方向',
-      semantic_query_text: '远程仿真控制 信息孤岛 数据整合 轨道交通 综合试验',
-      search_elements: [
-        { block_id: 'C2', element_name: '远程仿真控制' },
-        { block_id: 'E', element_name: '打破信息孤岛与时空离散' },
-      ],
-      query_blueprints: [
-        { batch_id: 'bp3_1', goal: '远程仿真控制主检索' },
-        { batch_id: 'bp3_2', goal: '信息孤岛突破补检' },
-      ],
-      retrieval_steps: [
-        {
-          step_id: 'step_3_1',
-          title: '远程控制主检索',
-          purpose: '定位远程仿真、控制和试验调度方向文献',
-          feature_combination: 'C2+E',
-          language_strategy: '中英文并行',
-          ipc_cpc_mode: '按需辅助',
-          ipc_cpc_codes: ['G05B19/00'],
-          expected_recall: '获取远程仿真控制方向候选',
-          fallback_action: '扩大到工业互联网与数字孪生邻域',
-          query_blueprint_refs: ['bp3_1'],
-          phase_key: 'execute_search',
-          activation_mode: 'immediate',
+          "element_name": "轨旁与车载数据融合",
+          "keywords_zh": ["轨旁", "车载", "数据融合", "路侧", "车辆端", "信息融合"],
+          "keywords_en": ["wayside", "onboard", "data fusion", "trackside", "vehicle-side", "information fusion"],
+          "block_id": "",
+          "notes": "Block B2 - 核心技术特征2"
         },
         {
-          step_id: 'step_3_2',
-          title: '信息孤岛补检',
-          purpose: '补强数据整合与孤岛打破的机制证据',
-          feature_combination: 'E',
-          language_strategy: '中文优先',
-          ipc_cpc_mode: '弱化分类号',
-          ipc_cpc_codes: [],
-          expected_recall: '补充机制层证据',
-          fallback_action: '转向邻近行业数据融合方案',
-          query_blueprint_refs: ['bp3_2'],
-          phase_key: 'execute_search',
-          activation_mode: 'conditional',
-          activation_summary: '当主检索不足以覆盖信息孤岛突破时激活',
+          "element_name": "高速数据传输通道",
+          "keywords_zh": ["高速传输", "数据传输", "传输通道", "通信链路", "宽带传输"],
+          "keywords_en": ["high-speed transmission", "data transmission", "transmission channel", "communication link", "broadband transmission"],
+          "block_id": "",
+          "notes": "Block C - 技术支撑特征"
         },
+        {
+          "element_name": "统一数据存储中心",
+          "keywords_zh": ["数据存储", "存储中心", "统一存储", "数据中心", "集中存储"],
+          "keywords_en": ["data storage", "storage center", "unified storage", "data center", "centralized storage"],
+          "block_id": "",
+          "notes": "Block E - 系统架构特征"
+        },
+        {
+          "element_name": "远程仿真控制",
+          "keywords_zh": ["远程仿真", "仿真控制", "远程测试", "虚拟仿真", "远程控制"],
+          "keywords_en": ["remote simulation", "simulation control", "remote testing", "virtual simulation", "remote control"],
+          "block_id": "",
+          "notes": "Block E - 功能特征"
+        },
+        {
+          "element_name": "打破信息孤岛与时空离散",
+          "keywords_zh": ["信息孤岛", "时空离散", "数据整合", "信息集成", "系统整合"],
+          "keywords_en": ["information silo", "spatiotemporal discrete", "data integration", "information integration", "system integration"],
+          "block_id": "",
+          "notes": "技术问题与效果"
+        }
       ],
-      classification_hints: [],
-    },
-  ],
-}
+      "retrieval_steps": [
+        {
+          "step_id": "RS001",
+          "title": "核心特征组合检索（Block A + B1 + B2）",
+          "purpose": "优先检索最核心的技术组合：轨道交通试验系统中的同步采集与轨旁车载数据融合",
+          "feature_combination": "A + B1 + B2",
+          "language_strategy": "中英文混合检索，优先中文",
+          "ipc_cpc_mode": "hybrid",
+          "ipc_cpc_codes": ["G01D", "G06F16", "B61L27", "G08G1", "H04L67"],
+          "expected_recall": "50-200篇",
+          "fallback_action": "若召回过低，放宽至A+B1或A+B2组合",
+          "query_blueprint_refs": ["QB001_A_B1_B2"],
+          "phase_key": "execute_search",
+          "activation_mode": "immediate",
+          "depends_on_step_ids": [],
+          "activation_conditions": { "any_of": [] },
+          "activation_summary": "立即执行，作为首轮核心检索",
+          "probe_summary": {}
+        },
+        {
+          "step_id": "RS002",
+          "title": "支撑技术检索（Block C + E）",
+          "purpose": "检索高速数据传输通道与统一数据存储中心、远程仿真相关技术",
+          "feature_combination": "C + E",
+          "language_strategy": "中英文混合检索",
+          "ipc_cpc_mode": "hybrid",
+          "ipc_cpc_codes": ["H04L29", "G06F3", "G06F16", "G05B17"],
+          "expected_recall": "100-300篇",
+          "fallback_action": "若召回过高，增加轨道交通领域限定",
+          "query_blueprint_refs": ["QB002_C_E"],
+          "phase_key": "execute_search",
+          "activation_mode": "immediate",
+          "depends_on_step_ids": [],
+          "activation_conditions": { "any_of": [] },
+          "activation_summary": "立即执行，作为第二轮支撑技术检索",
+          "probe_summary": {}
+        },
+        {
+          "step_id": "RS003",
+          "title": "完整系统检索",
+          "purpose": "检索包含完整系统架构的现有技术，覆盖全部核心要素",
+          "feature_combination": "A + B1 + B2 + C + E",
+          "language_strategy": "中文优先，辅以英文",
+          "ipc_cpc_mode": "hybrid",
+          "ipc_cpc_codes": ["G01D", "G06F16", "B61L27", "H04L67", "G05B17"],
+          "expected_recall": "20-80篇",
+          "fallback_action": "若召回过低，简化为A+B1+B2+E组合",
+          "query_blueprint_refs": ["QB003_full_system"],
+          "phase_key": "execute_search",
+          "activation_mode": "immediate",
+          "depends_on_step_ids": ["RS001", "RS002"],
+          "activation_conditions": {
+            "any_of": [
+              { "signal": "RS001_completed", "equals": true },
+              { "signal": "RS002_completed", "equals": true }
+            ]
+          },
+          "activation_summary": "在RS001和RS002完成后执行，用于检索完整系统方案",
+          "probe_summary": {}
+        },
+        {
+          "step_id": "RS004",
+          "title": "技术问题与效果扩展检索",
+          "purpose": "针对打破信息孤岛与时空离散的技术问题进行扩展检索",
+          "feature_combination": "A + 信息孤岛/时空离散",
+          "language_strategy": "中文为主",
+          "ipc_cpc_mode": "hybrid",
+          "ipc_cpc_codes": ["G06F16", "G01D", "B61L27"],
+          "expected_recall": "30-100篇",
+          "fallback_action": "若召回过低，仅使用信息孤岛或数据整合关键词",
+          "query_blueprint_refs": ["QB004_expanded"],
+          "phase_key": "execute_search",
+          "activation_mode": "conditional",
+          "depends_on_step_ids": ["RS003"],
+          "activation_conditions": {
+            "any_of": [
+              { "signal": "recall_quality", "equals": "too_narrow" },
+              { "signal": "gap_identified", "equals": "technical_problem_coverage" }
+            ]
+          },
+          "activation_summary": "当核心检索召回不足或发现技术效果覆盖缺口时激活",
+          "probe_summary": {}
+        }
+      ],
+      "query_blueprints": [
+        { "batch_id": "QB001_A_B1_B2", "goal": "检索轨道交通试验系统中同时域同步采集与轨旁车载数据融合的核心技术", "sub_plan_id": "SP001" },
+        { "batch_id": "QB002_C_E", "goal": "检索高速数据传输与统一存储中心及远程仿真相关技术", "sub_plan_id": "SP001" },
+        { "batch_id": "QB003_full_system", "goal": "检索完整的轨道交通试验数据融合与评估系统", "sub_plan_id": "SP001" },
+        { "batch_id": "QB004_expanded", "goal": "扩展检索：信息孤岛打破与时空离散问题解决的相关技术", "sub_plan_id": "SP001" }
+      ],
+      "classification_hints": [
+        { "hint": "优先关注轨道交通、铁路、地铁领域的试验测试系统", "relevance": "high" },
+        { "hint": "重点关注数据同步、时间同步、多源数据融合相关专利", "relevance": "high" },
+        { "hint": "关注轨旁设备与车载设备之间的数据交互与融合技术", "relevance": "high" },
+        { "hint": "注意区分单纯的监控系统与综合试验数据融合评估系统", "relevance": "medium" },
+        { "hint": "远程仿真与虚拟测试技术可能分布在多个技术领域", "relevance": "medium" }
+      ]
+    }
+  ]
+}`)
 
-const replayPlannerStageMessages = [
+const replayPlannerMessages = [
   {
-    message_id: 'replay-stage-planner-1',
-    created_at: '2026-04-16T09:04:04.286857Z',
-    content: '我先基于现有上下文组织这轮检索计划。当前已识别 7 个检索要素，接下来会先定检索主线、数据库边界和后续验证点。',
-  },
-  {
-    message_id: 'replay-stage-planner-2',
-    created_at: '2026-04-16T09:04:22.294363Z',
-    content: '开始进入计划草案实际组装，接下来会先落展示正文，再补执行结构和子计划。',
-  },
-  {
-    message_id: 'replay-stage-planner-3',
-    created_at: '2026-04-16T09:04:47.122012Z',
-    content: '开始构建检索计划草案。本计划围绕专利 CN115541268A《基于全状态协同感知的轨道交通综合试验数据融合与评估系统》展开，目标是检索可能构成对比文件的现有技术。计划将按三个子计划方向组织：(1) 轨道交通试验系统 + 数据同步采集；(2) 轨旁车载数据融合 + 高速传输存储；(3) 远程仿真控制 + 信息孤岛突破。',
-  },
-  {
-    message_id: 'replay-stage-planner-4',
-    created_at: '2026-04-16T09:05:22.018194Z',
-    content: '已保存计划正文框架，接下来开始补执行结构和数据库边界。',
-  },
-  {
-    message_id: 'replay-stage-planner-5',
-    created_at: '2026-04-16T09:05:22.019943Z',
-    content: '已完成检索计划用户可见文档（review_markdown）的保存。文档包含六大标准章节：检索目标、检索边界、检索要素表、分步检索方案、调整策略、待确认项。接下来将保存执行规范顶层结构。',
-  },
-  {
-    message_id: 'replay-stage-planner-6',
-    created_at: '2026-04-16T09:05:31.355899Z',
-    content: '已保存执行总览，接下来开始逐个写入子计划和检索步骤。',
-  },
-  {
-    message_id: 'replay-stage-planner-7',
-    created_at: '2026-04-16T09:05:31.363326Z',
-    content: '已完成执行规范顶层结构保存。检索范围涵盖专利库（zhihuiya）与非专利文献库（openalex、semanticscholar、crossref）。执行策略采用动态重规划，支持并行子计划、条件分支、语义检索与分类号辅助。接下来开始写入子计划。',
-  },
-  {
-    message_id: 'replay-stage-planner-8',
-    created_at: '2026-04-16T09:05:54.266610Z',
-    content: '已写入一个子计划，接下来继续补齐剩余结构。',
-  },
-  {
-    message_id: 'replay-stage-planner-9',
-    created_at: '2026-04-16T09:05:54.284702Z',
-    content: '子计划 1（轨道交通试验系统 + 数据同步采集）已写入完成。包含 2 个查询批次（bp1_1 主检索、bp1_2 备选检索）和 2 个检索步骤（step_1_1 立即执行、step_1_2 条件分支）。接下来写入子计划 2。',
-  },
-  {
-    message_id: 'replay-stage-planner-10',
-    created_at: '2026-04-16T09:06:18.868046Z',
-    content: '已写入一个子计划，接下来继续补齐剩余结构。',
-  },
-  {
-    message_id: 'replay-stage-planner-11',
-    created_at: '2026-04-16T09:06:18.893133Z',
-    content: '子计划 2（轨旁车载数据融合 + 高速传输存储）已写入完成。包含 2 个查询批次（bp2_1 主检索、bp2_2 备选检索）和 2 个检索步骤（step_2_1 立即执行、step_2_2 条件分支）。接下来写入子计划 3。',
-  },
-  {
-    message_id: 'replay-stage-planner-12',
-    created_at: '2026-04-16T09:06:44.222626Z',
-    content: '已写入一个子计划，接下来继续补齐剩余结构。',
-  },
-  {
-    message_id: 'replay-stage-planner-13',
-    created_at: '2026-04-16T09:06:44.259271Z',
-    content: '子计划 3（远程仿真控制 + 信息孤岛突破）已写入完成。包含 2 个查询批次（bp3_1 主检索、bp3_2 备选检索）和 2 个检索步骤（step_3_1 立即执行、step_3_2 条件分支）。至此，三个子计划已全部写入。接下来输出完整计划正文，并等待主控发布正式计划。',
-  },
-  {
-    message_id: 'replay-stage-planner-14',
-    created_at: '2026-04-16T09:06:50.393513Z',
-    content: '完整计划正文已经生成，接下来准备发布正式计划并进入确认。',
-  },
-  {
-    message_id: 'replay-stage-planner-15',
-    created_at: '2026-04-16T09:06:55.627185Z',
-    content: '检索计划草案已完整生成。计划包含：1 个执行规范顶层结构、3 个子计划（共 6 个查询批次、6 个检索步骤）、完整的用户可见文档。计划支持动态重规划、条件分支、语义检索与分类号辅助，最多 3 轮检索，每轮精选最多 5 篇候选文献。',
-  },
-].map((item, index, items) => ({
-  ...item,
-  role: 'assistant',
-  kind: 'assistant_stage_message',
-  stream_status: 'completed',
-  metadata: {
-    stageKind: 'planner',
-    stageInstanceId: index === items.length - 1 ? 'planner:plan-1' : null,
-    runId: null,
-    planVersion: 1,
-    todoId: null,
-    batchId: null,
-    phase: 'drafting_plan',
-    status: 'completed',
-    runtimeCheckpoints: index >= 1 ? ['entered_execution'] : [],
-  },
-}))
+    message_id: 'replay-planner-chat',
+    role: 'assistant',
+    kind: 'chat',
+    stream_status: 'completed',
+    created_at: '2026-04-17T13:41:29.997104Z',
+    metadata: {
+      source_agent: 'planner',
+      source_role: 'subagent',
+      segment_id: 'a9aaf82085cb471691a422c789c47ae6',
+      content_type: 'markdown',
+    },
+    content: String.raw`# AI 检索计划草案
 
-const replayPlanSummary = [
-  '# 检索计划：轨道交通综合试验数据融合与评估系统',
-  '',
-  '## 检索目标',
-  '围绕专利 CN115541268A《基于全状态协同感知的轨道交通综合试验数据融合与评估系统》检索可能构成对比文件的现有技术，核心方向为"解决多子系统数据时空离散与信息孤岛问题"。',
-  '',
-  '## 检索边界',
-  '- **时间边界**：申请日 2022-09-22 之前公开',
-  '- **申请人边界**：重点关注中车成都机车车辆有限公司及中车集团下属单位，同时不限制其他申请人',
-  '- **地域边界**：全球专利文献',
-  '- **文献类型**：发明专利、实用新型专利、非专利文献（学术论文、会议论文）',
-  '- **语言范围**：中文、英文为主',
-  '',
-  '## 核心检索要素',
-  '| 逻辑块 | 要素名称 | 核心概念 |',
-  '|--------|---------|---------|',
-  '| Block A | 轨道交通试验系统 | 轨道交通、铁路车辆、试验系统、综合试验、测试平台 |',
-  '| Block B1 | 同时域数据同步采集 | 数据同步、时间同步、同步采集、同时域、多源异构 |',
-  '| Block B2 | 轨旁与车载数据融合 | 轨旁、车载、车地通信、数据融合、协同感知 |',
-  '| Block C | 高速数据传输与统一存储 | 高速传输、5G、统一存储、数据中心、云存储 |',
-  '| Block C2 | 远程仿真控制 | 远程仿真、仿真控制、数字孪生、虚拟仿真、远程监控 |',
-  '| Block E | 打破信息孤岛与时空离散 | 信息孤岛、数据孤岛、时空离散、数据整合、一体化 |',
-  '',
-  '## 分步检索方案',
-  '本次检索分为三个子计划方向并行推进：',
-  '',
-  '### 子计划 1：轨道交通试验系统 + 数据同步采集',
-  '- **步骤 1.1（立即执行）**：Block A + Block B1 组合检索，定位试验系统中多源数据同步采集文献',
-  '- **步骤 1.2（条件分支）**：若召回过少，放宽至仅 Block A 检索后人工筛选',
-  '',
-  '### 子计划 2：轨旁车载数据融合 + 高速传输存储',
-  '- **步骤 2.1（立即执行）**：Block B2 + Block C 组合检索，定位车地数据协同与高速传输文献',
-  '- **步骤 2.2（条件分支）**：若效果不佳，分别检索轨旁/车载数据融合方向',
-  '',
-  '### 子计划 3：远程仿真控制 + 信息孤岛突破',
-  '- **步骤 3.1（立即执行）**：Block C2 + Block E 组合检索，定位远程仿真与数据整合文献',
-  '- **步骤 3.2（条件分支）**：若效果不佳，引入分类号扩展至智能制造、工业互联网等相邻领域',
-  '',
-  '## 执行策略',
-  '- **动态重规划**：每轮检索后评估召回质量，连续 2 轮无进展则触发策略调整',
-  '- **最多轮次**：3 轮检索',
-  '- **每轮精选**：最多 5 篇候选文献进入人工筛选',
-  '- **条件分支**：根据主检索结果自动激活备选检索步骤',
-  '',
-  '## 调整策略',
-  '1. 关键词扩展：引入同义词、近义词、上下位概念',
-  '2. 分类号辅助：引入 IPC/CPC 分类号（G01M17/00、G06F16/00、G05B19/00、H04L67/00 等）',
-  '3. 语义检索增强：捕捉概念相似但表述不同的文献',
-  '4. 申请人聚焦：中车集团、中国铁道科学研究院、西南交通大学等核心研发机构',
-  '5. 非专文献优先：加大学术论文、会议论文检索权重',
-  '',
-  '请确认是否启动检索。',
-].join('\n')
+## 【检索目标】
+
+本检索计划旨在针对专利 CN115541268A《基于全状态协同感知的轨道交通综合试验数据融合与评估系统》检索可能构成对比文件的现有技术。核心目标是系统性地查找在轨道交通试验领域中，涉及全状态协同感知、同时域数据同步采集、轨旁与车载数据融合、高速数据传输、统一数据存储及远程仿真控制等关键技术特征的已有专利文献，为专利性分析提供充分的对比文件支撑。
+
+---
+
+## 【检索边界】
+
+| 约束维度 | 具体限制 |
+|---------|---------|
+| **时间范围** | 2010 年 -2025 年（覆盖目标专利申请日前的完整技术周期） |
+| **地域范围** | 全球专利（CN、US、EP、JP、KR、WO 等主要专利局） |
+| **文献类型** | 发明专利、实用新型（优先发明专利） |
+| **语言范围** | 中文、英文（辅以日文、韩文摘要） |
+| **数据库范围** | 智慧芽专利数据库（zhihuiya） |
+| **技术领域** | 轨道交通试验测试、数据融合、同步采集、远程仿真相关技术 |
+
+---
+
+## 【检索要素】
+
+| 要素编号 | 要素名称 | 中文关键词 | 英文关键词 | 所属 Block | 技术定位 |
+|---------|---------|-----------|-----------|-----------|---------|
+| SE001 | 轨道交通试验系统 | 轨道交通、铁路、地铁、试验系统、测试系统、综合试验 | rail transit, railway, subway, test system, testing system, comprehensive test | Block A | 应用场景与系统类型 |
+| SE002 | 同时域数据同步采集 | 同步采集、同时域、时间同步、数据采集、实时采集、多源同步 | synchronous acquisition, simultaneous, time synchronization, data acquisition, real-time acquisition, multi-source synchronization | Block B1 | 核心技术特征 1 |
+| SE003 | 轨旁与车载数据融合 | 轨旁、车载、数据融合、路侧、车辆端、信息融合 | wayside, onboard, data fusion, trackside, vehicle-side, information fusion | Block B2 | 核心技术特征 2 |
+| SE004 | 高速数据传输通道 | 高速传输、数据传输、传输通道、通信链路、宽带传输 | high-speed transmission, data transmission, transmission channel, communication link, broadband transmission | Block C | 技术支撑特征 |
+| SE005 | 统一数据存储中心 | 数据存储、存储中心、统一存储、数据中心、集中存储 | data storage, storage center, unified storage, data center, centralized storage | Block E | 系统架构特征 |
+| SE006 | 远程仿真控制 | 远程仿真、仿真控制、远程测试、虚拟仿真、远程控制 | remote simulation, simulation control, remote testing, virtual simulation, remote control | Block E | 功能特征 |
+| SE007 | 打破信息孤岛与时空离散 | 信息孤岛、时空离散、数据整合、信息集成、系统整合 | information silo, spatiotemporal discrete, data integration, information integration, system integration | Block E | 技术问题与效果 |
+
+---
+
+## 【分步检索方案】
+
+本检索计划采用**分步递进、先核心后扩展**的策略，共设计 4 个检索步骤：
+
+### 第一步：核心特征组合检索（RS001）
+- **检索组合**：Block A（轨道交通试验系统）+ Block B1（同时域数据同步采集）+ Block B2（轨旁与车载数据融合）
+- **检索目的**：优先锁定最核心的技术方案，即轨道交通试验场景下实现同步采集与轨旁 - 车载数据融合的现有技术
+- **预期召回**：50-200 篇
+- **IPC/CPC 分类**：G01D（测量）、G06F16（数据融合）、B61L27（轨道交通控制）、G08G1（交通控制）、H04L67（网络通信）
+- **调整策略**：若召回量过低，放宽至 A+B1 或 A+B2 的双要素组合
+
+### 第二步：支撑技术检索（RS002）
+- **检索组合**：Block C（高速数据传输通道）+ Block E（统一数据存储中心 + 远程仿真控制）
+- **检索目的**：检索系统架构层面的支撑技术，包括数据传输、存储及远程仿真功能
+- **预期召回**：100-300 篇
+- **IPC/CPC 分类**：H04L29（数据传输）、G06F3（存储接口）、G06F16（数据管理）、G05B17（仿真控制）
+- **调整策略**：若召回量过高，增加轨道交通领域限定词进行收窄
+
+### 第三步：完整系统检索（RS003）
+- **检索组合**：Block A + B1 + B2 + C + E（全要素组合）
+- **检索目的**：直接检索与目标专利整体技术方案高度接近的完整系统方案
+- **预期召回**：20-80 篇
+- **IPC/CPC 分类**：G01D、G06F16、B61L27、H04L67、G05B17 组合使用
+- **调整策略**：若召回量过低，简化为 A+B1+B2+E 组合，暂时放宽高速传输限定
+
+### 第四步：技术问题与效果扩展检索（RS004）
+- **检索组合**：Block A + 信息孤岛/时空离散（Block E 的技术问题维度）
+- **检索目的**：从技术问题角度扩展检索，查找解决信息孤岛与时空离散问题的相关技术
+- **预期召回**：30-100 篇
+- **激活条件**：当核心检索召回不足或发现技术效果覆盖缺口时条件性激活
+- **调整策略**：若召回量过低，仅使用"信息孤岛"或"数据整合"单一关键词
+
+---
+
+## 【调整策略】
+
+| 场景 | 调整方案 |
+|-----|---------|
+| **召回量过低（<30 篇）** | 1. 放宽关键词同义扩展（如"同步"扩展为"同时、实时、并发"）<br>2. 减少要素组合数量，从三要素降至双要素<br>3. 放宽 IPC/CPC 分类限制，采用更宽泛的大类 |
+| **召回量过高（>500 篇）** | 1. 增加轨道交通领域限定词<br>2. 增加时间同步、数据融合等核心功能限定<br>3. 限制标题/摘要中必须出现关键术语 |
+| **相关性不足** | 1. 增加否定词排除无关领域（如排除"医疗、电力"等）<br>2. 调整关键词权重，提升核心要素权重<br>3. 增加 IPC 分类号的精准度 |
+| **发现技术空白** | 1. 激活条件性检索步骤（RS004）<br>2. 从技术问题角度重新构建查询<br>3. 扩展至非专利文献（如学术论文）补充检索 |
+
+---
+
+## 【待确认】
+
+1. **目标专利申请日**：请确认 CN115541268A 的确切申请日/优先权日，以便精确设定检索时间截止点
+2. **重点对比方向**：请确认是否需要重点关注特定技术特征（如"全状态协同感知"的具体实现方式）
+3. **地域优先级**：请确认是否需要优先检索特定国家/地区的专利（如中国、美国、欧洲等）
+4. **补充检索需求**：在完成首轮专利检索后，是否需要扩展至非专利文献（学术论文、技术标准等）以补充技术背景
+
+---
+
+*本计划草案版本：v2 | 草案 ID：7abcfd2a2ee3 | 生成时间：2026-01-XX*`,
+  },
+] as Array<Record<string, any>>
+
+const replayPlanSummary = replayPlannerMessages[0].content
 
 const replayProcessEvents = [
   {
-    stageInstanceId: 'planner:plan-1',
-    name: 'planner',
-    label: '检索规划',
-    eventId: 'planner:started',
-    processType: 'subagent',
-    status: 'running',
-    statusText: '检索规划开始执行',
-    summary: '检索规划',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    displayKind: 'group_status',
-    displayGroupKey: 'planner',
-    dedupeKey: 'planner',
-    type: 'process.started',
-    seq: 29,
-    createdAt: '2026-04-16T09:04:22.289754Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_b0acb1748f564a469a2f50d1:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'save_plan_execution_overview',
-    toolLabel: '保存计划总览',
-    summary: '保存计划总览',
-    statusText: '保存计划总览',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_b0acb1748f564a469a2f50d1',
-    type: 'process.started',
-    seq: 32,
-    createdAt: '2026-04-16T09:05:22.000232Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_b0acb1748f564a469a2f50d1:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'save_plan_execution_overview',
-    toolLabel: '保存计划总览',
-    summary: '保存计划总览',
-    statusText: '保存计划总览已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_b0acb1748f564a469a2f50d1',
-    type: 'process.completed',
-    seq: 34,
-    createdAt: '2026-04-16T09:05:22.019943Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_b1868529b9a94bb6840f39c7:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'save_plan_execution_overview',
-    toolLabel: '保存计划总览',
-    summary: '保存计划总览',
-    statusText: '保存计划总览',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_b1868529b9a94bb6840f39c7',
-    type: 'process.started',
-    seq: 37,
-    createdAt: '2026-04-16T09:05:31.355899Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_b1868529b9a94bb6840f39c7:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'save_plan_execution_overview',
-    toolLabel: '保存计划总览',
-    summary: '保存计划总览',
-    statusText: '保存计划总览已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_b1868529b9a94bb6840f39c7',
-    type: 'process.completed',
-    seq: 39,
-    createdAt: '2026-04-16T09:05:31.363326Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_2b47139d06aa4ff5ba69860c:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_2b47139d06aa4ff5ba69860c',
-    type: 'process.started',
-    seq: 42,
-    createdAt: '2026-04-16T09:05:54.266610Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_2b47139d06aa4ff5ba69860c:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_2b47139d06aa4ff5ba69860c',
-    type: 'process.completed',
-    seq: 44,
-    createdAt: '2026-04-16T09:05:54.284702Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_04b8687436b74ef09e50c8a4:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_04b8687436b74ef09e50c8a4',
-    type: 'process.started',
-    seq: 47,
-    createdAt: '2026-04-16T09:06:18.868046Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_04b8687436b74ef09e50c8a4:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_04b8687436b74ef09e50c8a4',
-    type: 'process.completed',
-    seq: 49,
-    createdAt: '2026-04-16T09:06:18.893133Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_df0ae69ab2b14b1d8c1a26fe:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_df0ae69ab2b14b1d8c1a26fe',
-    type: 'process.started',
-    seq: 52,
-    createdAt: '2026-04-16T09:06:44.222626Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_df0ae69ab2b14b1d8c1a26fe:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'append_plan_sub_plan',
-    toolLabel: '追加子计划',
-    summary: '追加子计划',
-    statusText: '追加子计划已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_df0ae69ab2b14b1d8c1a26fe',
-    type: 'process.completed',
-    seq: 54,
-    createdAt: '2026-04-16T09:06:44.259271Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_aecaac76c79d4de698b6b154:running',
-    processType: 'tool',
-    status: 'running',
-    toolName: 'publish_planner_draft',
-    toolLabel: '发布计划草案',
-    summary: '发布计划草案',
-    statusText: '发布计划草案',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_aecaac76c79d4de698b6b154',
-    type: 'process.started',
-    seq: 57,
-    createdAt: '2026-04-16T09:06:50.393513Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
-    eventId: 'call_aecaac76c79d4de698b6b154:completed',
-    processType: 'tool',
-    status: 'completed',
-    toolName: 'publish_planner_draft',
-    toolLabel: '发布计划草案',
-    summary: '发布计划草案',
-    statusText: '发布计划草案已完成',
-    subagentName: 'planner',
-    subagentLabel: '检索规划',
-    errorMessage: null,
-    displayKind: 'detail',
-    displayGroupKey: 'planner',
-    dedupeKey: 'call_aecaac76c79d4de698b6b154',
-    type: 'process.completed',
-    seq: 59,
-    createdAt: '2026-04-16T09:06:50.418314Z',
-    runId: null,
-  },
-  {
-    stageInstanceId: 'planner:plan-1',
     name: 'planner',
     label: '检索规划',
     eventId: 'planner:completed',
@@ -711,8 +435,8 @@ const replayProcessEvents = [
     displayGroupKey: 'planner',
     dedupeKey: 'planner',
     type: 'process.completed',
-    seq: 63,
-    createdAt: '2026-04-16T09:06:55.627185Z',
+    seq: 528,
+    createdAt: '2026-04-17T13:41:29.996226Z',
     runId: null,
   },
 ] as Array<Record<string, any>>
@@ -793,7 +517,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
   const replaySession: AiSearchSessionSummary = {
     sessionId: 'mock-replay-5e53e613',
     taskId: 'mock-replay-5e53e613',
-    title: 'Mock · 5e53e613 实际回放',
+    title: 'AI 检索计划 - CN115541268A',
     status: 'paused',
     phase: 'awaiting_plan_confirmation',
     activityState: 'paused',
@@ -802,8 +526,8 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     pinned: false,
     activePlanVersion: 1,
     selectedDocumentCount: 0,
-    createdAt: '2026-04-15T16:06:58.288848Z',
-    updatedAt: '2026-04-16T09:07:19.780733Z',
+    createdAt: '2026-04-17T13:38:10.785003+00:00',
+    updatedAt: '2026-04-17T13:41:36.466779+00:00',
   }
 
   const sessions = [replaySession, completedSession, decisionSession, runningSession, planSession, questionSession]
@@ -827,41 +551,49 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
             content: '以下是从 AI 分析带入的检索上下文，请基于这些信息生成一份可审核的检索计划。\n\n## 来源\n- AI 分析任务：e8f6f776\n- 专利号：CN115541268A\n- 标题：基于全状态协同感知的轨道交通综合试验数据融合与评估系统\n\n## 本轮检索目标\n- 围绕专利 CN115541268A《基于全状态协同感知的轨道交通综合试验数据融合与评估系统》检索可能构成对比文件的现有技术。\n\n## 可用检索要素\n- [Block A] 轨道交通试验系统\n- [Block B1] 同时域数据同步采集\n- [Block B2] 轨旁与车载数据融合\n- [Block C] 高速数据传输通道\n- [Block C] 统一数据存储中心\n- [Block C] 远程仿真控制\n- [Block E] 打破信息孤岛与时空离散\n\n请基于以上信息生成一份可审核的检索计划。',
             created_at: '2026-04-15T16:06:59.594403Z',
           },
-          ...replayPlannerStageMessages,
+          ...replayPlannerMessages,
           {
             message_id: 'replay-plan-confirmation',
             role: 'assistant',
             kind: 'plan_confirmation',
             plan_version: 1,
             content: replayPlanSummary,
-            created_at: '2026-04-16T09:07:19.746066Z',
+            created_at: '2026-04-17T13:41:36.419188Z',
             metadata: {
               plan_version: 1,
               plan_summary: replayPlanSummary,
-              confirmation_label: '确认并启动检索',
+              confirmation_label: '实施此计划',
             },
           },
         ],
         pendingAction: {
-          actionId: '3391d66bf71c',
+          actionId: '740011d3efad',
           actionType: 'plan_confirmation',
+          source: 'plan_gate',
           status: 'pending',
           plan_version: 1,
           plan_summary: replayPlanSummary,
-          confirmation_label: '确认并启动检索',
+          confirmation_label: '实施此计划',
           runId: null,
-          createdAt: '2026-04-16T09:07:19.747585Z',
-          updatedAt: '2026-04-16T09:07:19.747585Z',
+          payload: {
+            plan_version: 1,
+            plan_summary: replayPlanSummary,
+            confirmation_label: '实施此计划',
+          },
+          createdAt: '2026-04-17T13:41:36.420719Z',
+          updatedAt: '2026-04-17T13:41:36.420719Z',
+          resolvedAt: null,
         },
         processEvents: replayProcessEvents,
       },
       stream: {
-        lastEventSeq: 69,
+        lastEventSeq: 538,
       },
       executionMessageQueue: { items: [] },
       plan: {
         currentPlan: {
           planVersion: 1,
+          status: 'awaiting_confirmation',
           reviewMarkdown: replayPlanSummary,
           executionSpec: replayPlanExecutionSpec,
         },
@@ -880,8 +612,6 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
       analysisSeed: {
         status: 'completed',
         sourceTaskId: 'e8f6f776',
-        sourcePn: 'CN115541268A',
-        sourceTitle: '基于全状态协同感知的轨道交通综合试验数据融合与评估系统',
       },
     },
     'mock-question': {

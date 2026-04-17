@@ -7,6 +7,7 @@ from pathlib import Path
 from agents.ai_search.src.context import AiSearchAgentContext
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, ToolMessage
 
 from backend import task_usage_tracking
 from backend.models import CurrentUser
@@ -116,7 +117,8 @@ def test_stream_message_endpoint_surfaces_direct_reply_even_without_state_transi
             assert payload == {"messages": [{"role": "user", "content": "请帮我检索相关方案"}]}
             assert config["configurable"]["thread_id"].startswith("ai-search-")
             assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
-            assert kwargs["stream_mode"] == ["messages", "custom"]
+            assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
+            assert kwargs["version"] == "v2"
             await asyncio.sleep(0)
             yield ((), "messages", (_FakeChunk("好的，我先整理检索计划。"), {}))
 

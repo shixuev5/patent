@@ -348,63 +348,9 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
         self.context = context
 
     def before_agent(self, state: Any, runtime: Any) -> None:
-        if not self.role or self.role == "main-agent":
-            return None
-        label = format_subagent_label(self.role)
-        write_stream_event(
-            getattr(runtime, "stream_writer", None),
-            {
-                "type": "subagent.started",
-                "payload": {
-                    "eventId": f"{self.role}:started",
-                    "processType": "subagent",
-                    "status": "running",
-                    "name": self.role,
-                    "label": label,
-                    "summary": label,
-                    "statusText": f"{label}开始执行",
-                    "subagentName": self.role,
-                    "subagentLabel": label,
-                    **build_process_display_metadata(
-                        process_type="subagent",
-                        event_id=f"{self.role}:started",
-                        subagent_name=self.role,
-                        label=label,
-                        summary=label,
-                    ),
-                },
-            },
-        )
         return None
 
     def after_agent(self, state: Any, runtime: Any) -> None:
-        if not self.role or self.role == "main-agent":
-            return None
-        label = format_subagent_label(self.role)
-        write_stream_event(
-            getattr(runtime, "stream_writer", None),
-            {
-                "type": "subagent.completed",
-                "payload": {
-                    "eventId": f"{self.role}:completed",
-                    "processType": "subagent",
-                    "status": "completed",
-                    "name": self.role,
-                    "label": label,
-                    "summary": label,
-                    "statusText": f"{label}已完成",
-                    "subagentName": self.role,
-                    "subagentLabel": label,
-                    **build_process_display_metadata(
-                        process_type="subagent",
-                        event_id=f"{self.role}:completed",
-                        subagent_name=self.role,
-                        label=label,
-                        summary=label,
-                    ),
-                },
-            },
-        )
         return None
 
     def wrap_tool_call(
@@ -412,112 +358,14 @@ class AiSearchStreamingMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler,
     ) -> ToolMessage | Command[Any]:
-        tool_name = str(request.tool_call.get("name") or "").strip()
-        if tool_name == "task":
-            return handler(request)
-        tool_call_id = str(request.tool_call.get("id") or tool_name or "tool").strip()
-        args = request.tool_call.get("args") if isinstance(request.tool_call.get("args"), dict) else {}
-        write_stream_event(
-            getattr(request.runtime, "stream_writer", None),
-            {
-                "type": "tool.started",
-                "payload": build_tool_event_payload(
-                    role=self.role,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call_id,
-                    args=args,
-                    status="running",
-                ),
-            },
-        )
-        try:
-            result = handler(request)
-        except Exception as exc:
-            write_stream_event(
-                getattr(request.runtime, "stream_writer", None),
-                {
-                    "type": "tool.failed",
-                    "payload": build_tool_event_payload(
-                        role=self.role,
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        args=args,
-                        status="failed",
-                        error_message=str(exc),
-                    ),
-                },
-            )
-            raise
-        write_stream_event(
-            getattr(request.runtime, "stream_writer", None),
-            {
-                "type": "tool.completed",
-                "payload": build_tool_event_payload(
-                    role=self.role,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call_id,
-                    args=args,
-                    status="completed",
-                ),
-            },
-        )
-        return result
+        return handler(request)
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler,
     ) -> ToolMessage | Command[Any]:
-        tool_name = str(request.tool_call.get("name") or "").strip()
-        if tool_name == "task":
-            return await handler(request)
-        tool_call_id = str(request.tool_call.get("id") or tool_name or "tool").strip()
-        args = request.tool_call.get("args") if isinstance(request.tool_call.get("args"), dict) else {}
-        write_stream_event(
-            getattr(request.runtime, "stream_writer", None),
-            {
-                "type": "tool.started",
-                "payload": build_tool_event_payload(
-                    role=self.role,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call_id,
-                    args=args,
-                    status="running",
-                ),
-            },
-        )
-        try:
-            result = await handler(request)
-        except Exception as exc:
-            write_stream_event(
-                getattr(request.runtime, "stream_writer", None),
-                {
-                    "type": "tool.failed",
-                    "payload": build_tool_event_payload(
-                        role=self.role,
-                        tool_name=tool_name,
-                        tool_call_id=tool_call_id,
-                        args=args,
-                        status="failed",
-                        error_message=str(exc),
-                    ),
-                },
-            )
-            raise
-        write_stream_event(
-            getattr(request.runtime, "stream_writer", None),
-            {
-                "type": "tool.completed",
-                "payload": build_tool_event_payload(
-                    role=self.role,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call_id,
-                    args=args,
-                    status="completed",
-                ),
-            },
-        )
-        return result
+        return await handler(request)
 
 
 def build_streaming_middleware(role: str, *, context: Any | None = None) -> AiSearchStreamingMiddleware:

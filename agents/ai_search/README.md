@@ -140,6 +140,14 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `close-reader` 禁止：`write_file`、`edit_file`、`execute`
 - `plan-prober` 只允许 `probe_count_boolean`、`probe_search_boolean`、`probe_search_semantic`
 
+当前流式约定也在这套运行时里配合后端消费层落地：
+
+- deepagents / langgraph 统一使用 `astream(..., stream_mode=["updates", "messages", "custom"], version="v2", subgraphs=True)`
+- `updates` 是唯一的 process lifecycle 来源：主 agent 的 `task` tool call 映射为 specialist 的 `process.started` / `process.completed` / `process.failed`，普通工具调用也从 `updates` 推导
+- `messages` 只负责主 agent / specialist 的 Markdown 增量输出
+- `custom` 只保留业务事件，例如 `snapshot.changed`，不再承载 subagent / tool lifecycle
+- specialist 侧的 streaming middleware 现在只保留扩展点，不再自己写 `subagent.*` / `tool.*` 事件
+
 ## Stable Exports
 
 对包外保持稳定的入口仍然是：
@@ -184,3 +192,8 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
   聚合 snapshot、当前 plan/run/messages/documents 的 read model。
 - [artifacts_service.py](/Users/yanhao/Documents/codes/patent/backend/ai_search/artifacts_service.py)
   处理 terminal report / bundle / download url。
+
+其中 SSE 流事件的职责边界是：
+
+- `agent_run_service` 负责把 deepagents 原生 `updates/messages/custom` 归一成前端消费的 `process.*`、`message.segment.*`、`run.updated` 等业务事件
+- `snapshot_service` 不解析 deepagents 原生流，只消费已持久化的业务流事件和当前存储状态
