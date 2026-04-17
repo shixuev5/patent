@@ -174,6 +174,7 @@ class AiSearchArtifactsService:
             feature_comparison=feature_comparison,
             close_read_result=gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
             feature_compare_result=gap_context.get("feature_compare_result") if isinstance(gap_context.get("feature_compare_result"), dict) else None,
+            feature_compare_markdown=context.latest_agent_markdown_content("feature-comparer", plan_version=plan_version),
             source_patent_data=context.load_source_patent_data(),
             termination_reason=termination_reason,
         )

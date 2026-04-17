@@ -8,9 +8,6 @@ from deepagents.backends.state import StateBackend
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import build_guard_middleware, build_streaming_middleware, large_model
 from agents.ai_search.src.subagents.close_reader.prompt import CLOSE_READER_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.close_reader.schemas import CloseReaderOutput
-
-
 def build_close_reader_agent(storage: object | None = None, task_id: str = ""):
     context = AiSearchAgentContext(storage, task_id) if storage and task_id else None
     tools = context.build_close_reader_tools() if context is not None else []
@@ -19,7 +16,6 @@ def build_close_reader_agent(storage: object | None = None, task_id: str = ""):
         tools=tools,
         system_prompt=CLOSE_READER_SYSTEM_PROMPT,
         middleware=[build_guard_middleware("close-reader", storage, task_id), build_streaming_middleware("close-reader", context=context)],
-        response_format=CloseReaderOutput,
         backend=StateBackend,
         name="ai-search-close-reader",
     )

@@ -354,13 +354,10 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
             "status": "completed",
             "table_json": self._parse_metadata(row.get("table_rows_json")),
             "table_rows": self._parse_metadata(row.get("table_rows_json")),
-            "summary_markdown": row.get("summary_markdown"),
-            "overall_findings": row.get("overall_findings"),
+            "document_roles": self._parse_metadata(row.get("document_roles_json")),
             "coverage_gaps": self._parse_metadata(row.get("coverage_gaps_json")),
-            "difference_highlights": self._parse_metadata(row.get("difference_highlights_json")),
             "follow_up_search_hints": self._parse_metadata(row.get("follow_up_search_hints_json")),
             "creativity_readiness": row.get("creativity_readiness"),
-            "readiness_rationale": row.get("readiness_rationale"),
             "created_at": row.get("created_at"),
             "updated_at": row.get("updated_at"),
         }
@@ -375,17 +372,12 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
             "table_rows_json": self._encode_json_value(
                 record.get("table_rows") or record.get("table_json") or []
             ),
-            "summary_markdown": record.get("summary_markdown"),
-            "overall_findings": record.get("overall_findings"),
+            "document_roles_json": self._encode_json_value(record.get("document_roles") or []),
             "coverage_gaps_json": self._encode_json_value(record.get("coverage_gaps") or []),
-            "difference_highlights_json": self._encode_json_value(
-                record.get("difference_highlights") or []
-            ),
             "follow_up_search_hints_json": self._encode_json_value(
                 record.get("follow_up_search_hints") or []
             ),
             "creativity_readiness": record.get("creativity_readiness"),
-            "readiness_rationale": record.get("readiness_rationale"),
             "created_at": str(record.get("created_at") or utc_now_z()),
             "updated_at": str(record.get("updated_at") or utc_now_z()),
         }
@@ -402,9 +394,9 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
                 """
             INSERT INTO ai_search_feature_compare_results (
                 result_id, run_id, batch_id, task_id, plan_version, table_rows_json,
-                summary_markdown, overall_findings, coverage_gaps_json, difference_highlights_json,
-                follow_up_search_hints_json, creativity_readiness, readiness_rationale, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                document_roles_json, coverage_gaps_json, follow_up_search_hints_json,
+                creativity_readiness, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 [
                     payload["result_id"],
@@ -413,13 +405,10 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
                     payload["task_id"],
                     payload["plan_version"],
                     payload["table_rows_json"],
-                    payload["summary_markdown"],
-                    payload["overall_findings"],
+                    payload["document_roles_json"],
                     payload["coverage_gaps_json"],
-                    payload["difference_highlights_json"],
                     payload["follow_up_search_hints_json"],
                     payload["creativity_readiness"],
-                    payload["readiness_rationale"],
                     payload["created_at"],
                     payload["updated_at"],
                 ],
@@ -463,9 +452,6 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
             "batch_id": str(record.get("batch_id") or "").strip(),
             "task_id": str(record.get("task_id") or "").strip(),
             "plan_version": int(record.get("plan_version") or 0),
-            "coverage_summary": record.get("coverage_summary"),
-            "selection_summary": record.get("selection_summary"),
-            "follow_up_hints_json": self._encode_json_value(record.get("follow_up_hints") or []),
             "document_assessments_json": self._encode_json_value(
                 record.get("document_assessments") or []
             ),
@@ -489,10 +475,10 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
             self._request(
                 """
             INSERT INTO ai_search_close_read_results (
-                result_id, run_id, batch_id, task_id, plan_version, coverage_summary, selection_summary,
-                follow_up_hints_json, document_assessments_json, key_passages_json, claim_alignments_json,
-                limitation_coverage_json, limitation_gaps_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                result_id, run_id, batch_id, task_id, plan_version, document_assessments_json,
+                key_passages_json, claim_alignments_json, limitation_coverage_json,
+                limitation_gaps_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 [
                     payload["result_id"],
@@ -500,9 +486,6 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
                     payload["batch_id"],
                     payload["task_id"],
                     payload["plan_version"],
-                    payload["coverage_summary"],
-                    payload["selection_summary"],
-                    payload["follow_up_hints_json"],
                     payload["document_assessments_json"],
                     payload["key_passages_json"],
                     payload["claim_alignments_json"],
@@ -526,9 +509,6 @@ class AiSearchDocumentsRepositoryMixin(AiSearchRunLookupMixin):
             "batch_id": row.get("batch_id"),
             "task_id": row.get("task_id"),
             "plan_version": int(row["plan_version"]),
-            "coverage_summary": row.get("coverage_summary"),
-            "selection_summary": row.get("selection_summary"),
-            "follow_up_hints": self._parse_metadata(row.get("follow_up_hints_json")),
             "document_assessments": self._parse_metadata(row.get("document_assessments_json")),
             "key_passages": self._parse_metadata(row.get("key_passages_json")),
             "claim_alignments": self._parse_metadata(row.get("claim_alignments_json")),

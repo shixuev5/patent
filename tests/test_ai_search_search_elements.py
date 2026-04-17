@@ -16,14 +16,13 @@ def test_normalize_search_elements_payload_keeps_applicants_optional():
                 }
             ],
             "missing_items": [],
-            "clarification_summary": "已有核心技术要素。",
         }
     )
 
     assert payload["status"] == "complete"
     assert payload["applicants"] == []
     assert "申请人" in payload["missing_items"]
-    assert "未提供申请人，无法执行申请人追溯检索。" in payload["clarification_summary"]
+    assert "clarification_summary" not in payload
 
 
 def test_normalize_search_elements_payload_adds_missing_date_boundary():

@@ -677,7 +677,7 @@ def build_search_tools(context: Any) -> List[Any]:
             "lane_type": str(lane_type or "").strip(),
         }
         constraints = build_search_constraints(search_elements)
-        academic_query_text = build_query_text(batch, {})
+        academic_query_text = build_query_text(batch, search_elements)
         payload: Dict[str, Any] = {
             "plan_version": int(plan_version),
             "lane_type": str(lane_type or "").strip(),

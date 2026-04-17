@@ -247,12 +247,9 @@ class AiSearchRunsRepositoryMixin:
             "todo_id": row.get("todo_id"),
             "step_id": row.get("step_id"),
             "sub_plan_id": row.get("sub_plan_id"),
-            "result_summary": row.get("result_summary") or "",
-            "adjustments": self._parse_metadata(row.get("adjustments_json")),
             "plan_change_assessment": self._parse_metadata(
                 row.get("plan_change_assessment_json")
             ),
-            "next_recommendation": row.get("next_recommendation") or "",
             "candidate_pool_size": int(row.get("candidate_pool_size") or 0),
             "new_unique_candidates": int(row.get("new_unique_candidates") or 0),
             "metadata": metadata,
@@ -269,12 +266,9 @@ class AiSearchRunsRepositoryMixin:
             "todo_id": str(record.get("todo_id") or "").strip(),
             "step_id": str(record.get("step_id") or "").strip() or None,
             "sub_plan_id": str(record.get("sub_plan_id") or "").strip() or None,
-            "result_summary": str(record.get("result_summary") or "").strip() or None,
-            "adjustments_json": self._encode_json_value(record.get("adjustments") or []),
             "plan_change_assessment_json": self._encode_json_value(
                 record.get("plan_change_assessment") or {}
             ),
-            "next_recommendation": str(record.get("next_recommendation") or "").strip() or None,
             "candidate_pool_size": int(record.get("candidate_pool_size") or 0),
             "new_unique_candidates": int(record.get("new_unique_candidates") or 0),
             "metadata_json": self._encode_json_value(record.get("metadata") or {}),
@@ -293,9 +287,8 @@ class AiSearchRunsRepositoryMixin:
                 """
             INSERT INTO ai_search_execution_summaries (
                 summary_id, run_id, task_id, plan_version, todo_id, step_id, sub_plan_id,
-                result_summary, adjustments_json, plan_change_assessment_json, next_recommendation,
-                candidate_pool_size, new_unique_candidates, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                plan_change_assessment_json, candidate_pool_size, new_unique_candidates, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 [
                     payload["summary_id"],
@@ -305,10 +298,7 @@ class AiSearchRunsRepositoryMixin:
                     payload["todo_id"],
                     payload["step_id"],
                     payload["sub_plan_id"],
-                    payload["result_summary"],
-                    payload["adjustments_json"],
                     payload["plan_change_assessment_json"],
-                    payload["next_recommendation"],
                     payload["candidate_pool_size"],
                     payload["new_unique_candidates"],
                     payload["metadata_json"],

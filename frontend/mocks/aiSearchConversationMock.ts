@@ -1,5 +1,5 @@
 import type {
-  AiSearchPendingAssistantMessage,
+  AiSearchMessageSegment,
   AiSearchPhaseMarker,
   AiSearchSessionSummary,
   AiSearchSnapshot,
@@ -8,7 +8,7 @@ import type {
 
 type MockRuntime = {
   activeRun: { runKey: string, sessionId: string, startedAt: string, phase: string } | null
-  pendingAssistantMessage: AiSearchPendingAssistantMessage | null
+  messageSegments: AiSearchMessageSegment[]
   phaseMarkers: AiSearchPhaseMarker[]
   activeSubagentStatuses: Record<string, AiSearchSubagentStatus>
   streaming: boolean
@@ -352,17 +352,17 @@ const replayPlannerStageMessages = [
   {
     message_id: 'replay-stage-planner-13',
     created_at: '2026-04-16T09:06:44.259271Z',
-    content: '子计划 3（远程仿真控制 + 信息孤岛突破）已写入完成。包含 2 个查询批次（bp3_1 主检索、bp3_2 备选检索）和 2 个检索步骤（step_3_1 立即执行、step_3_2 条件分支）。至此，三个子计划已全部写入。接下来调用 finalize_plan_draft 进行完整性校验与封口。',
+    content: '子计划 3（远程仿真控制 + 信息孤岛突破）已写入完成。包含 2 个查询批次（bp3_1 主检索、bp3_2 备选检索）和 2 个检索步骤（step_3_1 立即执行、step_3_2 条件分支）。至此，三个子计划已全部写入。接下来输出完整计划正文，并等待主控发布正式计划。',
   },
   {
     message_id: 'replay-stage-planner-14',
     created_at: '2026-04-16T09:06:50.393513Z',
-    content: '已完成计划草案封口校验，接下来准备提交正式计划并进入确认。',
+    content: '完整计划正文已经生成，接下来准备发布正式计划并进入确认。',
   },
   {
     message_id: 'replay-stage-planner-15',
     created_at: '2026-04-16T09:06:55.627185Z',
-    content: '检索计划草案已完成校验与封口。计划包含：1 个执行规范顶层结构、3 个子计划（共 6 个查询批次、6 个检索步骤）、完整的用户可见文档。计划支持动态重规划、条件分支、语义检索与分类号辅助，最多 3 轮检索，每轮精选最多 5 篇候选文献。',
+    content: '检索计划草案已完整生成。计划包含：1 个执行规范顶层结构、3 个子计划（共 6 个查询批次、6 个检索步骤）、完整的用户可见文档。计划支持动态重规划、条件分支、语义检索与分类号辅助，最多 3 轮检索，每轮精选最多 5 篇候选文献。',
   },
 ].map((item, index, items) => ({
   ...item,
@@ -461,10 +461,10 @@ const replayProcessEvents = [
     eventId: 'call_b0acb1748f564a469a2f50d1:running',
     processType: 'tool',
     status: 'running',
-    toolName: 'save_plan_review_markdown',
-    toolLabel: '保存计划正文',
-    summary: '保存计划正文',
-    statusText: '保存计划正文',
+    toolName: 'save_plan_execution_overview',
+    toolLabel: '保存计划总览',
+    summary: '保存计划总览',
+    statusText: '保存计划总览',
     subagentName: 'planner',
     subagentLabel: '检索规划',
     errorMessage: null,
@@ -481,10 +481,10 @@ const replayProcessEvents = [
     eventId: 'call_b0acb1748f564a469a2f50d1:completed',
     processType: 'tool',
     status: 'completed',
-    toolName: 'save_plan_review_markdown',
-    toolLabel: '保存计划正文',
-    summary: '保存计划正文',
-    statusText: '保存计划正文已完成',
+    toolName: 'save_plan_execution_overview',
+    toolLabel: '保存计划总览',
+    summary: '保存计划总览',
+    statusText: '保存计划总览已完成',
     subagentName: 'planner',
     subagentLabel: '检索规划',
     errorMessage: null,
@@ -661,10 +661,10 @@ const replayProcessEvents = [
     eventId: 'call_aecaac76c79d4de698b6b154:running',
     processType: 'tool',
     status: 'running',
-    toolName: 'finalize_plan_draft',
-    toolLabel: '完成计划草案',
-    summary: '完成计划草案',
-    statusText: '完成计划草案',
+    toolName: 'publish_planner_draft',
+    toolLabel: '发布计划草案',
+    summary: '发布计划草案',
+    statusText: '发布计划草案',
     subagentName: 'planner',
     subagentLabel: '检索规划',
     errorMessage: null,
@@ -681,10 +681,10 @@ const replayProcessEvents = [
     eventId: 'call_aecaac76c79d4de698b6b154:completed',
     processType: 'tool',
     status: 'completed',
-    toolName: 'finalize_plan_draft',
-    toolLabel: '完成计划草案',
-    summary: '完成计划草案',
-    statusText: '完成计划草案已完成',
+    toolName: 'publish_planner_draft',
+    toolLabel: '发布计划草案',
+    summary: '发布计划草案',
+    statusText: '发布计划草案已完成',
     subagentName: 'planner',
     subagentLabel: '检索规划',
     errorMessage: null,
@@ -1290,7 +1290,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
   const runtimeById: Record<string, MockRuntime> = {
     'mock-replay-5e53e613': {
       activeRun: null,
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [],
       activeSubagentStatuses: {},
       streaming: false,
@@ -1298,7 +1298,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     },
     'mock-question': {
       activeRun: null,
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [],
       activeSubagentStatuses: {},
       streaming: false,
@@ -1306,7 +1306,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     },
     'mock-plan': {
       activeRun: null,
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [],
       activeSubagentStatuses: {},
       streaming: false,
@@ -1314,7 +1314,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     },
     'mock-running': {
       activeRun: { runKey: 'mock-run-1', sessionId: 'mock-running', startedAt: isoAt(12), phase: 'execute_search' },
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [
         { id: 'phase-mock-run-1-drafting', runKey: 'mock-run-1', phase: 'drafting_plan', createdAt: isoAt(11), endedAt: isoAt(12) },
         { id: 'phase-mock-run-1-execute', runKey: 'mock-run-1', phase: 'execute_search', createdAt: isoAt(12), endedAt: null },
@@ -1332,7 +1332,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     },
     'mock-decision': {
       activeRun: null,
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [],
       activeSubagentStatuses: {},
       streaming: false,
@@ -1340,7 +1340,7 @@ export const buildAiSearchConversationMockState = (): AiSearchMockState => {
     },
     'mock-completed': {
       activeRun: null,
-      pendingAssistantMessage: null,
+      messageSegments: [],
       phaseMarkers: [],
       activeSubagentStatuses: {},
       streaming: false,

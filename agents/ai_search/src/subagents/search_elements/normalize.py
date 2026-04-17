@@ -86,14 +86,6 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
     if not applicants and "申请人" not in missing_items:
         missing_items.append("申请人")
 
-    clarification_parts: List[str] = []
-    raw_summary = str(source.get("clarification_summary") or "").strip()
-    if raw_summary:
-        clarification_parts.append(raw_summary)
-    if not applicants:
-        clarification_parts.append("未提供申请人，无法执行申请人追溯检索。")
-    clarification_summary = " ".join(part for part in clarification_parts if part).strip()
-
     status = str(source.get("status") or "").strip().lower()
     if not objective or not any(str(item.get("element_name") or "").strip() for item in normalized_elements):
         status = "needs_answer"
@@ -108,5 +100,4 @@ def normalize_search_elements_payload(payload: Any) -> Dict[str, Any]:
         "priority_date": priority_date,
         "search_elements": normalized_elements,
         "missing_items": missing_items,
-        "clarification_summary": clarification_summary,
     }

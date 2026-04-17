@@ -196,9 +196,6 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
                 "evidence_sufficiency": "sufficient",
             }
         ],
-        "coverage_summary": "覆盖充分",
-        "follow_up_hints": [],
-        "selection_summary": "选入对比文件",
     }
 
     result = json.loads(tool(operation="commit", plan_version=1, payload_json=json.dumps(payload, ensure_ascii=False)))

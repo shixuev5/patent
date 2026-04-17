@@ -8,8 +8,8 @@ import type {
   AiSearchBatchSummary,
   AiSearchCreateSessionResponse,
   AiSearchExecutionQueueResponse,
+  AiSearchMessageSegment,
   AiSearchPendingAction,
-  AiSearchPendingAssistantMessage,
   AiSearchPhaseMarker,
   AiSearchSessionSummary,
   AiSearchSessionListResponse,
@@ -22,7 +22,7 @@ const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'feat
 
 interface AiSearchSessionRuntime {
   activeRun: AiSearchActiveRun | null
-  pendingAssistantMessage: AiSearchPendingAssistantMessage | null
+  messageSegments: AiSearchMessageSegment[]
   phaseMarkers: AiSearchPhaseMarker[]
   activeSubagentStatuses: Record<string, AiSearchSubagentStatus>
   lastEventSeq: number
@@ -109,17 +109,9 @@ const resumeAction = (snapshot?: AiSearchSnapshot | null): Record<string, any> |
   }
 }
 
-const pendingAssistantFromId = (messageId: string, createdAt?: string): AiSearchPendingAssistantMessage => ({
-  messageId,
-  content: '',
-  contentType: 'markdown',
-  createdAt: createdAt || nowIso(),
-  hasDelta: false,
-})
-
 const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   activeRun: null,
-  pendingAssistantMessage: null,
+  messageSegments: [],
   phaseMarkers: [],
   activeSubagentStatuses: {},
   lastEventSeq: 0,
@@ -211,9 +203,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
       return activePhase(this.currentSession)
     },
 
-    pendingAssistantMessage(): AiSearchPendingAssistantMessage | null {
+    messageSegments(): AiSearchMessageSegment[] {
       const sessionId = String(this.currentSessionId || '').trim()
-      return sessionId ? (this.sessionRuntimeById[sessionId]?.pendingAssistantMessage || null) : null
+      return sessionId ? (this.sessionRuntimeById[sessionId]?.messageSegments || []) : []
     },
 
     phaseMarkers(): AiSearchPhaseMarker[] {
@@ -276,7 +268,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     _resetTransientRunState(sessionId: string) {
       this._setRuntime(sessionId, {
         activeRun: null,
-        pendingAssistantMessage: null,
+        messageSegments: [],
         activeSubagentStatuses: {},
       })
     },
@@ -445,15 +437,20 @@ export const useAiSearchStore = defineStore('aiSearch', {
       snapshot.conversation.processEvents = [...current, event]
     },
 
-    _pushAssistantMessage(sessionId: string, content: string, messageId?: string) {
+    _pushAssistantMessage(sessionId: string, content: string, options: {
+      messageId?: string
+      createdAt?: string
+      metadata?: Record<string, any>
+    } = {}) {
       const text = String(content || '')
       if (!text.trim()) return
       this._pushMessage(sessionId, {
-        message_id: messageId || `assistant-${Date.now()}`,
+        message_id: options.messageId || `assistant-${Date.now()}`,
         role: 'assistant',
         kind: 'chat',
         content: text,
-        created_at: nowIso(),
+        created_at: options.createdAt || nowIso(),
+        metadata: options.metadata || undefined,
       })
     },
 
@@ -534,11 +531,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
       ]
     },
 
-    _startPendingAssistant(sessionId: string, phaseHint?: string, forceNewRun: boolean = false) {
+    _startActiveRun(sessionId: string, phaseHint?: string, forceNewRun: boolean = false) {
       const snapshot = this._getSnapshot(sessionId)
       const runtime = this._ensureRuntime(sessionId)
-      const createdAt = forceNewRun ? nowIso() : (runtime.pendingAssistantMessage?.createdAt || nowIso())
-      const messageId = forceNewRun ? `pending-${Date.now()}` : (runtime.pendingAssistantMessage?.messageId || `pending-${Date.now()}`)
+      const createdAt = nowIso()
       const nextPhase = String(phaseHint || activePhase(snapshot) || '').trim()
       if (forceNewRun || !runtime.activeRun) {
         runtime.activeRun = {
@@ -548,32 +544,51 @@ export const useAiSearchStore = defineStore('aiSearch', {
           phase: nextPhase,
         }
         runtime.activeSubagentStatuses = {}
-        runtime.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
         return
       }
       runtime.activeRun = {
         ...runtime.activeRun,
         phase: nextPhase || runtime.activeRun.phase,
       }
-      if (!runtime.pendingAssistantMessage) {
-        runtime.pendingAssistantMessage = pendingAssistantFromId(messageId, createdAt)
-      }
     },
 
-    _setPendingAssistantMessage(sessionId: string, messageId?: string, patch?: Partial<AiSearchPendingAssistantMessage>) {
-      this._startPendingAssistant(sessionId)
+    _upsertMessageSegment(sessionId: string, segmentId: string, patch: Partial<AiSearchMessageSegment>) {
       const runtime = this._ensureRuntime(sessionId)
-      const current = runtime.pendingAssistantMessage || pendingAssistantFromId(messageId || `pending-${Date.now()}`)
-      runtime.pendingAssistantMessage = {
-        ...current,
-        ...(messageId ? { messageId } : {}),
+      const current = Array.isArray(runtime.messageSegments) ? [...runtime.messageSegments] : []
+      const normalizedSegmentId = String(segmentId || '').trim() || `segment-${Date.now()}`
+      const index = current.findIndex(item => String(item.segmentId || '').trim() === normalizedSegmentId)
+      const base: AiSearchMessageSegment = index >= 0
+        ? current[index]
+        : {
+            segmentId: normalizedSegmentId,
+            messageId: String(patch.messageId || `assistant-${Date.now()}`).trim(),
+            sourceAgent: String(patch.sourceAgent || 'main-agent').trim(),
+            sourceRole: String(patch.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
+            content: '',
+            contentType: 'markdown',
+            createdAt: nowIso(),
+            completed: false,
+          }
+      const next = {
+        ...base,
         ...patch,
-      }
+        segmentId: normalizedSegmentId,
+        messageId: String(patch.messageId || base.messageId || `assistant-${Date.now()}`).trim(),
+        sourceAgent: String(patch.sourceAgent || base.sourceAgent || 'main-agent').trim(),
+        sourceRole: String(patch.sourceRole || base.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
+      } as AiSearchMessageSegment
+      if (index >= 0) current[index] = next
+      else current.push(next)
+      runtime.messageSegments = current
     },
 
-    _completePendingAssistantMessage(sessionId: string, messageId: string, content: string) {
-      this._pushAssistantMessage(sessionId, content, messageId)
-      this._ensureRuntime(sessionId).pendingAssistantMessage = null
+    _clearMessageSegments(sessionId: string, predicate?: (segment: AiSearchMessageSegment) => boolean) {
+      const runtime = this._ensureRuntime(sessionId)
+      if (!predicate) {
+        runtime.messageSegments = []
+        return
+      }
+      runtime.messageSegments = runtime.messageSegments.filter(segment => !predicate(segment))
     },
 
     _setStreaming(sessionId: string, streaming: boolean) {
@@ -599,38 +614,59 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
-        this._startPendingAssistant(sessionId)
-        runtime.pendingAssistantMessage = null
+        this._startActiveRun(sessionId)
+        runtime.messageSegments = []
         this._ensurePhaseMarker(sessionId, phase)
         return
       }
 
-      if (event.type === 'assistant.message.started') {
-        this._setPendingAssistantMessage(sessionId, String(payload?.messageId || '').trim() || undefined, {
+      if (event.type === 'message.segment.started') {
+        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
+        this._upsertMessageSegment(sessionId, segmentId, {
+          messageId: String(payload?.messageId || '').trim() || `assistant-${Date.now()}`,
+          sourceAgent: String(payload?.sourceAgent || 'main-agent').trim() || 'main-agent',
+          sourceRole: String(payload?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
           contentType: String(payload?.contentType || 'markdown'),
+          completed: false,
         })
         return
       }
 
-      if (event.type === 'assistant.message.delta') {
-        const messageId = String(payload?.messageId || runtime.pendingAssistantMessage?.messageId || '').trim() || `pending-${Date.now()}`
+      if (event.type === 'message.segment.delta') {
+        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
+        const current = runtime.messageSegments.find(item => item.segmentId === segmentId)
         const delta = String(payload?.delta || '')
-        this._setPendingAssistantMessage(sessionId, messageId, {
-          content: `${runtime.pendingAssistantMessage?.content || ''}${delta}`,
-          contentType: String(payload?.contentType || runtime.pendingAssistantMessage?.contentType || 'markdown'),
-          hasDelta: !!(`${runtime.pendingAssistantMessage?.content || ''}${delta}`).trim(),
+        this._upsertMessageSegment(sessionId, segmentId, {
+          messageId: String(payload?.messageId || current?.messageId || '').trim() || `assistant-${Date.now()}`,
+          sourceAgent: String(payload?.sourceAgent || current?.sourceAgent || 'main-agent').trim() || 'main-agent',
+          sourceRole: String(payload?.sourceRole || current?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
+          content: `${current?.content || ''}${delta}`,
+          contentType: String(payload?.contentType || current?.contentType || 'markdown'),
+          completed: false,
         })
         return
       }
 
-      if (event.type === 'assistant.message.completed') {
-        const messageId = String(payload?.messageId || runtime.pendingAssistantMessage?.messageId || '').trim() || `assistant-${Date.now()}`
-        const content = String(payload?.content || runtime.pendingAssistantMessage?.content || '')
+      if (event.type === 'message.segment.completed') {
+        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
+        const current = runtime.messageSegments.find(item => item.segmentId === segmentId)
+        const messageId = String(payload?.messageId || current?.messageId || '').trim() || `assistant-${Date.now()}`
+        const content = String(payload?.content || current?.content || '')
+        const sourceAgent = String(payload?.sourceAgent || current?.sourceAgent || 'main-agent').trim() || 'main-agent'
+        const sourceRole = String(payload?.sourceRole || current?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent'
         if (content.trim()) {
-          this._completePendingAssistantMessage(sessionId, messageId, content)
-        } else {
-          runtime.pendingAssistantMessage = null
+          this._pushAssistantMessage(sessionId, content, {
+            messageId,
+            createdAt: current?.createdAt || nowIso(),
+            metadata: {
+              source_agent: sourceAgent,
+              source_role: sourceRole,
+              segment_id: segmentId,
+              content_type: String(payload?.contentType || current?.contentType || 'markdown'),
+            },
+          })
         }
+        this._clearMessageSegments(sessionId, segment => segment.segmentId === segmentId)
         return
       }
 
@@ -638,6 +674,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'message.created') {
         this._pushMessage(sessionId, payload)
+        if (String(payload?.kind || '').trim() === 'plan_confirmation') {
+          this._clearMessageSegments(sessionId, segment => segment.sourceAgent === 'planner')
+        }
         return
       }
 
@@ -769,7 +808,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'run.completed') {
         this._closeLatestPhaseMarker(sessionId)
         runtime.activeRun = null
-        runtime.pendingAssistantMessage = null
+        runtime.messageSegments = []
         runtime.activeSubagentStatuses = {}
         runtime.streaming = false
         return

@@ -89,6 +89,19 @@ def test_main_agent_blocks_removed_subagent_type():
     assert result.content == "子 agent `legacy-search-worker` 不允许由 `main-agent` 调用。"
 
 
+def test_main_agent_allows_named_planner_subagent_call_in_drafting_plan():
+    middleware = AiSearchGuardMiddleware(
+        "main-agent",
+        storage=_StubStorage(PHASE_DRAFTING_PLAN),
+        task_id="task-topic-3",
+    )
+    request = SimpleNamespace(tool_call={"name": "planner", "id": "call-topic-3", "args": {}})
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
 def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_phase():
     middleware = AiSearchGuardMiddleware(
         "query-executor",

@@ -320,7 +320,6 @@ def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_
             "priority_date": normalize_date_text(biblio.get("priority_date")),
             "search_elements": mapped_elements,
             "missing_items": [],
-            "clarification_summary": "已从 AI 分析结果导入首轮检索要素。",
         }
     )
 

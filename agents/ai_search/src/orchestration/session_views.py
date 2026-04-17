@@ -41,13 +41,10 @@ def build_gap_progress(context: Any, plan_version: int = 0) -> Dict[str, Any]:
     coverage_gaps = feature_compare_result.get("coverage_gaps") if isinstance(feature_compare_result.get("coverage_gaps"), list) else []
     document_assessments = close_read_result.get("document_assessments") if isinstance(close_read_result.get("document_assessments"), list) else []
     follow_up_hints: list[str] = []
-    for values in (close_read_result.get("follow_up_hints"), feature_compare_result.get("follow_up_search_hints")):
-        if not isinstance(values, list):
-            continue
-        for item in values:
-            text = str(item or "").strip()
-            if text and text not in follow_up_hints:
-                follow_up_hints.append(text)
+    for item in feature_compare_result.get("follow_up_search_hints") or []:
+        text = str(item or "").strip()
+        if text and text not in follow_up_hints:
+            follow_up_hints.append(text)
     readiness = str(feature_compare_result.get("creativity_readiness") or "").strip().lower()
     run_id = context.active_run_id(version)
     selected_count = len(context.storage.list_ai_search_documents(context.task_id, run_id, stages=["selected"])) if run_id else 0

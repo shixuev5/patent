@@ -57,6 +57,3 @@ class CloseReaderOutput(BaseModel):
     limitation_coverage: List[LimitationCoverageOutput] = Field(default_factory=list)
     limitation_gaps: List[LimitationGapOutput] = Field(default_factory=list)
     document_assessments: List[DocumentAssessmentOutput] = Field(default_factory=list)
-    coverage_summary: str = ""
-    follow_up_hints: List[str] = Field(default_factory=list)
-    selection_summary: str = ""

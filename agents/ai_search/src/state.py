@@ -160,14 +160,13 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "probe_search_semantic",
             "probe_search_boolean",
             "probe_count_boolean",
+            "save_probe_findings",
         },
     },
     "planner": {
         PHASE_DRAFTING_PLAN: {
-            "save_plan_review_markdown",
             "save_plan_execution_overview",
             "append_plan_sub_plan",
-            "finalize_plan_draft",
         },
     },
     "coarse-screener": {

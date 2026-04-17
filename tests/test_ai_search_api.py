@@ -149,9 +149,9 @@ def test_stream_message_endpoint_surfaces_direct_reply_even_without_state_transi
     events = _parse_events(body)
 
     assert events[0]["type"] == "run.started"
-    assert any(event["type"] == "assistant.message.started" for event in events)
-    assert any(event["type"] == "assistant.message.delta" for event in events)
-    assert any(event["type"] == "assistant.message.completed" for event in events)
+    assert any(event["type"] == "message.segment.started" for event in events)
+    assert any(event["type"] == "message.segment.delta" for event in events)
+    assert any(event["type"] == "message.segment.completed" for event in events)
     assert events[-1]["type"] == "run.completed"
 
 
@@ -287,7 +287,7 @@ def test_stream_message_endpoint_surfaces_direct_assistant_reply(monkeypatch, tm
     assert response.status_code == 200
     events = _parse_events(response.text)
     assert events[-1]["type"] == "run.completed"
-    assert any(event["type"] == "assistant.message.completed" for event in events)
+    assert any(event["type"] == "message.segment.completed" for event in events)
 
     snapshot = service.get_snapshot(session_id, "guest_ai_search")
     assert snapshot.session.phase == "drafting_plan"

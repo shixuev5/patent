@@ -67,9 +67,7 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
     spec = _execution_spec()
 
-    review_result = tools["save_plan_review_markdown"](
-        review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
-    )
+    review_result = context.save_planner_review_markdown("# 检索计划\n\n## 检索目标\n测试目标")
     tools["save_plan_execution_overview"](
         search_scope=spec.search_scope,
         constraints=spec.constraints,
@@ -77,16 +75,17 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
         probe_findings={"signals": [{"type": "semantic_probe", "count": 3}]},
     )
     tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
-    payload = json.loads(tools["finalize_plan_draft"]())
+    payload = json.loads(main_tools["publish_planner_draft"]())
     draft = context.current_planner_draft()
     fetched = json.loads(main_tools["get_planning_context"]())
 
-    assert json.loads(review_result)["draft_id"] == draft["draft_id"]
-    assert payload["draft_id"] == draft["draft_id"]
-    assert draft["draft_status"] == "finalized"
-    assert draft["execution_spec"]["sub_plans"][0]["retrieval_steps"][0]["query_blueprint_refs"] == ["b1"]
-    assert fetched["planner_draft"]["draft_id"] == draft["draft_id"]
-    assert fetched["planner_draft"]["probe_findings"]["signals"][0]["type"] == "semantic_probe"
+    assert review_result["draft_id"]
+    assert draft == {}
+    assert payload["plan_version"] == 1
+    assert fetched["planner_draft"] == {}
+    plan = _storage.get_ai_search_plan(_task_id, payload["plan_version"])
+    assert plan["execution_spec_json"]["sub_plans"][0]["retrieval_steps"][0]["query_blueprint_refs"] == ["b1"]
+    assert plan["review_markdown"].startswith("# 检索计划")
 
     context.clear_planner_draft()
 
@@ -101,16 +100,13 @@ def test_publish_planner_draft_normalizes_database_names(tmp_path):
     spec = _execution_spec().model_copy(deep=True)
     spec.search_scope["databases"] = ["zhihuiya", "openalex", "bad-db", "crossref", "openalex"]
 
-    tools["save_plan_review_markdown"](
-        review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
-    )
+    context.save_planner_review_markdown("# 检索计划\n\n## 检索目标\n测试目标")
     tools["save_plan_execution_overview"](
         search_scope=spec.search_scope,
         constraints=spec.constraints,
         execution_policy=spec.execution_policy,
     )
     tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
-    tools["finalize_plan_draft"]()
     plan_version = json.loads(main_tools["publish_planner_draft"]())["plan_version"]
     plan = storage.get_ai_search_plan(task_id, plan_version)
 
@@ -125,9 +121,7 @@ def test_planner_draft_overview_normalizes_string_probe_findings(tmp_path, probe
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
     spec = _execution_spec()
 
-    tools["save_plan_review_markdown"](
-        review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
-    )
+    context.save_planner_review_markdown("# 检索计划\n\n## 检索目标\n测试目标")
     payload = json.loads(
         tools["save_plan_execution_overview"](
             search_scope=spec.search_scope,
@@ -137,7 +131,6 @@ def test_planner_draft_overview_normalizes_string_probe_findings(tmp_path, probe
         )
     )
     tools["append_plan_sub_plan"](sub_plan=spec.sub_plans[0])
-    tools["finalize_plan_draft"]()
 
     draft = context.current_planner_draft()
     assert payload["draft_id"] == draft["draft_id"]

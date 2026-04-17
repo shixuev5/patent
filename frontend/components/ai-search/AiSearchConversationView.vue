@@ -76,14 +76,13 @@
                 class="text-[13px] leading-5"
                 :class="messageCardClass(entry)"
               >
-                <template v-if="entry.entryType === 'pending-assistant'">
+                <template v-if="isMessageSegmentEntry(entry)">
+                  <div class="mb-2 flex items-center gap-2 text-[11px] font-medium tracking-[0.08em] text-slate-400">
+                    <span class="inline-flex h-1.5 w-1.5 rounded-full" :class="narrationSourceDotClass(entry)" />
+                    <span>{{ narrationSourceLabel(entry) }}</span>
+                  </div>
                   <div v-if="entry.content" class="text-slate-700">
-                    <AiSearchStructuredPlan
-                      v-if="structuredPlanExecutionSpec"
-                      :execution-spec="structuredPlanExecutionSpec"
-                    />
                     <AiSearchExpandableContent
-                      v-else
                       :content="entry.content"
                       mode="markdown"
                       theme="slate"
@@ -130,6 +129,10 @@
                 </template>
 
                 <template v-else-if="entry.role === 'assistant'">
+                  <div class="mb-2 flex items-center gap-2 text-[11px] font-medium tracking-[0.08em] text-slate-400">
+                    <span class="inline-flex h-1.5 w-1.5 rounded-full" :class="narrationSourceDotClass(entry)" />
+                    <span>{{ narrationSourceLabel(entry) }}</span>
+                  </div>
                   <AiSearchExpandableContent :content="entry.content" mode="markdown" theme="slate" />
                 </template>
 
@@ -193,7 +196,6 @@ import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecis
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchProcessLine from '~/components/ai-search/AiSearchProcessLine.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
-import AiSearchStructuredPlan from '~/components/ai-search/AiSearchStructuredPlan.vue'
 import type { AiSearchArtifactAttachment } from '~/types/aiSearch'
 import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 
@@ -214,7 +216,6 @@ const props = withDefaults(defineProps<{
   streaming?: boolean
   resumeLastError?: string
   resumeAttemptCount?: number
-  pendingAssistantContent?: string
 }>(), {
   sessionId: '',
   structuredPlanExecutionSpec: null,
@@ -231,7 +232,6 @@ const props = withDefaults(defineProps<{
   streaming: false,
   resumeLastError: '',
   resumeAttemptCount: 0,
-  pendingAssistantContent: '',
 })
 
 defineEmits<{
@@ -282,8 +282,13 @@ const phaseDurationText = (entry: Record<string, any>): string => {
 
 const isProcessRenderEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'process-render'
 const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
+const isMessageSegmentEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'message-segment'
 const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
 const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
+const isNarrationLikeEntry = (entry: Record<string, any>): boolean => (
+  isMessageSegmentEntry(entry)
+  || (entry.role === 'assistant' && !isPlanMessage(entry) && !isQuestionMessage(entry))
+)
 const planVersionOf = (entry: Record<string, any>): number => {
   const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
   return Number.isFinite(value) ? value : 0
@@ -337,15 +342,47 @@ const isUserMarkdownEntry = (entry: Record<string, any>): boolean => {
 }
 
 const messageWrapperClass = (entry: Record<string, any>): string => (
-  'max-w-[90%]'
+  isNarrationLikeEntry(entry) ? 'w-full max-w-full' : 'max-w-[90%]'
 )
 
 const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
   }
+  if (isNarrationLikeEntry(entry)) {
+    return 'px-1 py-1 text-slate-700'
+  }
   if (isQuestionMessage(entry)) return ''
   return 'rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-slate-700 shadow-sm'
+}
+
+const sourceAgentOf = (entry: Record<string, any>): string => {
+  return String(entry.sourceAgent || entry.metadata?.source_agent || 'main-agent').trim() || 'main-agent'
+}
+
+const narrationSourceLabel = (entry: Record<string, any>): string => {
+  const sourceAgent = sourceAgentOf(entry)
+  if (sourceAgent === 'main-agent') return '检索分析'
+  if (sourceAgent === 'planner') return '检索规划'
+  if (sourceAgent === 'search-elements') return '检索要素整理'
+  if (sourceAgent === 'plan-prober') return '计划预检'
+  if (sourceAgent === 'query-executor') return '检索执行'
+  if (sourceAgent === 'coarse-screener') return '候选粗筛'
+  if (sourceAgent === 'close-reader') return '重点精读'
+  if (sourceAgent === 'feature-comparer') return '特征对比'
+  return sourceAgent || '检索分析'
+}
+
+const narrationSourceDotClass = (entry: Record<string, any>): string => {
+  const sourceAgent = sourceAgentOf(entry)
+  if (sourceAgent === 'planner') return 'bg-emerald-500'
+  if (sourceAgent === 'query-executor') return 'bg-amber-500'
+  if (sourceAgent === 'close-reader') return 'bg-rose-500'
+  if (sourceAgent === 'feature-comparer') return 'bg-violet-500'
+  if (sourceAgent === 'coarse-screener') return 'bg-sky-500'
+  if (sourceAgent === 'search-elements') return 'bg-teal-500'
+  if (sourceAgent === 'plan-prober') return 'bg-lime-500'
+  return 'bg-cyan-500'
 }
 
 const userMessageMode = (entry: Record<string, any>): 'markdown' | 'plaintext' => (
@@ -357,8 +394,7 @@ const userMessageTheme = (_entry: Record<string, any>): 'cyan' => 'cyan'
 const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
 
 const canCopyEntry = (entry: Record<string, any>): boolean => {
-  if (isStageMessage(entry)) return false
-  if (entry?.entryType === 'pending-assistant' && !entryCopyText(entry)) return false
+  if (isMessageSegmentEntry(entry) && !entryCopyText(entry)) return false
   return !!entryCopyText(entry)
 }
 
@@ -367,7 +403,7 @@ const downloadAttachmentsForEntry = (entry: Record<string, any>): AiSearchArtifa
   const attachments = Array.isArray(props.attachments) ? [...props.attachments] : []
   if (!attachments.length) return []
   if (entry.role !== 'assistant' || isPlanMessage(entry) || isQuestionMessage(entry)) return []
-  const assistantEntries = props.entries.filter(item => item.role === 'assistant' && item.entryType !== 'pending-assistant')
+  const assistantEntries = props.entries.filter(item => item.role === 'assistant' && item.entryType !== 'message-segment')
   if (assistantEntries.at(-1)?.id !== entry.id) return []
   return attachments.sort((left, right) => {
     if (Boolean(left.isPrimary) !== Boolean(right.isPrimary)) return left.isPrimary ? -1 : 1
@@ -406,6 +442,13 @@ const scrollToLatest = () => {
   void scrollMessagesToBottom('smooth')
 }
 
+const liveSegmentSignature = computed(() => (
+  props.entries
+    .filter(item => isMessageSegmentEntry(item))
+    .map(item => `${String(item.id || '')}:${String(item.content || '').length}`)
+    .join('|')
+))
+
 watch(messageListRef, (element, previous) => {
   if (previous) previous.removeEventListener('scroll', syncMessageListState)
   if (element) {
@@ -420,7 +463,7 @@ watch(
   [
     () => props.sessionId,
     () => props.entries.length,
-    () => props.pendingAssistantContent,
+    () => liveSegmentSignature.value,
   ],
   ([sessionId], [previousSessionId]) => {
     if (sessionId !== previousSessionId || isNearBottom.value) {

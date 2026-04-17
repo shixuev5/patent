@@ -8,7 +8,6 @@ from deepagents.backends.state import StateBackend
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import build_guard_middleware, build_streaming_middleware, default_model
 from agents.ai_search.src.subagents.query_executor.prompt import QUERY_EXECUTOR_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.query_executor.schemas import ExecutionStepSummary
 from agents.ai_search.src.subagents.query_executor.search_backend_tools import build_search_tools
 
 
@@ -19,7 +18,6 @@ def build_query_executor_agent(storage: object, task_id: str):
         tools=context.build_query_executor_tools() + build_search_tools(context),
         system_prompt=QUERY_EXECUTOR_SYSTEM_PROMPT,
         middleware=[build_guard_middleware("query-executor", storage, task_id), build_streaming_middleware("query-executor", context=context)],
-        response_format=ExecutionStepSummary,
         backend=StateBackend,
         name=f"ai-search-query-executor-{task_id}",
     )

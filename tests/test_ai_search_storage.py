@@ -218,13 +218,13 @@ def test_ai_search_storage_roundtrip(tmp_path):
             "task_id": "task-ai-search",
             "plan_version": 1,
             "table_json": [{"feature": "A", "doc": "CN123456A"}],
-            "summary_markdown": "总结",
+            "document_roles": [{"document_id": "doc-1", "role": "X"}],
         }
     )
     feature_comparison = storage.get_ai_search_feature_comparison("task-ai-search", 1)
     assert feature_comparison is not None
     assert feature_comparison["table_json"][0]["feature"] == "A"
-    assert feature_comparison["summary_markdown"] == "总结"
+    assert feature_comparison["document_roles"][0]["role"] == "X"
 
     assert storage.create_ai_search_execution_summary(
         {
@@ -235,7 +235,8 @@ def test_ai_search_storage_roundtrip(tmp_path):
             "todo_id": "plan_1:sub_plan_1:step_1",
             "step_id": "step_1",
             "sub_plan_id": "sub_plan_1",
-            "result_summary": "首轮召回有效",
+            "candidate_pool_size": 10,
+            "new_unique_candidates": 3,
             "metadata": {
                 "outcome_signals": {
                     "primary_goal_reached": True,

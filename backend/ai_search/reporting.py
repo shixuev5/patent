@@ -321,6 +321,7 @@ def build_ai_search_report_markdown(
     feature_comparison: Optional[Dict[str, Any]],
     close_read_result: Optional[Dict[str, Any]],
     feature_compare_result: Optional[Dict[str, Any]],
+    feature_compare_markdown: str = "",
     source_patent_data: Optional[Dict[str, Any]] = None,
     termination_reason: str = "",
 ) -> str:
@@ -342,9 +343,6 @@ def build_ai_search_report_markdown(
             plan_scope = current_plan.get("execution_spec", {}).get("search_scope", {}) or {}
     objective = str(plan_scope.get("objective") or "").strip()
     notes = []
-    readiness_rationale = str((feature_compare_result or {}).get("readiness_rationale") or "").strip()
-    if readiness_rationale:
-        notes.append(readiness_rationale)
     if termination_reason:
         notes.append(termination_reason)
     if objective:
@@ -415,6 +413,16 @@ def build_ai_search_report_markdown(
     if notes:
         note_items = "".join(f"<li>{_escape(item)}</li>" for item in notes if str(item or "").strip())
         note_block = f"\n<ul class=\"ai-search-notes\">{note_items}</ul>\n"
+    analysis_section = ""
+    if str(feature_compare_markdown or "").strip():
+        analysis_section = "\n".join(
+            [
+                "## 对比分析结论",
+                "",
+                str(feature_compare_markdown or "").strip(),
+                "",
+            ]
+        )
     return "\n".join(
         [
             "# 检索报告",
@@ -436,6 +444,7 @@ def build_ai_search_report_markdown(
             "2. 相关的段落和/或图号优先使用精读阶段定位到的证据位置。",
             "3. 涉及的权利要求来自精读阶段聚合的 claim 对齐结果。",
             note_block,
+            analysis_section,
             "",
         ]
     ).strip()
@@ -516,6 +525,7 @@ def build_ai_search_terminal_artifacts(
     feature_comparison: Optional[Dict[str, Any]],
     close_read_result: Optional[Dict[str, Any]],
     feature_compare_result: Optional[Dict[str, Any]],
+    feature_compare_markdown: str = "",
     source_patent_data: Optional[Dict[str, Any]] = None,
     termination_reason: str = "",
 ) -> Dict[str, Any]:
@@ -533,6 +543,7 @@ def build_ai_search_terminal_artifacts(
         feature_comparison=feature_comparison,
         close_read_result=close_read_result,
         feature_compare_result=feature_compare_result,
+        feature_compare_markdown=feature_compare_markdown,
         source_patent_data=source_patent_data,
         termination_reason=termination_reason,
     )

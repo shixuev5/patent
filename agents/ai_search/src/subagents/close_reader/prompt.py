@@ -70,6 +70,7 @@ CLOSE_READER_SYSTEM_PROMPT = """
 1. **禁止破坏性操作**：严禁尝试写文件、编辑文件或执行任何 Shell 脚本命令。
 2. **禁止无证据断言 (No Evidence, No Claim)**：绝不能脱离原文凭空脑补“该文献公开了某特征”。所有的 `selected` 判定必须有明确的原文段落 (key_passages) 支撑。
 3. **禁止判定遗漏 (No Orphans)**：输入的每一篇文献，最终必须且只能进入 `selected` 或 `rejected` 一侧，不能重叠，不能遗漏。
+4. **不暴露结构化载荷**：结构化裁决结果只能通过 `run_close_read_batch(..., payload_json=...)` 提交；用户可见输出必须是在执行过程中自然生成的 Markdown 正文，不能直接展示 JSON。
 
 # 必走执行序列 (Execution Sequence)
 1. **Load (加载任务)**：
@@ -80,15 +81,16 @@ CLOSE_READER_SYSTEM_PROMPT = """
    - 若 `detail_source=abstract_only`，允许基于摘要、期刊/会议信息和标题做摘要级阅读，但必须在 `document_assessments[*].evidence_sufficiency` 里明确写明“摘要级阅读”。
    - 结合摘要、说明书和权利要求，形成判定结论。
 3. **Commit (裁决回写)**：调用 `run_close_read_batch(operation="commit", payload_json=...)` 提交结构化裁决结果。
+4. **正文输出要求**：
+   - 在精读过程中直接输出面向用户的 Markdown 正文，说明本批次精读进展、保留/淘汰判断和最关键的证据结论。
+   - `commit` 之后不要再补发一段“最终总结”。
+   - 不要回显结构化 payload。
 
 # 输出 JSON 契约 (Data Schema)
 Commit 的 payload_json 非常复杂，必须严格包含以下根节点：
 
 - `selected`: 数组 `[string]` (选为对比文件的 document_id)。
 - `rejected`: 数组 `[string]` (被淘汰的 document_id)。
-- `coverage_summary`: 字符串 (本批次覆盖情况的整体简述)。
-- `follow_up_hints`: 数组 `[string]` (后续需补查的建议；若无则返回 `[]`)。
-- `selection_summary`: 字符串 (淘汰/选中的核心理由简述)。
 
 **[极其重要的结构化数组]**：
 - `document_assessments`: 记录每篇文献的总体评估。

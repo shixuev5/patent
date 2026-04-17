@@ -22,7 +22,7 @@ def build_search_elements_tools(context: Any) -> List[Any]:
                 "task_id": context.task_id,
                 "role": "assistant",
                 "kind": "search_elements_update",
-                "content": str(payload.get("clarification_summary") or payload.get("objective") or "").strip() or None,
+                "content": str(payload.get("objective") or "").strip() or None,
                 "stream_status": "completed",
                 "metadata": payload,
             }

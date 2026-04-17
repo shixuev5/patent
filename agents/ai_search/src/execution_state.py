@@ -42,10 +42,7 @@ class ExecutionStepSummary(BaseModel):
     todo_id: str
     step_id: str
     sub_plan_id: str
-    result_summary: str = ""
-    adjustments: List[str] = Field(default_factory=list)
     plan_change_assessment: Dict[str, Any] = Field(default_factory=dict)
-    next_recommendation: str = ""
     candidate_pool_size: int = 0
     new_unique_candidates: int = 0
     outcome_signals: Dict[str, Any] = Field(
@@ -58,7 +55,6 @@ class ExecutionStepSummary(BaseModel):
 
 
 class PlanProbeFindings(BaseModel):
-    overall_observation: str = ""
     retrieval_step_refs: List[str] = Field(default_factory=list)
     signals: List[Dict[str, Any]] = Field(default_factory=list)
 

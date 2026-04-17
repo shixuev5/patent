@@ -8,7 +8,6 @@ from deepagents.backends.state import StateBackend
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import build_guard_middleware, build_streaming_middleware, default_model
 from agents.ai_search.src.subagents.coarse_screener.prompt import COARSE_SCREEN_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.coarse_screener.schemas import CoarseScreenOutput
 
 
 def build_coarse_screener_agent(storage: object | None = None, task_id: str = ""):
@@ -19,7 +18,6 @@ def build_coarse_screener_agent(storage: object | None = None, task_id: str = ""
         tools=tools,
         system_prompt=COARSE_SCREEN_SYSTEM_PROMPT,
         middleware=[build_guard_middleware("coarse-screener", storage, task_id), build_streaming_middleware("coarse-screener", context=context)],
-        response_format=CoarseScreenOutput,
         backend=StateBackend,
         name="ai-search-coarse-screener",
     )

@@ -28,7 +28,12 @@ def publish_planner_draft(context: Any, *, runtime: Any | None = None) -> Dict[s
     draft = context.current_planner_draft()
     if not draft:
         raise ValueError("当前不存在 planner 草案。")
+    review_markdown = str(draft.get("review_markdown") or "").strip()
+    if not review_markdown:
+        raise ValueError("planner draft 缺少 review_markdown。")
     execution_spec = draft.get("execution_spec") if isinstance(draft.get("execution_spec"), dict) else {}
+    if not execution_spec:
+        raise ValueError("planner draft 缺少 execution_spec。")
     search_elements_snapshot = normalize_search_elements_payload(context.current_search_elements() or {})
     normalized_plan = normalize_execution_plan(execution_spec, search_elements_snapshot)
     search_scope = normalized_plan.get("search_scope") if isinstance(normalized_plan.get("search_scope"), dict) else {}
@@ -56,7 +61,7 @@ def publish_planner_draft(context: Any, *, runtime: Any | None = None) -> Dict[s
             "task_id": context.task_id,
             "plan_version": plan_version,
             "status": "draft",
-            "review_markdown": str(draft.get("review_markdown") or "").strip(),
+            "review_markdown": review_markdown,
             "execution_spec_json": {
                 "search_scope": search_scope,
                 "constraints": normalized_plan.get("constraints") or {},

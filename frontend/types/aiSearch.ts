@@ -138,12 +138,15 @@ export interface AiSearchStreamEvent {
   payload: any
 }
 
-export interface AiSearchPendingAssistantMessage {
+export interface AiSearchMessageSegment {
+  segmentId: string
   messageId: string
+  sourceAgent: string
+  sourceRole: 'main_agent' | 'subagent'
   content: string
   contentType: string
   createdAt: string
-  hasDelta: boolean
+  completed: boolean
 }
 
 export interface AiSearchActiveRun {

@@ -10,4 +10,3 @@ from pydantic import BaseModel, Field
 class CoarseScreenOutput(BaseModel):
     keep: List[str] = Field(default_factory=list)
     discard: List[str] = Field(default_factory=list)
-    reasoning_summary: str = ""

@@ -105,11 +105,16 @@ def build_main_agent_tools(context: Any) -> List[Any]:
 
     def request_plan_confirmation(
         plan_version: int,
-        plan_summary: str,
         confirmation_label: str = "实施此计划",
         runtime: ToolRuntime = None,
     ) -> str:
         """请求用户确认计划。"""
+        plan = context.storage.get_ai_search_plan(context.task_id, int(plan_version))
+        if not isinstance(plan, dict):
+            raise ValueError("指定的 plan_version 不存在。")
+        plan_summary = str(plan.get("review_markdown") or "").strip()
+        if not plan_summary:
+            raise ValueError("当前计划缺少 review_markdown，无法请求确认。")
         pending_action = context.storage.get_ai_search_pending_action(context.task_id, "plan_confirmation", status="pending")
         payload = {
             "plan_version": int(plan_version),

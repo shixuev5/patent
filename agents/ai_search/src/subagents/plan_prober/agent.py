@@ -8,7 +8,6 @@ from deepagents.backends.state import StateBackend
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime import build_guard_middleware, build_streaming_middleware, default_model
 from agents.ai_search.src.subagents.plan_prober.prompt import PLAN_PROBER_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.plan_prober.schemas import PlanProbeFindings
 
 
 def build_plan_prober_agent(storage: object, task_id: str):
@@ -18,7 +17,6 @@ def build_plan_prober_agent(storage: object, task_id: str):
         tools=context.build_plan_prober_tools(),
         system_prompt=PLAN_PROBER_SYSTEM_PROMPT,
         middleware=[build_guard_middleware("plan-prober", storage, task_id), build_streaming_middleware("plan-prober", context=context)],
-        response_format=PlanProbeFindings,
         backend=StateBackend,
         name=f"ai-search-plan-prober-{task_id}",
     )

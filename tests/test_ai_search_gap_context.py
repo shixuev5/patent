@@ -142,7 +142,6 @@ def _seed_gap_results(storage: SQLiteTaskStorage, task_id: str = "task-gap", *, 
             "batch_id": f"{run_id}-close-batch",
             "task_id": task_id,
             "plan_version": plan_version,
-            "follow_up_hints": ["补搜约束条件相关实现"],
             "limitation_gaps": [{"claim_id": "1", "limitation_id": "1-L2", "gap_summary": "缺少约束条件"}],
             "document_assessments": [],
             "key_passages": [],
@@ -160,7 +159,6 @@ def _seed_gap_results(storage: SQLiteTaskStorage, task_id: str = "task-gap", *, 
             "table_json": [{"feature": "A"}],
             "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L2", "gap_type": "missing_support"}],
             "creativity_readiness": "needs_more_evidence",
-            "summary_markdown": "还不能完成创造性评价",
         }
     )
     return run_id, feature_batch_id
@@ -255,7 +253,6 @@ def test_build_gap_strategy_seed_payload_extracts_targeted_gaps(tmp_path):
             "batch_id": f"{run_id}-close-batch",
             "task_id": "task-gap",
             "plan_version": 1,
-            "follow_up_hints": ["补搜参数窗口实现"],
             "limitation_gaps": [
                 {
                     "claim_id": "1",
@@ -439,12 +436,9 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
             {
                 "batch_id": load_payload["batch_id"],
                 "table_rows": [{"feature": "A", "document_id": "doc-1"}],
-                "summary_markdown": "summary",
-                "overall_findings": "仍需补一篇组合文献。",
                 "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
                 "follow_up_search_hints": ["补搜实现方式B"],
                 "creativity_readiness": "needs_more_evidence",
-                "readiness_rationale": "当前仅覆盖部分区别特征。",
             },
             ensure_ascii=False,
         ),
@@ -458,7 +452,7 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
     assert feature_result is not None
     assert feature_result["creativity_readiness"] == "needs_more_evidence"
     assert feature_result["coverage_gaps"][0]["gap_type"] == "combination_gap"
-    assert any(str(item.get("content") or "") == "仍需补一篇组合文献。" for item in chat_messages)
+    assert chat_messages == []
 
 
 def test_advance_workflow_begin_execution_sets_resume_metadata_on_todo(tmp_path):
@@ -535,10 +529,7 @@ def test_run_execution_step_commit_persists_step_summary(tmp_path):
                     "todo_id": "plan_1:sub_plan_1:step_1",
                     "step_id": "step_1",
                     "sub_plan_id": "sub_plan_1",
-                    "result_summary": "首轮召回有效",
-                    "adjustments": ["补充英文同义词"],
                     "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
-                    "next_recommendation": "advance_to_next_step",
                     "new_unique_candidates": 2,
                     "candidate_pool_size": 3,
                 },

@@ -73,17 +73,13 @@ def build_query_executor_tools(context: Any) -> List[Any]:
                     "todo_id": str(payload.get("todo_id") or "").strip(),
                     "step_id": str(payload.get("step_id") or "").strip(),
                     "sub_plan_id": str(payload.get("sub_plan_id") or "").strip(),
-                    "result_summary": str(payload.get("result_summary") or "").strip(),
-                    "adjustments": payload.get("adjustments") or [],
                     "plan_change_assessment": payload.get("plan_change_assessment") or {},
-                    "next_recommendation": str(payload.get("next_recommendation") or "").strip(),
                     "candidate_pool_size": int(payload.get("candidate_pool_size") or 0),
                     "new_unique_candidates": int(payload.get("new_unique_candidates") or 0),
                     "metadata": payload,
                 }
             )
             if todo_id:
-                next_recommendation = str(payload.get("next_recommendation") or "").strip()
                 plan_change = payload.get("plan_change_assessment") if isinstance(payload.get("plan_change_assessment"), dict) else {}
                 if bool(plan_change.get("requires_replan")):
                     context.update_todo(
@@ -91,14 +87,6 @@ def build_query_executor_tools(context: Any) -> List[Any]:
                         "paused",
                         current_task=None,
                         resume_from="await_plan_confirmation",
-                        state_updates={"last_summary": payload, "plan_version": version},
-                    )
-                elif next_recommendation == "retry_current_step":
-                    context.update_todo(
-                        todo_id,
-                        "in_progress",
-                        current_task=todo_id,
-                        resume_from="run_execution_step.load",
                         state_updates={"last_summary": payload, "plan_version": version},
                     )
                 else:

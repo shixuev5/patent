@@ -193,7 +193,7 @@ class AiSearchAnalysisSeedService:
                 "task_id": task.id,
                 "role": "assistant",
                 "kind": "search_elements_update",
-                "content": str(seeded_search_elements.get("clarification_summary") or "").strip() or None,
+                "content": str(seeded_search_elements.get("objective") or "").strip() or None,
                 "stream_status": "completed",
                 "metadata": {
                     **seeded_search_elements,

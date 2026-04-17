@@ -28,20 +28,6 @@ def _normalize_probe_findings(value: Any) -> Dict[str, Any] | None:
 
 
 def build_planner_tools(context: Any) -> List[Any]:
-    def save_plan_review_markdown(
-        review_markdown: str,
-        runtime: ToolRuntime = None,
-    ) -> str:
-        """保存面向用户展示的 Markdown 计划正文。"""
-        draft = context.save_planner_review_markdown(review_markdown, runtime=runtime)
-        return json.dumps(
-            {
-                "draft_id": draft.get("draft_id"),
-                "draft_version": int(draft.get("draft_version") or 0),
-            },
-            ensure_ascii=False,
-        )
-
     def save_plan_execution_overview(
         search_scope: Dict[str, Any],
         constraints: Dict[str, Any],
@@ -84,22 +70,7 @@ def build_planner_tools(context: Any) -> List[Any]:
             ensure_ascii=False,
         )
 
-    def finalize_plan_draft(runtime: ToolRuntime = None) -> str:
-        """校验并封口当前计划草案。"""
-        draft = context.finalize_planner_draft(runtime=runtime)
-        return json.dumps(
-            {
-                "draft_id": draft.get("draft_id"),
-                "draft_version": int(draft.get("draft_version") or 0),
-                "plan_version": int(draft.get("plan_version") or 0),
-                "draft_status": str(draft.get("draft_status") or "").strip(),
-            },
-            ensure_ascii=False,
-        )
-
     return [
-        save_plan_review_markdown,
         save_plan_execution_overview,
         append_plan_sub_plan,
-        finalize_plan_draft,
     ]

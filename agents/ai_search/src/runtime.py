@@ -57,10 +57,9 @@ TOOL_DISPLAY_LABELS = {
     "advance_workflow": "推进工作流",
     "complete_session": "完成当前检索",
     "save_search_elements": "保存检索要素",
-    "save_plan_review_markdown": "保存计划正文",
+    "save_probe_findings": "保存预检信号",
     "save_plan_execution_overview": "保存计划总览",
     "append_plan_sub_plan": "追加子计划",
-    "finalize_plan_draft": "完成计划草案",
     "probe_search_semantic": "执行语义预检",
     "probe_search_boolean": "执行布尔预检",
     "probe_count_boolean": "统计布尔命中数",
@@ -134,9 +133,33 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
 
+    def _guard_subagent_call(self, request: ToolCallRequest, subagent_type: str) -> ToolMessage | None:
+        normalized_subagent = str(subagent_type or "").strip()
+        phase = self._current_task_state()
+        if normalized_subagent not in self.allowed_subagents:
+            return ToolMessage(
+                content=f"子 agent `{normalized_subagent or 'unknown'}` 不允许由 `{self.role}` 调用。",
+                name=str(request.tool_call.get("name") or "task") or "task",
+                tool_call_id=request.tool_call["id"],
+            )
+        if phase and self.role == "main-agent":
+            allowed_subagents = allowed_main_agent_subagents(phase)
+            if normalized_subagent not in allowed_subagents:
+                return ToolMessage(
+                    content=f"子 agent `{normalized_subagent or 'unknown'}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
+                    name=str(request.tool_call.get("name") or "task") or "task",
+                    tool_call_id=request.tool_call["id"],
+                )
+        return None
+
     def _guard_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = str(request.tool_call.get("name") or "").strip()
         phase = self._current_task_state()
+        if tool_name == "task":
+            subagent_type = str((request.tool_call.get("args") or {}).get("subagent_type") or "").strip()
+            return self._guard_subagent_call(request, subagent_type)
+        if tool_name in ALL_AI_SEARCH_SUBAGENTS:
+            return self._guard_subagent_call(request, tool_name)
         if tool_name in self.blocked_tools:
             return ToolMessage(
                 content=f"工具 `{tool_name}` 对 `{self.role}` 不可用。",
@@ -146,7 +169,7 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         if phase:
             if self.role == "main-agent":
                 allowed_tools = allowed_main_agent_tools(phase)
-                if tool_name != "task" and tool_name not in allowed_tools:
+                if tool_name not in allowed_tools:
                     return ToolMessage(
                         content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
                         name=tool_name or "phase_blocked_tool",
@@ -158,22 +181,6 @@ class AiSearchGuardMiddleware(AgentMiddleware):
                     return ToolMessage(
                         content=f"工具 `{tool_name}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
                         name=tool_name or "phase_blocked_tool",
-                        tool_call_id=request.tool_call["id"],
-                    )
-        if tool_name == "task":
-            subagent_type = str((request.tool_call.get("args") or {}).get("subagent_type") or "").strip()
-            if subagent_type not in self.allowed_subagents:
-                return ToolMessage(
-                    content=f"子 agent `{subagent_type or 'unknown'}` 不允许由 `{self.role}` 调用。",
-                    name="task",
-                    tool_call_id=request.tool_call["id"],
-                )
-            if phase and self.role == "main-agent":
-                allowed_subagents = allowed_main_agent_subagents(phase)
-                if subagent_type not in allowed_subagents:
-                    return ToolMessage(
-                        content=f"子 agent `{subagent_type or 'unknown'}` 不能在阶段 `{phase}` 由 `{self.role}` 调用。",
-                        name="task",
                         tool_call_id=request.tool_call["id"],
                     )
         return None
@@ -273,14 +280,12 @@ def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
     if name == "run_feature_compare":
         operation = str(args.get("operation") or "load").strip().lower()
         return "提交特征对比结果" if operation == "commit" else "加载特征对比上下文"
-    if name == "save_plan_review_markdown":
-        return "保存计划正文"
     if name == "save_plan_execution_overview":
         return "保存计划总览"
+    if name == "save_probe_findings":
+        return "保存预检信号"
     if name == "append_plan_sub_plan":
         return "追加子计划"
-    if name == "finalize_plan_draft":
-        return "完成计划草案"
     return format_tool_label(name)
 
 

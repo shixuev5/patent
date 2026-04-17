@@ -165,7 +165,6 @@
           :streaming="streaming || mockMode"
           :resume-last-error="resumeLastError"
           :resume-attempt-count="resumeAttemptCount"
-          :pending-assistant-content="pendingAssistantMessage?.content || ''"
           :phase="activePhase"
           :workspace-title="workspaceTitle"
           :attachments="currentSession?.artifacts?.attachments || []"
@@ -358,8 +357,8 @@ const {
   currentSession,
   error,
   loading,
+  messageSegments,
   mockMode,
-  pendingAssistantMessage,
   phaseMarkers,
   sessions,
   streaming,
@@ -491,7 +490,7 @@ const canSubmitHeaderRename = computed(() => {
 const { conversationRenderEntries } = useAiSearchConversation({
   messages,
   phaseMarkers,
-  pendingAssistantMessage,
+  messageSegments,
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,

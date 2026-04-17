@@ -470,7 +470,8 @@ def test_delete_session_rejects_execute_search_phase(monkeypatch, tmp_path):
         service.delete_session(created.sessionId, "guest_ai_search")
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "检索执行中，请稍后再删除会话。"
+    assert exc_info.value.detail["code"] == "SESSION_DELETE_BLOCKED"
+    assert exc_info.value.detail["message"] == "这个检索还在执行中。"
 
 
 def test_stream_message_rejects_when_search_is_running(monkeypatch, tmp_path):
@@ -657,8 +658,6 @@ def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeove
             plan_version=1,
             payload_json=json.dumps(
                 {
-                    "result_summary": "完成本轮召回",
-                    "next_recommendation": "continue",
                     "candidate_pool_size": 12,
                     "new_unique_candidates": 4,
                 },
@@ -696,10 +695,8 @@ def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_pa
         todos=[{"todo_id": "plan_1:sub_plan_1:step_1", "sub_plan_id": "sub_plan_1", "step_id": "step_1", "title": "执行步骤 1", "description": "目的：验证首轮召回", "status": "in_progress", "resume_from": "run_execution_step"}],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
-
-    assert exc_info.value.detail["code"] == RESUME_NOT_AVAILABLE_CODE
+    events = asyncio.run(_collect_stream(service.stream_resume(created.sessionId, "guest_ai_search")))
+    assert events == []
 
 
 def test_stream_message_rejects_when_question_pending(monkeypatch, tmp_path):
@@ -818,7 +815,6 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
             "task_id": created.sessionId,
             "plan_version": 1,
             "table_json": [{"feature": "A"}],
-            "summary_markdown": "旧特征表",
         }
     )
     _set_phase(
@@ -849,7 +845,7 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
     )
 
     class _FakeCloseReaderAgent:
-        def invoke(self, _payload):
+        async def astream(self, _payload, config=None, **kwargs):
             run = storage.get_ai_search_run(created.sessionId, plan_version=1)
             batch_id_value = str(run.get("active_batch_id") or "")
             storage.update_ai_search_document(
@@ -864,10 +860,10 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
                 key_passages_json=[{"passage": "证据段"}],
             )
             storage.update_ai_search_batch(batch_id_value, status="committed")
-            return {"messages": [{"role": "assistant", "content": "done"}]}
+            yield (("close-reader",), "messages", ("## 精读结论\n保留 doc-2。", {"lc_agent_name": "close-reader", "langgraph_node": "model"}))
 
     class _FakeFeatureAgent:
-        def invoke(self, _payload):
+        async def astream(self, _payload, config=None, **kwargs):
             batch_id_value = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
             storage.create_ai_search_feature_comparison(
                 {
@@ -877,8 +873,6 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
                     "task_id": created.sessionId,
                     "plan_version": 1,
                     "table_json": [{"feature": "B"}],
-                    "summary_markdown": "新特征表",
-                    "overall_findings": "人工复核后已更新对比结论。",
                 }
             )
             storage.update_ai_search_run(
@@ -888,7 +882,7 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
                 status=TaskStatus.PROCESSING.value,
                 active_batch_id=batch_id_value,
             )
-            return {"messages": [{"role": "assistant", "content": "done"}]}
+            yield (("feature-comparer",), "messages", ("## 对比结论\n人工复核后已更新对比结论。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
 
     monkeypatch.setattr(ai_search_service_module, "build_close_reader_agent", lambda *_args, **_kwargs: _FakeCloseReaderAgent())
     monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
@@ -1170,10 +1164,117 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
     assert events[0].startswith("data: ")
     assert parsed[0]["type"] == "run.started"
     assert any(item.startswith(": keepalive") for item in events)
-    assert any(event["type"] == "assistant.message.delta" for event in parsed)
-    assert any(event["type"] == "assistant.message.completed" for event in parsed)
+    assert any(event["type"] == "message.segment.delta" for event in parsed)
+    assert any(
+        event["type"] == "message.segment.completed"
+        and event["payload"].get("sourceAgent") == "main-agent"
+        for event in parsed
+    )
     assert events[-1].startswith("data: ")
     assert "run.completed" in events[-1]
+
+
+def test_stream_message_emits_planner_message_segments_and_persists_review_markdown(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
+
+    class _FakeChunk:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "计划已起草完成。"}]}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            planner_ns = ("tools:planner-call-1",)
+            planner_meta = {"lc_agent_name": "planner", "langgraph_node": "model"}
+            yield (planner_ns, "custom", {"type": "subagent.started", "payload": {"name": "planner"}})
+            yield (planner_ns, "messages", (_FakeChunk("# 检索计划\n\n"), planner_meta))
+            yield (planner_ns, "messages", (_FakeChunk("## 检索目标\n测试目标"), planner_meta))
+            yield (planner_ns, "custom", {"type": "subagent.completed", "payload": {"name": "planner"}})
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+    monkeypatch.setattr(
+        ai_search_agent_run_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+    parsed = _parse_data_events(events)
+    planner_draft = AiSearchAgentContext(storage, created.sessionId).current_planner_draft()
+
+    assert any(
+        event["type"] == "message.segment.started"
+        and event["payload"].get("sourceAgent") == "planner"
+        for event in parsed
+    )
+    assert any(
+        event["type"] == "message.segment.delta"
+        and event["payload"].get("sourceAgent") == "planner"
+        for event in parsed
+    )
+    assert any(
+        event["type"] == "message.segment.completed"
+        and event["payload"].get("sourceAgent") == "planner"
+        for event in parsed
+    )
+    assert planner_draft["review_markdown"] == "# 检索计划\n\n## 检索目标\n测试目标"
+
+
+def test_stream_message_ignores_root_tool_messages_and_only_streams_model_text(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+
+    class ToolMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeChunk:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": "最终答复"}]}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            assert payload == {"messages": [{"role": "user", "content": "请开始规划"}]}
+            yield ((), "messages", (ToolMessage('{"phase":"drafting_plan"}'), {"lc_agent_name": "ai-search-main-agent-test", "langgraph_node": "tools"}))
+            yield ((), "messages", (_FakeChunk("最终答复"), {"lc_agent_name": "ai-search-main-agent-test", "langgraph_node": "model"}))
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage, task_id: _FakeAgent())
+    monkeypatch.setattr(
+        ai_search_agent_run_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+    parsed = _parse_data_events(events)
+    deltas = [
+        event["payload"]["delta"]
+        for event in parsed
+        if event["type"] == "message.segment.delta" and event["payload"].get("sourceAgent") == "main-agent"
+    ]
+
+    assert deltas == ["最终答复"]
 
 
 def test_stream_message_emits_run_error_when_drafting_completes_without_draft(monkeypatch, tmp_path):
@@ -1476,7 +1577,7 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     )
 
     class _FakeFeatureAgent:
-        def invoke(self, payload):
+        async def astream(self, payload, config=None, **kwargs):
             assert "特征对比分析" in payload["messages"][0]["content"]
             batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
             storage.create_ai_search_feature_comparison(
@@ -1487,12 +1588,9 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
                     "task_id": created.sessionId,
                     "plan_version": 1,
                     "table_json": [{"feature": "A"}],
-                    "summary_markdown": "新特征表",
-                    "overall_findings": "可以结束",
                     "coverage_gaps": [],
                     "follow_up_search_hints": [],
                     "creativity_readiness": "ready",
-                    "readiness_rationale": "证据充分",
                 }
             )
             storage.update_ai_search_run(
@@ -1503,7 +1601,7 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
                 active_batch_id=batch_id,
                 active_retrieval_todo_id="feature_comparison",
             )
-            return {"messages": [{"role": "assistant", "content": "done"}]}
+            yield (("feature-comparer",), "messages", ("## 对比结论\n证据充分，可以结束。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
 
     monkeypatch.setattr(
         ai_search_service_module,
@@ -1606,7 +1704,7 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
     )
 
     class _FakeFeatureAgent:
-        def invoke(self, payload):
+        async def astream(self, payload, config=None, **kwargs):
             assert "特征对比分析" in payload["messages"][0]["content"]
             batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-handoff-batch")
             storage.create_ai_search_feature_comparison(
@@ -1617,12 +1715,9 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
                     "task_id": created.sessionId,
                     "plan_version": 1,
                     "table_json": [{"feature": "A"}],
-                    "summary_markdown": "特征表",
-                    "overall_findings": "仍需继续检索",
                     "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
                     "follow_up_search_hints": ["补搜实现方式B"],
                     "creativity_readiness": "needs_more_evidence",
-                    "readiness_rationale": "证据仍不足。",
                 }
             )
             storage.update_ai_search_run(
@@ -1633,7 +1728,7 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
                 active_batch_id=batch_id,
                 active_retrieval_todo_id="feature_comparison",
             )
-            return {"messages": [{"role": "assistant", "content": "done"}]}
+            yield (("feature-comparer",), "messages", ("## 对比结论\n仍需继续检索。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
 
     monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
 
@@ -1755,7 +1850,6 @@ def test_stream_decision_complete_finalizes_existing_feature_comparison(monkeypa
             "task_id": created.sessionId,
             "plan_version": 1,
             "table_json": [{"feature": "A"}],
-            "summary_markdown": "特征表",
         }
     )
     _set_phase(
@@ -1832,7 +1926,6 @@ def test_snapshot_returns_extended_search_elements(monkeypatch, tmp_path):
                 "priority_date": "2023-10-15",
                 "search_elements": [{"element_name": "异常检测", "keywords_zh": ["异常检测"]}],
                 "missing_items": [],
-                "clarification_summary": "已获得核心检索边界。",
             },
         }
     )
@@ -2043,7 +2136,7 @@ def test_seed_search_elements_from_analysis_keeps_optional_fields_missing():
     assert payload["filing_date"] is None
     assert payload["priority_date"] is None
     assert "申请日或优先权日" in payload["missing_items"]
-    assert "未提供申请人" in payload["clarification_summary"]
+    assert "clarification_summary" not in payload
 
 
 def test_build_analysis_seed_user_message_renders_structured_effect_groups():

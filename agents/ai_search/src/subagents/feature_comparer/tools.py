@@ -80,29 +80,12 @@ def build_feature_comparer_tools(context: Any) -> List[Any]:
                     "task_id": context.task_id,
                     "plan_version": version,
                     "table_rows": payload.get("table_rows") or [],
-                    "summary_markdown": payload.get("summary_markdown") or "",
-                    "overall_findings": payload.get("overall_findings"),
                     "coverage_gaps": payload.get("coverage_gaps") or [],
-                    "difference_highlights": payload.get("difference_highlights") or [],
+                    "document_roles": payload.get("document_roles") or [],
                     "follow_up_search_hints": payload.get("follow_up_search_hints") or [],
                     "creativity_readiness": payload.get("creativity_readiness"),
-                    "readiness_rationale": payload.get("readiness_rationale"),
                 }
             )
-            findings = str(payload.get("overall_findings") or "特征对比分析结果已生成。").strip()
-            if findings:
-                context.storage.create_ai_search_message(
-                    {
-                        "message_id": uuid.uuid4().hex,
-                        "task_id": context.task_id,
-                        "plan_version": version,
-                        "role": "assistant",
-                        "kind": "chat",
-                        "content": findings,
-                        "stream_status": "completed",
-                        "metadata": {},
-                    }
-                )
             context.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
             context.update_task_phase(
                 PHASE_FEATURE_COMPARISON,

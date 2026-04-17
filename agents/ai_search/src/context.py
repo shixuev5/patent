@@ -566,6 +566,20 @@ class AiSearchAgentContext:
             runtime=runtime,
         )
 
+    def save_planner_probe_findings(
+        self,
+        probe_findings: Optional[Dict[str, Any]],
+        *,
+        runtime: Any | None = None,
+    ) -> Dict[str, Any]:
+        return self._persist_planner_draft(
+            current=self.current_planner_draft(),
+            probe_findings=probe_findings,
+            draft_status="drafting",
+            finalized_at=None,
+            runtime=runtime,
+        )
+
     def append_planner_sub_plan(self, sub_plan: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
         current = self.current_planner_draft()
         current_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
@@ -867,6 +881,41 @@ class AiSearchAgentContext:
         feature_compare_result = self.storage.get_ai_search_feature_comparison(self.task_id, run_id) or {}
         return {"close_read_result": close_read_result, "feature_compare_result": feature_compare_result}
 
+    def latest_agent_markdown_message(
+        self,
+        source_agent: str,
+        *,
+        plan_version: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        normalized_source_agent = str(source_agent or "").strip()
+        target_plan_version = int(plan_version or 0)
+        for item in reversed(self.storage.list_ai_search_messages(self.task_id)):
+            if str(item.get("role") or "").strip() != "assistant":
+                continue
+            if str(item.get("kind") or "").strip() != "chat":
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if str(metadata.get("source_agent") or "").strip() != normalized_source_agent:
+                continue
+            if target_plan_version > 0 and int(item.get("plan_version") or 0) != target_plan_version:
+                continue
+            return item
+        return {}
+
+    def latest_agent_markdown_content(
+        self,
+        source_agent: str,
+        *,
+        plan_version: Optional[int] = None,
+    ) -> str:
+        return str(
+            self.latest_agent_markdown_message(
+                source_agent,
+                plan_version=plan_version,
+            ).get("content")
+            or ""
+        ).strip()
+
     def reset_execution_control(
         self,
         plan_version: Optional[int] = None,
@@ -917,13 +966,10 @@ class AiSearchAgentContext:
                     continue
                 raw_gaps.append({"source": source_name, **item})
         follow_up_hints: List[str] = []
-        for values in (close_read_result.get("follow_up_hints"), feature_compare_result.get("follow_up_search_hints")):
-            if not isinstance(values, list):
-                continue
-            for item in values:
-                text = str(item or "").strip()
-                if text and text not in follow_up_hints:
-                    follow_up_hints.append(text)
+        for item in feature_compare_result.get("follow_up_search_hints") or []:
+            text = str(item or "").strip()
+            if text and text not in follow_up_hints:
+                follow_up_hints.append(text)
         targeted_gaps: List[Dict[str, Any]] = []
         seed_batch_specs: List[Dict[str, Any]] = []
         for index, item in enumerate(raw_gaps, start=1):

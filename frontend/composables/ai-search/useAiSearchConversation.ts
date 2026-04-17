@@ -71,7 +71,7 @@ const toProcessNode = (event: ConversationEntryLike, titleOverride?: string): Pr
 export const useAiSearchConversation = ({
   messages,
   phaseMarkers,
-  pendingAssistantMessage,
+  messageSegments,
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
@@ -79,7 +79,7 @@ export const useAiSearchConversation = ({
 }: {
   messages: { value: Array<Record<string, any>> }
   phaseMarkers: { value: Array<Record<string, any>> }
-  pendingAssistantMessage: { value: Record<string, any> | null }
+  messageSegments: { value: Array<Record<string, any>> }
   currentPendingAction: { value: Record<string, any> | null }
   resumeActionCard: { value: ConversationActionCard | null }
   humanDecisionCard: { value: ConversationActionCard | null }
@@ -158,17 +158,23 @@ export const useAiSearchConversation = ({
         order: 1000 + index,
       })
     })
-    if (pendingAssistantMessage.value) {
+    messageSegments.value.forEach((segment, index) => {
       entries.push({
-        id: `pending-${pendingAssistantMessage.value.messageId}`,
-        entryType: 'pending-assistant',
+        id: `segment-${segment.segmentId || index}`,
+        entryType: 'message-segment',
         role: 'assistant',
-        content: pendingAssistantMessage.value.content,
-        createdAt: pendingAssistantMessage.value.createdAt,
-        sortKey: toMillis(pendingAssistantMessage.value.createdAt),
-        order: 2000,
+        messageId: segment.messageId,
+        segmentId: segment.segmentId,
+        sourceAgent: segment.sourceAgent || 'main-agent',
+        sourceRole: segment.sourceRole || 'main_agent',
+        content: segment.content || '',
+        contentType: segment.contentType || 'markdown',
+        createdAt: segment.createdAt,
+        sortKey: toMillis(segment.createdAt),
+        order: 2000 + index,
+        completed: !!segment.completed,
       })
-    }
+    })
     return entries.sort((left, right) => {
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
