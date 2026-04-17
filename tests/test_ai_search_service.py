@@ -739,7 +739,7 @@ def test_stream_plan_confirmation_rejects_stale_version(monkeypatch, tmp_path):
     assert exc_info.value.detail["code"] == STALE_PLAN_CONFIRMATION_CODE
 
 
-def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_plan(monkeypatch, tmp_path):
+def test_stream_plan_confirmation_emits_run_failed_when_resume_does_not_confirm_plan(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     storage.create_ai_search_plan(
@@ -762,7 +762,7 @@ def test_stream_plan_confirmation_emits_run_error_when_resume_does_not_confirm_p
 
     events = asyncio.run(_collect_stream(service.stream_plan_confirmation(created.sessionId, "guest_ai_search", 1)))
 
-    assert any("run.error" in item for item in events)
+    assert any("run.failed" in item for item in events)
     assert any(PLAN_CONFIRMATION_REQUIRED_CODE in item for item in events)
     assert not any("run.completed" in item for item in events)
 
@@ -991,7 +991,7 @@ def test_stream_message_supersedes_waiting_plan(monkeypatch, tmp_path):
     assert updated_plan is not None
     assert updated_plan["status"] == "superseded"
     assert snapshot.run["phase"] == PHASE_DRAFTING_PLAN
-    assert any("run.error" in item for item in events)
+    assert any("run.failed" in item for item in events)
 
 
 def test_run_main_agent_reads_state_with_explicit_checkpointer(monkeypatch, tmp_path):
@@ -1277,7 +1277,7 @@ def test_stream_message_ignores_root_tool_messages_and_only_streams_model_text(m
     assert deltas == ["最终答复"]
 
 
-def test_stream_message_emits_run_error_when_drafting_completes_without_draft(monkeypatch, tmp_path):
+def test_stream_message_emits_run_failed_when_drafting_completes_without_draft(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
 
@@ -1301,7 +1301,7 @@ def test_stream_message_emits_run_error_when_drafting_completes_without_draft(mo
 
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
 
-    assert any("run.error" in item for item in events)
+    assert any("run.failed" in item for item in events)
     assert not any("run.completed" in item for item in events)
 
 
@@ -1335,26 +1335,18 @@ def test_stream_message_dedupes_phase_markers_and_maps_subagent_lifecycle(monkey
 
     assert [event["type"] for event in parsed].count("phase.changed") == 0
     assert parsed[0]["type"] == "run.started"
-    subagent_started_index = next(
-        index
-        for index, event in enumerate(parsed)
-        if event["type"] == "process.event" and event["payload"]["processEventType"] == "subagent.started"
-    )
-    subagent_completed_index = next(
-        index
-        for index, event in enumerate(parsed)
-        if event["type"] == "process.event" and event["payload"]["processEventType"] == "subagent.completed"
-    )
+    subagent_started_index = next(index for index, event in enumerate(parsed) if event["type"] == "process.started")
+    subagent_completed_index = next(index for index, event in enumerate(parsed) if event["type"] == "process.completed")
     assert subagent_started_index < subagent_completed_index
     assert any(
-        event["type"] == "process.event"
-        and event["payload"]["processEventType"] == "subagent.started"
+        event["type"] == "process.started"
+        and event["payload"]["processType"] == "subagent"
         and event["payload"]["label"] == "检索规划"
         for event in parsed
     )
     assert any(
-        event["type"] == "process.event"
-        and event["payload"]["processEventType"] == "subagent.completed"
+        event["type"] == "process.completed"
+        and event["payload"]["processType"] == "subagent"
         and event["payload"]["label"] == "检索规划"
         for event in parsed
     )
@@ -1421,20 +1413,20 @@ def test_stream_message_persists_stage_messages_and_process_events_from_custom_e
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
     assert any(
-        event["type"] == "process.event"
-        and event["payload"]["processEventType"] == "subagent.started"
+        event["type"] == "process.started"
+        and event["payload"]["processType"] == "subagent"
         and event["payload"]["label"] == "检索规划"
         for event in parsed
     )
     assert any(
-        event["type"] == "process.event"
-        and event["payload"]["processEventType"] == "tool.completed"
+        event["type"] == "process.completed"
+        and event["payload"]["processType"] == "tool"
         and event["payload"]["summary"] == "读取规划上下文"
         for event in parsed
     )
     assert not any(message["kind"] == "assistant_stage_message" for message in snapshot.conversation["messages"])
     assert snapshot.conversation["processEvents"]
-    assert snapshot.conversation["processEvents"][0]["processEventType"] == "subagent.started"
+    assert snapshot.conversation["processEvents"][0]["type"] == "process.started"
     assert snapshot.stream["lastEventSeq"] > 0
 
 
@@ -1483,14 +1475,14 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
             "session_id": created.sessionId,
             "task_id": created.sessionId,
             "run_id": None,
-            "event_type": "process.event",
+            "event_type": "process.started",
             "entity_id": "stage-1",
             "payload": {
-                "type": "process.event",
+                "type": "process.started",
                 "sessionId": created.sessionId,
                 "taskId": created.sessionId,
                 "phase": PHASE_DRAFTING_PLAN,
-                "payload": {"eventId": "planner:started", "processEventType": "subagent.started", "name": "planner", "label": "检索规划"},
+                "payload": {"eventId": "planner:started", "processType": "subagent", "name": "planner", "label": "检索规划"},
             },
         }
     )
@@ -1500,14 +1492,14 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
             "session_id": created.sessionId,
             "task_id": created.sessionId,
             "run_id": None,
-            "event_type": "process.event",
+            "event_type": "process.completed",
             "entity_id": "stage-1",
             "payload": {
-                "type": "process.event",
+                "type": "process.completed",
                 "sessionId": created.sessionId,
                 "taskId": created.sessionId,
                 "phase": PHASE_DRAFTING_PLAN,
-                "payload": {"eventId": "planner:completed", "processEventType": "subagent.completed", "name": "planner", "label": "检索规划"},
+                "payload": {"eventId": "planner:completed", "processType": "subagent", "name": "planner", "label": "检索规划"},
             },
         }
     )
@@ -1516,7 +1508,7 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
     parsed = _parse_data_events(events)
 
     assert len(parsed) == 1
-    assert parsed[0]["type"] == "process.event"
+    assert parsed[0]["type"] == "process.completed"
     assert parsed[0]["seq"] == int(second["seq"])
 
 
@@ -2531,7 +2523,7 @@ def test_stream_analysis_seed_failure_notifies_terminal_failure(monkeypatch, tmp
     created = service.create_session_from_analysis_seed("guest_ai_search", analysis_task.id)
 
     async def _fake_stream_main_agent_execution(*_args, **_kwargs):
-        yield 'data: {"type":"run.error","payload":{"message":"seed boom"}}'
+        yield 'data: {"type":"run.failed","payload":{"message":"seed boom"}}'
 
     notify_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(service.agent_runs, "_stream_main_agent_execution", _fake_stream_main_agent_execution)
@@ -2618,7 +2610,7 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
     assert ai_meta.get("analysis_seed_status") == "completed"
     assert ai_meta.get("planner_draft") is None
     assert ai_meta.get("active_plan_version") == 1
-    assert any(event["type"] == "process.event" for event in parsed)
+    assert any(event["type"] == "process.started" for event in parsed)
     assert snapshot.conversation["pendingAction"] is not None
     assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
     assert snapshot.analysisSeed is not None

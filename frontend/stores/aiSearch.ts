@@ -751,15 +751,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
         return
       }
 
-      if (event.type === 'process.event') {
+      if (event.type === 'process.started' || event.type === 'process.completed' || event.type === 'process.failed') {
         this._upsertProcessEvent(sessionId, {
           ...(payload || {}),
           seq: seq || payload?.seq || 0,
           createdAt: event.timestamp || payload?.timestamp || nowIso(),
         })
-        const processEventType = String(payload?.processEventType || '').trim()
+        const processType = String(payload?.processType || '').trim()
         const name = String(payload?.subagentName || payload?.name || '').trim()
-        if (processEventType === 'subagent.started' && name) {
+        if (processType === 'subagent' && event.type === 'process.started' && name) {
           runtime.activeSubagentStatuses = {
             ...runtime.activeSubagentStatuses,
             [name]: {
@@ -771,33 +771,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
           }
           return
         }
-        if (processEventType === 'subagent.completed' && name && runtime.activeSubagentStatuses[name]) {
-          const nextStatuses = { ...runtime.activeSubagentStatuses }
-          delete nextStatuses[name]
-          runtime.activeSubagentStatuses = nextStatuses
-        }
-        return
-      }
-
-      if (event.type === 'subagent.started') {
-        const name = String(payload?.name || '').trim()
-        if (name) {
-          runtime.activeSubagentStatuses = {
-            ...runtime.activeSubagentStatuses,
-            [name]: {
-              name,
-              label: String(payload?.label || formatSubagentName(name)),
-              statusText: String(payload?.statusText || `${formatSubagentName(name)}执行中。`),
-              startedAt: nowIso(),
-            },
-          }
-        }
-        return
-      }
-
-      if (event.type === 'subagent.completed') {
-        const name = String(payload?.name || '').trim()
-        if (name && runtime.activeSubagentStatuses[name]) {
+        if (processType === 'subagent' && (event.type === 'process.completed' || event.type === 'process.failed') && name && runtime.activeSubagentStatuses[name]) {
           const nextStatuses = { ...runtime.activeSubagentStatuses }
           delete nextStatuses[name]
           runtime.activeSubagentStatuses = nextStatuses
@@ -814,7 +788,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         return
       }
 
-      if (event.type === 'run.error') {
+      if (event.type === 'run.failed') {
         this._closeLatestPhaseMarker(sessionId)
         runtime.error = String(payload?.message || '当前流式轮次执行失败。')
         runtime.streaming = false

@@ -226,15 +226,22 @@ class AiSearchAgentRunService:
 
     def _normalize_process_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         event_type = str(event.get("type") or "").strip()
-        if event_type not in {"subagent.started", "subagent.completed", "tool.started", "tool.completed", "tool.failed"}:
+        process_event_types = {
+            "subagent.started": "process.started",
+            "tool.started": "process.started",
+            "subagent.completed": "process.completed",
+            "tool.completed": "process.completed",
+            "tool.failed": "process.failed",
+        }
+        normalized_type = process_event_types.get(event_type)
+        if not normalized_type:
             return event
         payload = dict(event.get("payload") or {})
         if self._should_hide_process_event(event_type, payload):
             return {}
-        payload["processEventType"] = event_type
         return {
             **event,
-            "type": "process.event",
+            "type": normalized_type,
             "payload": payload,
         }
 
@@ -1322,23 +1329,32 @@ class AiSearchAgentRunService:
                             ):
                                 yield event
                             self._reset_message_segment_state(stream_state, subagent_name)
-                    yield self._format_event(
-                        event_type,
-                        session_id,
-                        current_phase,
-                        normalized_payload,
-                    )
+                    normalized_event = self._normalize_process_stream_event({"type": event_type, "payload": normalized_payload})
+                    if normalized_event:
+                        yield self._format_event(
+                            str(normalized_event.get("type") or "").strip(),
+                            session_id,
+                            current_phase,
+                            normalized_event.get("payload") if isinstance(normalized_event.get("payload"), dict) else {},
+                        )
                     if event_type == "subagent.completed" and subagent_name in ALL_AI_SEARCH_SUBAGENTS:
                         for event in self._complete_message_segment_if_needed(
                             task_id,
                             session_id,
                             current_phase,
                             stream_state,
-                            source_agent=subagent_name,
-                        ):
-                            yield event
+                                source_agent=subagent_name,
+                            ):
+                                yield event
                 elif event_type in {"tool.started", "tool.completed", "tool.failed"} and isinstance(event_payload, dict):
-                    yield self._format_event(event_type, session_id, current_phase, dict(event_payload))
+                    normalized_event = self._normalize_process_stream_event({"type": event_type, "payload": dict(event_payload)})
+                    if normalized_event:
+                        yield self._format_event(
+                            str(normalized_event.get("type") or "").strip(),
+                            session_id,
+                            current_phase,
+                            normalized_event.get("payload") if isinstance(normalized_event.get("payload"), dict) else {},
+                        )
 
                 snapshot = self.snapshots.get_snapshot(session_id, owner_id)
                 async for event in self._emit_snapshot_diff_events(
@@ -1528,7 +1544,7 @@ class AiSearchAgentRunService:
             ):
                 yield event
             yield self._format_event(
-                "run.error",
+                "run.failed",
                 task.id,
                 self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
@@ -1687,7 +1703,7 @@ class AiSearchAgentRunService:
             ):
                 yield event
             yield self._format_event(
-                "run.error",
+                "run.failed",
                 task.id,
                 self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
@@ -1779,7 +1795,7 @@ class AiSearchAgentRunService:
             ):
                 yield event
             yield self._format_event(
-                "run.error",
+                "run.failed",
                 task.id,
                 self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
                 self._stream_error_payload(exc),
@@ -2023,7 +2039,7 @@ class AiSearchAgentRunService:
                     event_type = str(payload.get("type") or "").strip()
                     if event_type == "run.completed":
                         saw_run_completed = True
-                    if event_type == "run.error":
+                    if event_type == "run.failed":
                         maybe_error = payload.get("payload")
                         run_error = maybe_error if isinstance(maybe_error, dict) else {"message": "生成 AI 检索计划失败。"}
                 yield event

@@ -69,13 +69,15 @@ class AiSearchSnapshotService:
             events = events[-int(limit) :]
         flattened: List[Dict[str, Any]] = []
         for item in events:
-            if str(item.get("event_type") or "").strip() != "process.event":
+            event_type = str(item.get("event_type") or "").strip()
+            if event_type not in {"process.started", "process.completed", "process.failed"}:
                 continue
             payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
             detail = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
             flattened.append(
                 {
                     **detail,
+                    "type": event_type,
                     "seq": int(item.get("seq") or 0),
                     "createdAt": str(item.get("created_at") or ""),
                     "runId": str(item.get("run_id") or "").strip() or None,
