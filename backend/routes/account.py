@@ -333,23 +333,71 @@ def _datetime_bounds(start_day: date, end_day: date) -> Tuple[str, str]:
     return local_day_start_end_to_utc(start_day, day_count=(end_day - start_day).days + 1)
 
 
+def _workdays_in_month(year: int, month: int) -> List[date]:
+    month_start_dt, month_end_dt = _month_start_end(year, month)
+    month_start_day = month_start_dt.date()
+    month_end_day = (month_end_dt - timedelta(days=1)).date()
+    return [day for day in _iter_dates(month_start_day, month_end_day) if _is_workday(day)]
+
+
+def _nth_workday_from_month_end(year: int, month: int, offset_from_end: int) -> date:
+    workdays = _workdays_in_month(year, month)
+    if offset_from_end <= 0 or len(workdays) < offset_from_end:
+        raise ValueError(f"invalid workday offset: year={year} month={month} offset={offset_from_end}")
+    return workdays[-offset_from_end]
+
+
+def _shift_year_month(year: int, month: int, delta: int) -> Tuple[int, int]:
+    total_months = (year * 12 + (month - 1)) + delta
+    shifted_year = total_months // 12
+    shifted_month = total_months % 12 + 1
+    return shifted_year, shifted_month
+
+
+def _resolve_settlement_period(year: int, month: int) -> Dict[str, object]:
+    prev_year, prev_month = _shift_year_month(year, month, -1)
+    period_start = _nth_workday_from_month_end(prev_year, prev_month, 3)
+    period_end = _nth_workday_from_month_end(year, month, 4)
+    days = list(_iter_dates(period_start, period_end))
+    week_ranges: List[Dict[str, object]] = []
+    for index in range(4):
+        start_index = index * 7
+        if start_index >= len(days):
+            break
+        end_index = min(len(days) - 1, start_index + 6)
+        week_ranges.append(
+            {
+                "label": f"第{index + 1}周",
+                "start": days[start_index],
+                "end": days[end_index],
+            }
+        )
+    return {
+        "start": period_start,
+        "end": period_end,
+        "days": days,
+        "week_ranges": week_ranges,
+        "period_label": f"{year}年{month}月结案周期",
+    }
+
+
 def _build_summary_text(work_week_total: int, work_month_total: int, weekly_series: List[WeeklyActivityPoint]) -> str:
     if work_month_total == 0:
-        return "本月暂无任务创建记录，可以从 AI 分析任务开始沉淀个人节奏。"
+        return "当前结案周期内还没有 AI 分析记录，可以优先推进待完成案件。"
 
     first_half = sum(item.totalCreated for item in weekly_series[:2])
     second_half = sum(item.totalCreated for item in weekly_series[2:])
     pace_estimate = work_week_total * 4
 
     if second_half > first_half * 1.1:
-        return "最近两周活跃度高于月初，任务节奏在加速。"
+        return "周期后半段的 AI 分析数量高于前半段，当前节奏在加快。"
     if second_half < first_half * 0.9:
-        return "最近两周活跃度低于月初，建议适当补齐任务节奏。"
+        return "周期后半段的 AI 分析数量低于前半段，建议优先推进临近完成案件。"
     if pace_estimate > work_month_total * 1.15:
-        return "最近一个工作周创建节奏较快，建议持续优先处理高价值任务。"
+        return "最近一个工作周的 AI 分析节奏偏快，继续保持能更稳地达成目标。"
     if pace_estimate < work_month_total * 0.85:
-        return "最近一个工作周创建节奏偏缓，可优先安排高价值任务。"
-    return "当前任务节奏整体稳定，可持续保持。"
+        return "最近一个工作周的 AI 分析节奏偏缓，可优先推进临近完成的案件。"
+    return "当前 AI 分析节奏整体稳定，可持续保持。"
 
 
 def _count_created(owner_id: str, start_day: date, end_day: date, task_type: str) -> int:
@@ -359,6 +407,17 @@ def _count_created(owner_id: str, start_day: date, end_day: date, task_type: str
         start_iso,
         end_iso,
         task_type=task_type,
+    )
+
+
+def _count_completed(owner_id: str, start_day: date, end_day: date, task_type: str) -> int:
+    start_iso, end_iso = _datetime_bounds(start_day, end_day)
+    return task_manager.storage.count_user_tasks_by_completed_range(
+        owner_id,
+        start_iso,
+        end_iso,
+        task_type=task_type,
+        status="completed",
     )
 
 
@@ -869,103 +928,70 @@ async def get_account_dashboard(
 ):
     now = utc_now().astimezone(APP_TZ)
     actual_year, actual_month = _normalize_year_month(year, month, now)
-
-    month_start_dt, month_end_dt = _month_start_end(actual_year, actual_month)
-    month_start_day = month_start_dt.date()
-    month_end_day = (month_end_dt - timedelta(days=1)).date()
+    settlement_period = _resolve_settlement_period(actual_year, actual_month)
+    period_start_day = settlement_period["start"]
+    period_end_day = settlement_period["end"]
+    period_days = settlement_period["days"]
+    week_ranges = settlement_period["week_ranges"]
 
     week_start, week_end = _recent_workday_window(5, now.date())
-    month_work_start, month_work_end = _recent_workday_window(22, now.date())
+    work_week_analysis = _count_completed(current_user.user_id, week_start, week_end, TaskType.PATENT_ANALYSIS.value)
+    work_month_analysis = _count_completed(current_user.user_id, period_start_day, period_end_day, TaskType.PATENT_ANALYSIS.value)
 
-    work_week_analysis = _count_created(current_user.user_id, week_start, week_end, TaskType.PATENT_ANALYSIS.value)
-    work_week_review = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REVIEW.value)
-    work_week_reply = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_REPLY.value)
-    work_week_search = _count_created(current_user.user_id, week_start, week_end, TaskType.AI_SEARCH.value)
-    work_month_analysis = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.PATENT_ANALYSIS.value)
-    work_month_review = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REVIEW.value)
-    work_month_reply = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_REPLY.value)
-    work_month_search = _count_created(current_user.user_id, month_work_start, month_work_end, TaskType.AI_SEARCH.value)
-
-    created_rows = task_manager.storage.aggregate_user_created_tasks_daily(
+    completed_rows = task_manager.storage.aggregate_user_completed_tasks_daily(
         current_user.user_id,
-        month_start_day,
-        month_end_day,
+        period_start_day,
+        period_end_day,
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        status="completed",
     )
     daily_map: Dict[str, Dict[str, int]] = {}
-    for row in created_rows:
+    for row in completed_rows:
         key = row["day"]
-        item = daily_map.setdefault(key, {"analysis": 0, "review": 0, "reply": 0, "search": 0})
+        item = daily_map.setdefault(key, {"analysis": 0})
         if row["task_type"] == TaskType.PATENT_ANALYSIS.value:
             item["analysis"] += int(row["count"])
-        elif row["task_type"] == TaskType.AI_REVIEW.value:
-            item["review"] += int(row["count"])
-        elif row["task_type"] == TaskType.AI_REPLY.value:
-            item["reply"] += int(row["count"])
-        elif row["task_type"] == TaskType.AI_SEARCH.value:
-            item["search"] += int(row["count"])
 
     weekly_bucket = [
-        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
-        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
-        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
-        {"analysis": 0, "review": 0, "reply": 0, "search": 0},
+        {"analysis": 0}
+        for _ in range(max(4, len(week_ranges)))
     ]
     daily_series: List[DailyActivityPoint] = []
-    for day_item in _iter_dates(month_start_day, month_end_day):
+    for day_item in period_days:
         key = day_item.isoformat()
-        row = daily_map.get(key, {"analysis": 0, "review": 0, "reply": 0, "search": 0})
+        row = daily_map.get(key, {"analysis": 0})
         analysis = int(row["analysis"])
-        review = int(row["review"])
-        reply = int(row["reply"])
-        search = int(row["search"])
-        total = analysis + review + reply + search
+        total = analysis
         daily_series.append(
             DailyActivityPoint(
                 date=key,
                 analysisCreated=analysis,
-                reviewCreated=review,
-                replyCreated=reply,
-                searchCreated=search,
                 totalCreated=total,
             )
         )
 
-        week_index = min(3, (day_item.day - 1) // 7)
+        day_offset = (day_item - period_start_day).days
+        week_index = min(len(weekly_bucket) - 1, max(0, day_offset // 7))
         weekly_bucket[week_index]["analysis"] += analysis
-        weekly_bucket[week_index]["review"] += review
-        weekly_bucket[week_index]["reply"] += reply
-        weekly_bucket[week_index]["search"] += search
 
     weekly_series: List[WeeklyActivityPoint] = []
     for idx in range(4):
         analysis = weekly_bucket[idx]["analysis"]
-        review = weekly_bucket[idx]["review"]
-        reply = weekly_bucket[idx]["reply"]
-        search = weekly_bucket[idx]["search"]
         weekly_series.append(
             WeeklyActivityPoint(
                 week=f"第{idx + 1}周",
                 analysisCreated=analysis,
-                reviewCreated=review,
-                replyCreated=reply,
-                searchCreated=search,
-                totalCreated=analysis + review + reply + search,
+                totalCreated=analysis,
             )
         )
 
     work_week = TaskWindowCounts(
         analysisCount=work_week_analysis,
-        reviewCount=work_week_review,
-        replyCount=work_week_reply,
-        searchCount=work_week_search,
-        totalCount=work_week_analysis + work_week_review + work_week_reply + work_week_search,
+        totalCount=work_week_analysis,
     )
     work_month = TaskWindowCounts(
         analysisCount=work_month_analysis,
-        reviewCount=work_month_review,
-        replyCount=work_month_reply,
-        searchCount=work_month_search,
-        totalCount=work_month_analysis + work_month_review + work_month_reply + work_month_search,
+        totalCount=work_month_analysis,
     )
     month_target, month_target_source = _resolve_effective_month_target(
         current_user.user_id,
@@ -976,6 +1002,11 @@ async def get_account_dashboard(
     return AccountDashboardResponse(
         year=actual_year,
         month=actual_month,
+        periodStart=period_start_day.isoformat(),
+        periodEnd=period_end_day.isoformat(),
+        periodLabel=str(settlement_period["period_label"]),
+        targetMetricType=TaskType.PATENT_ANALYSIS.value,
+        countBasis="completed_at",
         monthTarget=int(month_target),
         monthTargetSource=month_target_source,
         workWeek=work_week,

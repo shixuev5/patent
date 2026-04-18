@@ -1,7 +1,9 @@
 from agents.ai_reply.src.utils import (
     is_patent_application_number,
     is_patent_document,
+    normalize_quote_translation,
     normalize_patent_identifier,
+    quote_needs_translation,
 )
 
 
@@ -60,3 +62,16 @@ def test_is_patent_application_number_detects_common_formats() -> None:
 def test_normalize_patent_identifier_strips_common_separators() -> None:
     assert normalize_patent_identifier("US 2023/0403781 A1") == "US20230403781A1"
     assert normalize_patent_identifier("EP-3-379-496-A1") == "EP3379496A1"
+
+
+def test_quote_needs_translation_detects_non_chinese_quotes() -> None:
+    assert quote_needs_translation("A system and a method for monitoring pressure.") is True
+    assert quote_needs_translation("車両がトンネル内走行中に、車内圧力検出装置５で検出した車内圧力値") is True
+    assert quote_needs_translation("该专利公开了车内压力监测与报警的基础系统架构。") is False
+    assert quote_needs_translation("D1-2020") is False
+
+
+def test_normalize_quote_translation_only_keeps_valid_non_chinese_translation() -> None:
+    assert normalize_quote_translation("A system and a method.", "一种系统和方法。") == "一种系统和方法。"
+    assert normalize_quote_translation("A system and a method.", "A system and a method.") == ""
+    assert normalize_quote_translation("该专利公开了基础系统架构。", "This patent discloses the basic architecture.") == ""

@@ -5,7 +5,7 @@ import importlib
 import os
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,6 +65,29 @@ def _mount_storage(monkeypatch, tmp_path):
     return storage
 
 
+def _create_completed_task(
+    storage: SQLiteTaskStorage,
+    *,
+    owner_id: str,
+    task_id: str,
+    task_type: str,
+    completed_at: datetime,
+    status: TaskStatus = TaskStatus.COMPLETED,
+):
+    storage.create_task(
+        Task(
+            id=task_id,
+            owner_id=owner_id,
+            task_type=task_type,
+            status=status,
+            title=task_id,
+            created_at=completed_at - timedelta(days=1),
+            updated_at=completed_at,
+            completed_at=completed_at,
+        )
+    )
+
+
 def test_month_target_carry_forward_chain(monkeypatch, tmp_path):
     _mount_storage(monkeypatch, tmp_path)
     user = CurrentUser(user_id='u-1')
@@ -113,6 +136,76 @@ def test_dashboard_includes_target_and_source(monkeypatch, tmp_path):
     assert dashboard.monthTargetSource == 'carried'
     assert dashboard.year == 2026
     assert dashboard.month == 3
+
+
+def test_dashboard_uses_settlement_period_and_completed_analysis_only(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='u-dashboard-period')
+
+    asyncio.run(
+        account.put_account_month_target(
+            payload=AccountMonthTargetUpsertRequest(year=2026, month=4, targetCount=6),
+            current_user=user,
+        )
+    )
+
+    _create_completed_task(
+        storage,
+        owner_id=user.user_id,
+        task_id='analysis-in-period-1',
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        completed_at=datetime(2026, 3, 27, 10, 0, tzinfo=timezone.utc),
+    )
+    _create_completed_task(
+        storage,
+        owner_id=user.user_id,
+        task_id='analysis-in-period-2',
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        completed_at=datetime(2026, 4, 27, 9, 0, tzinfo=timezone.utc),
+    )
+    _create_completed_task(
+        storage,
+        owner_id=user.user_id,
+        task_id='analysis-outside-period',
+        task_type=TaskType.PATENT_ANALYSIS.value,
+        completed_at=datetime(2026, 4, 28, 9, 0, tzinfo=timezone.utc),
+    )
+    _create_completed_task(
+        storage,
+        owner_id=user.user_id,
+        task_id='reply-in-period',
+        task_type=TaskType.AI_REPLY.value,
+        completed_at=datetime(2026, 4, 10, 9, 0, tzinfo=timezone.utc),
+    )
+
+    dashboard = asyncio.run(account.get_account_dashboard(year=2026, month=4, current_user=user))
+
+    assert dashboard.periodStart == '2026-03-27'
+    assert dashboard.periodEnd == '2026-04-27'
+    assert dashboard.periodLabel == '2026年4月结案周期'
+    assert dashboard.targetMetricType == 'patent_analysis'
+    assert dashboard.countBasis == 'completed_at'
+    assert dashboard.monthTarget == 6
+    assert dashboard.workMonth.totalCount == 2
+    assert dashboard.workMonth.analysisCount == 2
+    assert len(dashboard.dailySeries) == 32
+    daily_map = {item.date: item.totalCreated for item in dashboard.dailySeries}
+    assert daily_map['2026-03-27'] == 1
+    assert daily_map['2026-04-10'] == 0
+    assert daily_map['2026-04-27'] == 1
+    assert [item.totalCreated for item in dashboard.weeklySeries] == [1, 0, 0, 1]
+
+
+def test_settlement_period_handles_cross_year_boundary(monkeypatch, tmp_path):
+    _mount_storage(monkeypatch, tmp_path)
+    user = CurrentUser(user_id='u-period-cross-year')
+
+    dashboard = asyncio.run(account.get_account_dashboard(year=2027, month=1, current_user=user))
+
+    assert dashboard.periodStart == '2026-12-29'
+    assert dashboard.periodEnd == '2027-01-26'
+    assert dashboard.periodLabel == '2027年1月结案周期'
+    assert len(dashboard.dailySeries) == 29
 
 
 def test_profile_sanitizes_none_like_text(monkeypatch, tmp_path):

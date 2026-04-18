@@ -36,7 +36,12 @@ from agents.ai_reply.src.retrieval_utils import (
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import EvidenceAssessment
-from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
+from agents.ai_reply.src.utils import (
+    PipelineCancelled,
+    ensure_not_cancelled,
+    get_node_cache,
+    normalize_quote_translation,
+)
 from config import settings
 
 
@@ -733,6 +738,7 @@ class CommonKnowledgeVerificationNode:
     {
       "doc_id": "EXT1",
       "quote": "原文核心证据片段摘录",
+      "quote_translation": "若 quote 不是中文，必须提供对应中文译文；若 quote 已是中文，固定填空字符串",
       "location": "如：文献摘要/第X段/摘要",
       "analysis": "该证据如何支持或反驳公知常识的认定",
       "source_url": "https://...",
@@ -899,9 +905,14 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
                 continue
 
             source_item = external_doc_map.get(doc_id, {})
+            quote = str(evidence.get("quote", "")).strip()
             evidence_items.append({
                 "doc_id": doc_id,
-                "quote": str(evidence.get("quote", "")).strip(),
+                "quote": quote,
+                "quote_translation": normalize_quote_translation(
+                    quote,
+                    str(evidence.get("quote_translation", "")).strip(),
+                ),
                 "location": str(evidence.get("location", "")).strip(),
                 "analysis": str(evidence.get("analysis", "")).strip(),
                 "source_url": str(

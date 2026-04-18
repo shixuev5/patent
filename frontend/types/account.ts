@@ -74,32 +74,28 @@ export interface AccountWeChatIntegrationUpdateRequest {
 export interface WeeklyActivityPoint {
   week: string
   analysisCreated: number
-  reviewCreated: number
-  replyCreated: number
-  searchCreated: number
   totalCreated: number
 }
 
 export interface TaskWindowCounts {
   analysisCount: number
-  reviewCount: number
-  replyCount: number
-  searchCount: number
   totalCount: number
 }
 
 export interface DailyActivityPoint {
   date: string
   analysisCreated: number
-  reviewCreated: number
-  replyCreated: number
-  searchCreated: number
   totalCreated: number
 }
 
 export interface AccountDashboard {
   year: number
   month: number
+  periodStart: string
+  periodEnd: string
+  periodLabel: string
+  targetMetricType: 'patent_analysis'
+  countBasis: 'completed_at'
   monthTarget: number
   monthTargetSource: 'explicit' | 'carried' | 'empty'
   workWeek: TaskWindowCounts

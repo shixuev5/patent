@@ -33,8 +33,10 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     unassessed_disputes = _as_int(_item_get(summary, "unassessed_disputes", 0))
     response_reply_points = _as_int(_item_get(summary, "response_reply_points", 0))
 
+    overall_conclusion = str(_item_get(summary, "overall_conclusion", "")).strip()
     rebuttal_distribution = _item_get(summary, "rebuttal_type_distribution", {}) or {}
     verdict_distribution = _item_get(summary, "verdict_distribution", {}) or {}
+    added_matter_risk_summary = str(_item_get(amendment_section, "added_matter_risk_summary", "")).strip()
     app_correct = _as_int(_item_get(verdict_distribution, "applicant_correct", 0))
     exm_correct = _as_int(_item_get(verdict_distribution, "examiner_correct", 0))
     inconclusive = _as_int(_item_get(verdict_distribution, "inconclusive", 0))
@@ -70,27 +72,24 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     confidence_known_total = confidence_high + confidence_mid + confidence_low
     avg_confidence = sum(confidence_values) / len(confidence_values) if confidence_values else -1.0
 
-    dominant_verdict_name, dominant_verdict_value = _max_label_value(
-        [
-            ("申请人正确", app_correct),
-            ("审查员正确", exm_correct),
-            ("结论不确定", inconclusive),
-        ]
+    overall_primary, overall_secondary = _build_overall_judgement_card(
+        overall_conclusion=overall_conclusion,
+        assessed_disputes=assessed_disputes,
+        app_correct=app_correct,
+        exm_correct=exm_correct,
+        inconclusive=inconclusive,
+        added_matter_risk_summary=added_matter_risk_summary,
     )
-    dominant_type_name, dominant_type_value = _max_label_value(
-        [
-            ("事实争议", fact_dispute),
-            ("逻辑争议", logic_dispute),
-            ("未分类争议", unknown_dispute),
-        ]
+    risk_primary, risk_secondary = _build_key_risk_card(
+        unassessed_disputes=unassessed_disputes,
+        inconclusive=inconclusive,
+        added_matter_risk_summary=added_matter_risk_summary,
     )
-    dominant_conf_name, dominant_conf_value = _max_label_value(
-        [
-            ("高置信（>=0.75）", confidence_high),
-            ("中置信（0.50-0.74）", confidence_mid),
-            ("低置信（<0.50）", confidence_low),
-            ("未给出置信度", confidence_unknown),
-        ]
+    support_primary, support_secondary = _build_support_strength_card(
+        assessed_disputes=assessed_disputes,
+        app_correct=app_correct,
+        avg_confidence=avg_confidence,
+        confidence_known_total=confidence_known_total,
     )
 
     lines: List[str] = []
@@ -101,30 +100,31 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append('<div class="oar-conclusion-grid">')
     lines.append(
         _conclusion_card(
+            "整体判断",
+            overall_primary,
+            overall_secondary,
+            emphasis=True,
+        )
+    )
+    lines.append(
+        _conclusion_card(
+            "重点风险",
+            risk_primary,
+            risk_secondary,
+        )
+    )
+    lines.append(
+        _conclusion_card(
             "核查进度",
             f"{assessed_disputes}/{total_disputes} 项已核查",
-            f"待核查 {unassessed_disputes} 项；申请人答复要点 {response_reply_points} 项",
+            f"待核查 {unassessed_disputes} 项；已形成答复 {response_reply_points} 项",
         )
     )
     lines.append(
         _conclusion_card(
-            "主导裁决",
-            f"{dominant_verdict_name}（{dominant_verdict_value} 项）",
-            f"占已核查争议点 {_pct_text(dominant_verdict_value, assessed_disputes)}",
-        )
-    )
-    lines.append(
-        _conclusion_card(
-            "主导争议类型",
-            f"{dominant_type_name}（{dominant_type_value} 项）",
-            f"占总争议点 {_pct_text(dominant_type_value, total_disputes)}",
-        )
-    )
-    lines.append(
-        _conclusion_card(
-            "主导置信分层",
-            f"{dominant_conf_name}（{dominant_conf_value} 项）",
-            f"均值置信度 {_confidence_pct_text(avg_confidence)}（有效 {confidence_known_total} 项）",
+            "支撑强度",
+            support_primary,
+            support_secondary,
         )
     )
     lines.append("</div>")
@@ -257,9 +257,88 @@ def _followup_needed(section: Any) -> bool:
     return bool(_item_get(section, "needed", False))
 
 
-def _conclusion_card(title: str, primary: str, secondary: str) -> str:
+def _build_overall_judgement_card(
+    overall_conclusion: str,
+    assessed_disputes: int,
+    app_correct: int,
+    exm_correct: int,
+    inconclusive: int,
+    added_matter_risk_summary: str,
+) -> Tuple[str, str]:
+    if added_matter_risk_summary:
+        primary = "存在修改超范围风险"
+        secondary = added_matter_risk_summary
+        return primary, secondary
+
+    if assessed_disputes <= 0:
+        return "暂无可用核查结论", "当前尚无已完成核查的争议点"
+
+    normalized = overall_conclusion.strip()
+    if normalized == "申请人主要争点更占优" or app_correct > exm_correct:
+        primary = "本次答复基本成立"
+    elif normalized == "审查员主要争点更占优" or exm_correct > app_correct:
+        primary = "本次答复支撑不足"
+    elif normalized == "现有争点暂无法形成明确结论" or inconclusive == assessed_disputes:
+        primary = "本次答复暂无法形成明确结论"
+    else:
+        primary = "本次答复结论相持"
+
+    secondary = f"已核查 {assessed_disputes} 项中，{app_correct} 项可支持申请人主张"
+    return primary, secondary
+
+
+def _build_key_risk_card(
+    unassessed_disputes: int,
+    inconclusive: int,
+    added_matter_risk_summary: str,
+) -> Tuple[str, str]:
+    if added_matter_risk_summary:
+        return "存在修改超范围风险", added_matter_risk_summary
+    if inconclusive > 0:
+        primary = f"{inconclusive} 项仍需重点复核"
+        secondary = "现有证据尚不足以形成明确结论"
+        return primary, secondary
+    if unassessed_disputes > 0:
+        primary = f"{unassessed_disputes} 项待继续核查"
+        secondary = "仍有争议点未完成有效评估"
+        return primary, secondary
+    return "未见明显剩余风险", "已核查争议点均形成明确判断"
+
+
+def _build_support_strength_card(
+    assessed_disputes: int,
+    app_correct: int,
+    avg_confidence: float,
+    confidence_known_total: int,
+) -> Tuple[str, str]:
+    if assessed_disputes <= 0:
+        return "暂无法判断", "当前缺少可用于衡量支撑强度的核查结果"
+
+    if avg_confidence < 0:
+        primary = f"有效回应 {app_correct} 项"
+        secondary = f"占已核查争议点 {_pct_text(app_correct, assessed_disputes)}；暂无有效置信度"
+        return primary, secondary
+
+    if avg_confidence >= 0.75:
+        band = "高支撑"
+    elif avg_confidence >= 0.5:
+        band = "中等支撑"
+    else:
+        band = "低支撑"
+    primary = f"{band} {app_correct} 项"
+    secondary = (
+        f"占已核查争议点 {_pct_text(app_correct, assessed_disputes)}；"
+        f"平均置信度 {_confidence_pct_text(avg_confidence)}（有效 {confidence_known_total} 项）"
+    )
+    return primary, secondary
+
+
+def _conclusion_card(title: str, primary: str, secondary: str, emphasis: bool = False) -> str:
+    class_name = "oar-conclusion-card"
+    if emphasis:
+        class_name += " oar-conclusion-card-emphasis"
     return (
-        '<div class="oar-conclusion-card">'
+        f'<div class="{class_name}">'
         f'<div class="oar-conclusion-title">{_html_text(title, default="")}</div>'
         f'<div class="oar-conclusion-primary">{_html_text(primary, default="-")}</div>'
         f'<div class="oar-conclusion-secondary">{_html_text(secondary, default="-")}</div>'
@@ -1250,6 +1329,7 @@ def _render_ai_basis_html(evidence_assessment: Any) -> str:
         )
         location = _text_or_default(_item_get(item, "location", ""), default="")
         quote = _text_or_default(_item_get(item, "quote", ""), default="")
+        quote_translation = _text_or_default(_item_get(item, "quote_translation", ""), default="")
         analysis = _text_or_default(_item_get(item, "analysis", ""), default="")
         header_parts = [f"证据{index}"]
         if source_title:
@@ -1263,9 +1343,11 @@ def _render_ai_basis_html(evidence_assessment: Any) -> str:
         )
         if quote:
             basis_parts.append(_evidence_line_html("引文：", quote))
+        if quote and quote_translation:
+            basis_parts.append(_evidence_line_html("译文：", quote_translation, extra_class="oar-evidence-line-translation"))
         if analysis:
             basis_parts.append(_evidence_line_html("分析：", analysis))
-        if not quote and not analysis:
+        if not quote and not quote_translation and not analysis:
             basis_parts.append('<div class="oar-evidence-line">-</div>')
         basis_parts.append("</div>")
 
@@ -1273,9 +1355,10 @@ def _render_ai_basis_html(evidence_assessment: Any) -> str:
     return "".join(basis_parts)
 
 
-def _evidence_line_html(label: str, value: str) -> str:
+def _evidence_line_html(label: str, value: str, extra_class: str = "") -> str:
+    class_attr = " ".join(part for part in ["oar-evidence-line", str(extra_class).strip()] if part)
     return (
-        '<div class="oar-evidence-line">'
+        f'<div class="{class_attr}">'
         f'<span class="oar-evidence-line-label">{_escape_text(label)}</span>'
         f'{_html_text(value, default="-")}'
         "</div>"

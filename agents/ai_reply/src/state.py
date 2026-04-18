@@ -75,6 +75,7 @@ class EvidenceAssessmentQuote(BaseModel):
     """证据引用项"""
     doc_id: str = Field(..., description="对比文件编号，如 D1")
     quote: str = Field(default="", description="证据原文片段")
+    quote_translation: str = Field(default="", description="当 quote 为非中文时提供的中文译文")
     location: str = Field(default="", description="证据位置描述")
     analysis: str = Field(default="", description="证据与争议关系分析")
     source_url: Optional[str] = Field(None, description="证据来源链接")

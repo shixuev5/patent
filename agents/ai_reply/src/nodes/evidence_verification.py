@@ -12,7 +12,12 @@ from loguru import logger
 from agents.common.retrieval import LocalEvidenceRetriever
 from agents.common.utils.concurrency import submit_with_current_context
 from agents.common.utils.llm import get_llm_service
-from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
+from agents.ai_reply.src.utils import (
+    PipelineCancelled,
+    ensure_not_cancelled,
+    get_node_cache,
+    normalize_quote_translation,
+)
 from agents.ai_reply.src.state import EvidenceAssessment
 from config import settings
 
@@ -430,6 +435,7 @@ class EvidenceVerificationNode:
     {
       "doc_id": "必须是当前争议项 supporting_docs 中给出的 doc_id（如 D1）",
       "quote": "必须从对比文件中【一字不差】地复制支撑你结论的原句，严禁洗稿或概括！",
+      "quote_translation": "若 quote 不是中文，必须提供对应中文译文；若 quote 已是中文，固定填空字符串",
       "location": "描述引用内容在文档中的大概位置或上下文环境",
       "analysis": "解释这段引用原文是如何支撑 assessment 结论的"
     }
@@ -697,9 +703,14 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
             doc_id = str(evidence.get("doc_id", "")).strip()
             if doc_id and allowed_doc_ids and doc_id not in allowed_doc_ids:
                 continue
+            quote = str(evidence.get("quote", "")).strip()
             evidence_items.append({
                 "doc_id": doc_id,
-                "quote": str(evidence.get("quote", "")).strip(),
+                "quote": quote,
+                "quote_translation": normalize_quote_translation(
+                    quote,
+                    str(evidence.get("quote_translation", "")).strip(),
+                ),
                 "location": str(evidence.get("location", "")).strip(),
                 "analysis": str(evidence.get("analysis", "")).strip(),
                 "source_url": str(evidence.get("source_url", "")).strip() or None,

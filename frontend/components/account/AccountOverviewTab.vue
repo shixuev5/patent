@@ -4,13 +4,13 @@
       <article class="metric-card">
         <p class="metric-label">最近一个工作周</p>
         <p class="metric-value">{{ dashboard?.workWeek.totalCount ?? 0 }}</p>
-        <p class="metric-desc">分析 {{ dashboard?.workWeek.analysisCount ?? 0 }} · 审查 {{ dashboard?.workWeek.reviewCount ?? 0 }} · 答复 {{ dashboard?.workWeek.replyCount ?? 0 }}</p>
+        <p class="metric-desc">AI 分析 {{ dashboard?.workWeek.analysisCount ?? 0 }} 个</p>
       </article>
 
       <article class="metric-card">
-        <p class="metric-label">最近一个工作月</p>
+        <p class="metric-label">当前结案周期</p>
         <p class="metric-value">{{ dashboard?.workMonth.totalCount ?? 0 }}</p>
-        <p class="metric-desc">分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} · 审查 {{ dashboard?.workMonth.reviewCount ?? 0 }} · 答复 {{ dashboard?.workMonth.replyCount ?? 0 }}</p>
+        <p class="metric-desc">AI 分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} 个</p>
       </article>
 
       <article class="metric-card" :class="deltaToneClass">
@@ -30,7 +30,7 @@
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold text-slate-900">{{ dashboardTitle }}</h2>
-          <p class="text-xs text-slate-500">横轴为自然日（仅显示第1-4周标签），纵轴为累计任务数</p>
+          <p class="text-xs text-slate-500">横轴为结案周期日期，纵轴为累计 AI 分析数</p>
         </div>
         <div class="flex items-center gap-2">
           <p
@@ -68,7 +68,7 @@
             <div class="mt-1 h-1.5 rounded-full bg-slate-200">
               <div class="h-1.5 rounded-full bg-cyan-500 transition-all duration-500" :style="{ width: `${item.progressBarWidth}%` }" />
             </div>
-            <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · 分析 {{ item.analysisCreated }} · 审查 {{ item.reviewCreated ?? 0 }} · 答复 {{ item.replyCreated }}</p>
+            <p class="mb-0 mt-1 text-xs text-slate-600">目标 {{ item.targetCount }} · AI 分析 {{ item.analysisCreated }}</p>
           </div>
         </div>
       </div>
@@ -76,12 +76,16 @@
 
     <article class="rounded-2xl border border-slate-200 bg-white p-4">
       <div class="mb-2 flex items-center justify-between gap-3">
-        <h3 class="text-sm font-semibold text-slate-900">最近一个月每日创建</h3>
-        <p class="text-xs text-slate-500">按当前月份自然日展示</p>
+        <h3 class="text-sm font-semibold text-slate-900">当前结案周期每日 AI 分析</h3>
+        <p class="text-xs text-slate-500">{{ periodRangeLabel }}</p>
       </div>
 
       <div class="daily-chart-wrap">
-        <div ref="dailyChartRef" class="chart-canvas daily-chart" />
+        <div class="daily-chart-scroll">
+          <div class="daily-chart-inner" :style="dailyChartCanvasStyle">
+            <div ref="dailyChartRef" class="chart-canvas daily-chart" />
+          </div>
+        </div>
       </div>
     </article>
   </div>
@@ -94,8 +98,6 @@ import type { AccountDashboard } from '~/types/account'
 interface WeeklyBreakdownItem {
   week: string
   analysisCreated: number
-  reviewCreated?: number
-  replyCreated: number
   totalCreated: number
   targetCount: number
   percent: number
@@ -139,46 +141,52 @@ let trendChart: EChartsInstance | null = null
 let dailyChart: EChartsInstance | null = null
 let resizeObserver: ResizeObserver | null = null
 let chartBootstrapTimer: ReturnType<typeof setTimeout> | null = null
+const viewportWidth = ref(typeof window === 'undefined' ? 1280 : window.innerWidth)
 
-const now = new Date()
-
-const monthDays = computed(() => {
-  const year = props.dashboard?.year ?? now.getFullYear()
-  const month = props.dashboard?.month ?? (now.getMonth() + 1)
-  return new Date(year, month, 0).getDate()
+const periodStartDate = computed(() => {
+  const raw = String(props.dashboard?.periodStart || '')
+  return raw ? new Date(`${raw}T00:00:00`) : null
 })
 
-const isCurrentMonthDashboard = computed(() => (
-  !!props.dashboard
-  && props.dashboard.year === now.getFullYear()
-  && props.dashboard.month === now.getMonth() + 1
-))
+const periodEndDate = computed(() => {
+  const raw = String(props.dashboard?.periodEnd || '')
+  return raw ? new Date(`${raw}T00:00:00`) : null
+})
+
+const periodDays = computed(() => {
+  if (!periodStartDate.value || !periodEndDate.value) return props.dashboard?.dailySeries?.length || 0
+  const diff = periodEndDate.value.getTime() - periodStartDate.value.getTime()
+  return Math.max(0, Math.floor(diff / 86400000) + 1)
+})
 
 const visibleDayCount = computed(() => (
-  isCurrentMonthDashboard.value
-    ? Math.min(monthDays.value, now.getDate())
-    : monthDays.value
+  periodDays.value
 ))
 
+const padDate = (value: number): string => String(value).padStart(2, '0')
+
 const dailySeriesByDay = computed(() => {
-  const series = Array.from({ length: monthDays.value }, (_item, index) => ({
-    date: '',
-    totalCreated: 0,
-    day: index + 1,
-  }))
-  for (const item of props.dashboard?.dailySeries || []) {
-    const day = Number(String(item.date || '').slice(8, 10))
-    if (!Number.isInteger(day) || day < 1 || day > series.length) continue
-    series[day - 1] = {
-      date: item.date,
-      totalCreated: Number(item.totalCreated || 0),
-      day,
+  const start = periodStartDate.value
+  if (!start || periodDays.value <= 0) return []
+  const map = new Map((props.dashboard?.dailySeries || []).map(item => [item.date, item]))
+  return Array.from({ length: periodDays.value }, (_item, index) => {
+    const current = new Date(start.getTime() + index * 86400000)
+    const date = `${current.getFullYear()}-${padDate(current.getMonth() + 1)}-${padDate(current.getDate())}`
+    const item = map.get(date)
+    return {
+      date,
+      label: `${padDate(current.getMonth() + 1)}-${padDate(current.getDate())}`,
+      totalCreated: Number(item?.totalCreated || 0),
+      day: index + 1,
     }
-  }
-  return series
+  })
 })
 
-const dayCategories = computed(() => Array.from({ length: monthDays.value }, (_item, index) => String(index + 1)))
+const dayCategories = computed(() => dailySeriesByDay.value.map(item => item.label))
+const isCompactMobile = computed(() => viewportWidth.value < 640)
+const dailyChartCanvasStyle = computed(() => ({
+  width: isCompactMobile.value ? `${Math.max(periodDays.value * 38, 860)}px` : '100%',
+}))
 
 const actualCumulativeValues = computed<(number | null)[]>(() => {
   let running = 0
@@ -190,10 +198,10 @@ const actualCumulativeValues = computed<(number | null)[]>(() => {
 })
 
 const expectedCumulativeValues = computed<(number | null)[]>(() => {
-  if (props.monthTarget <= 0) return Array.from({ length: monthDays.value }).fill(null)
-  return Array.from({ length: monthDays.value }, (_item, index) => {
+  if (props.monthTarget <= 0) return Array.from<number | null>({ length: periodDays.value }).fill(null)
+  return Array.from({ length: periodDays.value }, (_item, index) => {
     if (index >= visibleDayCount.value) return null
-    return Number(((props.monthTarget * (index + 1)) / Math.max(1, monthDays.value)).toFixed(2))
+    return Number(((props.monthTarget * (index + 1)) / Math.max(1, periodDays.value)).toFixed(2))
   })
 })
 
@@ -204,17 +212,17 @@ const chartMaxY = computed(() => {
 })
 
 const weekRanges = computed(() => ([
-  { label: '第1周', start: 1, end: Math.min(7, monthDays.value) },
-  { label: '第2周', start: 8, end: Math.min(14, monthDays.value) },
-  { label: '第3周', start: 15, end: Math.min(21, monthDays.value) },
-  { label: '第4周', start: 22, end: monthDays.value },
+  { label: '第1周', start: 1, end: Math.min(7, periodDays.value) },
+  { label: '第2周', start: 8, end: Math.min(14, periodDays.value) },
+  { label: '第3周', start: 15, end: Math.min(21, periodDays.value) },
+  { label: '第4周', start: 22, end: periodDays.value },
 ]))
 
 const weekSeparatorDays = computed(() => (
   weekRanges.value
     .slice(1)
-    .filter(item => item.start <= monthDays.value)
-    .map(item => item.start)
+    .filter(item => item.start <= periodDays.value)
+    .map(item => item.start - 1)
 ))
 
 const weekLabelMap = computed<Record<number, string>>(() => {
@@ -254,12 +262,12 @@ const trendChartOption = computed<Record<string, any>>(() => ({
     extraCssText: 'border-radius: 12px; box-shadow: 0 12px 28px rgba(15,23,42,0.22);',
     formatter: (rawParams: any) => {
       const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-      const day = Number(params[0]?.axisValue || 0)
-      const actual = actualCumulativeValues.value[day - 1]
-      const expected = expectedCumulativeValues.value[day - 1]
-      const item = dailySeriesByDay.value[day - 1]
-      const dateLabel = item?.date || `${props.dashboard?.year ?? now.getFullYear()}-${String(props.dashboard?.month ?? (now.getMonth() + 1)).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-      const weekLabel = `第${Math.min(4, Math.floor((Math.max(day, 1) - 1) / 7) + 1)}周`
+      const dayIndex = dayCategories.value.findIndex(item => item === String(params[0]?.axisValue || ''))
+      const actual = actualCumulativeValues.value[dayIndex]
+      const expected = expectedCumulativeValues.value[dayIndex]
+      const item = dailySeriesByDay.value[dayIndex]
+      const dateLabel = item?.date || '-'
+      const weekLabel = `第${Math.min(4, Math.floor(Math.max(dayIndex, 0) / 7) + 1)}周`
       return [
         `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
         `<div style="opacity:0.82;margin-bottom:4px;">${weekLabel}</div>`,
@@ -283,7 +291,7 @@ const trendChartOption = computed<Record<string, any>>(() => ({
       margin: 12,
       fontSize: 10,
       color: '#64748b',
-      formatter: (value: string) => weekLabelMap.value[Number(value)] || '',
+      formatter: (_value: string, index: number) => weekLabelMap.value[index + 1] || '',
     },
   },
   yAxis: {
@@ -351,7 +359,7 @@ const trendChartOption = computed<Record<string, any>>(() => ({
           type: 'dashed',
           width: 1,
         },
-        data: weekSeparatorDays.value.map(day => ({ xAxis: String(day) })),
+        data: weekSeparatorDays.value.map(day => ({ xAxis: dayCategories.value[day] })),
       },
     },
   ],
@@ -369,6 +377,7 @@ const dailyChartOption = computed<Record<string, any>>(() => ({
   },
   tooltip: {
     trigger: 'axis',
+    appendToBody: true,
     axisPointer: {
       type: 'line',
       lineStyle: {
@@ -385,13 +394,13 @@ const dailyChartOption = computed<Record<string, any>>(() => ({
     extraCssText: 'border-radius: 12px; box-shadow: 0 12px 28px rgba(15,23,42,0.22);',
     formatter: (rawParams: any) => {
       const params = Array.isArray(rawParams) ? rawParams : [rawParams]
-      const day = Number(params[0]?.axisValue || 0)
-      const value = dailyTotals.value[day - 1] || 0
-      const item = dailySeriesByDay.value[day - 1]
-      const dateLabel = item?.date || `${props.dashboard?.year ?? now.getFullYear()}-${String(props.dashboard?.month ?? (now.getMonth() + 1)).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      const dayIndex = dayCategories.value.findIndex(item => item === String(params[0]?.axisValue || ''))
+      const value = dailyTotals.value[dayIndex] || 0
+      const item = dailySeriesByDay.value[dayIndex]
+      const dateLabel = item?.date || '-'
       return [
         `<div style="font-weight:600;margin-bottom:4px;">${dateLabel}</div>`,
-        `<div>当日创建：${value} 个</div>`,
+        `<div>当日 AI 分析：${value} 个</div>`,
       ].join('')
     },
   },
@@ -420,7 +429,7 @@ const dailyChartOption = computed<Record<string, any>>(() => ({
   },
   series: [
     {
-      name: '每日创建',
+      name: '每日 AI 分析',
       type: 'bar',
       data: dailyTotals.value,
       barWidth: '70%',
@@ -481,13 +490,21 @@ const syncCharts = async () => {
 }
 
 const resizeCharts = () => {
+  if (typeof window !== 'undefined') viewportWidth.value = window.innerWidth
   trendChart?.resize()
   dailyChart?.resize()
 }
 
 const formatPercent = (value: number): string => `${Math.round(value)}%`
 
-watch([trendChartOption, dailyChartOption], () => {
+const periodRangeLabel = computed(() => {
+  const start = String(props.dashboard?.periodStart || '').trim()
+  const end = String(props.dashboard?.periodEnd || '').trim()
+  if (!start || !end) return '按当前结案周期展示'
+  return `${start} 至 ${end}`
+})
+
+watch([trendChartOption, dailyChartOption, dailyChartCanvasStyle], () => {
   void syncCharts()
 })
 
@@ -567,6 +584,17 @@ onBeforeUnmount(() => {
   padding: 0.35rem 0.35rem 0.1rem;
 }
 
+.daily-chart-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+.daily-chart-inner {
+  min-width: 100%;
+}
+
 .chart-canvas {
   width: 100%;
 }
@@ -600,6 +628,10 @@ onBeforeUnmount(() => {
 
   .daily-chart {
     height: 7rem;
+  }
+
+  .daily-chart-wrap {
+    padding-bottom: 0.3rem;
   }
 }
 </style>

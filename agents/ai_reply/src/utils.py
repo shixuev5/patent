@@ -32,6 +32,10 @@ _PATENT_APPLICATION_PATTERNS = [
     r"^\d{4}\d{7,8}\.[0-9X]$",  # 中国申请号，如 202211411308.6 / 202310001234.5 / 202310658730.X
     r"^PCT[A-Z]{2}\d{4}\d{5,}$",  # PCT 申请号简化归一化格式，如 PCTCN2024123456
 ]
+_CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+_JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7af]")
 
 
 class PipelineCancelled(RuntimeError):
@@ -67,6 +71,35 @@ def is_patent_application_number(value: str) -> bool:
             return True
 
     return False
+
+
+def quote_needs_translation(text: str) -> bool:
+    """判断证据引文是否需要补充中文译文。"""
+    value = str(text or "").strip()
+    if not value:
+        return False
+
+    if _JAPANESE_KANA_RE.search(value) or _HANGUL_RE.search(value):
+        return True
+
+    chinese_count = len(_CHINESE_CHAR_RE.findall(value))
+    latin_count = len(_LATIN_CHAR_RE.findall(value))
+    if chinese_count > 0 and latin_count == 0:
+        return False
+    return latin_count >= 3
+
+
+def normalize_quote_translation(quote: str, translation: str) -> str:
+    """标准化译文字段，仅在非中文引文时保留有效中文译文。"""
+    quote_text = str(quote or "").strip()
+    translation_text = str(translation or "").strip()
+    if not quote_needs_translation(quote_text):
+        return ""
+    if not translation_text:
+        return ""
+    if translation_text == quote_text:
+        return ""
+    return translation_text
 
 
 def get_file_hash(file_path: str) -> str:

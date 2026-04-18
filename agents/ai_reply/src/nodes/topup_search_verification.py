@@ -39,7 +39,12 @@ from agents.ai_reply.src.retrieval_utils import (
     plan_engine_queries,
 )
 from agents.ai_reply.src.state import Dispute, EvidenceAssessment
-from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
+from agents.ai_reply.src.utils import (
+    PipelineCancelled,
+    ensure_not_cancelled,
+    get_node_cache,
+    normalize_quote_translation,
+)
 from config import settings
 
 
@@ -416,6 +421,7 @@ class TopupSearchVerificationNode:
     {
       "doc_id": "D1",
       "quote": "相关证据片段",
+      "quote_translation": "若 quote 不是中文，必须提供对应中文译文；若 quote 已是中文，固定填空字符串",
       "location": "证据的具体位置/段落",
       "analysis": "该证据与新增特征的具体映射关系分析（为何引用它）",
       "source_url": "https://...",
@@ -690,10 +696,15 @@ feature_text: {feature_text}
             source_item = evidence_map.get(doc_id, {})
             if doc_id not in used_doc_ids:
                 used_doc_ids.append(doc_id)
+            quote = str(evidence.get("quote", "")).strip()
 
             evidence_items.append({
                 "doc_id": doc_id,
-                "quote": str(evidence.get("quote", "")).strip(),
+                "quote": quote,
+                "quote_translation": normalize_quote_translation(
+                    quote,
+                    str(evidence.get("quote_translation", "")).strip(),
+                ),
                 "location": str(evidence.get("location", "")).strip(),
                 "analysis": str(evidence.get("analysis", "")).strip(),
                 "source_url": str(evidence.get("source_url") or source_item.get("source_url") or "").strip() or None,

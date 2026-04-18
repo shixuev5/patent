@@ -228,6 +228,18 @@ def _sample_report() -> dict:
 def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     content = build_final_report_markdown(_sample_report())
 
+    assert "整体判断" in content
+    assert "本次答复基本成立" in content
+    assert "重点风险" in content
+    assert "1 项仍需重点复核" in content
+    assert "核查进度" in content
+    assert "2/2 项已核查" in content
+    assert "支撑强度" in content
+    assert "中等支撑 1 项" in content
+    assert "主导裁决" not in content
+    assert "主导争议类型" not in content
+    assert "主导置信分层" not in content
+    assert 'class="oar-conclusion-card oar-conclusion-card-emphasis"' in content
     assert "## 3. 权利要求变更表" in content
     assert "### 3.1 实质修改" not in content
     assert "### 3.2 结构调整" not in content
@@ -369,6 +381,72 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert "修改摘要：" in html_doc
     assert "CHANGE_FINAL_END" in html_doc
     assert "<blockquote>" not in html_doc
+
+
+def test_build_final_report_markdown_renders_quote_translation_for_non_chinese_quotes() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {},
+        "response_dispute_section": {
+            "items": [
+                {
+                    "dispute_id": "DSP_1",
+                    "origin": "response_dispute",
+                    "claim_ids": ["1"],
+                    "feature_text": "特征A",
+                    "examiner_opinion": {"type": "mixed_basis", "reasoning": "审查员理由"},
+                    "applicant_opinion": {"reasoning": "申请人理由"},
+                    "evidence_assessment": {
+                        "assessment": {
+                            "verdict": "EXAMINER_CORRECT",
+                            "confidence": 0.85,
+                            "reasoning": "AI判断",
+                            "examiner_rejection_rationale": "",
+                        },
+                        "evidence": [
+                            {
+                                "doc_id": "EXT1",
+                                "location": "摘要",
+                                "quote": "A system and a method for monitoring pressure inside a railway vehicle comprise a carriage pressure detection device.",
+                                "quote_translation": "一种用于监测轨道车辆内部压力的系统和方法，包括车厢压力检测装置。",
+                                "analysis": "英文证据支持分析。",
+                            },
+                            {
+                                "doc_id": "D1",
+                                "location": "说明书后半段",
+                                "quote": "車両がトンネル内走行中に、車内圧力検出装置５で検出した車内圧力値が車内の圧力の制御の基準値に対し変動した場合。",
+                                "quote_translation": "当车辆在隧道内行驶时，如果车内压力检测装置5检测到的车内压力值相对于车内压力控制基准值发生变化。",
+                                "analysis": "日文证据支持分析。",
+                            },
+                            {
+                                "doc_id": "D2",
+                                "location": "第3页",
+                                "quote": "该专利公开了车内压力监测与报警的基础系统架构。",
+                                "analysis": "中文证据支持分析。",
+                            },
+                        ],
+                    },
+                }
+            ]
+        },
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "译文：" in content
+    assert "一种用于监测轨道车辆内部压力的系统和方法，包括车厢压力检测装置。" in content
+    assert "当车辆在隧道内行驶时，如果车内压力检测装置5检测到的车内压力值相对于车内压力控制基准值发生变化。" in content
+    assert "中文证据支持分析。" in content
+    english_quote_pos = content.index("A system and a method for monitoring pressure inside a railway vehicle")
+    english_translation_pos = content.index("一种用于监测轨道车辆内部压力的系统和方法，包括车厢压力检测装置。")
+    english_analysis_pos = content.index("英文证据支持分析。")
+    assert english_quote_pos < english_translation_pos < english_analysis_pos
+    chinese_quote_pos = content.index("该专利公开了车内压力监测与报警的基础系统架构。")
+    chinese_analysis_pos = content.index("中文证据支持分析。")
+    assert chinese_quote_pos < chinese_analysis_pos
+    assert content.count("译文：") == 2
 
 
 def test_build_final_report_markdown_preserves_upstream_unique_claim_cards() -> None:

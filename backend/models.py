@@ -189,32 +189,28 @@ class InternalWeChatInboundMessageResponse(BaseModel):
 class WeeklyActivityPoint(BaseModel):
     week: str
     analysisCreated: int
-    reviewCreated: int
-    replyCreated: int
-    searchCreated: int
     totalCreated: int
 
 
 class TaskWindowCounts(BaseModel):
     analysisCount: int
-    reviewCount: int
-    replyCount: int
-    searchCount: int
     totalCount: int
 
 
 class DailyActivityPoint(BaseModel):
     date: str
     analysisCreated: int
-    reviewCreated: int
-    replyCreated: int
-    searchCreated: int
     totalCreated: int
 
 
 class AccountDashboardResponse(BaseModel):
     year: int
     month: int
+    periodStart: str
+    periodEnd: str
+    periodLabel: str
+    targetMetricType: Literal["patent_analysis"]
+    countBasis: Literal["completed_at"]
     monthTarget: int
     monthTargetSource: Literal["explicit", "carried", "empty"]
     workWeek: TaskWindowCounts

@@ -113,7 +113,7 @@
           </div>
 
           <div class="target-panel">
-            <p class="target-label">本月目标</p>
+            <p class="target-label">本周期目标</p>
             <div class="target-actions">
               <input
                 v-model="monthTargetInput"
@@ -326,9 +326,21 @@ const isCurrentMonthSelection = computed(() => selectedMonth.value === currentMo
 const hasNotificationTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
 const hasWechatTab = computed(() => profile.value?.authType === 'authing' || authStore.isLoggedIn)
 
-const monthDays = computed(() => new Date(parsedYearMonth.value.year, parsedYearMonth.value.month, 0).getDate())
 const dailySeries = computed(() => dashboard.value?.dailySeries ?? [])
 const weeklySeries = computed<WeeklyActivityPoint[]>(() => dashboard.value?.weeklySeries ?? [])
+const periodStartDate = computed(() => {
+  const raw = String(dashboard.value?.periodStart || '')
+  return raw ? new Date(`${raw}T00:00:00`) : null
+})
+const periodEndDate = computed(() => {
+  const raw = String(dashboard.value?.periodEnd || '')
+  return raw ? new Date(`${raw}T00:00:00`) : null
+})
+const periodDays = computed(() => {
+  if (!periodStartDate.value || !periodEndDate.value) return dailySeries.value.length
+  const diff = periodEndDate.value.getTime() - periodStartDate.value.getTime()
+  return Math.max(0, Math.floor(diff / 86400000) + 1)
+})
 
 const monthTotalCreated = computed(() => dailySeries.value.reduce((sum, item) => sum + item.totalCreated, 0))
 const monthTarget = computed(() => Math.max(0, Number(dashboard.value?.monthTarget ?? 0)))
@@ -409,15 +421,12 @@ const usageResetLabel = computed(() => {
 const elapsedRatio = computed(() => {
   if (!dashboard.value) return 0
 
-  const targetYear = dashboard.value.year
-  const targetMonth = dashboard.value.month
-  const currentYear = now.getFullYear()
-  const currentMonth = now.getMonth() + 1
-
-  if (targetYear < currentYear || (targetYear === currentYear && targetMonth < currentMonth)) return 1
-  if (targetYear > currentYear || (targetYear === currentYear && targetMonth > currentMonth)) return 0
-
-  return Math.min(1, Math.max(0, now.getDate() / monthDays.value))
+  if (!periodStartDate.value || !periodEndDate.value) return 0
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (today < periodStartDate.value) return 0
+  if (today >= periodEndDate.value) return 1
+  const elapsedDays = Math.floor((today.getTime() - periodStartDate.value.getTime()) / 86400000) + 1
+  return Math.min(1, Math.max(0, elapsedDays / Math.max(1, periodDays.value)))
 })
 
 const actualProgressPercent = computed(() => {
@@ -434,16 +443,16 @@ const progressDeltaPercent = computed(() => actualProgressPercent.value - expect
 
 const weekRanges = computed(() => {
   return [
-    { label: '第1周', start: 1, end: Math.min(7, monthDays.value) },
-    { label: '第2周', start: 8, end: Math.min(14, monthDays.value) },
-    { label: '第3周', start: 15, end: Math.min(21, monthDays.value) },
-    { label: '第4周', start: 22, end: monthDays.value },
+    { label: '第1周', start: 1, end: Math.min(7, periodDays.value) },
+    { label: '第2周', start: 8, end: Math.min(14, periodDays.value) },
+    { label: '第3周', start: 15, end: Math.min(21, periodDays.value) },
+    { label: '第4周', start: 22, end: periodDays.value },
   ]
 })
 
 const weekDayCounts = computed(() => {
   return weekRanges.value.map((item) => {
-    if (item.start > monthDays.value || item.end < item.start) return 0
+    if (item.start > periodDays.value || item.end < item.start) return 0
     return item.end - item.start + 1
   })
 })
@@ -451,7 +460,7 @@ const weekDayCounts = computed(() => {
 const weeklyTargets = computed(() => {
   if (monthTarget.value <= 0) return [0, 0, 0, 0]
 
-  const totalDays = Math.max(1, monthDays.value)
+  const totalDays = Math.max(1, periodDays.value)
   const rawTargets = weekDayCounts.value.map((days) => (monthTarget.value * days) / totalDays)
   const floorTargets = rawTargets.map((value) => Math.floor(value))
   let remainder = monthTarget.value - floorTargets.reduce((sum, item) => sum + item, 0)
@@ -472,26 +481,18 @@ const weeklyTargets = computed(() => {
 })
 
 const currentWeekIndex = computed(() => {
-  const selectedYear = parsedYearMonth.value.year
-  const selectedMonthNum = parsedYearMonth.value.month
-  const currentYear = now.getFullYear()
-  const currentMonthNum = now.getMonth() + 1
-
-  if (selectedYear < currentYear || (selectedYear === currentYear && selectedMonthNum < currentMonthNum)) {
-    return 3
-  }
-  if (selectedYear > currentYear || (selectedYear === currentYear && selectedMonthNum > currentMonthNum)) {
-    return -1
-  }
-  return Math.min(3, Math.floor((now.getDate() - 1) / 7))
+  if (!periodStartDate.value || !periodEndDate.value) return -1
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (today < periodStartDate.value) return -1
+  if (today >= periodEndDate.value) return 3
+  const dayOffset = Math.floor((today.getTime() - periodStartDate.value.getTime()) / 86400000)
+  return Math.min(3, Math.floor(dayOffset / 7))
 })
 
 const weeklyBreakdown = computed(() => {
   const defaultWeeks = Array.from({ length: 4 }, (_item, index) => ({
     week: `第${index + 1}周`,
     analysisCreated: 0,
-    reviewCreated: 0,
-    replyCreated: 0,
     totalCreated: 0,
   }))
 
@@ -539,15 +540,15 @@ const openUsageLogin = async () => {
 }
 
 const dashboardTitle = computed(() => {
-  if (!dashboard.value) return '月度创建趋势'
-  return `${dashboard.value.year} 年 ${dashboard.value.month} 月创建趋势`
+  if (!dashboard.value) return '结案周期趋势'
+  return dashboard.value.periodLabel || `${dashboard.value.year} 年 ${dashboard.value.month} 月结案周期趋势`
 })
 
 const targetHintText = computed(() => {
-  if (!isCurrentMonthSelection.value) return '当前查看历史月份，目标仅可在当月修改。'
-  if (monthTargetSource.value === 'carried') return '本月目标已自动沿用最近一次设置值，需要的话可直接改。'
-  if (monthTargetSource.value === 'empty') return '还没有任何目标，先定一个小目标会更容易跟进节奏。'
-  return '已设置本月目标，后续进度和周卡片会按这个值实时更新。'
+  if (!isCurrentMonthSelection.value) return '当前查看历史结案月，目标仅可在当前结案月修改。'
+  if (monthTargetSource.value === 'carried') return '本周期目标已自动沿用最近一次设置值，需要的话可直接改。'
+  if (monthTargetSource.value === 'empty') return '当前结案周期还没有目标，先定一个 AI 分析目标更容易跟进节奏。'
+  return '已设置本周期目标，后续进度和周卡片会按这个值实时更新。'
 })
 
 const actualProgressLabel = computed(() => formatPercent(actualProgressPercent.value))
@@ -567,22 +568,22 @@ const deltaToneClass = computed(() => {
 
 const smartSummary = computed(() => {
   if (monthTarget.value <= 0) {
-    return '这个月还没立下目标，先定一个你觉得“刚好有挑战”的数字，我们再一起盯节奏。'
+    return '当前结案周期还没立下目标，先定一个你觉得刚好有挑战的 AI 分析数量。'
   }
   const expectedCount = Math.round((monthTarget.value * elapsedRatio.value) || 0)
   const deltaCount = monthTotalCreated.value - expectedCount
   const absDeltaCount = Math.abs(deltaCount)
   const deltaPrefix = deltaCount >= 0 ? '领先' : '落后'
   if (progressDeltaPercent.value >= 8) {
-    return `你这个月推进得很稳，当前已比节奏${deltaPrefix} ${absDeltaCount} 个，继续保持这个手感就很好。`
+    return `当前结案周期推进得很稳，AI 分析数量已比节奏${deltaPrefix} ${absDeltaCount} 个。`
   }
   if (progressDeltaPercent.value <= -8) {
-    return `最近节奏稍慢一点，当前比计划${deltaPrefix} ${absDeltaCount} 个；这周抓 1-2 个关键任务就能追上来。`
+    return `当前 AI 分析节奏稍慢，和计划相差 ${absDeltaCount} 个；优先推进临近完成案件会更有效。`
   }
   if (monthTargetSource.value === 'carried') {
-    return '本月沿用了之前的目标，目前进度基本贴着计划线，继续按现在的节奏推进就可以。'
+    return '本周期沿用了之前的目标，目前进度基本贴着计划线，继续按现在的节奏推进即可。'
   }
-  return '当前进度和目标几乎同步，整体状态很平稳，照这个节奏走就行。'
+  return '当前 AI 分析进度和目标基本同步，整体节奏比较平稳。'
 })
 
 const targetInputInvalid = computed(() => {

@@ -77,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ChevronUpIcon,
   ArrowDownTrayIcon,
@@ -92,6 +92,10 @@ import { useTaskStore } from '~/stores/task'
 const taskStore = useTaskStore()
 const isExpanded = ref(false)
 const showClearConfirm = ref(false)
+const syncBodyScrollLock = () => {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return
+  document.body.style.overflow = isExpanded.value && window.innerWidth <= 640 ? 'hidden' : ''
+}
 
 const toggleExpand = () => {
   isExpanded.value = !isExpanded.value
@@ -116,6 +120,17 @@ const downloadAll = () => {
 
 onMounted(() => {
   if (taskStore.hasProcessingTasks) isExpanded.value = true
+  syncBodyScrollLock()
+  window.addEventListener('resize', syncBodyScrollLock)
+})
+
+watch(isExpanded, () => {
+  syncBodyScrollLock()
+})
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('resize', syncBodyScrollLock)
+  if (typeof document !== 'undefined') document.body.style.overflow = ''
 })
 </script>
 
@@ -236,8 +251,28 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
+  .task-panel {
+    @apply px-0;
+  }
+
+  .task-panel.expanded {
+    top: 5.5rem;
+    max-height: none;
+  }
+
   .panel-shell {
     @apply rounded-t-2xl;
+  }
+
+  .task-panel.expanded .panel-shell {
+    height: 100%;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-bottom-width: 0;
+    border-top-left-radius: 1.5rem;
+    border-top-right-radius: 1.5rem;
+    display: flex;
+    flex-direction: column;
   }
 
   .panel-header {
@@ -278,6 +313,12 @@ onMounted(() => {
 
   .task-list {
     @apply space-y-3 px-4 pb-4 pt-2;
+  }
+
+  .task-panel.expanded .panel-content {
+    flex: 1;
+    max-height: none;
+    overscroll-behavior: contain;
   }
 }
 </style>

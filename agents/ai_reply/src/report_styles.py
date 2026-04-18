@@ -18,7 +18,6 @@ OAR_REPORT_CSS = DEFAULT_REPORT_CSS + """
     --oar-surface: #ffffff;
     --oar-surface-soft: #f8fafc;
     --oar-surface-tint: #f0f9ff;
-    --oar-surface-tint-strong: #ecfeff;
     --oar-success-bg: #ecfdf3;
     --oar-success-border: #16a34a;
     --oar-success-text: #166534;
@@ -107,6 +106,13 @@ th, td {
     border-radius: 10px;
     background: linear-gradient(180deg, var(--oar-surface) 0%, var(--oar-surface-tint) 100%);
     padding: 10px 12px;
+}
+
+.oar-conclusion-card-emphasis {
+    border-color: #b7d6e2;
+    border-left-color: var(--oar-accent-strong);
+    background: linear-gradient(180deg, #f8fdff 0%, #e6f4f8 100%);
+    box-shadow: 0 6px 16px rgba(14, 116, 144, 0.08);
 }
 
 .oar-conclusion-title {
@@ -436,6 +442,10 @@ th, td {
     line-height: 1.72;
 }
 
+.oar-evidence-line-translation {
+    color: var(--oar-muted);
+}
+
 .oar-evidence-line + .oar-evidence-line {
     margin-top: 4px;
 }
@@ -480,27 +490,6 @@ th, td {
 
 .oar-change-ai-card.oar-detail-block-evidence .oar-detail-body {
     text-indent: 0;
-}
-
-.oar-change-unassessed {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 4px 8px 8px 8px;
-}
-
-.oar-change-unassessed .oar-verdict-badge {
-    max-width: 108px;
-    margin: 0;
-    padding: 4px 8px;
-}
-
-.oar-change-unassessed-note {
-    font-size: 11px;
-    line-height: 1.35;
-    color: var(--oar-subtle);
-    text-align: left;
 }
 
 .oar-opinion-block {
@@ -636,31 +625,6 @@ th, td {
     padding: 14px 16px;
     page-break-inside: avoid;
     break-inside: avoid;
-}
-
-.oar-structural-adjustment-head {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--oar-ink);
-}
-
-.oar-structural-adjustment-tag {
-    margin-top: 6px;
-    display: inline-block;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--oar-accent-strong);
-}
-
-.oar-structural-adjustment-reason {
-    margin-top: 6px;
-    margin-bottom: 8px;
-    font-size: 12px;
-    color: var(--oar-muted);
-}
-
-.oar-ai-badge-stack-item + .oar-ai-badge-stack-item {
-    margin-top: 8px;
 }
 
 .oar-risk-grid,
