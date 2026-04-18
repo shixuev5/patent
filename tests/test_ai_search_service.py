@@ -13,18 +13,6 @@ from fastapi import HTTPException
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
-stub_ai_search_agents = types.ModuleType("agents.ai_search.main")
-stub_ai_search_agents.build_close_reader_agent = lambda: None
-stub_ai_search_agents.build_coarse_screener_agent = lambda: None
-stub_ai_search_agents.build_feature_comparer_agent = lambda: None
-stub_ai_search_agents.build_main_agent = lambda storage, task_id: None
-stub_ai_search_agents.build_planner_agent = lambda: None
-stub_ai_search_agents.build_plan_prober_agent = lambda: None
-stub_ai_search_agents.build_query_executor_agent = lambda: None
-stub_ai_search_agents.extract_latest_ai_message = lambda values: ""
-stub_ai_search_agents.extract_structured_response = lambda values: {}
-sys.modules.setdefault("agents.ai_search.main", stub_ai_search_agents)
-
 stub_search_clients_pkg = types.ModuleType("agents.common.search_clients")
 stub_search_clients_pkg.__path__ = []
 stub_search_clients_factory = types.ModuleType("agents.common.search_clients.factory")

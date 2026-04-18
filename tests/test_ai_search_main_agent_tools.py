@@ -40,23 +40,23 @@ sys.modules.setdefault("agents.common.retrieval.academic_search", stub_academic_
 sys.modules.setdefault("agents.common.search_clients", stub_search_clients_pkg)
 sys.modules.setdefault("agents.common.search_clients.factory", stub_search_clients_factory)
 
-from agents.ai_search.src import main_agent as main_agent_module
-from agents.ai_search.src.main_agent import agent as main_agent_agent_module
+from agents.ai_search.src.main_agent.agent import build_main_agent
+import agents.ai_search.src.main_agent.agent as main_agent_agent_module
 from agents.ai_search.src.main_agent.prompt import MAIN_AGENT_SYSTEM_PROMPT
 from agents.ai_search.src.runtime_context import AiSearchRuntimeContext
-from agents.ai_search.src.subagents import close_reader as close_reader_module
-from agents.ai_search.src.subagents import coarse_screener as coarse_screener_module
-from agents.ai_search.src.subagents import feature_comparer as feature_comparer_module
-from agents.ai_search.src.subagents import planner as planner_module
-from agents.ai_search.src.subagents import plan_prober as plan_prober_module
+from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
+from agents.ai_search.src.subagents.coarse_screener.agent import build_coarse_screener_subagent
+from agents.ai_search.src.subagents.feature_comparer.agent import build_feature_comparer_subagent
+from agents.ai_search.src.subagents.planner.agent import build_planner_subagent
+from agents.ai_search.src.subagents.plan_prober.agent import build_plan_prober_subagent
 from agents.ai_search.src.subagents.close_reader.prompt import CLOSE_READER_SYSTEM_PROMPT, build_close_reader_prompt
 from agents.ai_search.src.subagents.coarse_screener.prompt import COARSE_SCREEN_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.feature_comparer.prompt import FEATURE_COMPARER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.planner.prompt import PLANNER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.plan_prober.prompt import PLAN_PROBER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.query_executor.prompt import QUERY_EXECUTOR_SYSTEM_PROMPT
-from agents.ai_search.src.subagents import query_executor as query_executor_module
-from agents.ai_search.src.subagents import search_elements as search_elements_module
+from agents.ai_search.src.subagents.query_executor.agent import build_query_executor_subagent
+from agents.ai_search.src.subagents.search_elements.agent import build_search_elements_subagent
 from agents.ai_search.src.subagents.search_elements.prompt import SEARCH_ELEMENTS_SYSTEM_PROMPT
 
 
@@ -70,7 +70,7 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
     monkeypatch.setattr(main_agent_agent_module, "create_deep_agent", _fake_create_deep_agent)
     monkeypatch.setattr(main_agent_agent_module, "large_model", lambda: object())
 
-    main_agent_module.build_main_agent(object(), "task-ai-search")
+    build_main_agent(object(), "task-ai-search")
 
     tools = captured.get("tools")
     assert isinstance(tools, list)
@@ -100,31 +100,31 @@ def test_specialists_own_domain_tools():
 
     search_elements_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in search_elements_module.build_search_elements_subagent(storage, task_id)["tools"]
+        for tool in build_search_elements_subagent(storage, task_id)["tools"]
     }
     query_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in query_executor_module.build_query_executor_subagent(storage, task_id)["tools"]
+        for tool in build_query_executor_subagent(storage, task_id)["tools"]
     }
     coarse_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in coarse_screener_module.build_coarse_screener_subagent(storage, task_id)["tools"]
+        for tool in build_coarse_screener_subagent(storage, task_id)["tools"]
     }
     planner_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in planner_module.build_planner_subagent(storage, task_id)["tools"]
+        for tool in build_planner_subagent(storage, task_id)["tools"]
     }
     prober_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in plan_prober_module.build_plan_prober_subagent(storage, task_id)["tools"]
+        for tool in build_plan_prober_subagent(storage, task_id)["tools"]
     }
     close_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in close_reader_module.build_close_reader_subagent(storage, task_id)["tools"]
+        for tool in build_close_reader_subagent(storage, task_id)["tools"]
     }
     feature_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in feature_comparer_module.build_feature_comparer_subagent(storage, task_id)["tools"]
+        for tool in build_feature_comparer_subagent(storage, task_id)["tools"]
     }
 
     assert search_elements_tools == {"save_search_elements"}

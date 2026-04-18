@@ -1,4 +1,4 @@
-from agents.ai_search.src.subagents.search_elements import normalize_search_elements_payload
+from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 
 
 def test_normalize_search_elements_payload_keeps_applicants_optional():

@@ -6,8 +6,6 @@
 
 核心源码位于 [src](/Users/yanhao/Documents/codes/patent/agents/ai_search/src)：
 
-- [agents.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/agents.py)
-  稳定导出层，供 [agents.ai_search.main](/Users/yanhao/Documents/codes/patent/agents/ai_search/main.py) 和 [agents.ai_search](/Users/yanhao/Documents/codes/patent/agents/ai_search/__init__.py) 使用。
 - [context.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/context.py)
   共享任务上下文、todo 读写、计划/消息读取、gap 评估辅助。
 - [runtime.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/runtime.py)
@@ -148,25 +146,14 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `custom` 只保留业务事件，例如 `snapshot.changed`，不再承载 subagent / tool lifecycle
 - specialist 不再挂自定义 streaming middleware，所有 lifecycle 都由 deepagents / langgraph 原生流推导
 
-## Stable Exports
+## Imports
 
-对包外保持稳定的入口仍然是：
+当前代码直接从具体实现模块导入：
 
-- [agents.ai_search](/Users/yanhao/Documents/codes/patent/agents/ai_search/__init__.py)
-- [agents.ai_search.main](/Users/yanhao/Documents/codes/patent/agents/ai_search/main.py)
-
-它们继续导出：
-
-- `build_main_agent`
-- `build_plan_prober_agent`
-- `build_query_executor_agent`
-- `build_coarse_screener_agent`
-- `build_close_reader_agent`
-- `build_feature_comparer_agent`
-- `extract_latest_ai_message`
-- `extract_structured_response`
-
-内部目录可以继续演进，但这些顶层接口不应轻易改动。
+- 主 agent: [main_agent/agent.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/main_agent/agent.py)
+- search elements 归一化: [subagents/search_elements/normalize.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/search_elements/normalize.py)
+- 各 specialist subagent spec: 对应目录下的 `agent.py`
+- runtime 响应抽取: [runtime.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/runtime.py)
 
 ## Service Boundary
 

@@ -49,19 +49,21 @@ DEFAULT_MESSAGE_PHASES = {
 
 
 def build_main_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.main import build_main_agent as _build_main_agent
+    from agents.ai_search.src.main_agent.agent import build_main_agent as _build_main_agent
 
     return _build_main_agent(storage, task_id)
 
 
 def build_feature_comparer_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.main import build_feature_comparer_agent as _build_feature_comparer_agent
+    from agents.ai_search.src.subagents.feature_comparer.agent import (
+        build_feature_comparer_agent as _build_feature_comparer_agent,
+    )
 
     return _build_feature_comparer_agent(storage, task_id)
 
 
 def build_close_reader_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.main import build_close_reader_agent as _build_close_reader_agent
+    from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_agent as _build_close_reader_agent
 
     return _build_close_reader_agent(storage, task_id)
 

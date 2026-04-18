@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime_context import build_runtime_context
-from agents.ai_search.src.subagents.query_executor import build_search_tools
+from agents.ai_search.src.subagents.query_executor.search_backend_tools import build_search_tools
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 
