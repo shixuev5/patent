@@ -279,7 +279,11 @@ class AiSearchSnapshotService:
         meta = get_ai_search_meta(task)
         active_run = self._active_run(task)
         active_plan_version = int(meta.get("active_plan_version") or (active_run.get("plan_version") if active_run else 0) or 0)
-        feature_comparison = self.facade.artifacts._current_feature_comparison(task, active_plan_version)
+        feature_comparison = self.facade.artifacts._current_feature_comparison(
+            task,
+            active_plan_version,
+            fallback_latest=True,
+        )
         context = AiSearchAgentContext(self.storage, task.id)
         gap_context = context.latest_gap_context(active_plan_version)
         current_todo = context.current_todo()

@@ -55,6 +55,7 @@ def _create_batch(
         }
     )
     storage.replace_ai_search_batch_documents(batch_id, run_id, document_ids)
+    storage.update_ai_search_run(task_id, run_id, active_batch_id=batch_id)
     return batch_id
 
 
@@ -93,18 +94,12 @@ def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
     tool = next(tool for tool in context.build_coarse_screener_tools() if tool.__name__ == "run_coarse_screen_batch")
     batch_id = _create_batch(storage, "task-coarse", batch_type="coarse_screen", document_ids=["doc-1", "doc-2"])
 
-    result = json.loads(
-        tool(
-            operation="commit",
-            plan_version=1,
-            payload_json=json.dumps({"batch_id": batch_id, "keep": ["doc-1"], "discard": []}, ensure_ascii=False),
-            runtime=runtime,
-        )
-    )
-
-    assert result["ok"] is False
-    assert "遗漏了待处理 document_id" in result["error"]
-    assert "doc-2" in result["error"]
+    try:
+        context.persist_coarse_screen_result(["doc-1"], [], plan_version=1, runtime=runtime.context)
+        raise AssertionError("expected validation failure")
+    except ValueError as exc:
+        assert "遗漏了待处理 document_id" in str(exc)
+        assert "doc-2" in str(exc)
 
 
 def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
@@ -130,18 +125,12 @@ def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
     batch_id = _create_batch(storage, "task-close", batch_type="close_read", document_ids=["doc-1"])
 
-    result = json.loads(
-        tool(
-            operation="commit",
-            plan_version=1,
-            payload_json=json.dumps({"batch_id": batch_id, "selected": ["doc-1"], "rejected": ["doc-1"]}, ensure_ascii=False),
-            runtime=runtime,
-        )
-    )
-
-    assert result["ok"] is False
-    assert "存在重复 document_id" in result["error"]
-    assert "doc-1" in result["error"]
+    try:
+        context.persist_close_read_result({"selected": ["doc-1"], "rejected": ["doc-1"]}, plan_version=1, runtime=runtime.context)
+        raise AssertionError("expected validation failure")
+    except ValueError as exc:
+        assert "存在重复 document_id" in str(exc)
+        assert "doc-1" in str(exc)
 
 
 def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp_path):
@@ -209,10 +198,10 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
         ],
     }
 
-    result = json.loads(tool(operation="commit", plan_version=1, payload_json=json.dumps(payload, ensure_ascii=False), runtime=runtime))
+    selected_count = context.persist_close_read_result(payload, plan_version=1, runtime=runtime.context)
     documents = storage.list_ai_search_documents("task-align", 1, stages=["selected"])
 
-    assert result["selected_count"] == 1
+    assert selected_count == 1
     assert documents[0]["claim_ids_json"] == ["1"]
     assert "paragraph_0003" in documents[0]["evidence_locations_json"]
     assert "paragraph_0005" in documents[0]["evidence_locations_json"]

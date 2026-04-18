@@ -152,14 +152,15 @@ def test_main_agent_async_tool_guard_blocks_read_file():
 
 
 def test_close_reader_subagent_middleware_names_are_unique():
-    spec = build_close_reader_subagent(object(), "task-runtime")
+    spec = build_close_reader_subagent()
+    runnable = spec["runnable"]
     middleware = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=StateBackend),
-        SummarizationMiddleware(model=spec["model"], backend=StateBackend),
+        SummarizationMiddleware(model=runnable.model, backend=StateBackend),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
-        *list(spec.get("middleware", [])),
+        *list(getattr(runnable, "middleware", [])),
     ]
 
     names = [item.name for item in middleware]

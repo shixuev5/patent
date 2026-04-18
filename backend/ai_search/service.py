@@ -54,20 +54,6 @@ def build_main_agent(storage: Any, task_id: str) -> Any:
     return _build_main_agent(storage, task_id)
 
 
-def build_feature_comparer_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.src.subagents.feature_comparer.agent import (
-        build_feature_comparer_agent as _build_feature_comparer_agent,
-    )
-
-    return _build_feature_comparer_agent(storage, task_id)
-
-
-def build_close_reader_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_agent as _build_close_reader_agent
-
-    return _build_close_reader_agent(storage, task_id)
-
-
 def build_ai_search_terminal_artifacts(**kwargs: Any) -> Dict[str, Any]:
     from .reporting import build_ai_search_terminal_artifacts as _build_ai_search_terminal_artifacts
 
@@ -108,12 +94,6 @@ class AiSearchService:
 
     def _build_main_agent(self, storage: Any, task_id: str) -> Any:
         return build_main_agent(storage, task_id)
-
-    def _build_feature_comparer_agent(self, storage: Any, task_id: str) -> Any:
-        return build_feature_comparer_agent(storage, task_id)
-
-    def _build_close_reader_agent(self, storage: Any, task_id: str) -> Any:
-        return build_close_reader_agent(storage, task_id)
 
     def _build_terminal_artifacts(self, **kwargs: Any) -> Dict[str, Any]:
         return build_ai_search_terminal_artifacts(**kwargs)

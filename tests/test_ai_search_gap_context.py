@@ -440,20 +440,15 @@ def test_run_feature_compare_commit_persists_feature_compare_result_message(tmp_
     )
     load_payload = json.loads(run_feature_compare(operation="load", plan_version=1, runtime=runtime))
 
-    run_feature_compare(
-        operation="commit",
-        payload_json=json.dumps(
-            {
-                "batch_id": load_payload["batch_id"],
-                "table_rows": [{"feature": "A", "document_id": "doc-1"}],
-                "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
-                "follow_up_search_hints": ["补搜实现方式B"],
-                "creativity_readiness": "needs_more_evidence",
-            },
-            ensure_ascii=False,
-        ),
+    context.persist_feature_compare_result(
+        {
+            "table_rows": [{"feature": "A", "document_id": "doc-1"}],
+            "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
+            "follow_up_search_hints": ["补搜实现方式B"],
+            "creativity_readiness": "needs_more_evidence",
+        },
         plan_version=1,
-        runtime=runtime,
+        runtime=runtime.context,
     )
 
     messages = storage.list_ai_search_messages("task-gap")
@@ -535,24 +530,19 @@ def test_run_execution_step_commit_persists_step_summary(tmp_path):
         tool for tool in context.build_query_executor_tools() if str(getattr(tool, "__name__", "")) == "run_execution_step"
     )
 
-    result = run_execution_step(
-        operation="commit",
-        payload_json=json.dumps(
-            {
-                "todo_id": "plan_1:sub_plan_1:step_1",
-                "step_id": "step_1",
-                "sub_plan_id": "sub_plan_1",
-                "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
-                "new_unique_candidates": 2,
-                "candidate_pool_size": 3,
-            },
-            ensure_ascii=False,
-        ),
+    context.persist_execution_step_summary(
+        {
+            "todo_id": "plan_1:sub_plan_1:step_1",
+            "step_id": "step_1",
+            "sub_plan_id": "sub_plan_1",
+            "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
+            "new_unique_candidates": 2,
+            "candidate_pool_size": 3,
+        },
         plan_version=1,
-        runtime=runtime,
+        runtime=runtime.context,
     )
     summaries = storage.list_ai_search_execution_summaries(run_id)
-    assert result == "execution step summary saved"
     assert len(summaries) == 1
     assert summaries[0]["metadata"]["todo_id"] == "plan_1:sub_plan_1:step_1"
     assert summaries[0]["outcome_signals"]["primary_goal_reached"] is False

@@ -142,16 +142,18 @@ class AiSearchArtifactsService:
         if plan_version <= 0:
             return None
         run = self.facade.snapshots._active_run(task)
-        current_feature_comparison_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
-        if current_feature_comparison_id:
+        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
+        active_batch_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
+        active_batch = self.storage.get_ai_search_batch(active_batch_id) if active_batch_id else None
+        if str((active_batch or {}).get("batch_type") or "").strip() == "feature_comparison":
             table = self.storage.get_ai_search_feature_comparison(
                 task.id,
-                str(run.get("run_id") or "") if isinstance(run, dict) else plan_version,
+                run_id or plan_version,
             )
             if table:
                 return table
         if fallback_latest:
-            return self.storage.get_ai_search_feature_comparison(task.id, str(run.get("run_id") or "") if isinstance(run, dict) else plan_version)
+            return self.storage.get_ai_search_feature_comparison(task.id, run_id or plan_version)
         return None
 
     def _finalize_terminal_artifacts(

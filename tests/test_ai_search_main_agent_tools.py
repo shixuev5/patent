@@ -95,50 +95,53 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
 
 
 def test_specialists_own_domain_tools():
-    storage = object()
-    task_id = "task-ai-search"
-
-    search_elements_tools = {
-        str(getattr(tool, "__name__", ""))
-        for tool in build_search_elements_subagent(storage, task_id)["tools"]
-    }
+    search_elements_spec = build_search_elements_subagent()
+    planner_spec = build_planner_subagent()
+    prober_spec = build_plan_prober_subagent()
     query_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_query_executor_subagent(storage, task_id)["tools"]
+        for tool in build_query_executor_subagent()["runnable"].tools
     }
     coarse_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_coarse_screener_subagent(storage, task_id)["tools"]
-    }
-    planner_tools = {
-        str(getattr(tool, "__name__", ""))
-        for tool in build_planner_subagent(storage, task_id)["tools"]
-    }
-    prober_tools = {
-        str(getattr(tool, "__name__", ""))
-        for tool in build_plan_prober_subagent(storage, task_id)["tools"]
+        for tool in build_coarse_screener_subagent()["runnable"].tools
     }
     close_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_close_reader_subagent(storage, task_id)["tools"]
+        for tool in build_close_reader_subagent()["runnable"].tools
     }
     feature_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_feature_comparer_subagent(storage, task_id)["tools"]
+        for tool in build_feature_comparer_subagent()["runnable"].tools
     }
 
-    assert search_elements_tools == {"save_search_elements"}
-    assert planner_tools == {
-        "save_plan_execution_overview",
-        "append_plan_sub_plan",
+    assert "runnable" in search_elements_spec
+    assert "runnable" in planner_spec
+    assert "runnable" in prober_spec
+    assert "runnable" in build_query_executor_subagent()
+    assert "runnable" in build_coarse_screener_subagent()
+    assert "runnable" in build_close_reader_subagent()
+    assert "runnable" in build_feature_comparer_subagent()
+    assert query_tools == {
+        "run_execution_step",
+        "search_trace",
+        "search_semantic",
+        "search_boolean",
+        "count_boolean",
+        "fetch_patent_details",
+        "prepare_lane_queries",
+        "search_academic_openalex",
+        "search_academic_semanticscholar",
+        "search_academic_crossref",
     }
-    assert prober_tools == {
+    assert {
         "probe_search_semantic",
         "probe_search_boolean",
         "probe_count_boolean",
-        "save_probe_findings",
+    } == {
+        str(getattr(tool, "__name__", ""))
+        for tool in prober_spec["runnable"].tools
     }
-    assert "run_execution_step" in query_tools
     assert coarse_tools == {"run_coarse_screen_batch"}
     assert close_tools == {"run_close_read_batch"}
     assert feature_tools == {"run_feature_compare"}
@@ -165,19 +168,20 @@ def test_main_agent_prompt_uses_runtime_phase_names():
 
 
 def test_specialist_prompts_describe_allowed_tools_and_required_fields():
-    assert "`save_search_elements`" in SEARCH_ELEMENTS_SYSTEM_PROMPT
+    assert "`save_search_elements`" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
+    assert "系统自动持久化" in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert "missing_items" in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert "clarification_summary" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert '"申请人"' in SEARCH_ELEMENTS_SYSTEM_PROMPT
 
     assert "`probe_search_semantic`" in PLAN_PROBER_SYSTEM_PROMPT
-    assert "`save_probe_findings`" in PLAN_PROBER_SYSTEM_PROMPT
+    assert "`save_probe_findings`" not in PLAN_PROBER_SYSTEM_PROMPT
     assert "overall_observation" not in PLAN_PROBER_SYSTEM_PROMPT
     assert "retrieval_step_refs" in PLAN_PROBER_SYSTEM_PROMPT
     assert "signals" in PLAN_PROBER_SYSTEM_PROMPT
 
-    assert "`save_plan_execution_overview`" in PLANNER_SYSTEM_PROMPT
-    assert "`append_plan_sub_plan`" in PLANNER_SYSTEM_PROMPT
+    assert "`save_plan_execution_overview`" not in PLANNER_SYSTEM_PROMPT
+    assert "`append_plan_sub_plan`" not in PLANNER_SYSTEM_PROMPT
     assert "`save_plan_review_markdown`" not in PLANNER_SYSTEM_PROMPT
     assert "`finalize_plan_draft`" not in PLANNER_SYSTEM_PROMPT
     assert "完整的 `review_markdown` Markdown 文档本身" in PLANNER_SYSTEM_PROMPT

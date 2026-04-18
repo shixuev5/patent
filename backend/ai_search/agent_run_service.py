@@ -648,6 +648,38 @@ class AiSearchAgentRunService:
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
+    def _build_resume_close_read_prompt(self, task_id: str) -> str:
+        context = AiSearchAgentContext(self.storage, task_id)
+        payload = {
+            "phase": PHASE_CLOSE_READ,
+            "active_plan_version": context.active_plan_version(),
+            "active_batch_id": context.active_batch_id(),
+            "gap_context": context.latest_gap_context(),
+        }
+        return (
+            "这不是新的用户需求。"
+            "当前是人工送审复核后的继续执行。"
+            "你必须读取最新执行上下文，只处理当前 active close_read batch，完成精读后继续按主流程推进。"
+            "不要重新起草计划，不要跳过 close_read，不要绕过主流程。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
+    def _build_resume_feature_comparison_prompt(self, task_id: str) -> str:
+        context = AiSearchAgentContext(self.storage, task_id)
+        payload = {
+            "phase": PHASE_FEATURE_COMPARISON,
+            "active_plan_version": context.active_plan_version(),
+            "active_batch_id": context.active_batch_id(),
+            "gap_context": context.latest_gap_context(),
+        }
+        return (
+            "这不是新的用户需求。"
+            "当前是人工调整 selected 文献后的继续执行。"
+            "你必须读取最新执行上下文，重新完成 feature comparison，并根据结果继续按主流程推进。"
+            "不要绕过主流程，不要自己直接结束，除非流程判断应当完成。\n\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
+
     def _decision_termination_reason(self, task: Any) -> str:
         decision = self._require_human_decision_action(task)
         reason = str(decision.get("reason") or "").strip()
@@ -1804,264 +1836,6 @@ class AiSearchAgentRunService:
                 self._stream_error_payload(exc),
             )
 
-    async def _stream_feature_agent_execution(
-        self,
-        *,
-        task: Any,
-        owner_id: str,
-        plan_version: int,
-        previous_phase: str = "",
-        force_complete: bool = False,
-        termination_reason: str = "",
-        force_human_decision: bool = False,
-        human_decision_reason: str = "",
-        human_decision_summary: str = "",
-        emit_run_started: bool = True,
-        emit_run_completed: bool = True,
-    ) -> AsyncIterator[str]:
-        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
-        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
-        agent = self.facade._build_feature_comparer_agent(self.storage, task.id)
-        prompt = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "请基于当前活动计划和已选对比文件完成特征对比分析，并使用工具加载上下文后持久化结果。",
-                }
-            ]
-        }
-
-        try:
-            if not hasattr(agent, "astream") or not callable(getattr(agent, "astream")):
-                raise RuntimeError("feature-comparer 必须支持 astream 以输出原生 Markdown 流。")
-            async for event in self._consume_live_agent_stream(
-                session_id=task.id,
-                owner_id=owner_id,
-                task_id=task.id,
-                agent=agent,
-                payload=prompt,
-                stream_state=stream_state,
-                initial_snapshot=initial_snapshot,
-                previous_phase=previous_phase,
-                emit_run_started=emit_run_started,
-            ):
-                yield event
-
-            refreshed_task = self.storage.get_task(task.id)
-            latest_feature = self.artifacts._current_feature_comparison(refreshed_task, plan_version, fallback_latest=True) or {}
-            feature_comparison_id = str(latest_feature.get("feature_comparison_id") or latest_feature.get("result_id") or "").strip()
-            context = AiSearchAgentContext(self.storage, task.id)
-            progress = context.evaluate_gap_progress_payload(plan_version)
-            round_evaluation = commit_round_evaluation(context, plan_version)
-            final_phase = PHASE_FEATURE_COMPARISON
-            if force_complete:
-                final_phase = PHASE_COMPLETED
-            elif force_human_decision:
-                final_phase = PHASE_AWAITING_HUMAN_DECISION
-            elif bool(round_evaluation.get("should_request_decision")):
-                final_phase = PHASE_AWAITING_HUMAN_DECISION
-            elif str(progress.get("recommended_action") or "").strip() == "complete_execution":
-                final_phase = PHASE_COMPLETED
-            selected_count = len(self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"]))
-            if final_phase == PHASE_AWAITING_HUMAN_DECISION:
-                self.facade._update_phase(
-                    task.id,
-                    PHASE_FEATURE_COMPARISON,
-                    selected_document_count=selected_count,
-                )
-            else:
-                self.facade._update_phase(
-                    task.id,
-                    final_phase,
-                    selected_document_count=selected_count,
-                )
-            if final_phase == PHASE_COMPLETED:
-                self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
-                await asyncio.to_thread(self.facade.notify_task_terminal_status, task.id, PHASE_COMPLETED)
-
-            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-            async for event in self._emit_snapshot_diff_events(
-                stream_state["last_snapshot"],
-                final_snapshot,
-                stream_state=stream_state,
-            ):
-                yield event
-            stream_state["last_snapshot"] = final_snapshot
-
-            async for event in self._emit_final_message_segments_if_needed(task.id, stream_state):
-                yield event
-
-            if final_phase == PHASE_AWAITING_HUMAN_DECISION:
-                findings = context.latest_agent_markdown_content("feature-comparer", plan_version=plan_version)
-                decision_action = {
-                    "reason": (
-                        str(human_decision_reason or "").strip()
-                        or str(round_evaluation.get("decision_reason") or "no_progress_limit_reached").strip()
-                    ),
-                    "summary": (
-                        str(human_decision_summary or "").strip()
-                        or findings
-                        or str(round_evaluation.get("decision_summary") or "").strip()
-                        or "自动检索已停止，需要人工决策。"
-                    ),
-                    "roundCount": int(round_evaluation.get("execution_round_count") or 0),
-                    "noProgressRoundCount": int(round_evaluation.get("no_progress_round_count") or 0),
-                    "selectedCount": selected_count,
-                }
-                meta = get_ai_search_meta(self.storage.get_task(task.id))
-                thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-                async for event in self._stream_main_agent_execution(
-                    task=self.storage.get_task(task.id),
-                    owner_id=owner_id,
-                    thread_id=thread_id,
-                    payload={"messages": [{"role": "user", "content": self._build_human_decision_prompt(task.id, decision_action)}]},
-                    previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                    persist_fallback_assistant=True,
-                ):
-                    yield event
-                return
-
-            if emit_run_completed:
-                yield self._format_event(
-                    "run.completed",
-                    task.id,
-                    self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                    self._completion_payload_for_phase(
-                        final_phase,
-                        {
-                            "featureComparisonId": feature_comparison_id or None,
-                            "recommendedAction": progress.get("recommended_action"),
-                            "humanDecision": final_phase == PHASE_AWAITING_HUMAN_DECISION,
-                        },
-                    ),
-                )
-        except ExecutionQueueTakeoverRequested as exc:
-            handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-            async for event in self._emit_snapshot_diff_events(
-                stream_state["last_snapshot"],
-                handoff_snapshot,
-                stream_state=stream_state,
-            ):
-                yield event
-            stream_state["last_snapshot"] = handoff_snapshot
-            meta = get_ai_search_meta(self.storage.get_task(task.id))
-            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-            async for event in self._stream_main_agent_execution(
-                task=self.storage.get_task(task.id),
-                owner_id=owner_id,
-                thread_id=thread_id,
-                payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
-                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
-                persist_fallback_assistant=True,
-            ):
-                yield event
-        except Exception as exc:
-            for event in self._fail_open_stage_events(
-                task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
-                self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
-            ):
-                yield event
-            yield self._format_event(
-                "run.failed",
-                task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
-                self._stream_error_payload(exc),
-            )
-
-    async def _stream_close_reader_agent_execution(
-        self,
-        *,
-        task: Any,
-        owner_id: str,
-        previous_phase: str = "",
-        emit_run_started: bool = True,
-        emit_run_completed: bool = True,
-    ) -> AsyncIterator[str]:
-        previous_assistant = self.snapshots._latest_assistant_chat(task.id)
-        initial_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-        stream_state = self._init_stream_state(initial_snapshot, previous_assistant)
-        agent = self.facade._build_close_reader_agent(self.storage, task.id)
-        prompt = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "请仅对当前活动 close_read batch 中的文献完成人工送审复核，并使用工具加载上下文后提交结构化精读结果。",
-                }
-            ]
-        }
-
-        try:
-            if not hasattr(agent, "astream") or not callable(getattr(agent, "astream")):
-                raise RuntimeError("close-reader 必须支持 astream 以输出原生 Markdown 流。")
-            async for event in self._consume_live_agent_stream(
-                session_id=task.id,
-                owner_id=owner_id,
-                task_id=task.id,
-                agent=agent,
-                payload=prompt,
-                stream_state=stream_state,
-                initial_snapshot=initial_snapshot,
-                previous_phase=previous_phase,
-                emit_run_started=emit_run_started,
-            ):
-                yield event
-
-            final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-            async for event in self._emit_snapshot_diff_events(
-                stream_state["last_snapshot"],
-                final_snapshot,
-                stream_state=stream_state,
-            ):
-                yield event
-            stream_state["last_snapshot"] = final_snapshot
-            async for event in self._emit_final_message_segments_if_needed(task.id, stream_state):
-                yield event
-            if emit_run_completed:
-                yield self._format_event(
-                    "run.completed",
-                    task.id,
-                    self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                    self._completion_payload_for_phase(
-                        self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
-                        {"closeRead": True},
-                    ),
-                )
-        except ExecutionQueueTakeoverRequested as exc:
-            handoff_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
-            async for event in self._emit_snapshot_diff_events(
-                stream_state["last_snapshot"],
-                handoff_snapshot,
-                stream_state=stream_state,
-            ):
-                yield event
-            stream_state["last_snapshot"] = handoff_snapshot
-            meta = get_ai_search_meta(self.storage.get_task(task.id))
-            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
-            async for event in self._stream_main_agent_execution(
-                task=self.storage.get_task(task.id),
-                owner_id=owner_id,
-                thread_id=thread_id,
-                payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
-                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
-                persist_fallback_assistant=True,
-            ):
-                yield event
-        except Exception as exc:
-            for event in self._fail_open_stage_events(
-                task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
-                self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
-            ):
-                yield event
-            yield self._format_event(
-                "run.failed",
-                task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
-                self._stream_error_payload(exc),
-            )
-
     async def _stream_message_events(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
@@ -2660,6 +2434,9 @@ class AiSearchAgentRunService:
             yield event
         stream_state["last_snapshot"] = updated_snapshot
 
+        meta = get_ai_search_meta(self.storage.get_task(task.id))
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+
         if review_ids:
             batch_id = self._create_manual_close_read_batch(task.id, plan_version, review_ids)
             self.facade._update_phase(
@@ -2669,15 +2446,16 @@ class AiSearchAgentRunService:
                 active_batch_id=batch_id,
                 selected_document_count=selected_count,
             )
-            refreshed_task = self.storage.get_task(task.id)
-            async for event in self._stream_close_reader_agent_execution(
-                task=refreshed_task,
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
                 owner_id=owner_id,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": self._build_resume_close_read_prompt(task.id)}]},
                 previous_phase=PHASE_AWAITING_HUMAN_DECISION,
-                emit_run_started=False,
-                emit_run_completed=False,
+                persist_fallback_assistant=True,
             ):
                 yield event
+            return
 
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if selected_documents:
@@ -2686,19 +2464,16 @@ class AiSearchAgentRunService:
                 PHASE_FEATURE_COMPARISON,
                 active_plan_version=plan_version,
             )
-            refreshed_task = self.storage.get_task(task.id)
-            async for event in self._stream_feature_agent_execution(
-                task=refreshed_task,
+            async for event in self._stream_main_agent_execution(
+                task=self.storage.get_task(task.id),
                 owner_id=owner_id,
-                plan_version=plan_version,
+                thread_id=thread_id,
+                payload={"messages": [{"role": "user", "content": self._build_resume_feature_comparison_prompt(task.id)}]},
                 previous_phase=self._current_phase_value(task.id),
-                force_human_decision=True,
-                human_decision_reason="manual_document_review",
-                human_decision_summary="人工文献复核已完成，请决定继续检索或按当前结果完成。",
-                emit_run_started=False,
-                emit_run_completed=False,
+                persist_fallback_assistant=True,
             ):
                 yield event
+            return
         else:
             final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
             async for event in self._emit_snapshot_diff_events(
@@ -2708,8 +2483,6 @@ class AiSearchAgentRunService:
             ):
                 yield event
             stream_state["last_snapshot"] = final_snapshot
-            meta = get_ai_search_meta(self.storage.get_task(task.id))
-            thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
             decision_action = {
                 "reason": "manual_document_review",
                 "summary": "当前无已选对比文献，请送审候选文献或继续检索。",
@@ -2756,11 +2529,26 @@ class AiSearchAgentRunService:
             PHASE_FEATURE_COMPARISON,
             active_plan_version=plan_version,
         )
-        async for event in self._stream_feature_agent_execution(
+        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
+
+        def _post_run(_: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            updated_task = self.storage.get_task(task.id)
+            updated_meta = get_ai_search_meta(updated_task)
+            updated_phase = str(updated_meta.get("current_phase") or "")
+            if updated_phase == PHASE_COMPLETED:
+                self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason="feature_comparison_ready")
+                self.facade.notify_task_terminal_status(task.id, PHASE_COMPLETED)
+                return {"featureComparisonRequested": True, "completed": True}
+            return {"featureComparisonRequested": True, "completed": False}
+
+        async for event in self._stream_main_agent_execution(
             task=self.storage.get_task(task.id),
             owner_id=owner_id,
-            plan_version=plan_version,
+            thread_id=thread_id,
+            payload={"messages": [{"role": "user", "content": self._build_resume_feature_comparison_prompt(task.id)}]},
             previous_phase=previous_phase,
+            persist_fallback_assistant=True,
+            post_run=_post_run,
         ):
             yield event
 

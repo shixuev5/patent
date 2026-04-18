@@ -5,10 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from langchain.tools import ToolRuntime
-
-from agents.ai_search.src.runtime_context import resolve_agent_context
-from agents.ai_search.src.execution_state import PlanProbeFindings
 from agents.common.search_clients.factory import SearchClientFactory
 
 
@@ -68,19 +64,4 @@ def build_plan_prober_tools() -> List[Any]:
                 count = int(info.get("TOTAL") or info.get("total") or 0)
         return _json_dumps({"query_text": str(query_text or "").strip(), "count": count})
 
-    def save_probe_findings(
-        findings: PlanProbeFindings,
-        runtime: ToolRuntime = None,
-    ) -> str:
-        """保存结构化预检信号，供 planner 消费。"""
-        resolved_context = resolve_agent_context(runtime)
-        payload = findings.model_dump(mode="python")
-        draft = resolved_context.save_planner_probe_findings(payload, runtime=runtime)
-        return _json_dumps(
-            {
-                "draft_id": draft.get("draft_id"),
-                "draft_version": int(draft.get("draft_version") or 0),
-            }
-        )
-
-    return [probe_search_semantic, probe_search_boolean, probe_count_boolean, save_probe_findings]
+    return [probe_search_semantic, probe_search_boolean, probe_count_boolean]

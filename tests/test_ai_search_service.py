@@ -641,21 +641,16 @@ def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeove
     _seed_execution_queue_message(storage, created.sessionId, str(run.get("run_id") or ""), content="优先关注申请人为华为", ordinal=2)
 
     context = AiSearchAgentContext(storage, created.sessionId)
-    run_execution_step = build_query_executor_tools()[0]
     runtime = SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
 
     with pytest.raises(ExecutionQueueTakeoverRequested) as exc_info:
-        run_execution_step(
-            operation="commit",
+        context.persist_execution_step_summary(
+            {
+                "candidate_pool_size": 12,
+                "new_unique_candidates": 4,
+            },
             plan_version=1,
-            payload_json=json.dumps(
-                {
-                    "candidate_pool_size": 12,
-                    "new_unique_candidates": 4,
-                },
-                ensure_ascii=False,
-            ),
-            runtime=runtime,
+            runtime=runtime.context,
         )
 
     exc = exc_info.value
@@ -837,54 +832,35 @@ def test_stream_document_review_replaces_selected_set_via_manual_review(monkeypa
         },
     )
 
-    class _FakeCloseReaderAgent:
-        async def astream(self, _payload, config=None, **kwargs):
-            run = storage.get_ai_search_run(created.sessionId, plan_version=1)
-            batch_id_value = str(run.get("active_batch_id") or "")
-            storage.update_ai_search_document(
-                created.sessionId,
-                1,
-                "doc-2",
-                stage="selected",
-                user_pinned=True,
-                user_removed=False,
-                close_read_status="selected",
-                close_read_reason="人工送审复核通过",
-                key_passages_json=[{"passage": "证据段"}],
-            )
-            storage.update_ai_search_batch(batch_id_value, status="committed")
-            yield (("close-reader",), "messages", ("## 精读结论\n保留 doc-2。", {"lc_agent_name": "close-reader", "langgraph_node": "model"}))
-
-    class _FakeFeatureAgent:
-        async def astream(self, _payload, config=None, **kwargs):
-            batch_id_value = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
-            storage.create_ai_search_feature_comparison(
-                {
-                    "feature_comparison_id": "ft-new",
-                    "run_id": run_id,
-                    "batch_id": batch_id_value,
-                    "task_id": created.sessionId,
-                    "plan_version": 1,
-                    "table_json": [{"feature": "B"}],
-                }
-            )
-            storage.update_ai_search_run(
-                created.sessionId,
-                run_id,
-                phase=PHASE_FEATURE_COMPARISON,
-                status=TaskStatus.PROCESSING.value,
-                active_batch_id=batch_id_value,
-            )
-            yield (("feature-comparer",), "messages", ("## 对比结论\n人工复核后已更新对比结论。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
-
-    monkeypatch.setattr(ai_search_service_module, "build_close_reader_agent", lambda *_args, **_kwargs: _FakeCloseReaderAgent())
-    monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
-
     def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
         assert task_id == created.sessionId
         assert for_resume is False
-        assert "request_human_decision" in payload["messages"][0]["content"]
         context = AiSearchAgentContext(storage, task_id)
+        assert "人工送审复核后的继续执行" in payload["messages"][0]["content"]
+        batch_id_value = str(context.active_batch_id(1) or "")
+        storage.update_ai_search_document(
+            created.sessionId,
+            1,
+            "doc-2",
+            stage="selected",
+            user_pinned=True,
+            user_removed=False,
+            close_read_status="selected",
+            close_read_reason="人工送审复核通过",
+            key_passages_json=[{"passage": "证据段"}],
+        )
+        storage.update_ai_search_batch(batch_id_value, status="committed")
+        feature_batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
+        storage.create_ai_search_feature_comparison(
+            {
+                "feature_comparison_id": "ft-new",
+                "run_id": run_id,
+                "batch_id": feature_batch_id,
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "table_json": [{"feature": "B"}],
+            }
+        )
         context.create_pending_action(
             "human_decision",
             {
@@ -1619,7 +1595,7 @@ def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
     assert parsed[0]["seq"] == int(second["seq"])
 
 
-def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs(monkeypatch, tmp_path):
+def test_stream_feature_comparison_runs_via_main_agent_and_persists_outputs(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     output_dir = Path(storage.get_task(created.sessionId).output_dir)
@@ -1675,42 +1651,33 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
         current_feature_comparison_id=None,
     )
 
-    class _FakeFeatureAgent:
-        async def astream(self, payload, config=None, **kwargs):
-            assert "特征对比分析" in payload["messages"][0]["content"]
-            batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
-            storage.create_ai_search_feature_comparison(
-                {
-                    "feature_comparison_id": "ft-new",
-                    "run_id": run_id,
-                    "batch_id": batch_id,
-                    "task_id": created.sessionId,
-                    "plan_version": 1,
-                    "table_json": [{"feature": "A"}],
-                    "coverage_gaps": [],
-                    "follow_up_search_hints": [],
-                    "creativity_readiness": "ready",
-                }
-            )
-            storage.update_ai_search_run(
-                created.sessionId,
-                run_id,
-                phase=PHASE_FEATURE_COMPARISON,
-                status=TaskStatus.PROCESSING.value,
-                active_batch_id=batch_id,
-                active_retrieval_todo_id="feature_comparison",
-            )
-            yield (("feature-comparer",), "messages", ("## 对比结论\n证据充分，可以结束。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
+    def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
+        assert task_id == created.sessionId
+        assert for_resume is False
+        assert "feature comparison" in payload["messages"][0]["content"] or "特征对比" in payload["messages"][0]["content"]
+        batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-new-batch")
+        storage.create_ai_search_feature_comparison(
+            {
+                "feature_comparison_id": "ft-new",
+                "run_id": run_id,
+                "batch_id": batch_id,
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "table_json": [{"feature": "A"}],
+                "coverage_gaps": [],
+                "follow_up_search_hints": [],
+                "creativity_readiness": "ready",
+            }
+        )
+        context = AiSearchAgentContext(storage, task_id)
+        context.update_task_phase(PHASE_COMPLETED, active_plan_version=1, run_id=run_id, selected_document_count=1, current_task=None)
+        return {
+            "awaiting_user_action": False,
+            "completion_reason": "completed",
+            "values": {"messages": []},
+        }
 
-    monkeypatch.setattr(
-        ai_search_service_module,
-        "build_feature_comparer_agent",
-        lambda storage_arg, task_id_arg: (
-            _FakeFeatureAgent()
-            if storage_arg is storage and task_id_arg == created.sessionId
-            else (_ for _ in ()).throw(AssertionError("unexpected feature agent binding"))
-        ),
-    )
+    monkeypatch.setattr(service, "_run_main_agent", _fake_run_main_agent)
     notify_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         service,
@@ -1735,7 +1702,6 @@ def test_stream_feature_comparison_uses_bound_feature_agent_and_persists_outputs
     assert documents[0]["document_type"] == "X"
     assert documents[0]["report_row_order"] == 1
     assert task.metadata["output_files"]["bundle_zip"] == str(bundle_path)
-    assert any("batch.updated" in item for item in events)
     assert any("run.updated" in item for item in events)
     assert notify_calls == [
         {
@@ -1802,38 +1768,24 @@ def test_stream_feature_comparison_enters_human_decision_when_no_progress_limit_
         processed_execution_summary_count=0,
     )
 
-    class _FakeFeatureAgent:
-        async def astream(self, payload, config=None, **kwargs):
-            assert "特征对比分析" in payload["messages"][0]["content"]
-            batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-handoff-batch")
-            storage.create_ai_search_feature_comparison(
-                {
-                    "feature_comparison_id": "ft-handoff",
-                    "run_id": run_id,
-                    "batch_id": batch_id,
-                    "task_id": created.sessionId,
-                    "plan_version": 1,
-                    "table_json": [{"feature": "A"}],
-                    "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
-                    "follow_up_search_hints": ["补搜实现方式B"],
-                    "creativity_readiness": "needs_more_evidence",
-                }
-            )
-            storage.update_ai_search_run(
-                created.sessionId,
-                run_id,
-                phase=PHASE_FEATURE_COMPARISON,
-                status=TaskStatus.PROCESSING.value,
-                active_batch_id=batch_id,
-                active_retrieval_todo_id="feature_comparison",
-            )
-            yield (("feature-comparer",), "messages", ("## 对比结论\n仍需继续检索。", {"lc_agent_name": "feature-comparer", "langgraph_node": "model"}))
-
-    monkeypatch.setattr(ai_search_service_module, "build_feature_comparer_agent", lambda *_args, **_kwargs: _FakeFeatureAgent())
-
     def _fake_run_main_agent(task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False):
         assert task_id == created.sessionId
         assert for_resume is False
+        assert "feature comparison" in payload["messages"][0]["content"] or "特征对比" in payload["messages"][0]["content"]
+        batch_id = _create_batch(storage, created.sessionId, run_id, plan_version=1, batch_type="feature_comparison", batch_id="ft-handoff-batch")
+        storage.create_ai_search_feature_comparison(
+            {
+                "feature_comparison_id": "ft-handoff",
+                "run_id": run_id,
+                "batch_id": batch_id,
+                "task_id": created.sessionId,
+                "plan_version": 1,
+                "table_json": [{"feature": "A"}],
+                "coverage_gaps": [{"claim_id": "1", "limitation_id": "1-L3", "gap_type": "combination_gap"}],
+                "follow_up_search_hints": ["补搜实现方式B"],
+                "creativity_readiness": "needs_more_evidence",
+            }
+        )
         context = AiSearchAgentContext(storage, task_id)
         context.create_pending_action(
             "human_decision",

@@ -19,7 +19,7 @@
             <button
               type="button"
               class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-cyan-700 text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              :disabled="loading || mockMode"
+              :disabled="loading"
               @click="createSession"
             >
               <PlusIcon class="h-3.5 w-3.5" />
@@ -43,7 +43,7 @@
           <button
             type="button"
             class="w-full rounded-lg bg-cyan-700 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            :disabled="loading || mockMode"
+            :disabled="loading"
             @click="createSession"
           >
             新建会话
@@ -119,7 +119,7 @@
                   <template v-else>
                     <p class="truncate whitespace-nowrap text-sm font-semibold text-slate-900" :title="workspaceTitle">{{ workspaceTitle }}</p>
                     <button
-                      v-if="currentSession && !mockMode"
+                      v-if="currentSession"
                       type="button"
                       class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent text-slate-400 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-700 lg:inline-flex"
                       :disabled="currentSessionMutating"
@@ -138,17 +138,13 @@
                 type="button"
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 lg:hidden"
                 aria-label="新建会话"
-                :disabled="loading || mockMode"
+                :disabled="loading"
                 @click="createSession"
               >
                 <PlusIcon class="h-4 w-4" />
               </button>
             </div>
           </div>
-        </div>
-
-        <div v-if="mockMode" class="border-b border-amber-200 bg-amber-50/70 px-4 py-2 text-[12px] text-amber-800">
-          Mock 数据预览模式。可切换会话查看不同阶段，提交类操作已禁用。访问 `/search?mock_ai_search=1` 开启。
         </div>
 
         <AiSearchConversationView
@@ -162,7 +158,7 @@
           :human-decision-action="humanDecisionAction"
           :selected-review-documents="selectedReviewDocuments"
           :review-candidate-documents="reviewCandidateDocuments"
-          :streaming="streaming || mockMode"
+          :streaming="streaming"
           :resume-last-error="resumeLastError"
           :resume-attempt-count="resumeAttemptCount"
           :phase="activePhase"
@@ -258,7 +254,7 @@
         <div class="border-t border-slate-200 px-4 py-4">
           <AiSearchComposerPanel
             v-model="composer"
-            :disabled="inputDisabled || !currentSession || mockMode"
+            :disabled="inputDisabled || !currentSession"
             :placeholder="inputPlaceholder"
             :can-submit="canSubmitMessage"
             :mode="composerMode"
@@ -328,7 +324,6 @@ import AiSearchConversationView from '~/components/ai-search/AiSearchConversatio
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
 import { useAiSearchComposer } from '~/composables/ai-search/useAiSearchComposer'
 import { useAiSearchConversation } from '~/composables/ai-search/useAiSearchConversation'
-import { buildAiSearchConversationMockState } from '~/mocks/aiSearchConversationMock'
 import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
@@ -358,7 +353,6 @@ const {
   error,
   loading,
   messageSegments,
-  mockMode,
   phaseMarkers,
   sessions,
   streaming,
@@ -480,7 +474,6 @@ const currentSessionMutating = computed(() => {
   const sessionId = String(currentSession.value?.session.sessionId || '').trim()
   return !!sessionId && aiSearchStore.isSessionMutating(sessionId)
 })
-const shouldUseMockData = computed(() => String(route.query.mock_ai_search || '').trim() === '1')
 const canSubmitHeaderRename = computed(() => {
   const nextTitle = headerTitleDraft.value.trim()
   const currentTitle = String(currentSession.value?.session.title || '').trim()
@@ -517,7 +510,6 @@ const {
 })
 
 const composerHint = computed(() => {
-  if (mockMode.value) return 'Mock 数据预览模式，输入已禁用。'
   if (composerMode.value === 'blocked') return '当前需要先处理上方操作卡，暂不接受普通消息。'
   if (['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase.value || '')) {
     return '执行中补充的消息会在下一个执行节点统一生效。'
@@ -650,10 +642,6 @@ const toggleSidebar = () => {
 }
 
 const createSession = async () => {
-  if (mockMode.value) {
-    showMessage('info', 'Mock 模式下不创建新会话。')
-    return
-  }
   await aiSearchStore.createSession()
 }
 
@@ -827,15 +815,6 @@ watch(
 )
 
 onMounted(async () => {
-  if (shouldUseMockData.value) {
-    if (import.meta.client) {
-      const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
-      sidebarCollapsed.value = storedCollapsed
-      mobileDrawerOpen.value = false
-    }
-    aiSearchStore.loadMockData(buildAiSearchConversationMockState())
-    return
-  }
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
     await adminUsageStore.fetchAccess(true)

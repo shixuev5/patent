@@ -24,6 +24,7 @@ from agents.ai_search.src.orchestration.execution_runtime import (
 from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
+from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
     PHASE_CLOSE_READ,
@@ -84,6 +85,35 @@ def _load_json_bytes(raw: Optional[bytes]) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _sorted_claim_ids(values: List[str]) -> List[str]:
+    unique = {str(value or "").strip() for value in values if str(value or "").strip()}
+    return sorted(unique, key=lambda item: (0, int(item)) if item.isdigit() else (1, item))
+
+
+def _format_evidence_location(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("paragraph_"):
+        raw_number = text.split("_", 1)[1]
+        try:
+            return f"说明书第{int(raw_number):02d}段"
+        except Exception:
+            return text
+    return text
+
+
+def _summarize_evidence_locations(values: List[str]) -> str:
+    ordered = []
+    seen = set()
+    for value in values:
+        text = _format_evidence_location(value)
+        if text and text not in seen:
+            seen.add(text)
+            ordered.append(text)
+    return "；".join(ordered[:4])
 
 
 class AiSearchAgentContext:
@@ -154,6 +184,10 @@ class AiSearchAgentContext:
     def active_run_id(self, plan_version: Optional[int] = None) -> str:
         run = self.active_run(plan_version)
         return str(run.get("run_id") or "").strip() if run else ""
+
+    def active_batch_id(self, plan_version: Optional[int] = None) -> str:
+        run = self.active_run(plan_version)
+        return str(run.get("active_batch_id") or "").strip() if run else ""
 
     def ensure_run(self, plan_version: int, *, phase: str) -> Dict[str, Any]:
         run = self.storage.get_ai_search_run(self.task_id, plan_version=int(plan_version))
@@ -540,6 +574,22 @@ class AiSearchAgentContext:
             runtime=runtime,
         )
 
+    def save_search_elements_payload(self, payload: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
+        normalized_payload = normalize_search_elements_payload(payload)
+        self.storage.create_ai_search_message(
+            {
+                "message_id": uuid.uuid4().hex,
+                "task_id": self.task_id,
+                "role": "assistant",
+                "kind": "search_elements_update",
+                "content": str(normalized_payload.get("objective") or "").strip() or None,
+                "stream_status": "completed",
+                "metadata": normalized_payload,
+            }
+        )
+        self.notify_snapshot_changed(runtime, reason="search_elements")
+        return normalized_payload
+
     def save_planner_execution_overview(
         self,
         *,
@@ -579,6 +629,384 @@ class AiSearchAgentContext:
             finalized_at=None,
             runtime=runtime,
         )
+
+    def save_planner_draft_payload(
+        self,
+        *,
+        review_markdown: str,
+        execution_spec: Dict[str, Any],
+        probe_findings: Optional[Dict[str, Any]] = None,
+        runtime: Any | None = None,
+    ) -> Dict[str, Any]:
+        validated_spec = SearchPlanExecutionSpecInput.model_validate(execution_spec).model_dump(mode="python")
+        return self._persist_planner_draft(
+            current=self.current_planner_draft(),
+            review_markdown=str(review_markdown or "").strip(),
+            execution_spec=validated_spec,
+            probe_findings=probe_findings,
+            draft_status="drafting",
+            finalized_at=None,
+            runtime=runtime,
+        )
+
+    def persist_execution_step_summary(self, payload: Dict[str, Any], *, plan_version: Optional[int] = None, runtime: Any | None = None) -> None:
+        version = int(plan_version or self.active_plan_version() or 0)
+        current_todo = self.current_todo() or {}
+        todo_id = str(current_todo.get("todo_id") or "").strip()
+        payload = dict(payload or {})
+        payload.setdefault("todo_id", todo_id)
+        payload.setdefault("step_id", str(current_todo.get("step_id") or "").strip())
+        payload.setdefault("sub_plan_id", str(current_todo.get("sub_plan_id") or "").strip())
+        payload.setdefault(
+            "outcome_signals",
+            {
+                "primary_goal_reached": False,
+                "recall_quality": "balanced",
+                "triggered_by_adjustment": False,
+            },
+        )
+        if not str(payload.get("todo_id") or "").strip():
+            raise ValueError("execution_step_summary 缺少 todo_id。")
+        run_id = self.active_run_id(version)
+        self.storage.create_ai_search_execution_summary(
+            {
+                "summary_id": uuid.uuid4().hex,
+                "run_id": run_id,
+                "task_id": self.task_id,
+                "plan_version": version,
+                "todo_id": str(payload.get("todo_id") or "").strip(),
+                "step_id": str(payload.get("step_id") or "").strip(),
+                "sub_plan_id": str(payload.get("sub_plan_id") or "").strip(),
+                "plan_change_assessment": payload.get("plan_change_assessment") or {},
+                "candidate_pool_size": int(payload.get("candidate_pool_size") or 0),
+                "new_unique_candidates": int(payload.get("new_unique_candidates") or 0),
+                "metadata": payload,
+            }
+        )
+        if todo_id:
+            plan_change = payload.get("plan_change_assessment") if isinstance(payload.get("plan_change_assessment"), dict) else {}
+            if bool(plan_change.get("requires_replan")):
+                self.update_todo(
+                    todo_id,
+                    "paused",
+                    current_task=None,
+                    resume_from="await_plan_confirmation",
+                    state_updates={"last_summary": payload, "plan_version": version},
+                )
+            else:
+                self.update_todo(
+                    todo_id,
+                    "completed",
+                    current_task=todo_id,
+                    state_updates={"last_summary": payload, "plan_version": version},
+                )
+        self.notify_snapshot_changed(runtime, reason="execution_step_summary")
+        takeover = self.consume_execution_message_queue_for_takeover(runtime=runtime)
+        if takeover is not None:
+            raise takeover
+
+    def persist_coarse_screen_result(self, keep: List[str], discard: List[str], *, plan_version: Optional[int] = None, runtime: Any | None = None) -> Dict[str, int]:
+        version = int(plan_version or self.active_plan_version() or 0)
+        batch_id = self.active_batch_id(version)
+        batch = self.storage.get_ai_search_batch(batch_id)
+        if not batch or str(batch.get("batch_type") or "") != "coarse_screen":
+            raise ValueError("coarse_screen commit 缺少有效 batch_id。")
+        if str(batch.get("status") or "") == "committed":
+            raise ValueError("coarse_screen batch 已提交，不能重复提交。")
+        keep_ids = {str(item).strip() for item in keep if str(item).strip()}
+        discard_ids = {str(item).strip() for item in discard if str(item).strip()}
+        current_records = self.storage.list_ai_search_documents(self.task_id, version)
+        pending_ids = set(self.storage.list_ai_search_batch_documents(batch_id))
+        overlap_ids = keep_ids & discard_ids
+        unresolved_ids = pending_ids - keep_ids - discard_ids
+        unknown_ids = (keep_ids | discard_ids) - pending_ids
+        if overlap_ids:
+            raise ValueError(f"coarse_screen 结果中存在重复 document_id: {', '.join(sorted(overlap_ids))}")
+        if unresolved_ids:
+            raise ValueError(f"coarse_screen 结果遗漏了待处理 document_id: {', '.join(sorted(unresolved_ids))}")
+        if unknown_ids:
+            raise ValueError(f"coarse_screen 结果包含非待处理 document_id: {', '.join(sorted(unknown_ids))}")
+        applied = {"kept": 0, "discarded": 0}
+        for item in current_records:
+            if str(item.get("coarse_status") or "pending") != "pending":
+                continue
+            if str(item.get("stage") or "") not in {"candidate", ""}:
+                continue
+            document_id = str(item.get("document_id") or "")
+            if document_id in keep_ids:
+                self.storage.update_ai_search_document(
+                    self.task_id,
+                    version,
+                    document_id,
+                    stage="shortlisted",
+                    coarse_status="kept",
+                    coarse_reason="粗筛保留",
+                    coarse_screened_at=utc_now_z(),
+                )
+                self.storage.create_ai_search_document_decision(
+                    {
+                        "decision_id": uuid.uuid4().hex,
+                        "run_id": str(batch.get("run_id") or ""),
+                        "batch_id": batch_id,
+                        "task_id": self.task_id,
+                        "plan_version": version,
+                        "document_id": document_id,
+                        "decision_stage": "coarse_screen",
+                        "decision": "kept",
+                        "reason": "粗筛保留",
+                        "metadata": {"batch_id": batch_id},
+                    }
+                )
+                applied["kept"] += 1
+            elif document_id in discard_ids:
+                self.storage.update_ai_search_document(
+                    self.task_id,
+                    version,
+                    document_id,
+                    stage="rejected",
+                    coarse_status="discarded",
+                    coarse_reason="粗筛排除",
+                    coarse_screened_at=utc_now_z(),
+                )
+                self.storage.create_ai_search_document_decision(
+                    {
+                        "decision_id": uuid.uuid4().hex,
+                        "run_id": str(batch.get("run_id") or ""),
+                        "batch_id": batch_id,
+                        "task_id": self.task_id,
+                        "plan_version": version,
+                        "document_id": document_id,
+                        "decision_stage": "coarse_screen",
+                        "decision": "discarded",
+                        "reason": "粗筛排除",
+                        "metadata": {"batch_id": batch_id},
+                    }
+                )
+                applied["discarded"] += 1
+        self.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
+        self.notify_snapshot_changed(runtime, reason="documents")
+        self.update_task_phase("coarse_screen", runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
+        takeover = self.consume_execution_message_queue_for_takeover(runtime=runtime)
+        if takeover is not None:
+            raise takeover
+        return applied
+
+    def persist_feature_compare_result(self, payload: Dict[str, Any], *, plan_version: Optional[int] = None, runtime: Any | None = None) -> str:
+        version = int(plan_version or self.active_plan_version() or 0)
+        batch_id = self.active_batch_id(version)
+        batch = self.storage.get_ai_search_batch(batch_id)
+        if not batch or str(batch.get("batch_type") or "") != "feature_comparison":
+            raise ValueError("feature_compare commit 缺少有效 batch_id。")
+        if str(batch.get("status") or "") == "committed":
+            raise ValueError("feature_compare batch 已提交，不能重复提交。")
+        feature_comparison_id = uuid.uuid4().hex
+        self.storage.create_ai_search_feature_comparison(
+            {
+                "feature_comparison_id": feature_comparison_id,
+                "run_id": str(batch.get("run_id") or ""),
+                "batch_id": batch_id,
+                "task_id": self.task_id,
+                "plan_version": version,
+                "table_rows": payload.get("table_rows") or [],
+                "coverage_gaps": payload.get("coverage_gaps") or [],
+                "document_roles": payload.get("document_roles") or [],
+                "follow_up_search_hints": payload.get("follow_up_search_hints") or [],
+                "creativity_readiness": payload.get("creativity_readiness"),
+            }
+        )
+        self.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
+        self.update_task_phase(PHASE_FEATURE_COMPARISON, runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
+        takeover = self.consume_execution_message_queue_for_takeover(runtime=runtime)
+        if takeover is not None:
+            raise takeover
+        return feature_comparison_id
+
+    def persist_close_read_result(self, payload: Dict[str, Any], *, plan_version: Optional[int] = None, runtime: Any | None = None) -> int:
+        from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms, fallback_passages
+        from agents.ai_search.src.subagents.close_reader.workspace import detail_to_text, load_document_details
+
+        version = int(plan_version or self.active_plan_version() or 0)
+        batch_id = self.active_batch_id(version)
+        batch = self.storage.get_ai_search_batch(batch_id)
+        if not batch or str(batch.get("batch_type") or "") != "close_read":
+            raise ValueError("close_read commit 缺少有效 batch_id。")
+        if str(batch.get("status") or "") == "committed":
+            raise ValueError("close_read batch 已提交，不能重复提交。")
+        manual_review_batch = str(batch.get("input_hash") or "").strip().startswith("manual_review")
+        selected_ids = {str(item).strip() for item in (payload.get("selected") or []) if str(item).strip()}
+        rejected_ids = {str(item).strip() for item in (payload.get("rejected") or []) if str(item).strip()}
+        current_records = self.storage.list_ai_search_documents(self.task_id, version)
+        pending_ids = set(self.storage.list_ai_search_batch_documents(batch_id))
+        overlap_ids = selected_ids & rejected_ids
+        unresolved_ids = pending_ids - selected_ids - rejected_ids
+        unknown_ids = (selected_ids | rejected_ids) - pending_ids
+        if overlap_ids:
+            raise ValueError(f"close_read 结果中存在重复 document_id: {', '.join(sorted(overlap_ids))}")
+        if unresolved_ids:
+            raise ValueError(f"close_read 结果遗漏了待处理 document_id: {', '.join(sorted(unresolved_ids))}")
+        if unknown_ids:
+            raise ValueError(f"close_read 结果包含非待处理 document_id: {', '.join(sorted(unknown_ids))}")
+
+        passages_by_doc: Dict[str, List[Dict[str, Any]]] = {}
+        assessments_by_doc: Dict[str, Dict[str, Any]] = {}
+        claim_ids_by_doc: Dict[str, List[str]] = {}
+        locations_by_doc: Dict[str, List[str]] = {}
+        for item in payload.get("key_passages") or []:
+            if not isinstance(item, dict):
+                continue
+            document_id = str(item.get("document_id") or "").strip()
+            if not document_id:
+                continue
+            passages_by_doc.setdefault(document_id, []).append(
+                {
+                    "passage": str(item.get("passage") or "")[:400],
+                    "reason": str(item.get("reason") or "").strip(),
+                    "location": item.get("location"),
+                    "paragraph_type": str(item.get("paragraph_type") or "").strip(),
+                    "hit_terms": item.get("hit_terms") or [],
+                    "hit_density": item.get("hit_density"),
+                }
+            )
+            location = str(item.get("location") or "").strip()
+            if location:
+                locations_by_doc.setdefault(document_id, []).append(location)
+        for item in payload.get("claim_alignments") or []:
+            if not isinstance(item, dict):
+                continue
+            document_id = str(item.get("document_id") or "").strip()
+            claim_id = str(item.get("claim_id") or "").strip()
+            location = str(item.get("location") or "").strip()
+            if document_id and claim_id:
+                claim_ids_by_doc.setdefault(document_id, []).append(claim_id)
+            if document_id and location:
+                locations_by_doc.setdefault(document_id, []).append(location)
+        for item in payload.get("limitation_coverage") or []:
+            if not isinstance(item, dict):
+                continue
+            claim_id = str(item.get("claim_id") or "").strip()
+            supporting_ids = item.get("supporting_document_ids") if isinstance(item.get("supporting_document_ids"), list) else []
+            for document_id in supporting_ids:
+                doc_id = str(document_id or "").strip()
+                if doc_id and claim_id:
+                    claim_ids_by_doc.setdefault(doc_id, []).append(claim_id)
+        for item in payload.get("document_assessments") or []:
+            if not isinstance(item, dict):
+                continue
+            document_id = str(item.get("document_id") or "").strip()
+            if not document_id:
+                continue
+            assessments_by_doc[document_id] = {
+                "decision": str(item.get("decision") or "").strip(),
+                "confidence": float(item.get("confidence") or 0.0),
+                "evidence_sufficiency": str(item.get("evidence_sufficiency") or "").strip(),
+                "missing_evidence": item.get("missing_evidence") or [],
+            }
+        terms = collect_key_terms(self.current_search_elements(version))
+        selected_count = 0
+        for item in current_records:
+            document_id = str(item.get("document_id") or "")
+            if str(item.get("coarse_status") or "") != "kept":
+                continue
+            if str(item.get("close_read_status") or "pending") != "pending":
+                continue
+            passages = passages_by_doc.get(document_id)
+            if not passages:
+                detail = load_document_details(item)
+                passages = [
+                    {**passage, "document_id": document_id}
+                    for passage in fallback_passages(detail_to_text(detail), terms)[:DEFAULT_KEY_PASSAGES_LIMIT]
+                ]
+            assessment = assessments_by_doc.get(document_id)
+            if assessment:
+                passages = [{**passage, "assessment": assessment} for passage in passages]
+            claim_ids = _sorted_claim_ids(claim_ids_by_doc.get(document_id, []))
+            evidence_locations = []
+            for passage in passages:
+                location = str(passage.get("location") or "").strip()
+                if location:
+                    evidence_locations.append(location)
+            evidence_locations.extend(locations_by_doc.get(document_id, []))
+            evidence_summary = _summarize_evidence_locations(evidence_locations)
+            if document_id in selected_ids:
+                self.storage.update_ai_search_document(
+                    self.task_id,
+                    version,
+                    document_id,
+                    stage="selected",
+                    key_passages_json=passages,
+                    claim_ids_json=claim_ids,
+                    evidence_locations_json=evidence_locations,
+                    evidence_summary=evidence_summary,
+                    agent_reason="纳入对比文件",
+                    close_read_status="selected",
+                    close_read_reason="精读后纳入对比文件",
+                    close_read_at=utc_now_z(),
+                )
+                self.storage.create_ai_search_document_decision(
+                    {
+                        "decision_id": uuid.uuid4().hex,
+                        "run_id": str(batch.get("run_id") or ""),
+                        "batch_id": batch_id,
+                        "task_id": self.task_id,
+                        "plan_version": version,
+                        "document_id": document_id,
+                        "decision_stage": "close_read",
+                        "decision": "selected",
+                        "reason": "精读后纳入对比文件",
+                        "metadata": {"assessment": assessment or {}},
+                    }
+                )
+                selected_count += 1
+            elif document_id in rejected_ids:
+                self.storage.update_ai_search_document(
+                    self.task_id,
+                    version,
+                    document_id,
+                    stage="shortlisted" if manual_review_batch else "rejected",
+                    key_passages_json=passages,
+                    claim_ids_json=claim_ids,
+                    evidence_locations_json=evidence_locations,
+                    evidence_summary=evidence_summary,
+                    agent_reason="人工送审复核未通过" if manual_review_batch else "精读后排除",
+                    close_read_status="rejected",
+                    close_read_reason="人工送审复核未通过" if manual_review_batch else "精读后排除",
+                    close_read_at=utc_now_z(),
+                )
+                self.storage.create_ai_search_document_decision(
+                    {
+                        "decision_id": uuid.uuid4().hex,
+                        "run_id": str(batch.get("run_id") or ""),
+                        "batch_id": batch_id,
+                        "task_id": self.task_id,
+                        "plan_version": version,
+                        "document_id": document_id,
+                        "decision_stage": "close_read",
+                        "decision": "review_rejected" if manual_review_batch else "rejected",
+                        "reason": "人工送审复核未通过" if manual_review_batch else "精读后排除",
+                        "metadata": {"assessment": assessment or {}},
+                    }
+                )
+        self.storage.create_ai_search_close_read_result(
+            {
+                "result_id": uuid.uuid4().hex,
+                "run_id": str(batch.get("run_id") or ""),
+                "batch_id": batch_id,
+                "task_id": self.task_id,
+                "plan_version": version,
+                "document_assessments": payload.get("document_assessments") or [],
+                "key_passages": payload.get("key_passages") or [],
+                "claim_alignments": payload.get("claim_alignments") or [],
+                "limitation_coverage": payload.get("limitation_coverage") or [],
+                "limitation_gaps": payload.get("limitation_gaps") or [],
+            }
+        )
+        self.storage.update_ai_search_batch(batch_id, status="committed", committed_at=utc_now_z())
+        self.update_task_phase(PHASE_CLOSE_READ, runtime=runtime, active_plan_version=version, run_id=str(batch.get("run_id") or ""), active_batch_id=batch_id)
+        self.notify_snapshot_changed(runtime, reason="selection")
+        takeover = self.consume_execution_message_queue_for_takeover(runtime=runtime)
+        if takeover is not None:
+            raise takeover
+        return selected_count
 
     def append_planner_sub_plan(self, sub_plan: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
         current = self.current_planner_draft()

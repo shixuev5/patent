@@ -188,7 +188,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     sessionMutationBusyById: {} as Record<string, boolean>,
     loading: false,
     sessionsHydrated: false,
-    mockMode: false,
   }),
 
   getters: {
@@ -229,7 +228,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     inputDisabled(): boolean {
-      if (this.mockMode) return true
       const phase = activePhase(this.currentSession)
       const action = pendingAction(this.currentSession)
       return (!isExecutionPhase(phase) && this.streaming)
@@ -322,22 +320,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
     _setCurrentSessionId(sessionId: string) {
       this.currentSessionId = String(sessionId || '').trim()
-    },
-
-    loadMockData(payload: {
-      currentSessionId: string
-      sessions: AiSearchSessionSummary[]
-      snapshotsById: Record<string, AiSearchSnapshot>
-      runtimeById: Record<string, AiSearchSessionRuntime>
-    }) {
-      this.$reset()
-      this.mockMode = true
-      this.sessions = Array.isArray(payload.sessions) ? [...payload.sessions] : []
-      this.sessionSnapshotsById = { ...(payload.snapshotsById || {}) }
-      this.sessionRuntimeById = { ...(payload.runtimeById || {}) }
-      this.currentSessionId = String(payload.currentSessionId || this.sessions[0]?.sessionId || '').trim()
-      this.sessionsHydrated = true
-      this.loading = false
     },
 
     activateSession(sessionId: string) {
@@ -904,10 +886,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean, subscribeIfRunning?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
-      if (this.mockMode) {
-        if (options.activate !== false) this.activateSession(targetSessionId)
-        return
-      }
       if (options.activate) {
         this.activateSession(targetSessionId)
       }
@@ -941,11 +919,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     async init(preferredSessionId: string = '') {
-      if (this.mockMode) {
-        const targetId = String(preferredSessionId || this.currentSessionId || this.sessions[0]?.sessionId || '').trim()
-        if (targetId) this.activateSession(targetId)
-        return
-      }
       await this.fetchSessions()
       const targetId = String(preferredSessionId || this.currentSessionId || this._sortedSessionIds()[0] || '').trim()
       if (targetId) {
@@ -1110,12 +1083,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const snapshot = this._getSnapshot(sessionId)
       const targetId = String(queueMessageId || '').trim()
       if (!sessionId || !snapshot || !targetId) return
-      if (this.mockMode) {
-        snapshot.executionMessageQueue = {
-          items: (snapshot.executionMessageQueue?.items || []).filter((item) => item.queueMessageId !== targetId),
-        }
-        return
-      }
       this._setRuntimeError(sessionId, '')
       try {
         await this._postJson<AiSearchExecutionQueueResponse>(
@@ -1310,17 +1277,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async updateSession(sessionId: string, payload: { title?: string, pinned?: boolean }) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
-      if (this.mockMode) {
-        const index = this.sessions.findIndex((item) => item.sessionId === targetSessionId)
-        if (index >= 0) {
-          this.sessions[index] = { ...this.sessions[index], ...payload }
-        }
-        const snapshot = this._getSnapshot(targetSessionId)
-        if (snapshot) {
-          snapshot.session = { ...snapshot.session, ...payload }
-        }
-        return
-      }
       this._setSessionMutationBusy(targetSessionId, true)
       this._setRuntimeError(targetSessionId, '')
       try {
@@ -1356,17 +1312,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     async deleteSession(sessionId: string) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
-      if (this.mockMode) {
-        const wasActive = this.currentSessionId === targetSessionId
-        this.sessions = this.sessions.filter((item) => item.sessionId !== targetSessionId)
-        delete this.sessionSnapshotsById[targetSessionId]
-        delete this.sessionRuntimeById[targetSessionId]
-        delete this.sessionMutationBusyById[targetSessionId]
-        if (wasActive) {
-          this.currentSessionId = String(this.sessions[0]?.sessionId || '').trim()
-        }
-        return
-      }
       const wasActive = this.currentSessionId === targetSessionId
       this._setSessionMutationBusy(targetSessionId, true)
       this._setRuntimeError(targetSessionId, '')
