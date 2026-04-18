@@ -73,6 +73,7 @@ class ReportGenerationNode:
         evidence_map = self._build_evidence_map(item_get(state, "evidence_assessments", []))
         drafted_rejection_reasons = to_jsonable(item_get(state, "drafted_rejection_reasons", {}) or {})
         review_units = to_jsonable(item_get(state, "review_units", []))
+        search_followup_section = to_jsonable(item_get(state, "search_followup_section", {}) or {})
         added_matter_risk_summary = str(item_get(state, "added_matter_risk_summary", "")).strip()
         application_number = self._extract_application_number(state)
         current_notice_round = self._extract_current_notice_round(state)
@@ -126,6 +127,7 @@ class ReportGenerationNode:
             "response_reply_section": {
                 "items": response_reply_items,
             },
+            "search_followup_section": search_followup_section,
         }
         return report
 

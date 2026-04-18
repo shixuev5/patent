@@ -377,6 +377,30 @@ def test_create_from_analysis_endpoint_only_creates_seeded_session(monkeypatch, 
     assert response.json()["sourceTaskId"] == "analysis-1"
 
 
+def test_create_from_reply_endpoint_only_creates_seeded_session(monkeypatch, tmp_path):
+    app, service = _mount_app(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        service,
+        "create_session_from_reply_seed",
+        lambda owner_id, reply_task_id: AiSearchCreateSessionResponse(
+            sessionId="search-seed-reply-1",
+            taskId="search-seed-reply-1",
+            threadId="ai-search-search-seed-reply-1",
+            reused=False,
+            sourceTaskId=reply_task_id,
+        ),
+    )
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/ai-search/sessions/from-reply", json={"replyTaskId": "reply-1"})
+
+    assert response.status_code == 200
+    assert response.json()["sessionId"] == "search-seed-reply-1"
+    assert response.json()["reused"] is False
+    assert response.json()["sourceTaskId"] == "reply-1"
+
+
 def test_analysis_seed_endpoint_streams_seed_run(monkeypatch, tmp_path):
     app, service = _mount_app(monkeypatch, tmp_path)
 

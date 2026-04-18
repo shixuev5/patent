@@ -46,6 +46,10 @@ class AiSearchCreateFromAnalysisRequest(BaseModel):
     analysisTaskId: str = Field(..., min_length=1)
 
 
+class AiSearchCreateFromReplyRequest(BaseModel):
+    replyTaskId: str = Field(..., min_length=1)
+
+
 class AiSearchSessionSummary(BaseModel):
     sessionId: str
     taskId: str

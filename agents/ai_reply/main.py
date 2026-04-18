@@ -22,6 +22,7 @@ from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerif
 from agents.ai_reply.src.nodes.verification_join import VerificationJoinNode
 from agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
 from agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingNode
+from agents.ai_reply.src.nodes.search_followup_generation import SearchFollowupGenerationNode
 from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
 from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
 from agents.ai_reply.src.edges import handle_error
@@ -60,6 +61,7 @@ def create_workflow(config: WorkflowConfig = None):
     workflow.add_node("verification_join", VerificationJoinNode(config), retry_policy=retry_policy)
     workflow.add_node("rejection_drafting", RejectionDraftingNode(config), retry_policy=retry_policy)
     workflow.add_node("claim_review_drafting", ClaimReviewDraftingNode(config), retry_policy=retry_policy)
+    workflow.add_node("search_followup_generation", SearchFollowupGenerationNode(config), retry_policy=retry_policy)
     workflow.add_node("report_generation", ReportGenerationNode(config), retry_policy=retry_policy)
     workflow.add_node("final_report_render", FinalReportRenderNode(config), retry_policy=retry_policy)
     workflow.add_node("handle_error", handle_error)
@@ -151,6 +153,11 @@ def create_workflow(config: WorkflowConfig = None):
     )
     workflow.add_conditional_edges(
         "claim_review_drafting",
+        create_router("search_followup_generation"),
+        {"handle_error": "handle_error", "search_followup_generation": "search_followup_generation"},
+    )
+    workflow.add_conditional_edges(
+        "search_followup_generation",
         create_router("report_generation"),
         {"handle_error": "handle_error", "report_generation": "report_generation"},
     )

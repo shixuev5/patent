@@ -85,6 +85,11 @@ def _build_completed_state(initial_state, publication_number: str = "CN115655695
                 "application_number": "202310001234.5",
             },
         },
+        "final_report": {
+            "search_followup_section": {
+                "needed": True,
+            }
+        },
     }
 
 
@@ -132,6 +137,7 @@ def test_ai_reply_uploads_pdf_and_json_to_r2_and_updates_pn(monkeypatch, tmp_pat
     assert latest is not None
     assert latest.status.value == "completed"
     assert latest.pn == "CN115655695A"
+    assert latest.metadata.get("search_followup_needed") is True
     output_files = latest.metadata.get("output_files", {})
     assert output_files.get("pn") == "CN115655695A"
     assert output_files.get("r2_key") == "workspace/CN115655695A/ai_reply.pdf"

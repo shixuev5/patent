@@ -5,6 +5,7 @@ export interface Task {
   backendId?: string;
   title: string;
   taskType: TaskType;
+  aiSearchSeedAvailable?: boolean;
   pn?: string;
   status: 'pending' | 'processing' | 'completed' | 'error' | 'failed' | 'cancelled';
   progress: number;

@@ -92,9 +92,10 @@ class AiSearchAnalysisSeedService:
             raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 分析任务生成检索计划。")
         return analysis_task
 
-    def _find_existing_analysis_seed_session(self, owner_id: str, analysis_task_id: str) -> Optional[Any]:
-        target_analysis_task_id = str(analysis_task_id or "").strip()
-        if not target_analysis_task_id:
+    def _find_existing_seed_session(self, owner_id: str, source_task_id: str, *, source_type: str) -> Optional[Any]:
+        target_source_task_id = str(source_task_id or "").strip()
+        target_source_type = str(source_type or "").strip()
+        if not target_source_task_id or not target_source_type:
             return None
         batch_size = 200
         offset = 0
@@ -106,9 +107,9 @@ class AiSearchAnalysisSeedService:
                 if str(task.task_type or "") != TaskType.AI_SEARCH.value:
                     continue
                 meta = get_ai_search_meta(task)
-                if str(meta.get("source_type") or "").strip() != "analysis":
+                if str(meta.get("source_type") or "").strip() != target_source_type:
                     continue
-                if str(meta.get("source_task_id") or "").strip() != target_analysis_task_id:
+                if str(meta.get("source_task_id") or "").strip() != target_source_task_id:
                     continue
                 return task
             if len(tasks) < batch_size:
@@ -118,7 +119,7 @@ class AiSearchAnalysisSeedService:
 
     def _prepare_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
         analysis_task = self._get_completed_analysis_task(owner_id, analysis_task_id)
-        existing_task = self._find_existing_analysis_seed_session(owner_id, analysis_task.id)
+        existing_task = self._find_existing_seed_session(owner_id, analysis_task.id, source_type="analysis")
         if existing_task:
             self.facade._emit_system_log(
                 category="task_execution",
@@ -213,13 +214,15 @@ class AiSearchAnalysisSeedService:
         )
         return self._analysis_seed_response(task, source_task_id=str(analysis_task.id))
 
-    def _complete_analysis_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
+    def _complete_source_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
         task = self.facade.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
+        source_type = str(meta.get("source_type") or "").strip() or "analysis"
+        source_label = "AI 答复" if source_type == "reply" else "AI 分析"
         if not seed_prompt:
-            raise HTTPException(status_code=409, detail="当前会话缺少 AI 分析种子上下文。")
+            raise HTTPException(status_code=409, detail=f"当前会话缺少 {source_label} 种子上下文。")
         source_task_id = str(meta.get("source_task_id") or "").strip()
         source_pn = str(meta.get("source_pn") or "").strip() or None
 
@@ -253,7 +256,7 @@ class AiSearchAnalysisSeedService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=False,
-                message="从 AI 分析创建 AI 检索计划失败",
+                message=f"从 {source_label} 创建 AI 检索计划失败",
                 payload={"analysis_task_id": source_task_id or None, "error": str(exc)},
             )
             self.facade.notify_task_terminal_status(
@@ -276,7 +279,7 @@ class AiSearchAnalysisSeedService:
             task_id=task.id,
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="已从 AI 分析创建 AI 检索计划",
+            message=f"已从 {source_label} 创建 AI 检索计划",
             payload={
                 "analysis_task_id": source_task_id or None,
                 "analysis_pn": source_pn or None,

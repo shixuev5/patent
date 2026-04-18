@@ -232,6 +232,33 @@ class ReviewUnit(BaseModel):
     source_summary: Dict[str, Any] = Field(default_factory=dict, description="调试用来源摘要")
 
 
+class SearchFollowupGapSummary(BaseModel):
+    """补检缺口摘要"""
+    claim_ids: List[str] = Field(default_factory=list, description="关联权利要求编号列表")
+    feature_text: str = Field("", description="关联技术特征")
+    gap_type: str = Field("", description="缺口类型")
+    gap_summary: str = Field("", description="缺口说明")
+    source_dispute_id: str = Field("", description="来源争议项编号")
+    source_feature_id: str = Field("", description="来源修改项编号")
+
+
+class SearchFollowupSection(BaseModel):
+    """补检/检索建议章节"""
+    needed: bool = Field(False, description="是否需要补检")
+    status: str = Field("complete", description="章节状态: complete/needs_answer")
+    objective: str = Field("", description="补检目标")
+    applicants: List[str] = Field(default_factory=list, description="申请人列表")
+    filing_date: Optional[str] = Field(None, description="申请日")
+    priority_date: Optional[str] = Field(None, description="优先权日")
+    missing_items: List[str] = Field(default_factory=list, description="缺失项列表")
+    trigger_reasons: List[str] = Field(default_factory=list, description="触发补检的原因")
+    gap_summaries: List[SearchFollowupGapSummary] = Field(default_factory=list, description="缺口摘要列表")
+    search_elements: List[Dict[str, Any]] = Field(default_factory=list, description="检索要素表")
+    suggested_constraints: Dict[str, Any] = Field(default_factory=dict, description="建议检索边界")
+    source_dispute_ids: List[str] = Field(default_factory=list, description="来源争议项编号列表")
+    source_feature_ids: List[str] = Field(default_factory=list, description="来源修改项编号列表")
+
+
 class ErrorInfo(BaseModel):
     """错误信息"""
     node_name: str = Field(..., description="错误发生的节点名称")
@@ -336,6 +363,10 @@ class WorkflowState(BaseModel):
     review_units: Annotated[List[ReviewUnit], operator.add] = Field(
         default_factory=list,
         description="基于上一轮OA重组后的评述单元",
+    )
+    search_followup_section: Optional[SearchFollowupSection] = Field(
+        None,
+        description="补检/检索建议章节",
     )
 
     # 最终报告

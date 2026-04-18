@@ -14,6 +14,7 @@ from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
 from agents.ai_reply.src.nodes.patent_retrieval import PatentRetrievalNode
 from agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
 from agents.ai_reply.src.nodes.report_generation import ReportGenerationNode
+from agents.ai_reply.src.nodes.search_followup_generation import SearchFollowupGenerationNode
 from agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
 from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 from agents.ai_reply.src.nodes.verification_join import VerificationJoinNode
@@ -136,6 +137,11 @@ def test_workflow_continues_verification_when_added_matter_risk_exists(monkeypat
     monkeypatch.setattr(RejectionDraftingNode, "__call__", _record("rejection_drafting"))
     monkeypatch.setattr(ClaimReviewDraftingNode, "__call__", _record("claim_review_drafting"))
     monkeypatch.setattr(
+        SearchFollowupGenerationNode,
+        "__call__",
+        _record("search_followup_generation", {"search_followup_section": {"needed": True}}),
+    )
+    monkeypatch.setattr(
         ReportGenerationNode,
         "__call__",
         _record("report_generation", {"final_report": {"status": "completed"}}),
@@ -155,4 +161,6 @@ def test_workflow_continues_verification_when_added_matter_risk_exists(monkeypat
     assert "common_knowledge_verification" in calls
     assert "topup_search_verification" in calls
     assert calls.index("analysis_parallel") < calls.index("verification_join")
+    assert calls.index("claim_review_drafting") < calls.index("search_followup_generation")
+    assert calls.index("search_followup_generation") < calls.index("report_generation")
     assert calls[-1] == "final_report_render"

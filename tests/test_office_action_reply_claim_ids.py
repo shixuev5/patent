@@ -273,3 +273,38 @@ def test_report_generation_marks_ai_assessment_presence_per_change_item() -> Non
 
     assert len(groups) == 1
     assert [item["has_ai_assessment"] for item in groups[0]["items"]] == [True, False]
+
+
+def test_report_generation_includes_search_followup_section() -> None:
+    node = ReportGenerationNode()
+
+    report = node._generate_report(
+        {
+            "task_id": "task-1",
+            "prepared_materials": {
+                "office_action": {
+                    "application_number": "202310001234.5",
+                    "current_notice_round": 2,
+                }
+            },
+            "disputes": [],
+            "evidence_assessments": [],
+            "drafted_rejection_reasons": {},
+            "review_units": [],
+            "search_followup_section": {
+                "needed": True,
+                "status": "complete",
+                "objective": "围绕新增特征继续补检。",
+                "trigger_reasons": ["现有核查结论暂不确定"],
+                "gap_summaries": [],
+                "search_elements": [{"element_name": "新增特征A", "keywords_zh": ["新增特征A"], "keywords_en": []}],
+                "suggested_constraints": {"priority_date": "2022-06-01"},
+                "source_dispute_ids": ["TOPUP_A1"],
+                "source_feature_ids": ["A1"],
+                "missing_items": [],
+            },
+        }
+    )
+
+    assert report["search_followup_section"]["needed"] is True
+    assert report["search_followup_section"]["source_feature_ids"] == ["A1"]

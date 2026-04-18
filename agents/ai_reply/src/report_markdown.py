@@ -16,6 +16,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     response_dispute_section = _item_get(report, "response_dispute_section", {}) or {}
     response_reply_section = _item_get(report, "response_reply_section", {}) or {}
     claim_review_section = _item_get(report, "claim_review_section", {}) or {}
+    search_followup_section = _item_get(report, "search_followup_section", {}) or {}
 
     disputes = _item_get(response_dispute_section, "items", []) or []
     reply_items = _item_get(response_reply_section, "items", []) or []
@@ -174,6 +175,12 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(_render_response_reply_blocks(disputes, reply_items))
     lines.append("")
 
+    if _followup_needed(search_followup_section):
+        lines.append("## 7. 补检/检索建议")
+        lines.append("")
+        lines.extend(_render_search_followup_section(search_followup_section))
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -244,6 +251,10 @@ def _confidence_pct_text(value: float) -> str:
     if value < 0:
         return "-"
     return f"{value * 100:.1f}%"
+
+
+def _followup_needed(section: Any) -> bool:
+    return bool(_item_get(section, "needed", False))
 
 
 def _conclusion_card(title: str, primary: str, secondary: str) -> str:
@@ -361,6 +372,101 @@ def _layered_summary_html(grid_class: str, summary_cells: List[str], detail_bloc
         parts.append("</div>")
     parts.append("</div>")
     return "".join(parts)
+
+
+def _render_search_followup_section(section: Any) -> List[str]:
+    lines: List[str] = []
+    trigger_reasons = _item_get(section, "trigger_reasons", []) or []
+    objective = _text_or_default(_item_get(section, "objective", ""), default="-")
+    search_elements = _item_get(section, "search_elements", []) or []
+    gap_summaries = _item_get(section, "gap_summaries", []) or []
+    constraints = _item_get(section, "suggested_constraints", {}) or {}
+    status = str(_item_get(section, "status", "")).strip()
+    missing_items = _item_get(section, "missing_items", []) or []
+
+    lines.append("当前报告识别到仍需补强的争点或新增特征，以下内容可用于后续人工补检与检索接续参考。")
+    lines.append("")
+
+    if trigger_reasons:
+        lines.append("### 7.1 触发原因")
+        for item in trigger_reasons:
+            lines.append(f"- {_text_or_default(item)}")
+        lines.append("")
+
+    lines.append("### 7.2 本轮补检目标")
+    lines.append(f"- {objective}")
+    if status == "needs_answer" and missing_items:
+        lines.append(f"- 当前仍缺少：{'、'.join(str(item).strip() for item in missing_items if str(item).strip())}")
+    lines.append("")
+
+    if gap_summaries:
+        lines.append("### 7.3 缺口摘要")
+        lines.append("| 权利要求 | 关联特征 | 缺口类型 | 缺口说明 |")
+        lines.append("| :--- | :--- | :--- | :--- |")
+        for item in gap_summaries:
+            claim_ids = ",".join(_item_get(item, "claim_ids", []) or []) or "-"
+            lines.append(
+                f"| {claim_ids} | {_safe_table_text(_item_get(item, 'feature_text', '-') or '-')} | "
+                f"{_safe_table_text(_item_get(item, 'gap_type', '-') or '-')} | "
+                f"{_safe_table_text(_item_get(item, 'gap_summary', '-') or '-')} |"
+            )
+        lines.append("")
+
+    if search_elements:
+        lines.append("### 7.4 检索要素表")
+        lines.append("| 逻辑块 | 检索要素 | 中文扩展 | 英文扩展 | 备注 |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- |")
+        for item in search_elements:
+            block_id = _format_followup_block_id(_item_get(item, "block_id", ""))
+            zh_terms = _format_followup_or_terms(_item_get(item, "keywords_zh", []) or [])
+            en_terms = _format_followup_or_terms(_item_get(item, "keywords_en", []) or [])
+            lines.append(
+                f"| {block_id} | {_safe_table_text(_item_get(item, 'element_name', '-') or '-')} | "
+                f"{zh_terms} | {en_terms} | "
+                f"{_safe_table_text(_item_get(item, 'notes', '-') or '-')} |"
+            )
+        lines.append("")
+
+    if constraints:
+        lines.append("### 7.5 建议边界")
+        applicants = constraints.get("applicants") if isinstance(constraints, dict) else []
+        comparison_document_ids = constraints.get("comparison_document_ids") if isinstance(constraints, dict) else []
+        filing_date = constraints.get("filing_date") if isinstance(constraints, dict) else None
+        priority_date = constraints.get("priority_date") if isinstance(constraints, dict) else None
+        notes = constraints.get("notes") if isinstance(constraints, dict) else []
+        if applicants:
+            lines.append(f"- 申请人：{'、'.join(str(item).strip() for item in applicants if str(item).strip())}")
+        if filing_date:
+            lines.append(f"- 申请日：{filing_date}")
+        if priority_date:
+            lines.append(f"- 优先权日：{priority_date}")
+        if comparison_document_ids:
+            lines.append(f"- 当前已存在对比文件编号：{'、'.join(str(item).strip() for item in comparison_document_ids if str(item).strip())}")
+        for note in notes if isinstance(notes, list) else []:
+            text = str(note or "").strip()
+            if text:
+                lines.append(f"- {text}")
+
+    return lines
+
+
+def _safe_table_text(value: Any) -> str:
+    return _text_or_default(value).replace("\n", "<br>").replace("|", "\\|")
+
+
+def _format_followup_or_terms(values: Any) -> str:
+    items = values if isinstance(values, list) else [values]
+    cleaned = [_safe_table_text(item) for item in items if str(item or "").strip()]
+    if not cleaned:
+        return "-"
+    return " <small style='color:#ccc;'>OR</small> ".join(cleaned)
+
+
+def _format_followup_block_id(value: Any) -> str:
+    block_id = str(value or "").strip().upper()
+    if not block_id:
+        return "-"
+    return f"Block {block_id}"
 
 
 def _claim_group_label_html(claim_id: Any, claim_type: Any) -> str:

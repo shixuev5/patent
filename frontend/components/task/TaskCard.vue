@@ -157,28 +157,29 @@ const canDelete = computed(() => {
   return props.task.status !== 'pending' && props.task.status !== 'processing'
 })
 
-const canCreateSearchDraft = computed(() => {
-  return (
-    authStore.isLoggedIn
-    && adminUsageStore.isAdmin
-    && displayStatus.value === 'completed'
-    && props.task.taskType === 'patent_analysis'
-    && !!props.task.backendId
-  )
-})
-
 const linkedSearchSession = computed(() => {
-  const analysisTaskId = String(props.task.backendId || '').trim()
-  if (!analysisTaskId) return null
-  return aiSearchStore.findSessionBySourceTaskId(analysisTaskId)
+  const sourceTaskId = String(props.task.backendId || '').trim()
+  if (!sourceTaskId) return null
+  return aiSearchStore.findSessionBySourceTaskId(sourceTaskId)
 })
 
 const hasLinkedSearchSession = computed(() => !!linkedSearchSession.value)
 
+const canCreateSearchDraft = computed(() => {
+  if (!authStore.isLoggedIn || !adminUsageStore.isAdmin) return false
+  if (displayStatus.value !== 'completed' || !props.task.backendId) return false
+  if (props.task.taskType === 'patent_analysis') return true
+  if (props.task.taskType === 'ai_reply') {
+    return !!props.task.aiSearchSeedAvailable || hasLinkedSearchSession.value
+  }
+  return false
+})
+
 const searchActionTitle = computed(() => {
+  const sourceLabel = props.task.taskType === 'ai_reply' ? 'AI 答复报告' : 'AI 分析结果'
   return linkedSearchSession.value
     ? '打开已创建的 AI 检索任务'
-    : '基于当前 AI 分析结果生成 AI 检索计划'
+    : `基于当前${sourceLabel}生成 AI 检索计划`
 })
 
 watch(
@@ -204,13 +205,17 @@ const download = () => taskStore.downloadResult(props.task)
 const retry = () => taskStore.retryTask(props.task)
 const cancel = () => taskStore.cancelTask(props.task)
 const openSearchDraft = async () => {
-  const analysisTaskId = String(props.task.backendId || '').trim()
-  if (!analysisTaskId || creatingSearchDraft.value) return
+  const sourceTaskId = String(props.task.backendId || '').trim()
+  if (!sourceTaskId || creatingSearchDraft.value) return
   creatingSearchDraft.value = true
   try {
     await aiSearchStore.ensureSessionsLoaded()
     const linkedSessionId = String(linkedSearchSession.value?.sessionId || '').trim()
-    const sessionId = linkedSessionId || await aiSearchStore.createSessionFromAnalysis(analysisTaskId)
+    const sessionId = linkedSessionId || (
+      props.task.taskType === 'ai_reply'
+        ? await aiSearchStore.createSessionFromReply(sourceTaskId)
+        : await aiSearchStore.createSessionFromAnalysis(sourceTaskId)
+    )
     if (!sessionId) {
       throw new Error('AI 检索计划创建成功，但未返回会话ID。')
     }

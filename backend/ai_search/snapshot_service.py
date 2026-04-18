@@ -125,10 +125,11 @@ class AiSearchSnapshotService:
 
     def _analysis_seed(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)
-        if str(meta.get("source_type") or "").strip() != "analysis":
+        source_type = str(meta.get("source_type") or "").strip()
+        if source_type not in {"analysis", "reply"}:
             return None
         status = str(meta.get("analysis_seed_status") or "").strip() or "completed"
-        payload: Dict[str, Any] = {"status": status}
+        payload: Dict[str, Any] = {"status": status, "sourceType": source_type}
         source_task_id = str(meta.get("source_task_id") or "").strip()
         if source_task_id:
             payload["sourceTaskId"] = source_task_id

@@ -733,3 +733,76 @@ def test_build_final_report_markdown_does_not_highlight_formula_spacing_noise() 
     assert 'class="oar-change-add"' not in content
     assert 'class="oar-change-del"' not in content
     assert "\\left(" in content
+
+
+def test_build_final_report_markdown_renders_search_followup_section_conditionally() -> None:
+    report = _sample_report()
+    report["search_followup_section"] = {
+        "needed": True,
+        "status": "complete",
+        "objective": "围绕新增特征继续补检。",
+        "trigger_reasons": ["现有核查结论暂不确定", "现有核查置信度偏低"],
+        "gap_summaries": [
+            {
+                "claim_ids": ["1"],
+                "feature_text": "星间激光通信模块",
+                "gap_type": "insufficient_evidence",
+                "gap_summary": "当前证据未稳定覆盖新增特征。",
+            }
+        ],
+        "search_elements": [
+            {
+                "block_id": "A",
+                "element_name": "星间通信系统",
+                "keywords_zh": ["星间通信系统", "卫星间通信系统"],
+                "keywords_en": ["inter-satellite communication system"],
+                "notes": "技术主题锚点",
+            },
+            {
+                "block_id": "B1",
+                "element_name": "星间激光通信模块",
+                "keywords_zh": ["星间激光通信", "激光通信模块"],
+                "keywords_en": ["laser inter-satellite communication"],
+                "notes": "优先检索优先权日前公开方案",
+            }
+        ],
+        "suggested_constraints": {
+            "applicants": ["示例申请人"],
+            "priority_date": "2022-06-01",
+            "comparison_document_ids": ["D1", "D2"],
+            "notes": ["优先围绕未闭环新增特征补强证据。"],
+        },
+        "source_dispute_ids": ["TOPUP_A1"],
+        "source_feature_ids": ["A1"],
+        "missing_items": [],
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "## 7. 补检/检索建议" in content
+    assert "### 7.4 检索要素表" in content
+    assert "星间激光通信模块" in content
+    assert "Block A" in content
+    assert "Block B1" in content
+    assert "<small style='color:#ccc;'>OR</small>" in content
+    assert "当前已存在对比文件编号：D1、D2" in content
+
+
+def test_build_final_report_markdown_hides_search_followup_section_when_not_needed() -> None:
+    report = _sample_report()
+    report["search_followup_section"] = {
+        "needed": False,
+        "status": "complete",
+        "objective": "",
+        "trigger_reasons": [],
+        "gap_summaries": [],
+        "search_elements": [],
+        "suggested_constraints": {},
+        "source_dispute_ids": [],
+        "source_feature_ids": [],
+        "missing_items": [],
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "## 7. 补检/检索建议" not in content

@@ -104,6 +104,7 @@ const toTaskFromServer = (serverTask: any): Task => ({
   backendId: serverTask.id,
   title: serverTask.title || serverTask.pn || '未命名任务',
   taskType: normalizeTaskType(serverTask.taskType),
+  aiSearchSeedAvailable: !!serverTask.aiSearchSeedAvailable,
   pn: serverTask.pn,
   status: normalizeStatus(serverTask.status),
   progress: typeof serverTask.progress === 'number' ? serverTask.progress : 0,
@@ -333,6 +334,7 @@ export const useTaskStore = defineStore('tasks', {
       const normalized = normalizeStatus(serverTask?.status || taskRef.status)
       taskRef.status = normalized
       taskRef.taskType = normalizeTaskType(serverTask?.taskType || taskRef.taskType)
+      if (typeof serverTask?.aiSearchSeedAvailable !== 'undefined') taskRef.aiSearchSeedAvailable = !!serverTask.aiSearchSeedAvailable
       if (typeof serverTask?.title === 'string' && serverTask.title.trim()) taskRef.title = serverTask.title
       if (typeof serverTask?.progress === 'number') taskRef.progress = serverTask.progress
       if (typeof serverTask?.step === 'string' && serverTask.step) taskRef.currentStep = serverTask.step

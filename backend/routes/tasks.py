@@ -119,7 +119,7 @@ def _to_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _notify_task_terminal_status_sync(
+def _notify_task_terminal_email_sync(
     task_id: str,
     terminal_status: str,
     *,
@@ -138,7 +138,7 @@ def _notify_task_terminal_status_sync(
     )
 
 
-async def _notify_task_terminal_status(
+async def _notify_task_terminal_email(
     task_id: str,
     terminal_status: str,
     *,
@@ -147,7 +147,7 @@ async def _notify_task_terminal_status(
 ) -> None:
     try:
         await asyncio.to_thread(
-            _notify_task_terminal_status_sync,
+            _notify_task_terminal_email_sync,
             task_id,
             terminal_status,
             task_type=task_type,
@@ -215,15 +215,23 @@ def _task_type(task: Any) -> str:
 
 
 def _task_to_response(task: Any) -> Dict[str, Any]:
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    task_type = _task_type(task)
+    seed_available = False
+    if task_type == TaskType.PATENT_ANALYSIS.value:
+        seed_available = str(getattr(task.status, "value", task.status) or "") == "completed"
+    elif task_type == TaskType.AI_REPLY.value:
+        seed_available = bool(metadata.get("search_followup_needed"))
     return {
         "id": task.id,
         "pn": task.pn,
         "title": task.title,
-        "taskType": _task_type(task),
+        "taskType": task_type,
         "status": task.status.value,
         "progress": task.progress,
         "step": task.current_step,
         "error": task.error_message,
+        "aiSearchSeedAvailable": seed_available,
         "created_at": to_utc_z(task.created_at, naive_strategy="utc"),
         "updated_at": to_utc_z(task.updated_at, naive_strategy="utc"),
         "completed_at": to_utc_z(task.completed_at, naive_strategy="utc") if task.completed_at else None,
@@ -918,7 +926,7 @@ async def run_patent_analysis_task(
                         message="命中历史分析结果，直接复用",
                         payload={"pn": resolved_pn, "reuse": True},
                     )
-                    await _notify_task_terminal_status(
+                    await _notify_task_terminal_email(
                         task_id,
                         "completed",
                         task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1079,7 +1087,7 @@ async def run_patent_analysis_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_status(
+            await _notify_task_terminal_email(
                 task_id,
                 "failed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1117,7 +1125,7 @@ async def run_patent_analysis_task(
                 task_manager.fail_task(task_id, error_msg)
                 latest_task = task_manager.get_task(task_id)
                 task_logger.bind(stage="finalize_report").error(error_msg)
-                await _notify_task_terminal_status(
+                await _notify_task_terminal_email(
                     task_id,
                     "failed",
                     task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1199,7 +1207,7 @@ async def run_patent_analysis_task(
                 message="任务执行完成",
                 payload={"output_pdf": output_pdf, "pn": final_pn},
             )
-            await _notify_task_terminal_status(
+            await _notify_task_terminal_email(
                 task_id,
                 "completed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1219,7 +1227,7 @@ async def run_patent_analysis_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_status(
+            await _notify_task_terminal_email(
                 task_id,
                 "failed",
                 task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1267,7 +1275,7 @@ async def run_patent_analysis_task(
             success=False,
             message=str(exc),
         )
-        await _notify_task_terminal_status(
+        await _notify_task_terminal_email(
             task_id,
             "failed",
             task_type=TaskType.PATENT_ANALYSIS.value,
@@ -1762,7 +1770,7 @@ async def run_ai_reply_task(
                 message=error_msg,
                 payload={"status": status},
             )
-            await _notify_task_terminal_status(
+            await _notify_task_terminal_email(
                 task_id,
                 "failed",
                 task_type=TaskType.AI_REPLY.value,
@@ -1784,7 +1792,7 @@ async def run_ai_reply_task(
             task_manager.fail_task(task_id, error_msg)
             latest_task = task_manager.get_task(task_id)
             task_logger.bind(stage="finalize_report").error(error_msg)
-            await _notify_task_terminal_status(
+            await _notify_task_terminal_email(
                 task_id,
                 "failed",
                 task_type=TaskType.AI_REPLY.value,
@@ -1866,6 +1874,13 @@ async def run_ai_reply_task(
                     )
                     task_logger.bind(stage="r2_upload").warning(f"AI 答复 JSON 上传到 R2 失败：{ai_reply_json_key}")
 
+        final_report = _to_dict(result.get("final_report"))
+        search_followup_section = _to_dict(final_report.get("search_followup_section")) if final_report else {}
+        search_followup_needed = bool(search_followup_section.get("needed"))
+        existing_metadata = existing_task.metadata.copy() if existing_task and isinstance(existing_task.metadata, dict) else {}
+        existing_metadata["search_followup_needed"] = search_followup_needed
+        task_manager.storage.update_task(task_id, metadata=existing_metadata)
+
         task_manager.complete_task(task_id, output_files=output_files)
         task_logger.bind(stage="finalize_report").success(f"任务已完成：{pdf_path}")
         emit_system_log(
@@ -1878,7 +1893,7 @@ async def run_ai_reply_task(
             message="任务执行完成",
             payload={"output_pdf": pdf_path},
         )
-        await _notify_task_terminal_status(
+        await _notify_task_terminal_email(
             task_id,
             "completed",
             task_type=TaskType.AI_REPLY.value,
@@ -1912,7 +1927,7 @@ async def run_ai_reply_task(
             success=False,
             message=error_msg,
         )
-        await _notify_task_terminal_status(
+        await _notify_task_terminal_email(
             task_id,
             "failed",
             task_type=TaskType.AI_REPLY.value,
@@ -1945,7 +1960,7 @@ async def run_ai_reply_task(
             success=False,
             message=str(exc),
         )
-        await _notify_task_terminal_status(
+        await _notify_task_terminal_email(
             task_id,
             "failed",
             task_type=TaskType.AI_REPLY.value,

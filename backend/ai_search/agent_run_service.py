@@ -2025,13 +2025,15 @@ class AiSearchAgentRunService:
     async def _stream_analysis_seed_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
-        if str(meta.get("source_type") or "").strip() != "analysis":
+        source_type = str(meta.get("source_type") or "").strip()
+        source_label = "AI 分析" if source_type == "analysis" else "AI 答复"
+        if source_type not in {"analysis", "reply"}:
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": ANALYSIS_SEED_REQUIRED_CODE,
-                    "message": "当前会话不是从 AI 分析生成的。",
-                    "suggestion": "你可以回到 AI 分析结果页重新发起检索。",
+                    "message": "当前会话不是从 AI 分析或 AI 答复结果生成的。",
+                    "suggestion": "你可以回到 AI 分析或 AI 答复结果页重新发起检索。",
                 },
             )
         if str(meta.get("analysis_seed_status") or "").strip() != "pending":
@@ -2050,8 +2052,8 @@ class AiSearchAgentRunService:
                 status_code=409,
                 detail={
                     "code": ANALYSIS_SEED_CONTEXT_MISSING_CODE,
-                    "message": "当前会话缺少 AI 分析上下文。",
-                    "suggestion": "你可以重新从 AI 分析结果页发起检索。",
+                    "message": f"当前会话缺少 {source_label} 上下文。",
+                    "suggestion": f"你可以重新从 {source_label}结果页发起检索。",
                 },
             )
 

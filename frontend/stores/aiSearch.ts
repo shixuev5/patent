@@ -883,6 +883,62 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
+    async createSessionFromReply(replyTaskId: string) {
+      const taskId = String(replyTaskId || '').trim()
+      if (!taskId) throw new Error('缺少 AI 答复任务ID。')
+      this.loading = true
+      try {
+        const token = await this._ensureToken()
+        const config = useRuntimeConfig()
+        const data = await requestJson<AiSearchCreateSessionResponse>({
+          baseUrl: config.public.apiBaseUrl,
+          path: '/api/ai-search/sessions/from-reply',
+          method: 'POST',
+          token,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ replyTaskId: taskId }),
+        })
+        const sessionId = String(data.sessionId || '').trim()
+        if (sessionId) {
+          if (data.reused) {
+            await this.fetchSessions()
+            await this.loadSession(sessionId, { activate: true })
+          } else {
+            const createdAt = nowIso()
+            this._applySnapshot(
+              createPlaceholderSnapshot({
+                sessionId,
+                taskId: String(data.taskId || sessionId).trim(),
+                title: 'AI 检索计划',
+                status: 'processing',
+                phase: 'drafting_plan',
+                sourceTaskId: String(data.sourceTaskId || taskId).trim() || taskId,
+                sourceType: 'reply',
+                createdAt,
+                updatedAt: createdAt,
+                analysisSeed: {
+                  status: 'pending',
+                  sourceTaskId: taskId,
+                  sourceType: 'reply',
+                },
+              }),
+              { activate: true },
+            )
+            void this.fetchSessions()
+          }
+        }
+        return sessionId
+      } catch (error: any) {
+        const message = error?.message || '创建 AI 检索计划失败'
+        this._setRuntimeError(this.currentSessionId, message)
+        throw error instanceof Error ? error : new Error(message)
+      } finally {
+        this.loading = false
+      }
+    },
+
     async loadSession(sessionId: string, options: { activate?: boolean, silent?: boolean, autoStartSeed?: boolean, subscribeIfRunning?: boolean } = {}) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return

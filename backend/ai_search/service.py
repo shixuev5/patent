@@ -65,6 +65,7 @@ class AiSearchService:
         from .agent_run_service import AiSearchAgentRunService
         from .analysis_seed_service import AiSearchAnalysisSeedService
         from .artifacts_service import AiSearchArtifactsService
+        from .reply_seed_service import AiSearchReplySeedService
         from .session_service import AiSearchSessionService
         from .snapshot_service import AiSearchSnapshotService
 
@@ -76,6 +77,7 @@ class AiSearchService:
         self.snapshots = AiSearchSnapshotService(self)
         self.artifacts = AiSearchArtifactsService(self)
         self.analysis_seeds = AiSearchAnalysisSeedService(self)
+        self.reply_seeds = AiSearchReplySeedService(self)
         self.agent_runs = AiSearchAgentRunService(self)
 
     @property
@@ -223,12 +225,23 @@ class AiSearchService:
     def create_session_from_analysis_seed(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
         return self.analysis_seeds._prepare_session_from_analysis(owner_id, analysis_task_id)
 
+    def create_session_from_reply_seed(self, owner_id: str, reply_task_id: str) -> AiSearchCreateSessionResponse:
+        return self.reply_seeds._prepare_session_from_reply(owner_id, reply_task_id)
+
     def create_session_from_analysis(self, owner_id: str, analysis_task_id: str) -> AiSearchCreateSessionResponse:
         created = self.analysis_seeds._prepare_session_from_analysis(owner_id, analysis_task_id)
         task = self.storage.get_task(created.sessionId)
         meta = get_ai_search_meta(task) if task else {}
         if not created.reused or str(meta.get("analysis_seed_status") or "").strip() == "pending":
-            self.analysis_seeds._complete_analysis_seed(owner_id, created.sessionId)
+            self.analysis_seeds._complete_source_seed(owner_id, created.sessionId)
+        return created
+
+    def create_session_from_reply(self, owner_id: str, reply_task_id: str) -> AiSearchCreateSessionResponse:
+        created = self.reply_seeds._prepare_session_from_reply(owner_id, reply_task_id)
+        task = self.storage.get_task(created.sessionId)
+        meta = get_ai_search_meta(task) if task else {}
+        if not created.reused or str(meta.get("analysis_seed_status") or "").strip() == "pending":
+            self.analysis_seeds._complete_source_seed(owner_id, created.sessionId)
         return created
 
     def list_sessions(self, owner_id: str) -> AiSearchSessionListResponse:
