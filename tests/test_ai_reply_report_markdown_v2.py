@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 
@@ -5,6 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents.ai_reply.src.report_markdown import build_final_report_markdown
 from agents.common.rendering.report_render import markdown_to_html_document
+
+
+_NOISE_FIXTURE = json.loads(
+    (Path(__file__).resolve().parent / "fixtures" / "ai_reply_noise_samples.json").read_text(encoding="utf-8")
+)
 
 
 def _sample_report() -> dict:
@@ -636,3 +642,94 @@ def test_build_final_report_markdown_review_summary_falls_back_without_amendment
     assert "重组范围：围绕权利要求2、3重组剩余从权评述。" in content
     assert "评述处理：缺少可复用原评述，本轮按现有素材重组正式评述。" in content
     assert "新增限定：" not in content
+
+
+def test_build_final_report_markdown_sanitizes_review_html_noise_from_fixture() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {"substantive_amendments": []},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "Claim4",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["4"],
+                    "title": "权利要求4",
+                    "claim_snapshots": [],
+                    "review_before_text": "",
+                    "review_text": _NOISE_FIXTURE["review_claim_4"]["review_text"],
+                    "source_summary": {},
+                },
+                {
+                    "unit_id": "Claim7",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["7"],
+                    "title": "权利要求7",
+                    "claim_snapshots": [],
+                    "review_before_text": "",
+                    "review_text": _NOISE_FIXTURE["review_claim_7"]["review_text"],
+                    "source_summary": {},
+                },
+                {
+                    "unit_id": "Claim9",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["9"],
+                    "title": "权利要求9",
+                    "claim_snapshots": [],
+                    "review_before_text": "",
+                    "review_text": _NOISE_FIXTURE["review_claim_9"]["review_text"],
+                    "source_summary": {},
+                },
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "<u>" not in content
+    assert "<img" not in content
+    assert "原文含图片或公式，解析未提取到可展示文本" in content
+
+
+def test_build_final_report_markdown_does_not_highlight_formula_spacing_noise() -> None:
+    item = _NOISE_FIXTURE["amendment_claim_10"]
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "10",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": item["amendment_id"],
+                            "feature_text": item["feature_text"],
+                            "feature_before_text": item["feature_before_text"],
+                            "feature_after_text": item["feature_after_text"],
+                            "contains_added_text": False,
+                            "amendment_kind": item["amendment_kind"],
+                            "content_origin": item["content_origin"],
+                            "source_claim_ids": item["source_claim_ids"],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "所述车内压力预测值的计算公式为" in content
+    assert 'class="oar-change-add"' not in content
+    assert 'class="oar-change-del"' not in content
+    assert "\\left(" in content

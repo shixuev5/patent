@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from agents.common.utils.llm import get_llm_service
+from agents.ai_reply.src.text_normalization import normalize_for_compare, sanitize_for_display
 from agents.ai_reply.src.state import (
     ClaimAlignment,
     StructuralAdjustment,
@@ -38,7 +39,7 @@ class AmendmentTrackingNode:
             ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "amendment_tracking")
             result = cache.run_step(
-                "track_amendment_v11",
+                "track_amendment_v12",
                 self._track_amendment,
                 self._state_get(state, "prepared_materials", {}),
                 self._state_get(state, "claims_previous_structured", []),
@@ -261,10 +262,10 @@ class AmendmentTrackingNode:
         for item in amendments_raw:
             amendment = self._to_dict(item)
             amendment_id = str(amendment.get("amendment_id", "")).strip()
-            feature_text = str(amendment.get("feature_text", "")).strip()
-            search_feature_text = str(amendment.get("search_feature_text", "")).strip() or feature_text
-            feature_before_text = str(amendment.get("feature_before_text", "")).strip()
-            feature_after_text = str(amendment.get("feature_after_text", "")).strip() or feature_text
+            feature_text = sanitize_for_display(amendment.get("feature_text", ""))
+            search_feature_text = sanitize_for_display(str(amendment.get("search_feature_text", "")).strip() or feature_text)
+            feature_before_text = sanitize_for_display(amendment.get("feature_before_text", ""))
+            feature_after_text = sanitize_for_display(str(amendment.get("feature_after_text", "")).strip() or feature_text)
             amendment_kind = str(amendment.get("amendment_kind", "")).strip()
             content_origin = str(amendment.get("content_origin", "")).strip()
             if not amendment_id or not feature_text:
@@ -295,6 +296,9 @@ class AmendmentTrackingNode:
                 if content_origin != "specification":
                     raise ValueError("spec_feature_addition 必须对应 content_origin=specification")
                 source_claim_ids = []
+
+            if normalize_for_compare(feature_before_text) == normalize_for_compare(feature_after_text):
+                continue
 
             amendments.append(
                 {
@@ -334,7 +338,7 @@ class AmendmentTrackingNode:
             old_text = str(old_claim.get("claim_text", "")).strip()
 
             if old_text:
-                if self._normalize_text(old_text) == self._normalize_text(new_text):
+                if normalize_for_compare(old_text) == normalize_for_compare(new_text):
                     used_old_claim_ids.add(claim_id)
                     alignments.append(
                         {
@@ -510,7 +514,7 @@ class AmendmentTrackingNode:
                 )
                 continue
 
-            if self._normalize_text(old_text) == self._normalize_text(new_text):
+            if normalize_for_compare(old_text) == normalize_for_compare(new_text):
                 continue
             if self._canonicalize_claim_text_for_alignment(old_text) == self._canonicalize_claim_text_for_alignment(new_text):
                 continue
@@ -610,8 +614,8 @@ class AmendmentTrackingNode:
             new_text = str(new_claim.get("claim_text", "")).strip()
             old_canonical = self._canonicalize_claim_text_for_alignment(old_text)
             new_canonical = self._canonicalize_claim_text_for_alignment(new_text)
-            old_normalized = self._normalize_text(old_text)
-            new_normalized = self._normalize_text(new_text)
+            old_normalized = normalize_for_compare(old_text)
+            new_normalized = normalize_for_compare(new_text)
 
             if alignment_kind == "renumbered_successor" and claim_id != old_claim_id:
                 adjustments.append(
@@ -645,11 +649,6 @@ class AmendmentTrackingNode:
 
         return adjustments
 
-    def _normalize_text(self, text: Any) -> str:
-        value = str(text or "")
-        value = re.sub(r"\s+", "", value)
-        return re.sub(r"[，,；;。:：\-—_（）()\[\]{}]", "", value).strip()
-
     def _canonicalize_claim_text_for_alignment(self, text: Any) -> str:
         value = str(text or "")
         value = value.split("#", 1)[0]
@@ -663,7 +662,7 @@ class AmendmentTrackingNode:
             "权利要求#所述",
             value,
         )
-        return self._normalize_text(value)
+        return normalize_for_compare(value)
 
     def _canonicalize_claim_body_for_alignment(self, text: Any) -> str:
         value = str(text or "")
@@ -674,7 +673,7 @@ class AmendmentTrackingNode:
             value,
         )
         value = re.sub(r"^\s*[^，,。；;：:]*?(其中|其特征在于)[，,:：]?\s*", "", value)
-        return self._normalize_text(value)
+        return normalize_for_compare(value)
 
     def _sort_claim_ids(self, claim_ids: List[str]) -> List[str]:
         return sorted([str(item).strip() for item in claim_ids if str(item).strip()], key=self._claim_sort_key)

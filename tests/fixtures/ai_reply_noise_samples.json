@@ -1,0 +1,39 @@
+{
+  "amendment_claim_8": {
+    "amendment_id": "A3",
+    "feature_text": "第一压力阈值为100Pa，第二压力阈值为200Pa，第三压力阈值为300Pa",
+    "feature_before_text": "所述第一压力阈值为 100 Pa , 所述第二压力阈值为 200 Pa , 所述第三压力阈值为 300 Pa 。",
+    "feature_after_text": "所述第一压力阈值为 100 Pa ，所述第二压力阈值为 200 Pa ，所述第三压力阈值为 300 Pa 。",
+    "target_claim_ids": [
+      "8"
+    ],
+    "amendment_kind": "claim_feature_merge",
+    "content_origin": "old_claim",
+    "source_claim_ids": [
+      "9"
+    ]
+  },
+  "amendment_claim_10": {
+    "amendment_id": "A5",
+    "feature_text": "采用特定计算公式根据上一时刻车内压力实时值、当前时刻车外压力预测值、采样时间间隔及动态气密指数计算当前时刻车内压力预测值",
+    "feature_before_text": "所述车内压力预测值的计算公式为: $$ P _ {1 i} ^ {*} = \\left(P _ {1 (i - 1)} + P _ {2 i} ^ {*} \\times \\Delta t / \\tau\\right) / \\left(1 + \\Delta t / \\tau\\right), $$ 其中， $P _ { 1 i } ^ { * }$ 为第 $_ { i }$ 个运行时间的车内压力预测值， $P _ { 1 ( i - 1 ) }$ 为第 $i ^ { - 1 }$ 个运行时间的车内压力实时值，$P _ { 2 i }$ 为第 $_ i$ 个运行时间的车外压力预测值， 为车内压力实时值的采样时间间隔， $\\tau$ 为车厢内的动态气密指数。",
+    "feature_after_text": "所述车内压力预测值的计算公式为: $$P_{1 i}^{*}=\\left(P_{1(i-1)}+P_{2 i}^{*}\\times \\Delta t/\\tau\\right)/\\left(1+\\Delta t/\\tau\\right),$$ 其中，$P_{1 i}^{*}$为第$_i$个运行时间的车内压力预测值，$P_{1(i-1)}$为第$i^{-1}$个运行时间的车内压力实时值，$P_{2 i}$为第$_i$个运行时间的车外压力预测值，为车内压力实时值的采样时间间隔，$\\tau$为车厢内的动态气密指数。",
+    "target_claim_ids": [
+      "10"
+    ],
+    "amendment_kind": "claim_feature_merge",
+    "content_origin": "old_claim",
+    "source_claim_ids": [
+      "11"
+    ]
+  },
+  "review_claim_4": {
+    "review_text": "权利要求4是从属权利要求，<u>实行由车速、位置、车内外压力以及由自主开发的车内压力计算预测程序预测信息来控制新风和排风机风量。</u>列车以140km/h速度从左端隧道外运行并驶入隧道，并依据地铁列车运行规律，<u>依据这些信息采用广义黎曼特征线隧道压力波计算法可以计算得出未来列车车外压力变化，并</u><img src=\"output/4003ae9b/parsed_office_action/images/media/image2.png\" style=\"width:1.6625in;height:0.75903in\" alt=\"IMG_256\" /><u>计算出车内压力变化。</u>"
+  },
+  "review_claim_7": {
+    "review_text": "权利要求7是从属权利要求，对比文件3还公开了：<u>通过广义黎曼特征线隧道压力波计算法得出未来列车车外压力变化</u>；并<img src=\"output/4003ae9b/parsed_office_action/images/media/image2.png\" style=\"width:1.6625in;height:0.75903in\" alt=\"IMG_256\" /><u>计算出车内压力变化</u>，式中pi为车内压力波动值。"
+  },
+  "review_claim_9": {
+    "review_text": "权利要求9是从属权利要求，<u>根据所述运行线路、当前运行时间和目标车外压力预测模型得到当前运行时间的车外压力预测值</u><img src=\"output/4003ae9b/parsed_office_action/images/media/image2.png\" style=\"width:1.59583in;height:0.72917in\" alt=\"IMG_256\" /><u>并计算出车内压力变化。</u>"
+  }
+}

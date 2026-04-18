@@ -1,4 +1,12 @@
+import json
+from pathlib import Path
+
 from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
+
+
+_NOISE_FIXTURE = json.loads(
+    (Path(__file__).resolve().parent / "fixtures" / "ai_reply_noise_samples.json").read_text(encoding="utf-8")
+)
 
 
 def test_build_claim_alignments_marks_pure_reindex_shift() -> None:
@@ -182,6 +190,44 @@ def test_normalize_tracking_result_accepts_new_substantive_amendment_schema() ->
     assert normalized["substantive_amendments"][0]["search_feature_text"] == "第一弹簧与壳体连接"
     assert normalized["substantive_amendments"][1]["feature_after_text"] == "第二弹簧与滑块连接"
     assert normalized["substantive_amendments"][1]["search_feature_text"] == "第二弹簧与滑块连接"
+
+
+def test_normalize_tracking_result_filters_punctuation_only_change() -> None:
+    node = AmendmentTrackingNode()
+
+    normalized = node._normalize_tracking_result(
+        {"substantive_amendments": [_NOISE_FIXTURE["amendment_claim_8"]]}
+    )
+
+    assert normalized["substantive_amendments"] == []
+
+
+def test_normalize_tracking_result_filters_formula_spacing_only_change() -> None:
+    node = AmendmentTrackingNode()
+
+    normalized = node._normalize_tracking_result(
+        {"substantive_amendments": [_NOISE_FIXTURE["amendment_claim_10"]]}
+    )
+
+    assert normalized["substantive_amendments"] == []
+
+
+def test_build_changed_claim_pairs_ignores_html_and_image_placeholders() -> None:
+    node = AmendmentTrackingNode()
+    old_claims = [
+        {"claim_id": "1", "claim_text": "一种方法，包括步骤A。"},
+    ]
+    new_claims = [
+        {"claim_id": "1", "claim_text": "<u>一种方法</u>，包括步骤A。<img src=\"image.png\" alt=\"IMG\" />"},
+    ]
+
+    alignments = node._build_claim_alignments(old_claims, new_claims)
+    changed_pairs = node._build_changed_claim_pairs(old_claims, new_claims, alignments)
+
+    assert alignments == [
+        {"claim_id": "1", "old_claim_id": "1", "alignment_kind": "same_number_match", "reason": "unchanged"},
+    ]
+    assert changed_pairs == []
 
 
 def test_track_amendment_uses_original_claims_for_first_notice() -> None:

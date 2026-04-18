@@ -7,6 +7,8 @@ import html
 import re
 from typing import Any, Dict, List, Tuple
 
+from agents.ai_reply.src.text_normalization import normalize_for_compare, sanitize_for_display
+
 
 def build_final_report_markdown(report: Dict[str, Any]) -> str:
     summary = _item_get(report, "summary", {}) or {}
@@ -380,9 +382,9 @@ def _change_item_html(item: Any) -> str:
     if item_type == "merged_structural_adjustment":
         return _merged_structural_adjustment_item_html(item)
 
-    feature_text = _text_or_default(_item_get(item, "feature_text", ""), default="-")
-    feature_before_text = str(_item_get(item, "feature_before_text", "")).strip()
-    feature_after_text = str(_item_get(item, "feature_after_text", "")).strip() or feature_text
+    feature_text = _text_or_default(sanitize_for_display(_item_get(item, "feature_text", "")), default="-")
+    feature_before_text = sanitize_for_display(_item_get(item, "feature_before_text", ""))
+    feature_after_text = sanitize_for_display(str(_item_get(item, "feature_after_text", "")).strip() or feature_text)
     source_claim_ids = _item_get(item, "source_claim_ids", []) or []
     amendment_kind = str(_item_get(item, "amendment_kind", "")).strip()
     source_title = _change_item_title_html(amendment_kind, source_claim_ids)
@@ -726,6 +728,10 @@ def _merged_structural_adjustment_item_html(merged_item: Dict[str, Any]) -> str:
 
 
 def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: str) -> Tuple[str, bool]:
+    if normalize_for_compare(before_text) == normalize_for_compare(after_text):
+        text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
+        return f'<div class="oar-change-diff">{text}</div>', False
+
     before_tokens = _tokenize_change_text(before_text)
     after_tokens = _tokenize_change_text(after_text)
     if not before_tokens and not after_tokens:
@@ -802,8 +808,8 @@ def _claim_snapshot_html(claim_snapshots: List[Any]) -> str:
     snapshots: List[tuple[str, str]] = []
     for item in claim_snapshots or []:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
-        claim_before_text = str(_item_get(item, "claim_before_text", "")).strip()
-        claim_text = _text_or_default(_item_get(item, "claim_text", ""), default="")
+        claim_before_text = sanitize_for_display(_item_get(item, "claim_before_text", ""))
+        claim_text = _text_or_default(sanitize_for_display(_item_get(item, "claim_text", "")), default="")
         if not claim_id:
             continue
         claim_diff_html, _ = _change_feature_diff_html(claim_before_text, claim_text, claim_text)
@@ -901,7 +907,7 @@ def _review_summary_html(
     amendment_feature_texts: List[str] = []
     for amendment_id in source_summary.get("amendment_ids", []) or []:
         amendment = amendment_map.get(str(amendment_id).strip(), {})
-        feature_text = str(_item_get(amendment, "feature_text", "")).strip()
+        feature_text = sanitize_for_display(_item_get(amendment, "feature_text", ""))
         if feature_text and feature_text not in amendment_feature_texts:
             amendment_feature_texts.append(feature_text)
         if len(amendment_feature_texts) >= 2:
@@ -950,8 +956,8 @@ def _render_review_unit_blocks(review_units: List[Any], substantive_amendments: 
             if str(_item_get(snapshot, "claim_id", "")).strip() in set(visible_claim_ids)
         ]
         claim_text_html = _claim_snapshot_html(claim_snapshots)
-        review_before_text = str(_item_get(item, "review_before_text", "")).strip()
-        review_text = str(_item_get(item, "review_text", "")).strip()
+        review_before_text = sanitize_for_display(_item_get(item, "review_before_text", ""))
+        review_text = sanitize_for_display(_item_get(item, "review_text", ""))
         review_body_html = _html_text(
             review_text,
             default="当前未提取到可复用的审查评述。",

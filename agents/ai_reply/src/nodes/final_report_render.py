@@ -35,7 +35,7 @@ class FinalReportRenderNode:
         try:
             ensure_not_cancelled(self.config)
             cache = get_node_cache(self.config, "final_report_render")
-            artifacts = cache.run_step("render_final_report_v10", self._render_report, state)
+            artifacts = cache.run_step("render_final_report_v11", self._render_report, state)
 
             updates["final_report_artifacts"] = artifacts
             updates["status"] = "completed"
@@ -78,7 +78,7 @@ class FinalReportRenderNode:
             output_path=pdf_path,
             title="Office Action Reply Final Report",
             css_text=OAR_REPORT_CSS,
-            enable_mathjax=False,
+            enable_mathjax=True,
             enable_echarts=False,
         )
 
