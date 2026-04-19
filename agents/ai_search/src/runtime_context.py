@@ -7,6 +7,16 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from langchain.agents.structured_output import ProviderStrategy
+from langchain.tools import ToolRuntime
+from langchain_core.runnables import Runnable
+from langgraph.types import Command
+
+from agents.ai_search.src.runtime import (
+    structured_output_system_prompt,
+    uses_dashscope_openai_compatible_api,
+)
+
 if TYPE_CHECKING:
     from agents.ai_search.src.context import AiSearchAgentContext
 
@@ -51,13 +61,27 @@ def ensure_deepagents_context_support() -> None:
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import HumanMessage, ToolMessage
     from langchain_core.tools import StructuredTool
-    from langgraph.types import Command
 
     if getattr(subagents_module, "_ai_search_context_support_patch", False):
         return
 
+    def _persist_subagent_result(spec: dict[str, Any], result: dict[str, Any], runtime: ToolRuntime) -> None:
+        persist_result = spec.get("persist_result")
+        if not callable(persist_result):
+            return
+        structured = result.get("structured_response")
+        if structured is None:
+            return
+        resolved_context = resolve_agent_context(runtime)
+        persist_result(resolved_context, structured, runtime=runtime.context)
+
     def _build_task_tool(subagents: list[dict[str, Any]], task_description: str | None = None) -> Any:
-        subagent_graphs: dict[str, Any] = {spec["name"]: spec["runnable"] for spec in subagents}
+        subagent_specs: dict[str, dict[str, Any]] = {
+            str(spec["name"]): spec for spec in subagents if str(spec.get("name") or "").strip()
+        }
+        subagent_graphs: dict[str, Runnable] = {
+            name: cast(Runnable, spec["runnable"]) for name, spec in subagent_specs.items()
+        }
         subagent_description_str = "\n".join(f"- {spec['name']}: {spec['description']}" for spec in subagents)
         if task_description is None:
             description = subagents_module.TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
@@ -98,8 +122,8 @@ def ensure_deepagents_context_support() -> None:
         def _validate_and_prepare_state(
             subagent_type: str,
             description: str,
-            runtime: Any,
-        ) -> tuple[Any, dict[str, Any]]:
+            runtime: ToolRuntime,
+        ) -> tuple[Runnable, dict[str, Any]]:
             subagent = subagent_graphs[subagent_type]
             subagent_state = {
                 key: value
@@ -109,7 +133,11 @@ def ensure_deepagents_context_support() -> None:
             subagent_state["messages"] = [HumanMessage(content=description)]
             return subagent, subagent_state
 
-        def task(description: str, subagent_type: str, runtime: Any) -> Any:
+        def task(
+            description: str,
+            subagent_type: str,
+            runtime: ToolRuntime,
+        ) -> str | Command:
             if subagent_type not in subagent_graphs:
                 allowed_types = ", ".join(f"`{name}`" for name in subagent_graphs)
                 return (
@@ -120,9 +148,14 @@ def ensure_deepagents_context_support() -> None:
                 raise ValueError("Tool call ID is required for subagent invocation")
             subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
             result = subagent.invoke(subagent_state, context=runtime.context)
+            _persist_subagent_result(subagent_specs[subagent_type], result, runtime)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
-        async def atask(description: str, subagent_type: str, runtime: Any) -> Any:
+        async def atask(
+            description: str,
+            subagent_type: str,
+            runtime: ToolRuntime,
+        ) -> str | Command:
             if subagent_type not in subagent_graphs:
                 allowed_types = ", ".join(f"`{name}`" for name in subagent_graphs)
                 return (
@@ -133,6 +166,7 @@ def ensure_deepagents_context_support() -> None:
                 raise ValueError("Tool call ID is required for subagent invocation")
             subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
             result = await subagent.ainvoke(subagent_state, context=runtime.context)
+            _persist_subagent_result(subagent_specs[subagent_type], result, runtime)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -166,17 +200,23 @@ def ensure_deepagents_context_support() -> None:
             interrupt_on = spec.get("interrupt_on")
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+            response_format = spec.get("response_format")
+            system_prompt = str(spec.get("system_prompt") or "")
+            if uses_dashscope_openai_compatible_api(model) and response_format is not None:
+                response_format = ProviderStrategy(schema=response_format)
+                system_prompt = structured_output_system_prompt(system_prompt)
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
+                    "persist_result": spec.get("persist_result"),
                     "runnable": create_agent(
                         model,
-                        system_prompt=spec["system_prompt"],
+                        system_prompt=system_prompt,
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
-                        response_format=spec.get("response_format"),
+                        response_format=response_format,
                         context_schema=spec.get("context_schema"),
                     ),
                 }

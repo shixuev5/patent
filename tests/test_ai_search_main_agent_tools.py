@@ -100,28 +100,28 @@ def test_specialists_own_domain_tools():
     prober_spec = build_plan_prober_subagent()
     query_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_query_executor_subagent()["runnable"].tools
+        for tool in build_query_executor_subagent()["tools"]
     }
     coarse_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_coarse_screener_subagent()["runnable"].tools
+        for tool in build_coarse_screener_subagent()["tools"]
     }
     close_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_close_reader_subagent()["runnable"].tools
+        for tool in build_close_reader_subagent()["tools"]
     }
     feature_tools = {
         str(getattr(tool, "__name__", ""))
-        for tool in build_feature_comparer_subagent()["runnable"].tools
+        for tool in build_feature_comparer_subagent()["tools"]
     }
 
-    assert "runnable" in search_elements_spec
-    assert "runnable" in planner_spec
-    assert "runnable" in prober_spec
-    assert "runnable" in build_query_executor_subagent()
-    assert "runnable" in build_coarse_screener_subagent()
-    assert "runnable" in build_close_reader_subagent()
-    assert "runnable" in build_feature_comparer_subagent()
+    assert "model" in search_elements_spec
+    assert "model" in planner_spec
+    assert "model" in prober_spec
+    assert "model" in build_query_executor_subagent()
+    assert "model" in build_coarse_screener_subagent()
+    assert "model" in build_close_reader_subagent()
+    assert "model" in build_feature_comparer_subagent()
     assert query_tools == {
         "run_execution_step",
         "search_trace",
@@ -140,7 +140,7 @@ def test_specialists_own_domain_tools():
         "probe_count_boolean",
     } == {
         str(getattr(tool, "__name__", ""))
-        for tool in prober_spec["runnable"].tools
+        for tool in prober_spec["tools"]
     }
     assert coarse_tools == {"run_coarse_screen_batch"}
     assert close_tools == {"run_close_read_batch"}

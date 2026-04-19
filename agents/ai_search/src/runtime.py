@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Sequence
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import _convert_to_openai_response_format
 from langgraph.types import Command
 from pydantic import BaseModel
 
@@ -371,13 +372,71 @@ def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:
         writer(payload)
 
 
+class AiSearchChatOpenAI(ChatOpenAI):
+    """Provider-compatibility wrapper for AI Search agents."""
+
+    def bind_tools(
+        self,
+        tools,
+        *,
+        tool_choice=None,
+        strict=None,
+        parallel_tool_calls=None,
+        response_format=None,
+        **kwargs: Any,
+    ):
+        # DashScope rejects `tools: []` when provider-native structured output is used.
+        # In that case we can bind the response format directly without entering the
+        # OpenAI tool-calling path.
+        if not list(tools or []) and response_format:
+            bind_kwargs: Dict[str, Any] = dict(kwargs)
+            if (
+                isinstance(response_format, dict)
+                and response_format.get("type") == "json_schema"
+                and "schema" in response_format.get("json_schema", {})
+            ):
+                strict = response_format["json_schema"].get("strict", None)
+                response_format = response_format["json_schema"]["schema"]
+            bind_kwargs["response_format"] = _convert_to_openai_response_format(
+                response_format,
+                strict=strict,
+            )
+            return self.bind(**bind_kwargs)
+        return super().bind_tools(
+            tools,
+            tool_choice=tool_choice,
+            strict=strict,
+            parallel_tool_calls=parallel_tool_calls,
+            response_format=response_format,
+            **kwargs,
+        )
+
+
+def uses_dashscope_openai_compatible_api(model: Any) -> bool:
+    base_url = str(
+        getattr(model, "openai_api_base", None)
+        or getattr(model, "base_url", None)
+        or settings.LLM_BASE_URL
+        or ""
+    ).strip().lower()
+    return "dashscope.aliyuncs.com" in base_url
+
+
+def structured_output_system_prompt(system_prompt: str) -> str:
+    prompt = str(system_prompt or "").rstrip()
+    if "json" in prompt.lower():
+        return prompt
+    suffix = "最终输出必须是合法 JSON，只能输出 JSON 本体，不要附加解释。"
+    return f"{prompt}\n\n{suffix}" if prompt else suffix
+
+
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:
     resolved_model = str(model_name or "").strip()
     if not resolved_model:
         raise ValueError("AI 检索未配置 LLM 模型。")
     if not settings.LLM_API_KEY:
         raise ValueError("AI 检索缺少必需的 LLM_API_KEY。")
-    return ChatOpenAI(
+    return AiSearchChatOpenAI(
         model=resolved_model,
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
