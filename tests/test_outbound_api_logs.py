@@ -124,3 +124,32 @@ def test_emit_system_log_applies_policy_filter(tmp_path, monkeypatch):
     assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
 
     assert [row["event_name"] for row in storage.rows] == ["llm_ok", "post_ok", "task_fail"]
+
+
+def test_requests_instrumentation_respects_suppression_context(tmp_path, monkeypatch):
+    storage = _MemoryStorage()
+    monkeypatch.setattr(system_logs, "_STORAGE_REF", storage)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_DIR", tmp_path)
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_FILE", tmp_path / "system_events.log")
+    monkeypatch.setattr(system_logs, "SYSTEM_LOG_PAYLOAD_DIR", tmp_path / "payloads")
+    monkeypatch.setattr(system_logs, "_REQUESTS_PATCHED", False)
+    monkeypatch.setattr(system_logs, "_ORIGINAL_SESSION_REQUEST", None)
+
+    def fake_original(self, method, url, *args, **kwargs):
+        return SimpleNamespace(
+            status_code=500,
+            ok=False,
+            reason="Server Error",
+            headers={"content-length": "123"},
+        )
+
+    monkeypatch.setattr(requests.sessions.Session, "request", fake_original)
+
+    system_logs.instrument_requests()
+
+    session = requests.Session()
+    with system_logs.suppress_outbound_request_logging():
+        response = session.request("GET", "https://api.example.com/v1/demo?token=abc", timeout=3)
+    assert response.status_code == 500
+    assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
+    assert storage.rows == []

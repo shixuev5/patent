@@ -41,6 +41,7 @@ from backend.models import (
 )
 from backend.utils import _build_r2_storage
 from backend.storage import TaskType, WeChatBinding, WeChatLoginSession, get_pipeline_manager
+from backend.storage.errors import StorageUnavailableError
 from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
 from config import settings
 
@@ -149,6 +150,15 @@ def _build_notification_settings_response(user) -> AccountNotificationSettingsRe
 def _ensure_wechat_integration_enabled() -> None:
     if not bool(settings.WECHAT_INTEGRATION_ENABLED):
         raise HTTPException(status_code=503, detail="微信接入尚未启用。")
+
+
+def _internal_wechat_storage_fallback(endpoint: str, exc: StorageUnavailableError) -> None:
+    logger.warning(
+        "internal wechat endpoint degraded: endpoint={} retry_after_seconds={} error={}",
+        endpoint,
+        getattr(exc, "retry_after_seconds", None),
+        exc,
+    )
 
 
 def _mask_wechat_id(value: str | None) -> str | None:
@@ -751,8 +761,13 @@ async def get_internal_wechat_runtime_snapshot(
     _token: str = Depends(_ensure_internal_gateway_token),
 ):
     _ensure_wechat_integration_enabled()
-    bindings = task_manager.storage.list_active_wechat_bindings() if hasattr(task_manager.storage, "list_active_wechat_bindings") else []
-    pending_sessions = task_manager.storage.list_pending_wechat_login_sessions() if hasattr(task_manager.storage, "list_pending_wechat_login_sessions") else []
+    try:
+        bindings = task_manager.storage.list_active_wechat_bindings() if hasattr(task_manager.storage, "list_active_wechat_bindings") else []
+        pending_sessions = task_manager.storage.list_pending_wechat_login_sessions() if hasattr(task_manager.storage, "list_pending_wechat_login_sessions") else []
+    except StorageUnavailableError as exc:
+        _internal_wechat_storage_fallback("/api/internal/wechat/runtime-snapshot", exc)
+        bindings = []
+        pending_sessions = []
     return {
         "activeBindings": [
             {
@@ -794,7 +809,11 @@ async def post_internal_wechat_delivery_jobs_claim(
     _token: str = Depends(_ensure_internal_gateway_token),
 ):
     _ensure_wechat_integration_enabled()
-    jobs = task_manager.storage.claim_wechat_delivery_jobs(payload.limit)
+    try:
+        jobs = task_manager.storage.claim_wechat_delivery_jobs(payload.limit)
+    except StorageUnavailableError as exc:
+        _internal_wechat_storage_fallback("/api/internal/wechat/delivery-jobs/claim", exc)
+        jobs = []
     items: List[Dict[str, object]] = []
     for job in jobs:
         task = task_manager.storage.get_task(job.task_id) if job.task_id else None

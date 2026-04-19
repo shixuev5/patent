@@ -131,6 +131,9 @@ def test_d1_request_wraps_rate_limit_as_storage_rate_limited(monkeypatch):
     storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
     storage.headers = {"Authorization": "Bearer test"}
     storage.timeout_seconds = 20
+    storage.max_retries = 0
+    storage.retry_base_delay_seconds = 0.5
+    storage.retry_max_delay_seconds = 4.0
 
     response = requests.Response()
     response.status_code = 429
@@ -153,8 +156,72 @@ def test_d1_request_wraps_timeout_as_storage_unavailable(monkeypatch):
     storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
     storage.headers = {"Authorization": "Bearer test"}
     storage.timeout_seconds = 20
+    storage.max_retries = 0
+    storage.retry_base_delay_seconds = 0.5
+    storage.retry_max_delay_seconds = 4.0
 
     monkeypatch.setattr(requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(requests.exceptions.ReadTimeout("timed out")))
 
     with pytest.raises(StorageUnavailableError):
         storage._request("SELECT 1")
+
+
+def test_d1_request_retries_rate_limit_then_succeeds(monkeypatch):
+    storage = object.__new__(D1TaskStorage)
+    storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
+    storage.headers = {"Authorization": "Bearer test"}
+    storage.timeout_seconds = 20
+    storage.max_retries = 2
+    storage.retry_base_delay_seconds = 0.01
+    storage.retry_max_delay_seconds = 0.02
+
+    response_429 = requests.Response()
+    response_429.status_code = 429
+    response_429.headers["Retry-After"] = "1"
+    response_429.url = storage.endpoint
+
+    response_ok = requests.Response()
+    response_ok.status_code = 200
+    response_ok._content = b'{"success":true,"result":[{"success":true,"results":[{"value":1}]}]}'
+    response_ok.url = storage.endpoint
+
+    calls = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return response_429
+        return response_ok
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr("backend.storage.backends.d1_backend.time.sleep", lambda _seconds: None)
+
+    result = storage._request("SELECT 1")
+
+    assert calls["count"] == 2
+    assert result["results"] == [{"value": 1}]
+
+
+def test_d1_request_does_not_retry_generic_request_exception(monkeypatch):
+    storage = object.__new__(D1TaskStorage)
+    storage.endpoint = "https://api.cloudflare.com/client/v4/accounts/test/d1/database/test/query"
+    storage.headers = {"Authorization": "Bearer test"}
+    storage.timeout_seconds = 20
+    storage.max_retries = 2
+    storage.retry_base_delay_seconds = 0.01
+    storage.retry_max_delay_seconds = 0.02
+
+    calls = {"count": 0}
+
+    def fake_post(*args, **kwargs):
+        calls["count"] += 1
+        raise requests.exceptions.RequestException("generic failure")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr("backend.storage.backends.d1_backend.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(StorageUnavailableError) as exc_info:
+        storage._request("SELECT 1")
+
+    assert str(exc_info.value) == "D1 request failed"
+    assert calls["count"] == 1

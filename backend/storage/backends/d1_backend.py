@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 import requests
 from loguru import logger
 
+from backend.system_logs import suppress_outbound_request_logging
 from backend.time_utils import utc_now_z
 from backend.storage.errors import StorageError, StorageRateLimitedError, StorageUnavailableError
 from ..models import TaskType
@@ -55,6 +58,12 @@ class D1Backend:
             "Content-Type": "application/json",
         }
         self.timeout_seconds = timeout_seconds
+        self.max_retries = max(0, int(os.getenv("D1_REQUEST_MAX_RETRIES", "2") or 0))
+        self.retry_base_delay_seconds = max(0.05, float(os.getenv("D1_REQUEST_RETRY_BASE_DELAY_SECONDS", "0.5") or 0.5))
+        self.retry_max_delay_seconds = max(
+            self.retry_base_delay_seconds,
+            float(os.getenv("D1_REQUEST_RETRY_MAX_DELAY_SECONDS", "4") or 4.0),
+        )
 
         self._init_database()
         logger.info("D1 任务存储初始化完成")
@@ -76,32 +85,58 @@ class D1Backend:
         if params:
             payload["params"] = [self._normalize_update_value(self._encode_metadata(v)) for v in params]
 
-        try:
-            response = requests.post(
-                self.endpoint,
-                headers=self.headers,
-                json=payload,
-                timeout=self.timeout_seconds,
+        attempts = self.max_retries + 1
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                with suppress_outbound_request_logging():
+                    response = requests.post(
+                        self.endpoint,
+                        headers=self.headers,
+                        json=payload,
+                        timeout=self.timeout_seconds,
+                    )
+                response.raise_for_status()
+                break
+            except requests.exceptions.Timeout as exc:
+                last_error = StorageUnavailableError("D1 request timed out")
+            except requests.exceptions.HTTPError as exc:
+                response = exc.response
+                status_code = int(getattr(response, "status_code", 0) or 0)
+                retry_after_seconds = self._parse_retry_after_seconds(response)
+                if status_code == 429:
+                    last_error = StorageRateLimitedError(
+                        "D1 request rate limited",
+                        retry_after_seconds=retry_after_seconds,
+                    )
+                elif status_code in {408, 425} or status_code >= 500:
+                    last_error = StorageUnavailableError(
+                        f"D1 request failed with status {status_code or 'unknown'}",
+                        retry_after_seconds=retry_after_seconds,
+                    )
+                else:
+                    raise StorageError(f"D1 request failed with status {status_code or 'unknown'}") from exc
+            except requests.exceptions.ConnectionError as exc:
+                last_error = StorageUnavailableError("D1 request failed")
+            except requests.exceptions.RequestException as exc:
+                raise StorageUnavailableError("D1 request failed") from exc
+
+            if attempt >= attempts or not isinstance(last_error, StorageUnavailableError):
+                assert last_error is not None
+                raise last_error
+
+            delay_seconds = self._retry_delay_seconds(attempt, last_error.retry_after_seconds)
+            logger.warning(
+                "D1 request retry scheduled: attempt={}/{} delay_seconds={} error={}",
+                attempt,
+                attempts,
+                delay_seconds,
+                last_error,
             )
-            response.raise_for_status()
-        except requests.exceptions.Timeout as exc:
-            raise StorageUnavailableError("D1 request timed out") from exc
-        except requests.exceptions.HTTPError as exc:
-            response = exc.response
-            status_code = int(getattr(response, "status_code", 0) or 0)
-            if status_code == 429:
-                raise StorageRateLimitedError(
-                    "D1 request rate limited",
-                    retry_after_seconds=self._parse_retry_after_seconds(response),
-                ) from exc
-            if status_code in {408, 425} or status_code >= 500:
-                raise StorageUnavailableError(
-                    f"D1 request failed with status {status_code or 'unknown'}",
-                    retry_after_seconds=self._parse_retry_after_seconds(response),
-                ) from exc
-            raise StorageError(f"D1 request failed with status {status_code or 'unknown'}") from exc
-        except requests.exceptions.RequestException as exc:
-            raise StorageUnavailableError("D1 request failed") from exc
+            time.sleep(delay_seconds)
+        else:
+            assert last_error is not None
+            raise last_error
 
         data = response.json()
 
@@ -116,6 +151,13 @@ class D1Backend:
         if statement_result.get("success") is False:
             raise StorageError(f"D1 SQL execution failed: {statement_result}")
         return statement_result
+
+    def _retry_delay_seconds(self, attempt: int, retry_after_seconds: Optional[int]) -> float:
+        if retry_after_seconds is not None:
+            return float(max(1, int(retry_after_seconds)))
+        exponent = max(0, int(attempt) - 1)
+        delay_seconds = self.retry_base_delay_seconds * (2 ** exponent)
+        return min(self.retry_max_delay_seconds, delay_seconds)
 
     def _fetchall(self, sql: str, params: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
         result = self._request(sql, params)

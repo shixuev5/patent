@@ -66,6 +66,10 @@ _INTERNAL_LOG_WRITE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "SYSTEM_LOG_INTERNAL_WRITE",
     default=False,
 )
+_SUPPRESS_OUTBOUND_REQUEST_LOGGING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "SYSTEM_LOG_SUPPRESS_OUTBOUND_REQUEST_LOGGING",
+    default=False,
+)
 
 _FILE_WRITE_LOCK = threading.Lock()
 _PATCH_LOCK = threading.Lock()
@@ -212,6 +216,19 @@ def internal_log_write_context():
 
 def is_internal_log_write() -> bool:
     return bool(_INTERNAL_LOG_WRITE.get())
+
+
+@contextlib.contextmanager
+def suppress_outbound_request_logging():
+    token = _SUPPRESS_OUTBOUND_REQUEST_LOGGING.set(True)
+    try:
+        yield
+    finally:
+        _SUPPRESS_OUTBOUND_REQUEST_LOGGING.reset(token)
+
+
+def is_outbound_request_logging_suppressed() -> bool:
+    return bool(_SUPPRESS_OUTBOUND_REQUEST_LOGGING.get())
 
 
 def get_request_context() -> Dict[str, Any]:
@@ -530,7 +547,7 @@ def instrument_requests() -> None:
         _ORIGINAL_SESSION_REQUEST = requests.sessions.Session.request
 
         def _wrapped_request(session, method, url, *args, **kwargs):
-            if is_internal_log_write():
+            if is_internal_log_write() or is_outbound_request_logging_suppressed():
                 return _ORIGINAL_SESSION_REQUEST(session, method, url, *args, **kwargs)
 
             started_at = time.perf_counter()

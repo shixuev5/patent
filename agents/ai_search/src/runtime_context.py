@@ -49,17 +49,15 @@ def ensure_deepagents_context_support() -> None:
     from langchain.agents import create_agent
     from langchain.agents.middleware import HumanInTheLoopMiddleware
     from langchain.agents.middleware.types import AgentMiddleware
-    from langchain.tools import BaseTool, ToolRuntime
     from langchain_core.messages import HumanMessage, ToolMessage
-    from langchain_core.runnables import Runnable
     from langchain_core.tools import StructuredTool
     from langgraph.types import Command
 
     if getattr(subagents_module, "_ai_search_context_support_patch", False):
         return
 
-    def _build_task_tool(subagents: list[dict[str, Any]], task_description: str | None = None) -> BaseTool:
-        subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
+    def _build_task_tool(subagents: list[dict[str, Any]], task_description: str | None = None) -> Any:
+        subagent_graphs: dict[str, Any] = {spec["name"]: spec["runnable"] for spec in subagents}
         subagent_description_str = "\n".join(f"- {spec['name']}: {spec['description']}" for spec in subagents)
         if task_description is None:
             description = subagents_module.TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
@@ -68,7 +66,7 @@ def ensure_deepagents_context_support() -> None:
         else:
             description = task_description
 
-        def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+        def _return_command_with_state_update(result: dict[str, Any], tool_call_id: str) -> Any:
             if "messages" not in result:
                 raise ValueError(
                     "CompiledSubAgent must return a state containing a 'messages' key. "
@@ -97,7 +95,11 @@ def ensure_deepagents_context_support() -> None:
                 }
             )
 
-        def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+        def _validate_and_prepare_state(
+            subagent_type: str,
+            description: str,
+            runtime: Any,
+        ) -> tuple[Any, dict[str, Any]]:
             subagent = subagent_graphs[subagent_type]
             subagent_state = {
                 key: value
@@ -107,7 +109,7 @@ def ensure_deepagents_context_support() -> None:
             subagent_state["messages"] = [HumanMessage(content=description)]
             return subagent, subagent_state
 
-        def task(description: str, subagent_type: str, runtime: ToolRuntime) -> str | Command:
+        def task(description: str, subagent_type: str, runtime: Any) -> Any:
             if subagent_type not in subagent_graphs:
                 allowed_types = ", ".join(f"`{name}`" for name in subagent_graphs)
                 return (
@@ -120,7 +122,7 @@ def ensure_deepagents_context_support() -> None:
             result = subagent.invoke(subagent_state, context=runtime.context)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
-        async def atask(description: str, subagent_type: str, runtime: ToolRuntime) -> str | Command:
+        async def atask(description: str, subagent_type: str, runtime: Any) -> Any:
             if subagent_type not in subagent_graphs:
                 allowed_types = ", ".join(f"`{name}`" for name in subagent_graphs)
                 return (
