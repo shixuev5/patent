@@ -57,3 +57,34 @@ def test_final_report_render_enables_mathjax(monkeypatch, tmp_path: Path) -> Non
     assert Path(artifacts["markdown_path"]).exists()
     assert calls
     assert calls[0]["enable_mathjax"] is True
+
+
+def test_final_report_render_skips_mathjax_when_markdown_has_no_formula(monkeypatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "agents.ai_reply.src.nodes.final_report_render.write_markdown",
+        lambda md_text, output_path: Path(output_path).write_text(md_text, encoding="utf-8"),
+    )
+
+    def _fake_render_markdown_to_pdf(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "agents.ai_reply.src.nodes.final_report_render.render_markdown_to_pdf",
+        _fake_render_markdown_to_pdf,
+    )
+
+    report = {
+        "summary": {},
+        "amendment_section": {"substantive_change_groups": [], "structural_adjustments": []},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    node = FinalReportRenderNode()
+    node._render_report({"final_report": report, "output_dir": str(tmp_path)})
+
+    assert calls
+    assert calls[0]["enable_mathjax"] is False

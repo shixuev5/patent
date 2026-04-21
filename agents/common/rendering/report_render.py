@@ -384,19 +384,29 @@ def render_markdown_to_pdf(
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(f"file://{temp_html_path.absolute()}", wait_until="networkidle")
+            page.goto(
+                f"file://{temp_html_path.absolute()}",
+                wait_until="domcontentloaded",
+                timeout=wait_timeout_ms,
+            )
 
             if enable_mathjax:
                 try:
-                    page.wait_for_function("() => window.MathJax", timeout=10000)
+                    page.wait_for_function("() => window.MathJax", timeout=wait_timeout_ms)
                     page.evaluate(
                         """
-                        async () => {
+                        async (timeoutMs) => {
                             if (window.MathJax && window.MathJax.startup) {
-                                await window.MathJax.startup.promise;
+                                await Promise.race([
+                                    window.MathJax.startup.promise,
+                                    new Promise((_, reject) => {
+                                        setTimeout(() => reject(new Error("MathJax startup timeout")), timeoutMs);
+                                    }),
+                                ]);
                             }
                         }
-                        """
+                        """,
+                        wait_timeout_ms,
                     )
                     logger.info("MathJax 渲染已完成。")
                 except Exception as ex:
