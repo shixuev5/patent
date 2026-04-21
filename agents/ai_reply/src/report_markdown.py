@@ -20,7 +20,7 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
 
     disputes = _item_get(response_dispute_section, "items", []) or []
     reply_items = _item_get(response_reply_section, "items", []) or []
-    review_units = _item_get(claim_review_section, "items", []) or []
+    review_units = _dedupe_review_units(_item_get(claim_review_section, "items", []) or [])
     substantive_change_groups = _item_get(amendment_section, "substantive_change_groups", []) or []
     structural_adjustments = _item_get(amendment_section, "structural_adjustments", []) or []
     claim_change_groups = _build_claim_change_groups(
@@ -641,8 +641,8 @@ def _build_claim_change_groups(
             item_dict["item_type"] = "substantive_amendment"
             bucket["items"].append(item_dict)
 
-    struct_grouped: Dict[str, List[Any]] = {}
-    for item in structural_adjustments or []:
+    struct_grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for item in _dedupe_structural_adjustments(structural_adjustments or []):
         claim_id = str(_item_get(item, "claim_id", "")).strip()
         if not claim_id:
             continue
@@ -960,7 +960,35 @@ def _tokenize_change_text(text: Any) -> List[str]:
     value = str(text or "")
     if not value:
         return []
-    return re.findall(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value)
+    tokens: List[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        if value.startswith("$$", index):
+            end = value.find("$$", index + 2)
+            if end != -1:
+                tokens.append(value[index:end + 2])
+                index = end + 2
+                continue
+        if value[index] == "$":
+            end = index + 1
+            while end < length:
+                if value[end] == "$" and value[end - 1] != "\\":
+                    break
+                end += 1
+            if end < length and value[end] == "$":
+                tokens.append(value[index:end + 1])
+                index = end + 1
+                continue
+        match = re.match(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value[index:])
+        if match:
+            token = match.group(0)
+            tokens.append(token)
+            index += len(token)
+        else:
+            tokens.append(value[index])
+            index += 1
+    return tokens
 
 
 def _to_dict(item: Any) -> Dict[str, Any]:
@@ -971,6 +999,39 @@ def _to_dict(item: Any) -> Dict[str, Any]:
     if hasattr(item, "dict"):
         return item.dict()
     return {}
+
+
+def _dedupe_structural_adjustments(items: List[Any]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, str, str, str, str]] = set()
+    for item in items or []:
+        item_dict = _to_dict(item)
+        claim_id = str(_item_get(item_dict, "claim_id", "")).strip()
+        old_claim_id = str(_item_get(item_dict, "old_claim_id", "")).strip()
+        adjustment_kind = str(_item_get(item_dict, "adjustment_kind", "")).strip()
+        before_text = normalize_for_compare(_item_get(item_dict, "before_text", ""))
+        after_text = normalize_for_compare(_item_get(item_dict, "after_text", ""))
+        dedupe_key = (claim_id, old_claim_id, adjustment_kind, before_text, after_text)
+        if not claim_id or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append(item_dict)
+    return deduped
+
+
+def _dedupe_review_units(items: List[Any]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen_keys: set[Tuple[str, Tuple[str, ...]]] = set()
+    for item in items or []:
+        item_dict = _to_dict(item)
+        unit_id = str(_item_get(item_dict, "unit_id", "")).strip()
+        display_claim_ids = tuple(_normalize_claim_id_list(_item_get(item_dict, "display_claim_ids", [])))
+        dedupe_key = (unit_id, display_claim_ids)
+        if not unit_id or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append(item_dict)
+    return deduped
 
 
 def _claim_sort_key(value: Any) -> Tuple[int, str]:

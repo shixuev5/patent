@@ -335,20 +335,20 @@ class WorkflowState(BaseModel):
     evidence_assessments: Annotated[List[EvidenceAssessment], operator.add] = Field(default_factory=list, description="核查结果（事实核查与公知常识核查统一结构）")
     claims_previous_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="上一版权利要求结构化列表")
     claims_current_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前最新权利要求结构化列表")
-    claims_old_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前OA审查所针对的权利要求结构化列表")
-    claims_effective_structured: Annotated[List[StructuredClaim], operator.add] = Field(default_factory=list, description="当前生效权利要求结构化列表")
+    claims_old_structured: List[StructuredClaim] = Field(default_factory=list, description="当前OA审查所针对的权利要求结构化列表")
+    claims_effective_structured: List[StructuredClaim] = Field(default_factory=list, description="当前生效权利要求结构化列表")
     claims_old_source: str = Field("", description="旧权利要求来源：claims_previous/original_patent")
     claims_old_source_reason: str = Field("", description="旧权利要求来源诊断原因")
-    claim_alignments: Annotated[List[ClaimAlignment], operator.add] = Field(
+    claim_alignments: List[ClaimAlignment] = Field(
         default_factory=list,
         description="新旧权利要求对齐结果列表",
     )
     has_claim_amendment: bool = Field(False, description="是否存在权利要求修改")
-    substantive_amendments: Annotated[List[SubstantiveAmendment], operator.add] = Field(
+    substantive_amendments: List[SubstantiveAmendment] = Field(
         default_factory=list,
         description="实质性修改列表",
     )
-    structural_adjustments: Annotated[List[StructuralAdjustment], operator.add] = Field(
+    structural_adjustments: List[StructuralAdjustment] = Field(
         default_factory=list,
         description="结构性调整列表",
     )
@@ -361,7 +361,7 @@ class WorkflowState(BaseModel):
         default_factory=dict,
         description="统一润色后的正式驳回正文，按 dispute_id 索引",
     )
-    review_units: Annotated[List[ReviewUnit], operator.add] = Field(
+    review_units: List[ReviewUnit] = Field(
         default_factory=list,
         description="基于上一轮OA重组后的评述单元",
     )

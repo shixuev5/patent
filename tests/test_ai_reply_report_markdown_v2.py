@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents.ai_reply.src.report_markdown import build_final_report_markdown
+from agents.ai_reply.src.report_styles import OAR_REPORT_CSS
 from agents.common.rendering.report_render import markdown_to_html_document
 
 
@@ -811,6 +812,133 @@ def test_build_final_report_markdown_does_not_highlight_formula_spacing_noise() 
     assert 'class="oar-change-add"' not in content
     assert 'class="oar-change-del"' not in content
     assert "\\left(" in content
+
+
+def test_build_final_report_markdown_treats_formula_as_whole_diff_token() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "2",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A1",
+                            "feature_text": r"计算公式由 $$A=B$$ 变更为 $$A=C$$",
+                            "feature_before_text": r"计算公式为 $$A=B$$",
+                            "feature_after_text": r"计算公式为 $$A=C$$",
+                            "contains_added_text": True,
+                            "amendment_kind": "spec_feature_addition",
+                            "content_origin": "specification",
+                            "source_claim_ids": [],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert '<span class="oar-change-del">$$A=B$$</span>' in content
+    assert '<span class="oar-change-add">$$A=C$$</span>' in content
+
+
+def test_build_final_report_markdown_dedupes_review_units_from_report_payload() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "Claim3",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["5"],
+                    "title": "权利要求5",
+                    "claim_snapshots": [{"claim_id": "5", "claim_before_text": "旧权5", "claim_text": "新权5"}],
+                    "review_before_text": "旧评述",
+                    "review_text": "第一次",
+                    "source_summary": {},
+                },
+                {
+                    "unit_id": "Claim3",
+                    "unit_type": "dependent_group_restructured",
+                    "display_claim_ids": ["5"],
+                    "title": "权利要求5",
+                    "claim_snapshots": [{"claim_id": "5", "claim_before_text": "旧权5", "claim_text": "新权5"}],
+                    "review_before_text": "旧评述",
+                    "review_text": "重复项",
+                    "source_summary": {},
+                },
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert content.count("权利要求5｜从权组重组") == 1
+    assert "第一次" in content
+    assert "重复项" not in content
+
+
+def test_build_final_report_markdown_dedupes_structural_adjustments_before_merge() -> None:
+    report = _sample_report()
+    report["amendment_section"]["structural_adjustments"] = [
+        {
+            "adjustment_id": "S1",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_merged",
+            "before_text": "权利要求6",
+            "after_text": "权利要求4",
+        },
+        {
+            "adjustment_id": "S1_dup",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_merged",
+            "before_text": "权利要求6",
+            "after_text": "权利要求4",
+        },
+        {
+            "adjustment_id": "S2",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_merged",
+            "before_text": "根据权利要求3所述的一种装置",
+            "after_text": "根据权利要求1所述的一种装置",
+        },
+    ]
+
+    content = build_final_report_markdown(report)
+
+    assert content.count("对应旧权利要求 6") == 1
+    assert content.count("编号顺延") == 1
+    assert content.count("引用关系调整") == 1
+
+
+def test_oar_report_css_keeps_structural_tags_single_line_and_translation_full_color() -> None:
+    assert "flex-direction: row;" in OAR_REPORT_CSS
+    assert "flex-wrap: wrap;" in OAR_REPORT_CSS
+    assert "white-space: nowrap;" in OAR_REPORT_CSS
+    assert ".oar-evidence-line-translation" not in OAR_REPORT_CSS
 
 
 def test_build_final_report_markdown_renders_search_followup_section_conditionally() -> None:

@@ -533,6 +533,75 @@ def test_claim_review_drafting_uses_alignment_map_for_pure_renumbered_residual_u
     ]
 
 
+def test_claim_review_drafting_maps_old_claim_8_9_group_to_new_claim_8_without_spurious_9(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    def _fake_invoke_text_json(messages, task_kind, temperature):
+        assert task_kind == "oar_claim_review_drafting"
+        payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
+        item = json.loads(payload)
+        return {
+            "unit_id": item["unit_id"],
+            "review_text": f"重组评述::{item['unit_id']}::{','.join(item.get('display_claim_ids', []))}",
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "1", "claim_text": "旧权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "2", "claim_text": "旧权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "3", "claim_text": "旧权3", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "4", "claim_text": "旧权4", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "5", "claim_text": "旧权5", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "6", "claim_text": "旧权6", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+            {"claim_id": "7", "claim_text": "旧权7", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "8", "claim_text": "旧权8", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+            {"claim_id": "9", "claim_text": "旧权9", "claim_type": "dependent", "parent_claim_ids": ["8"]},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "1", "claim_text": "现权1", "claim_type": "independent", "parent_claim_ids": []},
+            {"claim_id": "2", "claim_text": "现权2", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "3", "claim_text": "现权3", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "4", "claim_text": "现权4", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "5", "claim_text": "现权5", "claim_type": "dependent", "parent_claim_ids": ["4"]},
+            {"claim_id": "6", "claim_text": "现权6", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "7", "claim_text": "现权7", "claim_type": "dependent", "parent_claim_ids": ["4"]},
+            {"claim_id": "8", "claim_text": "现权8", "claim_type": "dependent", "parent_claim_ids": ["7"]},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {"paragraph_id": "Claim3", "claim_ids": ["3", "4", "5", "6"], "content": "权利要求 3-6 是从属权利要求。"},
+                    {"paragraph_id": "Claim4", "claim_ids": ["7"], "content": "权利要求 7 是从属权利要求。"},
+                    {"paragraph_id": "Claim5", "claim_ids": ["8", "9"], "content": "权利要求 8-9 是从属权利要求。"},
+                ]
+            }
+        },
+        substantive_amendments=[],
+        disputes=[],
+        evidence_assessments=[],
+        drafted_rejection_reasons={},
+        claim_alignments=[
+            {"claim_id": "1", "old_claim_id": "1", "alignment_kind": "same_number_match", "reason": "unchanged"},
+            {"claim_id": "2", "old_claim_id": "3", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "3", "old_claim_id": "4", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "4", "old_claim_id": "5", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "5", "old_claim_id": "6", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "6", "old_claim_id": "7", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "7", "old_claim_id": "8", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "8", "old_claim_id": "9", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+        ],
+    )
+
+    claim5_unit = next(item for item in result if item["unit_id"] == "Claim5")
+    assert claim5_unit["display_claim_ids"] == ["8"]
+    assert claim5_unit["source_paragraph_ids"] == ["Claim5"]
+    assert claim5_unit["claim_snapshots"] == [
+        {"claim_id": "8", "claim_before_text": "旧权9", "claim_text": "现权8", "claim_type": "dependent"},
+    ]
+
+
 def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> None:
     node = ClaimReviewDraftingNode()
 
@@ -563,6 +632,37 @@ def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> N
     assert "必须返回输入中的同一个 unit_id" in system_prompt
     assert "review_text 应尽量直接沿用 review_before_text" in user_prompt
     assert "只能返回该 unit_id 对应的单个 JSON 对象" in user_prompt
+
+
+def test_claim_review_drafting_dedupes_review_units_by_unit_id_and_claims() -> None:
+    node = ClaimReviewDraftingNode()
+
+    units = [
+        {
+            "unit_id": "Claim3",
+            "display_claim_ids": ["5"],
+            "title": "权利要求5",
+            "review_text": "第一次",
+        },
+        {
+            "unit_id": "Claim3",
+            "display_claim_ids": ["5"],
+            "title": "权利要求5",
+            "review_text": "重复项",
+        },
+        {
+            "unit_id": "Claim4",
+            "display_claim_ids": ["6"],
+            "title": "权利要求6",
+            "review_text": "保留项",
+        },
+    ]
+
+    result = node._dedupe_review_units(units)
+
+    assert [item["unit_id"] for item in result] == ["Claim3", "Claim4"]
+    assert [item["display_claim_ids"] for item in result] == [["5"], ["6"]]
+    assert result[0]["review_text"] == "第一次"
 
 
 def test_claim_review_drafting_raises_on_mismatched_unit_id(monkeypatch) -> None:

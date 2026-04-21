@@ -439,7 +439,8 @@ class ClaimReviewDraftingNode:
                 finalized[item["unit_id"]] = item
 
         unit_specs.sort(key=lambda item: (float(item.get("paragraph_order", 0)), self._claim_sort_key(item.get("anchor_claim_id", ""))))
-        return [finalized[unit["unit_id"]] for unit in unit_specs if unit["unit_id"] in finalized]
+        ordered_units = [finalized[unit["unit_id"]] for unit in unit_specs if unit["unit_id"] in finalized]
+        return self._dedupe_review_units(ordered_units)
 
     def _draft_single_review_unit(self, unit_input: Dict[str, Any]) -> Dict[str, Any]:
         unit_id = str(unit_input.get("unit_id", "")).strip() or "UNKNOWN"
@@ -899,6 +900,20 @@ class ClaimReviewDraftingNode:
             "claim_snapshots": [self._to_dict(item) for item in (unit.get("claim_snapshots", []) or [])],
             "source_summary": self._to_dict(unit.get("source_summary", {})),
         }
+
+    def _dedupe_review_units(self, units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        deduped: List[Dict[str, Any]] = []
+        seen_keys: Set[tuple[str, tuple[str, ...]]] = set()
+        for unit in units or []:
+            unit_dict = self._to_dict(unit)
+            unit_id = str(unit_dict.get("unit_id", "")).strip()
+            display_claim_ids = tuple(self._normalize_claim_ids(unit_dict.get("display_claim_ids", [])))
+            dedupe_key = (unit_id, display_claim_ids)
+            if not unit_id or dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+            deduped.append(unit_dict)
+        return deduped
 
     def _normalize_claims(self, claims: List[Any]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []

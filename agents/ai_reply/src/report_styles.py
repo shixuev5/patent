@@ -352,14 +352,17 @@ th, td {
 
 .oar-change-claims {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
     gap: 6px;
     flex-shrink: 0;
+    align-items: flex-start;
 }
 
 .oar-change-claims-compact {
-    align-items: flex-end;
-    gap: 0;
+    justify-content: flex-end;
+    gap: 6px;
+    max-width: 220px;
 }
 
 .oar-change-claims-main {
@@ -381,6 +384,8 @@ th, td {
     border: 1px solid var(--oar-border);
     color: var(--oar-ink-soft);
     background: var(--oar-surface-soft);
+    white-space: nowrap;
+    word-break: keep-all;
 }
 
 .oar-change-source-tag-claim {
@@ -440,10 +445,6 @@ th, td {
 
 .oar-evidence-line {
     line-height: 1.72;
-}
-
-.oar-evidence-line-translation {
-    color: var(--oar-muted);
 }
 
 .oar-evidence-line + .oar-evidence-line {

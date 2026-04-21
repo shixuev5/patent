@@ -141,22 +141,14 @@ class AccountRuntime:
         if account_id and self.current_account_id and account_id != self.current_account_id:
             raise RuntimeError(f"runtime account mismatch: expected {account_id}, got {self.current_account_id}")
 
+        task = job.get("task") if isinstance(job.get("task"), dict) else {}
+        download_path = str(task.get("downloadPath") or "").strip()
+        if download_path:
+            await self._send_delivery_artifact(bot=bot, peer_id=peer_id, download_path=download_path)
+
         summary = self._build_delivery_text(job)
         if summary:
             await bot.send(peer_id, summary)
-
-        task = job.get("task") if isinstance(job.get("task"), dict) else {}
-        download_path = str(task.get("downloadPath") or "").strip()
-        if not download_path:
-            return
-
-        content, _content_type, filename = await self.backend.download_task_artifact(download_path)
-        resolved_name = unquote(str(filename or "").strip()) or "result.bin"
-        send_media = getattr(bot, "send_media", None)
-        if callable(send_media):
-            await send_media(peer_id, {"file": content, "file_name": resolved_name})
-            return
-        await bot.send(peer_id, f"结果文件已生成，但当前网关未启用文件发送能力：{resolved_name}")
 
     async def _run_loop(self) -> None:
         while not self._stop_requested:
@@ -369,15 +361,17 @@ class AccountRuntime:
                 if not download_path:
                     continue
                 try:
-                    content, _content_type, filename = await self.backend.download_task_artifact(download_path)
-                    resolved_name = unquote(str(item.get("fileName") or filename or "").strip()) or "result.bin"
-                    reply_media = getattr(bot, "reply_media", None)
-                    if callable(reply_media):
-                        await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
-                    else:
-                        await bot.send(peer_id, f"文件结果已生成，但当前网关未启用文件发送能力：{resolved_name}")
+                    preferred_name = str(item.get("fileName") or "").strip() or None
+                    await self._reply_with_media(
+                        bot=bot,
+                        incoming_msg=incoming_msg,
+                        peer_id=peer_id,
+                        download_path=download_path,
+                        preferred_name=preferred_name,
+                    )
                 except Exception as exc:
-                    await bot.send(peer_id, f"文件发送失败：{exc}")
+                    await bot.send(peer_id, self._file_delivery_failure_text())
+                    print(f"[im-gateway] owner={self.owner_id} inline file delivery failed: {exc}")
                 continue
 
             text = str(item.get("text") or "").strip()
@@ -388,6 +382,49 @@ class AccountRuntime:
                 await reply(incoming_msg, text)
             else:
                 await bot.send(peer_id, text)
+
+    async def _send_delivery_artifact(self, *, bot: Any, peer_id: str, download_path: str) -> None:
+        content, content_type, filename = await self.backend.download_task_artifact(download_path)
+        resolved_name = unquote(str(filename or "").strip()) or "result.bin"
+        send_media = getattr(bot, "send_media", None)
+        if not callable(send_media):
+            raise RuntimeError("wechat gateway send_media is unavailable")
+        try:
+            await send_media(peer_id, {"file": content, "file_name": resolved_name})
+        except Exception as exc:
+            size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+            print(
+                f"[im-gateway] owner={self.owner_id} delivery artifact upload failed: "
+                f"peer_id={peer_id} file_name={resolved_name} content_type={content_type or '-'} "
+                f"size_bytes={size_bytes} error={exc}"
+            )
+            raise
+
+    async def _reply_with_media(
+        self,
+        *,
+        bot: Any,
+        incoming_msg: Any,
+        peer_id: str,
+        download_path: str,
+        preferred_name: Optional[str] = None,
+    ) -> None:
+        content, content_type, filename = await self.backend.download_task_artifact(download_path)
+        resolved_name = unquote(str(preferred_name or filename or "").strip()) or "result.bin"
+        reply_media = getattr(bot, "reply_media", None)
+        if callable(reply_media):
+            await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
+            return
+        send_media = getattr(bot, "send_media", None)
+        if callable(send_media):
+            await send_media(peer_id, {"file": content, "file_name": resolved_name})
+            return
+        size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+        print(
+            f"[im-gateway] owner={self.owner_id} media reply unsupported: "
+            f"peer_id={peer_id} file_name={resolved_name} content_type={content_type or '-'} size_bytes={size_bytes}"
+        )
+        raise RuntimeError("wechat gateway media send is unavailable")
 
     async def _send_typing_indicator(self, bot: Any, peer_id: str) -> None:
         if not str(peer_id or "").strip():
@@ -596,6 +633,10 @@ class AccountRuntime:
     @staticmethod
     def _friendly_inbound_failure_text() -> str:
         return "抱歉，刚才处理这条消息时出了点小问题。你可以稍后再发一次，我会继续帮你接着看。"
+
+    @staticmethod
+    def _file_delivery_failure_text() -> str:
+        return "结果文件发送失败了，我这边会继续重试。你先不用重复发送。"
 
     @staticmethod
     def _build_delivery_text(job: Dict[str, Any]) -> str:

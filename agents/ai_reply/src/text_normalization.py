@@ -81,12 +81,16 @@ def _normalize_math_text(text: str) -> str:
     value = str(text or "")
     value = re.sub(r"\$\$(.*?)\$\$", lambda match: f"$${_compact_math_segment(match.group(1))}$$", value, flags=re.DOTALL)
     value = re.sub(r"(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)", lambda match: f"${_compact_math_segment(match.group(1))}$", value, flags=re.DOTALL)
+    value = re.sub(r"\\([A-Za-z]+)\s+\{", r"\\\1{", value)
+    value = re.sub(r"\\([A-Za-z]+)\s+(?=[A-Za-z])", r"\\\1 ", value)
     value = re.sub(r"\\mathrm\s*\{\s*~?\s*([^{}]+?)\s*\}", r"\\mathrm{\1}", value)
     return value
 
 
 def _compact_math_segment(segment: str) -> str:
     value = re.sub(r"\s+", " ", str(segment or "")).strip()
-    value = re.sub(r"\s*([_^{}(),=+\-*/<>])\s*", r"\1", value)
+    value = re.sub(r"\s*([_^{}(),=+\-*/|])\s*", r"\1", value)
+    value = re.sub(r"\s*([<>]=?|<=|>=)\s*", r" \1 ", value)
+    value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"\\([A-Za-z]+)\s+\{", r"\\\1{", value)
     return value
