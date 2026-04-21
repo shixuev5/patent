@@ -229,13 +229,15 @@ def _sample_report() -> dict:
 def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     content = build_final_report_markdown(_sample_report())
 
-    assert "整体判断" in content
-    assert "本次答复基本成立" in content
-    assert "重点风险" in content
+    assert "# AI 答复报告" in content
+    assert "AI 答复最终报告" not in content
+    assert "整体判断" not in content
+    assert "申请人主张占优" in content
+    assert "重点风险" not in content
     assert "1 项仍需重点复核" in content
-    assert "核查进度" in content
+    assert "核查进度" not in content
     assert "2/2 项已核查" in content
-    assert "支撑强度" in content
+    assert "支撑强度" not in content
     assert "中等支撑 1 项" in content
     assert "主导裁决" not in content
     assert "主导争议类型" not in content
@@ -362,6 +364,50 @@ def test_build_final_report_markdown_merges_structural_adjustments_per_claim() -
     assert "AI更支持申请人" not in content
     assert "AI更支持审查员" not in content
     assert "AI暂不确定" not in content
+
+
+def test_build_final_report_markdown_merges_consecutive_renumberings_into_one_block() -> None:
+    report = _sample_report()
+    report["amendment_section"]["substantive_change_groups"] = []
+    report["amendment_section"]["structural_adjustments"] = [
+        {
+            "adjustment_id": "S1",
+            "claim_id": "5",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求6",
+            "after_text": "权利要求5",
+        },
+        {
+            "adjustment_id": "S2",
+            "claim_id": "6",
+            "claim_type": "dependent",
+            "old_claim_id": "7",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求7",
+            "after_text": "权利要求6",
+        },
+        {
+            "adjustment_id": "S3",
+            "claim_id": "7",
+            "claim_type": "dependent",
+            "old_claim_id": "8",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求8",
+            "after_text": "权利要求7",
+        },
+    ]
+
+    content = build_final_report_markdown(report)
+
+    assert "5,6,7（从权）" in content
+    assert "对应旧权利要求 6-8" in content
+    assert "旧权利要求6-8因上游权项删除，顺延为现权利要求5-7。" in content
+    assert content.count("编号顺延") == 1
 
 
 def test_build_final_report_markdown_html_conversion_preserves_layered_layout() -> None:
@@ -977,6 +1023,50 @@ def test_build_final_report_markdown_dedupes_structural_adjustments_before_merge
     assert content.count("对应旧权利要求 6") == 1
     assert content.count("编号顺延") == 1
     assert content.count("引用关系调整") == 1
+
+
+def test_build_final_report_markdown_does_not_merge_consecutive_renumberings_with_mixed_claim_adjustments() -> None:
+    report = _sample_report()
+    report["amendment_section"]["substantive_change_groups"] = []
+    report["amendment_section"]["structural_adjustments"] = [
+        {
+            "adjustment_id": "S1",
+            "claim_id": "5",
+            "claim_type": "dependent",
+            "old_claim_id": "6",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求6",
+            "after_text": "权利要求5",
+        },
+        {
+            "adjustment_id": "S2",
+            "claim_id": "6",
+            "claim_type": "dependent",
+            "old_claim_id": "7",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求7",
+            "after_text": "权利要求6",
+        },
+        {
+            "adjustment_id": "S2_ref",
+            "claim_id": "6",
+            "claim_type": "dependent",
+            "old_claim_id": "7",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_deleted",
+            "before_text": "根据权利要求4所述的一种装置",
+            "after_text": "根据权利要求3所述的一种装置",
+        },
+    ]
+
+    content = build_final_report_markdown(report)
+
+    assert "对应旧权利要求 6-7" not in content
+    assert "旧权利要求6-7因上游权项删除，顺延为现权利要求5-6。" not in content
+    assert "对应旧权利要求 6" in content
+    assert "对应旧权利要求 7" in content
 
 
 def test_oar_report_css_keeps_structural_tags_single_line_and_translation_full_color() -> None:

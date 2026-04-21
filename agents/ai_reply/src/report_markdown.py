@@ -93,14 +93,14 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     )
 
     lines: List[str] = []
-    lines.append("# AI 答复最终报告")
+    lines.append("# AI 答复报告")
     lines.append("")
 
     lines.append("## 1. 核心结论卡片")
     lines.append('<div class="oar-conclusion-grid">')
     lines.append(
         _conclusion_card(
-            "整体判断",
+            "",
             overall_primary,
             overall_secondary,
             emphasis=True,
@@ -108,21 +108,21 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
     )
     lines.append(
         _conclusion_card(
-            "重点风险",
+            "",
             risk_primary,
             risk_secondary,
         )
     )
     lines.append(
         _conclusion_card(
-            "核查进度",
+            "",
             f"{assessed_disputes}/{total_disputes} 项已核查",
             f"待核查 {unassessed_disputes} 项；已形成答复 {response_reply_points} 项",
         )
     )
     lines.append(
         _conclusion_card(
-            "支撑强度",
+            "",
             support_primary,
             support_secondary,
         )
@@ -275,13 +275,13 @@ def _build_overall_judgement_card(
 
     normalized = overall_conclusion.strip()
     if normalized == "申请人主要争点更占优" or app_correct > exm_correct:
-        primary = "本次答复基本成立"
+        primary = "申请人主张占优"
     elif normalized == "审查员主要争点更占优" or exm_correct > app_correct:
-        primary = "本次答复支撑不足"
+        primary = "审查意见占优"
     elif normalized == "现有争点暂无法形成明确结论" or inconclusive == assessed_disputes:
-        primary = "本次答复暂无法形成明确结论"
+        primary = "暂无法判断"
     else:
-        primary = "本次答复结论相持"
+        primary = "双方相持"
 
     secondary = f"已核查 {assessed_disputes} 项中，{app_correct} 项可支持申请人主张"
     return primary, secondary
@@ -337,9 +337,12 @@ def _conclusion_card(title: str, primary: str, secondary: str, emphasis: bool = 
     class_name = "oar-conclusion-card"
     if emphasis:
         class_name += " oar-conclusion-card-emphasis"
+    title_html = ""
+    if str(title or "").strip():
+        title_html = f'<div class="oar-conclusion-title">{_html_text(title, default="")}</div>'
     return (
         f'<div class="{class_name}">'
-        f'<div class="oar-conclusion-title">{_html_text(title, default="")}</div>'
+        f'{title_html}'
         f'<div class="oar-conclusion-primary">{_html_text(primary, default="-")}</div>'
         f'<div class="oar-conclusion-secondary">{_html_text(secondary, default="-")}</div>'
         "</div>"
@@ -566,6 +569,8 @@ def _change_item_html(item: Any) -> str:
         return _structural_adjustment_item_html(item)
     if item_type == "merged_structural_adjustment":
         return _merged_structural_adjustment_item_html(item)
+    if item_type == "merged_consecutive_renumbering":
+        return _merged_consecutive_renumbering_item_html(item)
 
     feature_text = _text_or_default(sanitize_for_display(_item_get(item, "feature_text", "")), default="-")
     feature_before_text = sanitize_for_display(_item_get(item, "feature_before_text", ""))
@@ -619,6 +624,11 @@ def _build_claim_change_groups(
     structural_adjustments: List[Any],
 ) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
+    substantive_claim_ids = {
+        str(_item_get(group, "claim_id", "")).strip()
+        for group in substantive_change_groups or []
+        if str(_item_get(group, "claim_id", "")).strip()
+    }
 
     for group in substantive_change_groups or []:
         claim_id = str(_item_get(group, "claim_id", "")).strip()
@@ -641,8 +651,32 @@ def _build_claim_change_groups(
             item_dict["item_type"] = "substantive_amendment"
             bucket["items"].append(item_dict)
 
+    deduped_adjustments = _dedupe_structural_adjustments(structural_adjustments or [])
+    merged_sequences, remaining_adjustments = _merge_consecutive_renumbering_adjustments(
+        deduped_adjustments,
+        substantive_claim_ids,
+    )
+
+    for merged_item in merged_sequences:
+        claim_ids = _item_get(merged_item, "claim_ids", []) or []
+        if not claim_ids:
+            continue
+        first_claim_id = str(claim_ids[0]).strip()
+        bucket = grouped.setdefault(
+            first_claim_id,
+            {
+                "claim_id": claim_ids,
+                "claim_type": str(_item_get(merged_item, "claim_type", "")).strip() or "unknown",
+                "items": [],
+            },
+        )
+        bucket["claim_id"] = claim_ids
+        if str(bucket.get("claim_type", "")).strip() == "unknown":
+            bucket["claim_type"] = str(_item_get(merged_item, "claim_type", "")).strip() or "unknown"
+        bucket["items"].append(merged_item)
+
     struct_grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for item in _dedupe_structural_adjustments(structural_adjustments or []):
+    for item in remaining_adjustments:
         claim_id = str(_item_get(item, "claim_id", "")).strip()
         if not claim_id:
             continue
@@ -687,7 +721,7 @@ def _build_claim_change_groups(
 
 def _claim_change_item_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
     item_type = str(item.get("item_type", "substantive_amendment")).strip()
-    if item_type in ("structural_adjustment", "merged_structural_adjustment"):
+    if item_type in ("structural_adjustment", "merged_structural_adjustment", "merged_consecutive_renumbering"):
         return (3, "")
 
     amendment_kind = str(item.get("amendment_kind", "")).strip()
@@ -912,6 +946,37 @@ def _merged_structural_adjustment_item_html(merged_item: Dict[str, Any]) -> str:
     )
 
 
+def _merged_consecutive_renumbering_item_html(merged_item: Dict[str, Any]) -> str:
+    claim_ids = _normalize_claim_id_list(_item_get(merged_item, "claim_ids", []))
+    old_claim_ids = _normalize_claim_id_list(_item_get(merged_item, "old_claim_ids", []))
+    reason = str(_item_get(merged_item, "reason", "")).strip()
+
+    if reason == "upstream_merged":
+        reason_prefix = "因上游权项并入"
+    elif reason == "upstream_deleted":
+        reason_prefix = "因上游权项删除"
+    else:
+        reason_prefix = "因结构调整"
+
+    claim_range = _format_claim_id_range(claim_ids)
+    old_claim_range = _format_claim_id_range(old_claim_ids)
+    summary = f"对应旧权利要求 {old_claim_range}"
+    sentence = f"旧权利要求{old_claim_range}{reason_prefix}，顺延为现权利要求{claim_range}。"
+    return (
+        '<div class="oar-change-item-card oar-structural-adjustment-item">'
+        '<div class="oar-change-item-head">'
+        f'<div class="oar-change-item-title">{_html_text(summary)}</div>'
+        '<div class="oar-change-claims oar-change-claims-compact">'
+        '<div><span class="oar-change-source-tag oar-change-source-tag-unknown">编号顺延</span></div>'
+        "</div>"
+        "</div>"
+        '<div class="oar-change-item-body">'
+        f'<div class="oar-change-item-label">{_html_text(sentence)}</div>'
+        "</div>"
+        "</div>"
+    )
+
+
 def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: str) -> Tuple[str, bool]:
     if normalize_for_compare(before_text) == normalize_for_compare(after_text):
         text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
@@ -1057,6 +1122,95 @@ def _dedupe_structural_adjustments(items: List[Any]) -> List[Dict[str, Any]]:
     return deduped
 
 
+def _merge_consecutive_renumbering_adjustments(
+    adjustments: List[Dict[str, Any]],
+    substantive_claim_ids: set[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    by_claim: Dict[str, List[Dict[str, Any]]] = {}
+    for item in adjustments:
+        claim_id = str(_item_get(item, "claim_id", "")).strip()
+        if claim_id:
+            by_claim.setdefault(claim_id, []).append(item)
+
+    eligible_claim_ids: set[str] = set()
+    for claim_id, items in by_claim.items():
+        if claim_id in substantive_claim_ids:
+            continue
+        if len(items) != 1:
+            continue
+        item = items[0]
+        if str(_item_get(item, "adjustment_kind", "")).strip() != "renumbering":
+            continue
+        if not str(_item_get(item, "claim_id", "")).strip().isdigit():
+            continue
+        if not str(_item_get(item, "old_claim_id", "")).strip().isdigit():
+            continue
+        eligible_claim_ids.add(claim_id)
+
+    eligible_items = [
+        item for item in adjustments
+        if str(_item_get(item, "claim_id", "")).strip() in eligible_claim_ids
+    ]
+    eligible_items.sort(
+        key=lambda item: (
+            int(str(_item_get(item, "claim_id", "0")).strip() or 0),
+            int(str(_item_get(item, "old_claim_id", "0")).strip() or 0),
+        )
+    )
+
+    merged_sequences: List[Dict[str, Any]] = []
+    consumed_claim_ids: set[str] = set()
+    current_sequence: List[Dict[str, Any]] = []
+
+    def flush_sequence() -> None:
+        nonlocal current_sequence
+        if len(current_sequence) >= 2:
+            merged_sequences.append(_build_consecutive_renumbering_item(current_sequence))
+            for seq_item in current_sequence:
+                consumed_claim_ids.add(str(_item_get(seq_item, "claim_id", "")).strip())
+        current_sequence = []
+
+    for item in eligible_items:
+        if not current_sequence:
+            current_sequence = [item]
+            continue
+        prev = current_sequence[-1]
+        prev_claim = int(str(_item_get(prev, "claim_id", "0")).strip() or 0)
+        prev_old = int(str(_item_get(prev, "old_claim_id", "0")).strip() or 0)
+        claim_id = int(str(_item_get(item, "claim_id", "0")).strip() or 0)
+        old_claim_id = int(str(_item_get(item, "old_claim_id", "0")).strip() or 0)
+        same_reason = str(_item_get(prev, "reason", "")).strip() == str(_item_get(item, "reason", "")).strip()
+        same_type = str(_item_get(prev, "claim_type", "")).strip() == str(_item_get(item, "claim_type", "")).strip()
+        if same_reason and same_type and claim_id == prev_claim + 1 and old_claim_id == prev_old + 1:
+            current_sequence.append(item)
+            continue
+        flush_sequence()
+        current_sequence = [item]
+    flush_sequence()
+
+    remaining_adjustments = [
+        item for item in adjustments
+        if str(_item_get(item, "claim_id", "")).strip() not in consumed_claim_ids
+    ]
+    return merged_sequences, remaining_adjustments
+
+
+def _build_consecutive_renumbering_item(sequence: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ordered = sorted(
+        sequence,
+        key=lambda item: int(str(_item_get(item, "claim_id", "0")).strip() or 0),
+    )
+    return {
+        "item_type": "merged_consecutive_renumbering",
+        "claim_ids": [str(_item_get(item, "claim_id", "")).strip() for item in ordered],
+        "old_claim_ids": [str(_item_get(item, "old_claim_id", "")).strip() for item in ordered],
+        "claim_type": str(_item_get(ordered[0], "claim_type", "")).strip() or "unknown",
+        "reason": str(_item_get(ordered[0], "reason", "")).strip(),
+        "adjustments": ordered,
+        "has_ai_assessment": False,
+    }
+
+
 def _dedupe_review_units(items: List[Any]) -> List[Dict[str, Any]]:
     deduped: List[Dict[str, Any]] = []
     seen_keys: set[Tuple[str, Tuple[str, ...]]] = set()
@@ -1073,10 +1227,38 @@ def _dedupe_review_units(items: List[Any]) -> List[Dict[str, Any]]:
 
 
 def _claim_sort_key(value: Any) -> Tuple[int, str]:
+    if isinstance(value, list):
+        normalized = _normalize_claim_id_list(value)
+        if normalized:
+            first = normalized[0]
+            if first.isdigit():
+                return (0, f"{int(first):09d}")
+            return (1, first)
     text = str(value or "").strip()
     if text.isdigit():
         return (0, f"{int(text):09d}")
     return (1, text)
+
+
+def _normalize_claim_id_list(value: Any) -> List[str]:
+    items = value if isinstance(value, list) else [value]
+    result: List[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def _format_claim_id_range(claim_ids: List[str]) -> str:
+    normalized = _normalize_claim_id_list(claim_ids)
+    if not normalized:
+        return "-"
+    if all(item.isdigit() for item in normalized):
+        numbers = [int(item) for item in normalized]
+        if len(numbers) >= 2 and all(numbers[idx] == numbers[0] + idx for idx in range(len(numbers))):
+            return f"{numbers[0]}-{numbers[-1]}"
+    return ",".join(normalized)
 
 
 def _review_unit_type_label(unit_type: str) -> str:
