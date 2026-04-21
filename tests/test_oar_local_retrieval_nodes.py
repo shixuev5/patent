@@ -165,6 +165,55 @@ def test_data_preparation_reports_remaining_missing_documents_after_partial_uplo
     assert message == "缺少对比文件，请上传：D2（IEEE 802.11, 通信协议）。 当前已上传 1 份对比文件，但仍未匹配到上述文献。"
 
 
+def test_data_preparation_matches_non_patent_titles_despite_quotes_and_punctuation(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D2",
+                "document_number": "“悬索桥桁架加劲梁动力等效成等截面欧拉梁方法”，祝卫亮;葛耀君，《哈尔滨工业大学学报》第 52 卷第 9 期 23-30 页",
+                "is_patent": False,
+                "publication_date": "2020-09",
+            },
+            {
+                "document_id": "D3",
+                "document_number": "“悬挑环形廊桥的气动弹性模型试验”，桂龙辉;谢霁明;林颖孜;张鸿玮，《浙江大学学报(工学版)》，第 51 卷第 11 期 34-42 页",
+                "is_patent": False,
+                "publication_date": "2017-11-15",
+            },
+        ],
+    }
+    parsed_files = [
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-d2.pdf",
+            "markdown_path": "doc-d2.md",
+            "content": "# 悬索桥桁架加劲梁动力等效成等截面欧拉梁方法祝卫亮，葛耀君\n正文",
+        },
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-d3.pdf",
+            "markdown_path": "doc-d3.md",
+            "content": "# 悬挑环形廊桥的气动弹性模型试验\n正文",
+        },
+        {"file_type": "response", "content": "答复内容"},
+    ]
+
+    prepared = node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+
+    comparison_docs = prepared["comparison_documents"]
+    assert comparison_docs[0]["document_id"] == "D2"
+    assert comparison_docs[0]["data"] == "# 悬索桥桁架加劲梁动力等效成等截面欧拉梁方法祝卫亮，葛耀君\n正文"
+    assert comparison_docs[1]["document_id"] == "D3"
+    assert comparison_docs[1]["data"] == "# 悬挑环形廊桥的气动弹性模型试验\n正文"
+
+
 def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     _patch_fake_embeddings(monkeypatch)
 

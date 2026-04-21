@@ -928,22 +928,22 @@ def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: 
     matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
     for tag, start_before, end_before, start_after, end_after in matcher.get_opcodes():
         if tag == "equal":
-            parts.append(_render_diff_tokens(before_tokens[start_before:end_before]))
+            parts.append(_render_diff_chunk(before_tokens[start_before:end_before]))
         elif tag == "delete":
-            parts.append(f'<span class="oar-change-del">{_render_diff_tokens(before_tokens[start_before:end_before])}</span>')
+            parts.append(_render_diff_chunk(before_tokens[start_before:end_before], wrapper_class="oar-change-del"))
         elif tag == "insert":
-            added_chunk = _render_diff_tokens(after_tokens[start_after:end_after])
+            added_chunk = _render_diff_chunk(after_tokens[start_after:end_after], wrapper_class="oar-change-add")
             if added_chunk:
                 contains_added_text = True
-                parts.append(f'<span class="oar-change-add">{added_chunk}</span>')
+                parts.append(added_chunk)
         elif tag == "replace":
-            deleted_chunk = _render_diff_tokens(before_tokens[start_before:end_before])
-            added_chunk = _render_diff_tokens(after_tokens[start_after:end_after])
+            deleted_chunk = _render_diff_chunk(before_tokens[start_before:end_before], wrapper_class="oar-change-del")
+            added_chunk = _render_diff_chunk(after_tokens[start_after:end_after], wrapper_class="oar-change-add")
             if deleted_chunk:
-                parts.append(f'<span class="oar-change-del">{deleted_chunk}</span>')
+                parts.append(deleted_chunk)
             if added_chunk:
                 contains_added_text = True
-                parts.append(f'<span class="oar-change-add">{added_chunk}</span>')
+                parts.append(added_chunk)
 
     if not parts:
         text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
@@ -954,6 +954,44 @@ def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: 
 
 def _render_diff_tokens(tokens: List[str]) -> str:
     return "".join(_escape_text(token) for token in tokens)
+
+
+def _render_diff_chunk(tokens: List[str], wrapper_class: str = "") -> str:
+    if not tokens:
+        return ""
+
+    parts: List[str] = []
+    text_buffer: List[str] = []
+
+    def flush_text_buffer() -> None:
+        if not text_buffer:
+            return
+        text_html = _render_diff_tokens(text_buffer)
+        if wrapper_class:
+            parts.append(f'<span class="{wrapper_class}">{text_html}</span>')
+        else:
+            parts.append(text_html)
+        text_buffer.clear()
+
+    for token in tokens:
+        if _is_display_math_token(token):
+            flush_text_buffer()
+            class_attr = "oar-change-math-block"
+            if wrapper_class == "oar-change-add":
+                class_attr += " oar-change-math-block-add"
+            elif wrapper_class == "oar-change-del":
+                class_attr += " oar-change-math-block-del"
+            parts.append(f'<div class="{class_attr}">{_escape_text(token)}</div>')
+            continue
+        text_buffer.append(token)
+
+    flush_text_buffer()
+    return "".join(parts)
+
+
+def _is_display_math_token(token: str) -> bool:
+    value = str(token or "")
+    return len(value) >= 4 and value.startswith("$$") and value.endswith("$$")
 
 
 def _tokenize_change_text(text: Any) -> List[str]:
@@ -1240,7 +1278,7 @@ def _render_review_unit_blocks(review_units: List[Any], substantive_amendments: 
 
 def _render_dispute_overview_table(disputes: List[Any]) -> str:
     lines = [
-        '<table class="oar-layered-table oar-layered-table-overview">',
+        '<table class="oar-layered-table oar-dispute-table">',
         "<colgroup>",
         '<col style="width: 40px;">',
         '<col style="width: 96px;">',
@@ -1263,17 +1301,23 @@ def _render_dispute_overview_table(disputes: List[Any]) -> str:
             [
                 "<tbody>",
                 "<tr>",
-                '<td class="oar-index-cell">1</td>',
-                '<td class="oar-layered-cell" colspan="4">',
-                _layered_summary_html(
-                    "oar-layered-grid-overview",
-                    ["-", "无争议点", "-", _verdict_badge_html("未核查", "UNASSESSED")],
+                '<td class="oar-index-cell" rowspan="2">1</td>',
+                '<td class="oar-dispute-summary-cell">-</td>',
+                '<td class="oar-dispute-summary-cell">无争议点</td>',
+                '<td class="oar-dispute-summary-cell">-</td>',
+                '<td class="oar-dispute-summary-cell oar-dispute-summary-cell-verdict">',
+                _verdict_badge_html("未核查", "UNASSESSED"),
+                "</td>",
+                "</tr>",
+                "<tr>",
+                '<td class="oar-dispute-detail-cell" colspan="4">',
+                _dispute_detail_box_html(
                     [
                         _detail_text_html("审查员理由：", "-"),
                         _detail_text_html("申请人理由：", "-"),
                         _detail_text_html("AI理由：", "-"),
                         _detail_text_html("AI依据：", "-"),
-                    ],
+                    ]
                 ),
                 "</td>",
                 "</tr>",
@@ -1308,19 +1352,25 @@ def _render_dispute_overview_table(disputes: List[Any]) -> str:
             ai_basis_html = _html_text("-")
         lines.extend(
             [
-                '<tbody class="oar-layered-group">',
+                '<tbody class="oar-dispute-group">',
                 "<tr>",
-                f'<td class="oar-index-cell">{index}</td>',
-                '<td class="oar-layered-cell" colspan="4">',
-                _layered_summary_html(
-                    "oar-layered-grid-overview",
-                    [claim_label, feature_text, examiner_type, _verdict_badge_html(_verdict_label(verdict), verdict)],
+                f'<td class="oar-index-cell" rowspan="2">{index}</td>',
+                f'<td class="oar-dispute-summary-cell">{_html_text(claim_label)}</td>',
+                f'<td class="oar-dispute-summary-cell">{_html_text(feature_text)}</td>',
+                f'<td class="oar-dispute-summary-cell">{_html_text(examiner_type)}</td>',
+                '<td class="oar-dispute-summary-cell oar-dispute-summary-cell-verdict">',
+                _verdict_badge_html(_verdict_label(verdict), verdict),
+                "</td>",
+                "</tr>",
+                "<tr>",
+                '<td class="oar-dispute-detail-cell" colspan="4">',
+                _dispute_detail_box_html(
                     [
                         _detail_text_html("审查员理由：", examiner_reasoning),
                         _detail_text_html("申请人理由：", applicant_reasoning),
                         _detail_text_html("AI理由：", ai_reason),
                         _detail_block_html("AI依据：", ai_basis_html, extra_class="oar-detail-block-evidence"),
-                    ],
+                    ]
                 ),
                 "</td>",
                 "</tr>",
@@ -1329,6 +1379,11 @@ def _render_dispute_overview_table(disputes: List[Any]) -> str:
         )
     lines.append("</table>")
     return "\n".join(lines)
+
+
+def _dispute_detail_box_html(detail_blocks: List[str]) -> str:
+    body = "".join(detail_blocks) if detail_blocks else _detail_text_html("说明：", "-")
+    return f'<div class="oar-dispute-detail-box">{body}</div>'
 
 
 def _render_response_reply_blocks(disputes: List[Any], reply_items: List[Any]) -> str:

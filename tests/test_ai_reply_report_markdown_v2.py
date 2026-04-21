@@ -257,6 +257,11 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     assert "CHANGE_QUOTE_END" in content
     assert "CHANGE_ANALYSIS_END" in content
     assert "CHANGE_FINAL_END" in content
+    assert 'class="oar-layered-table oar-dispute-table"' in content
+    assert 'class="oar-dispute-detail-cell" colspan="4"' in content
+    assert 'class="oar-dispute-detail-box"' in content
+    assert 'class="oar-layered-cell" colspan="4"' not in content
+    assert 'class="oar-index-cell" rowspan="2"' in content
     assert "CLAIM_CHANGE_REASON_SHOULD_HIDE" not in content
     assert "CLAIM_CHANGE_QUOTE_SHOULD_HIDE" not in content
     assert "CLAIM_CHANGE_ANALYSIS_SHOULD_HIDE" not in content
@@ -372,6 +377,7 @@ def test_build_final_report_markdown_html_conversion_preserves_layered_layout() 
     assert 'class="oar-opinion-block"' in html_doc
     assert 'class="oar-claim-snapshot-list"' in html_doc
     assert 'class="oar-verdict-badge oar-verdict-badge-applicant"' in html_doc
+    assert 'class="oar-dispute-detail-box"' in html_doc
     assert 'class="oar-change-add"' in html_doc
     assert 'class="oar-change-del"' in html_doc
     assert 'class="oar-change-source-tag oar-change-source-tag-spec"' in html_doc
@@ -849,8 +855,47 @@ def test_build_final_report_markdown_treats_formula_as_whole_diff_token() -> Non
 
     content = build_final_report_markdown(report)
 
-    assert '<span class="oar-change-del">$$A=B$$</span>' in content
-    assert '<span class="oar-change-add">$$A=C$$</span>' in content
+    assert '<div class="oar-change-math-block oar-change-math-block-del">$$A=B$$</div>' in content
+    assert '<div class="oar-change-math-block oar-change-math-block-add">$$A=C$$</div>' in content
+
+
+def test_build_final_report_markdown_keeps_text_and_display_formula_separated_in_diff() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "9",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A9",
+                            "feature_text": r"式中，$P$ 表示目标压力值。",
+                            "feature_before_text": r"计算结果为 $$P=\frac{h}{1 0 0}$$ 式中，$P$ 表示目标压力值。",
+                            "feature_after_text": r"计算结果为 $$P=\frac{h}{1 0 0}$$ 式中，$P$ 表示目标压力值。",
+                            "contains_added_text": False,
+                            "amendment_kind": "spec_feature_addition",
+                            "content_origin": "specification",
+                            "source_claim_ids": [],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert '$$P=\\frac{h}{100}$$' in content
+    assert '式中，$P$ 表示目标压力值。' in content
 
 
 def test_build_final_report_markdown_dedupes_review_units_from_report_payload() -> None:

@@ -167,6 +167,11 @@ th, td {
     break-inside: avoid;
 }
 
+.oar-dispute-group {
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
 .oar-layered-cell {
     padding: 0;
     background: var(--oar-surface);
@@ -231,6 +236,38 @@ th, td {
     padding: 6px 8px;
     overflow: hidden;
     box-sizing: border-box;
+}
+
+.oar-dispute-summary-cell {
+    padding: 8px 10px;
+    background: var(--oar-surface);
+    line-height: 1.5;
+    vertical-align: top;
+}
+
+.oar-dispute-summary-cell-verdict {
+    text-align: center;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    padding: 6px 8px;
+}
+
+.oar-dispute-summary-cell-verdict .oar-verdict-badge {
+    display: inline-block;
+    width: 100%;
+}
+
+.oar-dispute-detail-cell {
+    padding: 0;
+    background: linear-gradient(180deg, #f8fafc 0%, #f3f7fb 100%);
+    page-break-before: avoid;
+    break-before: avoid;
+}
+
+.oar-dispute-detail-box {
+    padding: 10px;
+    background: linear-gradient(180deg, #f8fafc 0%, #f3f7fb 100%);
+    page-break-inside: avoid;
+    break-inside: avoid;
 }
 
 .oar-verdict-badge {
@@ -409,6 +446,24 @@ th, td {
     word-break: break-word;
     line-height: 1.55;
     color: #334155;
+}
+
+.oar-change-math-block {
+    display: block;
+    margin: 10px 0;
+    padding: 4px 0;
+    text-align: center;
+}
+
+.oar-change-math-block-add {
+    color: var(--oar-danger-border);
+    font-weight: 700;
+}
+
+.oar-change-math-block-del {
+    color: #94a3b8;
+    text-decoration: line-through;
+    text-decoration-color: #cbd5e1;
 }
 
 .oar-change-add {

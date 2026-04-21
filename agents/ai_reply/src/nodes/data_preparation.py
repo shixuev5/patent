@@ -280,16 +280,23 @@ class DataPreparationNode:
         normalized_number = str(document_number or "").strip()
         if not normalized_number:
             return ""
-        return re.split(r"[,，]", normalized_number, maxsplit=1)[0].strip()
+        title = re.split(r"[,，]", normalized_number, maxsplit=1)[0].strip()
+        return title.strip("\"'“”‘’「」『』《》〈〉")
 
     def _title_in_content(self, title: str, content: str) -> bool:
         if not title or not content:
             return False
         if title in content:
             return True
-        normalized_title = re.sub(r"\s+", "", title)
-        normalized_content = re.sub(r"\s+", "", content)
+        normalized_title = self._normalize_non_patent_lookup_text(title)
+        normalized_content = self._normalize_non_patent_lookup_text(content)
         return bool(normalized_title) and normalized_title in normalized_content
+
+    def _normalize_non_patent_lookup_text(self, text: str) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        normalized = re.sub(r"[\"'“”‘’「」『』《》〈〉]", "", normalized)
+        normalized = re.sub(r"[，,；;：:。.!！?？·•／/\\\\|()\[\]{}<>-]+", "", normalized)
+        return normalized
 
     def _non_patent_file_label(self, item: Dict[str, Any]) -> str:
         file_path = str(item.get("file_path", "")).strip()

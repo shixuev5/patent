@@ -91,6 +91,11 @@ def _compact_math_segment(segment: str) -> str:
     value = re.sub(r"\s+", " ", str(segment or "")).strip()
     value = re.sub(r"\s*([_^{}(),=+\-*/|])\s*", r"\1", value)
     value = re.sub(r"\s*([<>]=?|<=|>=)\s*", r" \1 ", value)
+    value = re.sub(
+        r"(?<![A-Za-z])(?:\d\s+){2,}\d(?![A-Za-z])",
+        lambda match: re.sub(r"\s+", "", match.group(0)),
+        value,
+    )
     value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"\\([A-Za-z]+)\s+\{", r"\\\1{", value)
     return value

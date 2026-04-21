@@ -15,7 +15,7 @@ from agents.common.rendering.styles import DEFAULT_REPORT_CSS
 from agents.common.rendering.models import EChartSpec
 
 _ASSET_BASE_URL = "https://unpkg.com"
-_MATHJAX_ASSET_PATH = "mathjax@3.2.2/es5/tex-mml-chtml.js"
+_MATHJAX_ASSET_PATH = "mathjax@3.2.2/es5/tex-svg.js"
 _ECHARTS_ASSET_PATH = "echarts@5/dist/echarts.min.js"
 
 
@@ -392,7 +392,10 @@ def render_markdown_to_pdf(
 
             if enable_mathjax:
                 try:
-                    page.wait_for_function("() => window.MathJax", timeout=wait_timeout_ms)
+                    page.wait_for_function(
+                        "() => Boolean(window.MathJax && window.MathJax.startup && window.MathJax.startup.promise)",
+                        timeout=wait_timeout_ms,
+                    )
                     page.evaluate(
                         """
                         async (timeoutMs) => {

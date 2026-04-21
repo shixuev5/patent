@@ -81,6 +81,7 @@ def test_render_markdown_to_pdf_bounds_mathjax_wait(monkeypatch, tmp_path: Path)
     assert page.goto_calls[0]["wait_until"] == "domcontentloaded"
     assert page.goto_calls[0]["timeout"] == 4321
     assert page.wait_calls[0]["timeout"] == 4321
+    assert "window.MathJax.startup.promise" in page.wait_calls[0]["expression"]
     script, arg = page.evaluate_calls[0]
     assert "Promise.race" in str(script)
     assert arg == 4321

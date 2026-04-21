@@ -26,3 +26,11 @@ def test_normalize_for_compare_tolerates_formula_spacing_noise() -> None:
     right = r"所述车内压力预测值的计算公式为: $$P_{1i}^{*}=\left(P_{1(i-1)}+P_{2i}^{*}\times \Delta t/\tau\right)$$"
 
     assert normalize_for_compare(left) == normalize_for_compare(right)
+
+
+def test_sanitize_for_display_compacts_digit_spacing_inside_formula() -> None:
+    text = r"$$P=\left(\frac{h}{1 0 0}+\rho_{1}\right)\times \gamma$$"
+
+    result = sanitize_for_display(text)
+
+    assert r"\frac{h}{100}" in result
