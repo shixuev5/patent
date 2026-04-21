@@ -214,6 +214,176 @@ def test_data_preparation_matches_non_patent_titles_despite_quotes_and_punctuati
     assert comparison_docs[1]["data"] == "# 悬挑环形廊桥的气动弹性模型试验\n正文"
 
 
+def test_data_preparation_matches_by_author_when_title_missing(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D2",
+                "document_number": "桥梁风场研究方法, 张三;李四，《空气动力学学报》",
+                "is_patent": False,
+                "publication_date": None,
+            }
+        ],
+    }
+    parsed_files = [
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-d2.pdf",
+            "file_name": "现场测试记录.pdf",
+            "markdown_path": "doc-d2.md",
+            "content": "作者：李四 王五\n摘要：本文讨论桥梁风场问题。",
+        }
+    ]
+
+    prepared = node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+    assert prepared["comparison_documents"][0]["data"] == "作者：李四 王五\n摘要：本文讨论桥梁风场问题。"
+
+
+def test_data_preparation_uses_second_condition_to_break_ties(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D2",
+                "document_number": "模型试验方法, 张三;李四，《空气动力学学报》",
+                "is_patent": False,
+                "publication_date": None,
+            }
+        ],
+    }
+    parsed_files = [
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-a.pdf",
+            "file_name": "doc-a.pdf",
+            "markdown_path": "doc-a.md",
+            "content": "文中提到模型试验方法。\n作者：王五\n期刊：空气动力学学报",
+        },
+        {
+            "file_type": "comparison_doc",
+            "file_path": "doc-b.pdf",
+            "file_name": "doc-b.pdf",
+            "markdown_path": "doc-b.md",
+            "content": "文中提到模型试验方法。\n作者：李四\n期刊：其他期刊",
+        },
+    ]
+
+    prepared = node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+    assert prepared["comparison_documents"][0]["data"] == "文中提到模型试验方法。\n作者：李四\n期刊：其他期刊"
+
+
+def test_data_preparation_falls_back_to_upload_order_when_all_docs_unmatched(tmp_path: Path, monkeypatch) -> None:
+    _patch_fake_embeddings(monkeypatch)
+    monkeypatch.setattr(settings, "LOCAL_RETRIEVAL_ENABLED", False)
+
+    node = DataPreparationNode(config=WorkflowConfig(cache_dir=str(tmp_path / ".cache")))
+    office_action = {
+        "application_number": "CNAPP1",
+        "current_notice_round": 1,
+        "paragraphs": [],
+        "comparison_documents": [
+            {
+                "document_id": "D2",
+                "document_number": "文献甲, 张三，《期刊甲》",
+                "is_patent": False,
+                "publication_date": None,
+            },
+            {
+                "document_id": "D3",
+                "document_number": "文献乙, 李四，《期刊乙》",
+                "is_patent": False,
+                "publication_date": None,
+            },
+        ],
+    }
+    parsed_files = [
+        {
+            "file_type": "comparison_doc",
+            "file_path": "first.pdf",
+            "file_name": "first.pdf",
+            "markdown_path": "first.md",
+            "content": "完全无关内容A",
+        },
+        {
+            "file_type": "comparison_doc",
+            "file_path": "second.pdf",
+            "file_name": "second.pdf",
+            "markdown_path": "second.md",
+            "content": "完全无关内容B",
+        },
+    ]
+
+    prepared = node._prepare_materials(office_action=office_action, parsed_files=parsed_files, search_results=[])
+    assert prepared["comparison_documents"][0]["data"] == "完全无关内容A"
+    assert prepared["comparison_documents"][1]["data"] == "完全无关内容B"
+
+
+def test_extract_non_patent_metadata_omits_title_from_authors_and_trims_journal() -> None:
+    node = DataPreparationNode()
+
+    d2 = node._extract_non_patent_metadata(
+        "“悬索桥桁架加劲梁动力等效成等截面欧拉梁方法”，祝卫亮;葛耀君，《哈尔滨工业大学学报》第 52 卷第 9 期 23-30 页"
+    )
+    assert d2 == {
+        "title": "悬索桥桁架加劲梁动力等效成等截面欧拉梁方法",
+        "authors": ["祝卫亮", "葛耀君"],
+        "journal": "哈尔滨工业大学学报",
+    }
+
+    d3 = node._extract_non_patent_metadata(
+        "“悬挑环形廊桥的气动弹性模型试验”，桂龙辉;谢霁明;林颖孜;张鸿玮，《浙江大学学报(工学版)》，第 51 卷第 11 期 34-42 页"
+    )
+    assert d3 == {
+        "title": "悬挑环形廊桥的气动弹性模型试验",
+        "authors": ["桂龙辉", "谢霁明", "林颖孜", "张鸿玮"],
+        "journal": "浙江大学学报(工学版)",
+    }
+
+
+def test_extract_non_patent_metadata_handles_plain_comma_separated_references() -> None:
+    node = DataPreparationNode()
+
+    case1 = node._extract_non_patent_metadata(
+        "基于LIN总线的雨刮电机自动控制系统的设计,姜义成 等，计算机测量与控制，第12期，第3970-3972页，2014年12月"
+    )
+    assert case1 == {
+        "title": "基于LIN总线的雨刮电机自动控制系统的设计",
+        "authors": ["姜义成"],
+        "journal": "计算机测量与控制",
+    }
+
+    case2 = node._extract_non_patent_metadata(
+        "基于控制器局域网的悬浮控制器调试监测系统，曾颖丰，湖南工业大学学报，第04期，2018年7月"
+    )
+    assert case2 == {
+        "title": "基于控制器局域网的悬浮控制器调试监测系统",
+        "authors": ["曾颖丰"],
+        "journal": "湖南工业大学学报",
+    }
+
+    case3 = node._extract_non_patent_metadata(
+        "中低速磁浮悬浮架装配精度研究，魏德豪，中国优秀博硕士学位论文全文数据库(硕士)工程科技Ⅱ辑，第07期，2017年7月"
+    )
+    assert case3 == {
+        "title": "中低速磁浮悬浮架装配精度研究",
+        "authors": ["魏德豪"],
+        "journal": "中国优秀博硕士学位论文全文数据库(硕士)工程科技Ⅱ辑",
+    }
+
+
 def test_common_knowledge_uses_compact_evidence_cards(monkeypatch) -> None:
     _patch_fake_embeddings(monkeypatch)
 

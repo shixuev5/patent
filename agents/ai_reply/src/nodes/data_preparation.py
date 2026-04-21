@@ -5,6 +5,7 @@
 
 import re
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 from loguru import logger
@@ -202,28 +203,31 @@ class DataPreparationNode:
         non_patent_docs: List[Dict[str, Any]],
         uploaded_non_patent_files: List[Dict[str, Any]],
     ) -> Dict[str, str]:
-        """基于 document_number 中提取的标题，在上传非专 markdown 内容中命中并完成一对一映射。"""
+        """基于标题/作者/期刊匹配上传非专文件，必要时按顺序兜底映射。"""
         if not non_patent_docs:
             return {}
 
         content_map: Dict[str, str] = {}
         remaining_indices = set(range(len(uploaded_non_patent_files)))
         missing_doc_labels: List[str] = []
+        doc_candidates: Dict[str, List[int]] = {}
+        all_missing = True
 
         for doc in non_patent_docs:
             document_id = str(doc.get("document_id", "")).strip()
             document_number = str(doc.get("document_number", "")).strip()
-            title = self._extract_non_patent_title(document_number)
+            metadata = self._extract_non_patent_metadata(document_number)
+            title = metadata["title"]
 
             if not document_id:
                 raise ValueError(f"非专文献映射失败: document_number={document_number} 缺少 document_id")
             if not title:
                 raise ValueError(f"非专文献映射失败: {document_id} 的 document_number 为空，无法提取标题")
 
-            candidate_indices = [
-                idx for idx in sorted(remaining_indices)
-                if self._title_in_content(title, str(uploaded_non_patent_files[idx].get("content", "")))
-            ]
+            candidate_indices = self._collect_doc_candidate_indices(metadata, uploaded_non_patent_files, remaining_indices)
+            doc_candidates[document_id] = candidate_indices
+            if candidate_indices:
+                all_missing = False
 
             if len(candidate_indices) == 1:
                 matched_idx = candidate_indices[0]
@@ -232,27 +236,40 @@ class DataPreparationNode:
                 continue
 
             if len(candidate_indices) > 1:
+                narrowed_indices = self._disambiguate_doc_candidates(
+                    metadata,
+                    uploaded_non_patent_files,
+                    candidate_indices,
+                )
+                doc_candidates[document_id] = narrowed_indices
+                if len(narrowed_indices) == 1:
+                    matched_idx = narrowed_indices[0]
+                    remaining_indices.remove(matched_idx)
+                    content_map[document_id] = str(uploaded_non_patent_files[matched_idx].get("content", ""))
+                    continue
+
+        unresolved_docs = [
+            doc for doc in non_patent_docs
+            if str(doc.get("document_id", "")).strip() not in content_map
+        ]
+
+        if unresolved_docs and all_missing and len(unresolved_docs) == len(remaining_indices):
+            for doc, idx in zip(unresolved_docs, sorted(remaining_indices)):
+                document_id = str(doc.get("document_id", "")).strip()
+                content_map[document_id] = str(uploaded_non_patent_files[idx].get("content", ""))
+            return content_map
+
+        for doc in unresolved_docs:
+            document_id = str(doc.get("document_id", "")).strip()
+            candidate_indices = doc_candidates.get(document_id, [])
+            if candidate_indices:
                 matched_files = [
                     self._non_patent_file_label(uploaded_non_patent_files[idx])
                     for idx in candidate_indices
                 ]
                 raise ValueError(
-                    f"非专文献映射冲突: {document_id} 标题「{title}」匹配到多个上传文件: {', '.join(matched_files)}"
+                    f"非专文献映射冲突: {document_id} 匹配到多个上传文件: {', '.join(matched_files)}"
                 )
-
-            all_candidate_indices = [
-                idx for idx, item in enumerate(uploaded_non_patent_files)
-                if self._title_in_content(title, str(item.get("content", "")))
-            ]
-            if all_candidate_indices:
-                matched_files = [
-                    self._non_patent_file_label(uploaded_non_patent_files[idx])
-                    for idx in all_candidate_indices
-                ]
-                raise ValueError(
-                    f"非专文献映射冲突: {document_id} 标题「{title}」仅在已映射文件中出现: {', '.join(matched_files)}"
-                )
-
             missing_doc_labels.append(self._comparison_document_label(doc))
 
         if missing_doc_labels:
@@ -283,6 +300,73 @@ class DataPreparationNode:
         title = re.split(r"[,，]", normalized_number, maxsplit=1)[0].strip()
         return title.strip("\"'“”‘’「」『』《》〈〉")
 
+    def _extract_non_patent_metadata(self, document_number: str) -> Dict[str, Any]:
+        normalized_number = str(document_number or "").strip()
+        title = self._extract_non_patent_title(normalized_number)
+        remainder = self._strip_leading_title_segment(normalized_number, title)
+        authors_text, journal_text = self._split_authors_and_journal(remainder)
+        authors = self._split_authors(authors_text)
+        return {
+            "title": title,
+            "authors": authors,
+            "journal": journal_text,
+        }
+
+    def _strip_leading_title_segment(self, document_number: str, title: str) -> str:
+        normalized_number = str(document_number or "").strip()
+        normalized_title = str(title or "").strip()
+        if not normalized_number or not normalized_title:
+            return normalized_number
+        title_pattern = re.escape(normalized_title)
+        patterns = [
+            rf'^[\"\'“”‘’「」『』《》〈〉]*{title_pattern}[\"\'“”‘’「」『』《》〈〉]*',
+        ]
+        remainder = normalized_number
+        for pattern in patterns:
+            new_remainder = re.sub(pattern, "", normalized_number, count=1).lstrip("，,;；:： ")
+            if new_remainder != normalized_number:
+                remainder = new_remainder
+                break
+        return remainder
+
+    def _split_authors_and_journal(self, text: str) -> tuple[str, str]:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return "", ""
+        first_book = re.search(r"[《〈<]", normalized)
+        if first_book:
+            idx = first_book.start()
+            journal_segment = normalized[idx:].strip()
+            return normalized[:idx].strip("，,;；:： "), self._extract_journal_name(journal_segment)
+        parts = re.split(r"[,，]", normalized, maxsplit=1)
+        if len(parts) == 2:
+            return parts[0].strip(), self._extract_journal_name(parts[1].strip())
+        return normalized, ""
+
+    def _extract_journal_name(self, text: str) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+        bracket_match = re.search(r"[《〈<]([^》〉>]+)[》〉>]", normalized)
+        if bracket_match:
+            return bracket_match.group(1).strip()
+        cutoff = re.search(r"(第\s*\d+\s*卷|第\s*\d+\s*期|\d+\s*-\s*\d+\s*页|\d{4}\s*年)", normalized)
+        if cutoff:
+            normalized = normalized[:cutoff.start()].strip("，,;；:： ")
+        return normalized.strip("\"'“”‘’「」『』《》〈〉")
+
+    def _split_authors(self, authors_text: str) -> List[str]:
+        normalized = str(authors_text or "").strip()
+        if not normalized:
+            return []
+        parts = re.split(r"[;；,/，,\s]+", normalized)
+        authors: List[str] = []
+        for part in parts:
+            author = self._normalize_non_patent_lookup_text(part)
+            if len(author) >= 2:
+                authors.append(author)
+        return list(dict.fromkeys(authors))
+
     def _title_in_content(self, title: str, content: str) -> bool:
         if not title or not content:
             return False
@@ -297,6 +381,64 @@ class DataPreparationNode:
         normalized = re.sub(r"[\"'“”‘’「」『』《》〈〉]", "", normalized)
         normalized = re.sub(r"[，,；;：:。.!！?？·•／/\\\\|()\[\]{}<>-]+", "", normalized)
         return normalized
+
+    def _collect_doc_candidate_indices(
+        self,
+        metadata: Dict[str, Any],
+        uploaded_non_patent_files: List[Dict[str, Any]],
+        remaining_indices: set[int],
+    ) -> List[int]:
+        candidates: List[int] = []
+        for idx in sorted(remaining_indices):
+            item = uploaded_non_patent_files[idx]
+            matches = self._build_match_flags(metadata, item)
+            if any(matches.values()):
+                candidates.append(idx)
+        return candidates
+
+    def _disambiguate_doc_candidates(
+        self,
+        metadata: Dict[str, Any],
+        uploaded_non_patent_files: List[Dict[str, Any]],
+        candidate_indices: List[int],
+    ) -> List[int]:
+        narrowed = list(candidate_indices)
+        for key in ("title", "authors", "journal"):
+            matched = []
+            for idx in narrowed:
+                flags = self._build_match_flags(metadata, uploaded_non_patent_files[idx])
+                if flags.get(key):
+                    matched.append(idx)
+            if len(matched) == 1:
+                return matched
+            if matched:
+                narrowed = matched
+        return narrowed
+
+    def _build_match_flags(self, metadata: Dict[str, Any], uploaded_file: Dict[str, Any]) -> Dict[str, bool]:
+        searchable_text = self._build_uploaded_file_search_text(uploaded_file)
+        title = str(metadata.get("title", "")).strip()
+        authors = metadata.get("authors", []) or []
+        journal = str(metadata.get("journal", "")).strip()
+        return {
+            "title": self._field_in_text(title, searchable_text),
+            "authors": any(self._field_in_text(author, searchable_text) for author in authors),
+            "journal": self._field_in_text(journal, searchable_text),
+        }
+
+    def _build_uploaded_file_search_text(self, item: Dict[str, Any]) -> str:
+        content = str(item.get("content", "")).strip()
+        file_name = str(item.get("file_name", "")).strip()
+        file_path = str(item.get("file_path", "")).strip()
+        path_name = os.path.basename(file_path) if file_path else ""
+        return "\n".join(part for part in [content, file_name, path_name] if part)
+
+    def _field_in_text(self, field: str, text: str) -> bool:
+        normalized_field = self._normalize_non_patent_lookup_text(field)
+        normalized_text = self._normalize_non_patent_lookup_text(text)
+        if not normalized_field or not normalized_text:
+            return False
+        return normalized_field in normalized_text
 
     def _non_patent_file_label(self, item: Dict[str, Any]) -> str:
         file_path = str(item.get("file_path", "")).strip()
