@@ -33,6 +33,8 @@ INBOUND_REQUEST_TIMEOUT_SECONDS = max(
     INBOUND_REPLY_WAIT_SECONDS + 1.0,
     float(os.getenv("IM_GATEWAY_INBOUND_REQUEST_TIMEOUT_SECONDS", "180") or "180"),
 )
+MEDIA_UPLOAD_MAX_ATTEMPTS = max(1, int(os.getenv("IM_GATEWAY_MEDIA_UPLOAD_MAX_ATTEMPTS", "3") or "3"))
+MEDIA_UPLOAD_RETRY_DELAY_SECONDS = max(0.0, float(os.getenv("IM_GATEWAY_MEDIA_UPLOAD_RETRY_DELAY_SECONDS", "1") or "1"))
 DOWNLOAD_DIR = Path(os.getenv("IM_GATEWAY_DOWNLOAD_DIR", str(ROOT_DIR / "data" / "im_gateway")))
 
 
@@ -144,7 +146,10 @@ class AccountRuntime:
         task = job.get("task") if isinstance(job.get("task"), dict) else {}
         download_path = str(task.get("downloadPath") or "").strip()
         if download_path:
-            await self._send_delivery_artifact(bot=bot, peer_id=peer_id, download_path=download_path)
+            try:
+                await self._send_delivery_artifact(bot=bot, peer_id=peer_id, download_path=download_path)
+            except Exception:
+                await bot.send(peer_id, self._file_delivery_failure_text())
 
         summary = self._build_delivery_text(job)
         if summary:
@@ -389,16 +394,16 @@ class AccountRuntime:
         send_media = getattr(bot, "send_media", None)
         if not callable(send_media):
             raise RuntimeError("wechat gateway send_media is unavailable")
-        try:
-            await send_media(peer_id, {"file": content, "file_name": resolved_name})
-        except Exception as exc:
-            size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
-            print(
-                f"[im-gateway] owner={self.owner_id} delivery artifact upload failed: "
-                f"peer_id={peer_id} file_name={resolved_name} content_type={content_type or '-'} "
-                f"size_bytes={size_bytes} error={exc}"
-            )
-            raise
+        size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+        await self._send_media_with_retry(
+            send_media=send_media,
+            peer_id=peer_id,
+            payload={"file": content, "file_name": resolved_name},
+            file_name=resolved_name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            log_label="delivery artifact upload failed",
+        )
 
     async def _reply_with_media(
         self,
@@ -413,11 +418,38 @@ class AccountRuntime:
         resolved_name = unquote(str(preferred_name or filename or "").strip()) or "result.bin"
         reply_media = getattr(bot, "reply_media", None)
         if callable(reply_media):
-            await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
+            try:
+                await reply_media(incoming_msg, {"file": content, "file_name": resolved_name})
+            except Exception as exc:
+                if not self._is_retryable_media_error(exc):
+                    raise
+                send_media = getattr(bot, "send_media", None)
+                if not callable(send_media):
+                    raise
+                size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+                await self._send_media_with_retry(
+                    send_media=send_media,
+                    peer_id=peer_id,
+                    payload={"file": content, "file_name": resolved_name},
+                    file_name=resolved_name,
+                    content_type=content_type,
+                    size_bytes=size_bytes,
+                    log_label="media reply upload failed",
+                    initial_exception=exc,
+                )
             return
         send_media = getattr(bot, "send_media", None)
         if callable(send_media):
-            await send_media(peer_id, {"file": content, "file_name": resolved_name})
+            size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+            await self._send_media_with_retry(
+                send_media=send_media,
+                peer_id=peer_id,
+                payload={"file": content, "file_name": resolved_name},
+                file_name=resolved_name,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                log_label="media reply upload failed",
+            )
             return
         size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
         print(
@@ -425,6 +457,86 @@ class AccountRuntime:
             f"peer_id={peer_id} file_name={resolved_name} content_type={content_type or '-'} size_bytes={size_bytes}"
         )
         raise RuntimeError("wechat gateway media send is unavailable")
+
+    async def _send_media_with_retry(
+        self,
+        *,
+        send_media: Callable[[str, Dict[str, Any]], Any],
+        peer_id: str,
+        payload: Dict[str, Any],
+        file_name: str,
+        content_type: Optional[str],
+        size_bytes: int,
+        log_label: str,
+        initial_exception: Optional[Exception] = None,
+    ) -> None:
+        last_exc: Optional[Exception] = initial_exception
+        start_attempt = 2 if initial_exception is not None else 1
+        if initial_exception is None:
+            try:
+                await send_media(peer_id, payload)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_retryable_media_error(exc) or MEDIA_UPLOAD_MAX_ATTEMPTS <= 1:
+                    self._log_media_upload_failure(
+                        peer_id=peer_id,
+                        file_name=file_name,
+                        content_type=content_type,
+                        size_bytes=size_bytes,
+                        error=exc,
+                        log_label=log_label,
+                    )
+                    raise
+
+        for attempt in range(start_attempt, MEDIA_UPLOAD_MAX_ATTEMPTS + 1):
+            exc = last_exc if attempt == start_attempt else None
+            if exc is not None:
+                print(
+                    f"[im-gateway] owner={self.owner_id} retrying media upload: "
+                    f"peer_id={peer_id} file_name={file_name} attempt={attempt}/{MEDIA_UPLOAD_MAX_ATTEMPTS} error={exc}"
+                )
+            if MEDIA_UPLOAD_RETRY_DELAY_SECONDS > 0:
+                await asyncio.sleep(MEDIA_UPLOAD_RETRY_DELAY_SECONDS)
+            try:
+                await send_media(peer_id, payload)
+                return
+            except Exception as retry_exc:
+                last_exc = retry_exc
+                if not self._is_retryable_media_error(retry_exc):
+                    break
+
+        assert last_exc is not None
+        self._log_media_upload_failure(
+            peer_id=peer_id,
+            file_name=file_name,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            error=last_exc,
+            log_label=log_label,
+        )
+        raise last_exc
+
+    @staticmethod
+    def _is_retryable_media_error(exc: Exception) -> bool:
+        message = str(exc or "").strip().lower()
+        return "cdn upload failed" in message and "http 5" in message
+
+    def _log_media_upload_failure(
+        self,
+        *,
+        peer_id: str,
+        file_name: str,
+        content_type: Optional[str],
+        size_bytes: int,
+        error: Exception,
+        log_label: str,
+    ) -> None:
+        print(
+            f"[im-gateway] owner={self.owner_id} {log_label}: "
+            f"peer_id={peer_id} file_name={file_name} content_type={content_type or '-'} "
+            f"size_bytes={size_bytes} error={error}"
+        )
 
     async def _send_typing_indicator(self, bot: Any, peer_id: str) -> None:
         if not str(peer_id or "").strip():

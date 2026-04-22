@@ -1117,7 +1117,7 @@ def test_im_gateway_does_not_send_completion_text_before_delivery_artifact(monke
     assert sent_texts == ['分析任务 已完成。']
 
 
-def test_im_gateway_skips_completion_text_when_delivery_artifact_upload_fails(monkeypatch):
+def test_im_gateway_falls_back_to_text_when_delivery_artifact_upload_fails(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
@@ -1143,19 +1143,65 @@ def test_im_gateway_skips_completion_text_when_delivery_artifact_upload_fails(mo
     runtime.bot = FakeBot()
     runtime.current_account_id = 'bot-001'
 
-    with pytest.raises(RuntimeError, match='CDN upload failed: HTTP 500'):
-        asyncio.run(
-            runtime.send_delivery_job(
-                {
-                    'deliveryJobId': 'job-001',
-                    'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
-                    'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
-                    'task': {'downloadPath': '/download/path'},
-                }
-            )
+    asyncio.run(
+        runtime.send_delivery_job(
+            {
+                'deliveryJobId': 'job-001',
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+                'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
+                'task': {'downloadPath': '/download/path'},
+            }
         )
+    )
 
-    assert sent_texts == []
+    assert sent_texts == [
+        '结果文件发送失败了，我这边会继续重试。你先不用重复发送。',
+        '分析任务 已完成。',
+    ]
+
+
+def test_im_gateway_retries_delivery_artifact_upload_on_transient_cdn_error(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    sent_texts: list[str] = []
+    upload_attempts: list[dict[str, object]] = []
+
+    class FakeBackend:
+        async def download_task_artifact(self, _download_path: str):
+            return b'file-bytes', 'application/pdf', 'result.pdf'
+
+    class FakeBot:
+        async def send(self, _peer_id: str, text: str):
+            sent_texts.append(text)
+
+        async def send_media(self, _peer_id: str, payload: dict[str, object]):
+            upload_attempts.append(payload)
+            if len(upload_attempts) == 1:
+                raise RuntimeError('CDN upload failed: HTTP 500')
+
+    runtime = im_gateway_main.AccountRuntime(
+        owner_id='authing:owner-1',
+        backend=FakeBackend(),
+        download_dir=Path('.'),
+        background_task_tracker=lambda _task: None,
+    )
+    runtime.bot = FakeBot()
+    runtime.current_account_id = 'bot-001'
+
+    asyncio.run(
+        runtime.send_delivery_job(
+            {
+                'deliveryJobId': 'job-001',
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+                'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
+                'task': {'downloadPath': '/download/path'},
+            }
+        )
+    )
+
+    assert len(upload_attempts) == 2
+    assert sent_texts == ['分析任务 已完成。']
 
 
 def test_im_gateway_formats_pending_action_delivery(monkeypatch):
