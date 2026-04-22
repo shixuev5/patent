@@ -80,6 +80,54 @@ def test_evidence_verification_runs_disputes_in_parallel(monkeypatch) -> None:
     assert tracker["max_active"] >= 2
 
 
+def test_evidence_verification_retries_once_on_invalid_llm_output(monkeypatch) -> None:
+    node = EvidenceVerificationNode()
+    calls = {"count": 0}
+
+    def _fake_invoke_text_json(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "assessment": {
+                    "verdict": "APPLICANT_CORRECT",
+                    "reasoning": "首次输出缺字段",
+                    "confidence": 0.7,
+                    "examiner_rejection_rationale": "",
+                },
+                "evidence": [],
+            }
+        return {
+            "assessment": {
+                "verdict": "APPLICANT_CORRECT",
+                "reasoning": "重试后修正",
+                "confidence": 0.8,
+                "examiner_rejection_rationale": "结合D1的整体结构仍可论证为常规替换。",
+            },
+            "evidence": [],
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._verify_single_dispute(
+        dispute={
+            "dispute_id": "DSP_RETRY",
+            "claim_ids": ["1"],
+            "feature_text": "特征A",
+            "examiner_opinion": {"type": "document_based", "supporting_docs": [{"doc_id": "D1"}]},
+            "applicant_opinion": {"type": "fact_dispute"},
+        },
+        claims=[{"claim_text": "一种装置"}],
+        doc_group=("D1",),
+        missing_doc_ids=[],
+        prefix_messages=node._build_prefix_messages([{"doc_id": "D1", "document_number": "DOC1", "content": "D1内容"}]),
+        retrieval_docs=[],
+        local_retriever=None,
+    )
+
+    assert calls["count"] == 2
+    assert result["assessment"]["examiner_rejection_rationale"] == "结合D1的整体结构仍可论证为常规替换。"
+
+
 def test_evidence_verification_normalizes_doc_groups_for_prefix_cache() -> None:
     node = EvidenceVerificationNode()
 
@@ -341,6 +389,55 @@ def test_common_knowledge_verification_runs_disputes_in_parallel(monkeypatch) ->
     assert tracker["max_active"] >= 2
 
 
+def test_common_knowledge_verification_retries_once_on_invalid_llm_output(monkeypatch) -> None:
+    node = CommonKnowledgeVerificationNode()
+    calls = {"count": 0}
+
+    def _fake_invoke_text_json(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "assessment": {
+                    "verdict": "APPLICANT_CORRECT",
+                    "reasoning": "首次输出缺字段",
+                    "confidence": 0.6,
+                    "examiner_rejection_rationale": "",
+                },
+                "evidence": [],
+            }
+        return {
+            "assessment": {
+                "verdict": "APPLICANT_CORRECT",
+                "reasoning": "重试后修正",
+                "confidence": 0.75,
+                "examiner_rejection_rationale": "虽非公知常识，但结合既有结构仍可能属于容易想到的设计变形。",
+            },
+            "evidence": [],
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._verify_single_dispute(
+        dispute={
+            "dispute_id": "DSP_CK_RETRY",
+            "claim_ids": ["1"],
+            "feature_text": "特征B",
+            "examiner_opinion": {"type": "common_knowledge_based"},
+            "applicant_opinion": {"type": "logic_dispute"},
+        },
+        claim_text="权利要求1: 一种装置",
+        queries_by_engine={"google": []},
+        priority_date=None,
+        evidence_cards=[],
+        retrieval_engines=[],
+        retrieval_meta={},
+        local_retrieval_trace={},
+    )
+
+    assert calls["count"] == 2
+    assert result["assessment"]["examiner_rejection_rationale"] == "虽非公知常识，但结合既有结构仍可能属于容易想到的设计变形。"
+
+
 def test_topup_search_verification_runs_tasks_in_parallel(monkeypatch) -> None:
     node = TopupSearchVerificationNode()
     monkeypatch.setattr(settings, "OAR_MAX_CONCURRENCY", 3)
@@ -388,3 +485,48 @@ def test_topup_search_verification_runs_tasks_in_parallel(monkeypatch) -> None:
     assert len(result.get("disputes", [])) == 3
     assert len(result.get("evidence_assessments", [])) == 3
     assert tracker["max_active"] >= 2
+
+
+def test_topup_search_verification_retries_once_on_invalid_llm_output(monkeypatch) -> None:
+    node = TopupSearchVerificationNode()
+    calls = {"count": 0}
+
+    def _fake_invoke_text_json(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "examiner_opinion": {"type": "mixed_basis", "supporting_docs": [{"doc_id": "D1"}]},
+                "applicant_opinion": {"type": "logic_dispute"},
+                "assessment": {
+                    "verdict": "APPLICANT_CORRECT",
+                    "reasoning": "首次输出缺字段",
+                    "confidence": 0.65,
+                    "examiner_rejection_rationale": "",
+                },
+                "evidence": [],
+            }
+        return {
+            "examiner_opinion": {"type": "mixed_basis", "supporting_docs": [{"doc_id": "D1"}]},
+            "applicant_opinion": {"type": "logic_dispute"},
+            "assessment": {
+                "verdict": "APPLICANT_CORRECT",
+                "reasoning": "重试后修正",
+                "confidence": 0.85,
+                "examiner_rejection_rationale": "D1配合EXT1可作为进一步创造性评价的基础。",
+            },
+            "evidence": [{"doc_id": "D1", "quote": "公开内容", "quote_translation": "", "location": "段落1", "analysis": "支持分析"}],
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._evaluate_with_evidence_cards(
+        task={"task_id": "TOPUP_RETRY"},
+        claim_ids=["1"],
+        claim_text="权利要求1: 一种装置",
+        feature_text="新增特征C",
+        evidence_cards=[{"doc_id": "D1", "quote": "公开内容", "location": "段落1", "analysis": "支持分析"}],
+        external_queries={},
+    )
+
+    assert calls["count"] == 2
+    assert result["assessment"]["examiner_rejection_rationale"] == "D1配合EXT1可作为进一步创造性评价的基础。"

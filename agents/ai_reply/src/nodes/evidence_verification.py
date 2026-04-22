@@ -27,6 +27,7 @@ class EvidenceVerificationNode:
     _MAX_DOC_CACHE_MARKERS = 3
     _FULL_DOC_CONTEXT_LIMIT = 16000
     _NON_PATENT_RETRIEVAL_QUERY_LIMIT = 4
+    _LLM_MAX_ATTEMPTS = 2
 
     def __init__(self, config=None):
         self.config = config
@@ -491,12 +492,12 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
 """
         messages.append({"role": "user", "content": dispute_prompt})
 
-        response = self.llm_service.invoke_text_json(
+        parsed = self._invoke_and_normalize_with_retry(
             messages=messages,
             task_kind="oar_evidence_verification",
-            temperature=0.05,
+            allowed_doc_ids=set(doc_group),
+            dispute_id=str(dispute.get("dispute_id", "")).strip(),
         )
-        parsed = self._normalize_llm_output(response, set(doc_group))
 
         claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", []))
         feature_text = str(dispute.get("feature_text", "")).strip()
@@ -519,6 +520,37 @@ missing_doc_ids: {json.dumps(missing_doc_ids, ensure_ascii=False)}
                 "missing_doc_ids": list(missing_doc_ids),
             },
         }
+
+    def _invoke_and_normalize_with_retry(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        task_kind: str,
+        allowed_doc_ids: set[str],
+        dispute_id: str,
+    ) -> Dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self._LLM_MAX_ATTEMPTS + 1):
+            try:
+                response = self.llm_service.invoke_text_json(
+                    messages=messages,
+                    task_kind=task_kind,
+                    temperature=0.05,
+                )
+                return self._normalize_llm_output(response, allowed_doc_ids)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self._LLM_MAX_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "证据核查 LLM 输出异常，准备重试: dispute_id={} attempt={}/{} error={}",
+                    dispute_id or "-",
+                    attempt,
+                    self._LLM_MAX_ATTEMPTS,
+                    exc,
+                )
+        assert last_error is not None
+        raise last_error
 
     def _build_local_retriever(self, prepared_materials: Dict[str, Any]) -> LocalEvidenceRetriever | None:
         local_meta = self._to_dict(prepared_materials.get("local_retrieval", {}))

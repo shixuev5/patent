@@ -50,6 +50,7 @@ from config import settings
 
 class TopupSearchVerificationNode:
     """补充检索与评判节点（LLM主判）"""
+    _LLM_MAX_ATTEMPTS = 2
 
     def __init__(self, config=None):
         self.config = config
@@ -373,12 +374,45 @@ class TopupSearchVerificationNode:
             for item in evidence_cards
             if str(item.get("doc_id", "")).strip()
         }
-        response = self.llm_service.invoke_text_json(
+        return self._invoke_and_normalize_with_retry(
             messages=messages,
             task_kind="oar_topup_search_verification",
-            temperature=0.05,
+            allowed_doc_ids=allowed_doc_ids,
+            evidence_map=evidence_map,
+            task_id=str(task.get("task_id", "")).strip(),
         )
-        return self._normalize_llm_output(response, allowed_doc_ids, evidence_map)
+
+    def _invoke_and_normalize_with_retry(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        task_kind: str,
+        allowed_doc_ids: Set[str],
+        evidence_map: Dict[str, Dict[str, Any]],
+        task_id: str,
+    ) -> Dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self._LLM_MAX_ATTEMPTS + 1):
+            try:
+                response = self.llm_service.invoke_text_json(
+                    messages=messages,
+                    task_kind=task_kind,
+                    temperature=0.05,
+                )
+                return self._normalize_llm_output(response, allowed_doc_ids, evidence_map)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self._LLM_MAX_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "补充检索核查 LLM 输出异常，准备重试: task_id={} attempt={}/{} error={}",
+                    task_id or "-",
+                    attempt,
+                    self._LLM_MAX_ATTEMPTS,
+                    exc,
+                )
+        assert last_error is not None
+        raise last_error
 
     def _build_system_prompt(self) -> str:
         return """你是一位资深的中国专利局审查专家（熟练掌握《专利审查指南》）。你的核心任务是：针对申请人修改/新增的权利要求特征，基于提供的【本地对比文件证据(D*)】和【外部检索证据(EXT*)】，进行严谨的比对评判，并给出最终裁决。

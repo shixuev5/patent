@@ -47,6 +47,7 @@ from config import settings
 
 class CommonKnowledgeVerificationNode:
     """公知常识核查节点（输出结构与 EvidenceVerificationNode 对齐）"""
+    _LLM_MAX_ATTEMPTS = 2
 
     def __init__(self, config=None):
         self.config = config
@@ -827,12 +828,13 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
             if item.get("doc_id")
         }
 
-        response = self.llm_service.invoke_text_json(
+        parsed = self._invoke_and_normalize_with_retry(
             messages=messages,
             task_kind="oar_common_knowledge_verification",
-            temperature=0.05,
+            allowed_doc_ids=allowed_doc_ids,
+            external_doc_map=external_doc_map,
+            dispute_id=str(dispute.get("dispute_id", "")).strip(),
         )
-        parsed = self._normalize_llm_output(response, allowed_doc_ids, external_doc_map)
 
         claim_ids = self._normalize_claim_ids(dispute.get("claim_ids", []))
         feature_text = str(dispute.get("feature_text", "")).strip()
@@ -862,6 +864,38 @@ retrieval_queries_by_engine: {json.dumps(queries_by_engine, ensure_ascii=False)}
                 "retrieval": build_trace_retrieval(queries_by_engine, retrieval_engines, retrieval_meta),
             },
         }
+
+    def _invoke_and_normalize_with_retry(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        task_kind: str,
+        allowed_doc_ids: Set[str],
+        external_doc_map: Dict[str, Dict[str, Any]],
+        dispute_id: str,
+    ) -> Dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(1, self._LLM_MAX_ATTEMPTS + 1):
+            try:
+                response = self.llm_service.invoke_text_json(
+                    messages=messages,
+                    task_kind=task_kind,
+                    temperature=0.05,
+                )
+                return self._normalize_llm_output(response, allowed_doc_ids, external_doc_map)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self._LLM_MAX_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "公知常识核查 LLM 输出异常，准备重试: dispute_id={} attempt={}/{} error={}",
+                    dispute_id or "-",
+                    attempt,
+                    self._LLM_MAX_ATTEMPTS,
+                    exc,
+                )
+        assert last_error is not None
+        raise last_error
 
     def _normalize_llm_output(
         self,
