@@ -25,7 +25,6 @@
         <div class="wechat-panel-header">
           <div>
             <p class="wechat-badge is-bound">已登录</p>
-            <h3 class="wechat-name">{{ binding.wechatDisplayName || '微信账号' }}</h3>
             <p v-if="binding.boundAt" class="wechat-meta">登录于 {{ formatTime(binding.boundAt) }}</p>
           </div>
           <button

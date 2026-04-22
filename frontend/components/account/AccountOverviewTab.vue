@@ -8,7 +8,7 @@
       </article>
 
       <article class="metric-card">
-        <p class="metric-label">当前结案周期</p>
+        <p class="metric-label">本周期</p>
         <p class="metric-value">{{ dashboard?.workMonth.totalCount ?? 0 }}</p>
         <p class="metric-desc">AI 分析 {{ dashboard?.workMonth.analysisCount ?? 0 }} 个</p>
       </article>
@@ -30,7 +30,7 @@
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold text-slate-900">{{ dashboardTitle }}</h2>
-          <p class="text-xs text-slate-500">横轴为结案周期日期，纵轴为累计 AI 分析数</p>
+          <p class="text-xs text-slate-500">横轴为周期日期，纵轴为累计 AI 分析数</p>
         </div>
         <div class="flex items-center gap-2">
           <p
@@ -76,7 +76,7 @@
 
     <article class="rounded-2xl border border-slate-200 bg-white p-4">
       <div class="mb-2 flex items-center justify-between gap-3">
-        <h3 class="text-sm font-semibold text-slate-900">当前结案周期每日 AI 分析</h3>
+        <h3 class="text-sm font-semibold text-slate-900">本周期每日 AI 分析</h3>
         <p class="text-xs text-slate-500">{{ periodRangeLabel }}</p>
       </div>
 
@@ -500,7 +500,7 @@ const formatPercent = (value: number): string => `${Math.round(value)}%`
 const periodRangeLabel = computed(() => {
   const start = String(props.dashboard?.periodStart || '').trim()
   const end = String(props.dashboard?.periodEnd || '').trim()
-  if (!start || !end) return '按当前结案周期展示'
+  if (!start || !end) return '按本周期展示'
   return `${start} 至 ${end}`
 })
 

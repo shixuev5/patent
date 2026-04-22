@@ -547,7 +547,7 @@ const dashboardTitle = computed(() => {
 const targetHintText = computed(() => {
   if (!isCurrentMonthSelection.value) return '当前查看历史结案月，目标仅可在当前结案月修改。'
   if (monthTargetSource.value === 'carried') return '本周期目标已自动沿用最近一次设置值，需要的话可直接改。'
-  if (monthTargetSource.value === 'empty') return '当前结案周期还没有目标，先定一个 AI 分析目标更容易跟进节奏。'
+  if (monthTargetSource.value === 'empty') return '本周期还没有目标，先定一个 AI 分析目标更容易跟进节奏。'
   return '已设置本周期目标，后续进度和周卡片会按这个值实时更新。'
 })
 
@@ -568,14 +568,14 @@ const deltaToneClass = computed(() => {
 
 const smartSummary = computed(() => {
   if (monthTarget.value <= 0) {
-    return '当前结案周期还没立下目标，先定一个你觉得刚好有挑战的 AI 分析数量。'
+    return '本周期还没立下目标，先定一个你觉得刚好有挑战的 AI 分析数量。'
   }
   const expectedCount = Math.round((monthTarget.value * elapsedRatio.value) || 0)
   const deltaCount = monthTotalCreated.value - expectedCount
   const absDeltaCount = Math.abs(deltaCount)
   const deltaPrefix = deltaCount >= 0 ? '领先' : '落后'
   if (progressDeltaPercent.value >= 8) {
-    return `当前结案周期推进得很稳，AI 分析数量已比节奏${deltaPrefix} ${absDeltaCount} 个。`
+    return `本周期推进得很稳，AI 分析数量已比节奏${deltaPrefix} ${absDeltaCount} 个。`
   }
   if (progressDeltaPercent.value <= -8) {
     return `当前 AI 分析节奏稍慢，和计划相差 ${absDeltaCount} 个；优先推进临近完成案件会更有效。`
