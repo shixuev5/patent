@@ -1645,7 +1645,7 @@ def test_claim_wechat_delivery_jobs_skips_stale_rows_when_compare_and_claim_lose
 
     def _stale_fetchall(sql, params=None):
         normalized = " ".join(str(sql).split())
-        if normalized.startswith("SELECT * FROM wechat_delivery_jobs WHERE status = 'pending'"):
+        if "FROM wechat_delivery_jobs WHERE status = 'pending'" in normalized:
             return [
                 {
                     'delivery_job_id': created.delivery_job_id,

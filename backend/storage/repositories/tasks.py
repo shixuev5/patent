@@ -20,6 +20,11 @@ from ..models import AccountMonthTarget, Task, TaskStatus
 
 
 class TaskRepositoryMixin:
+    TASK_SNAPSHOT_COLUMNS = (
+        "id, owner_id, task_type, pn, title, status, progress, current_step, "
+        "error_message, created_at, updated_at, completed_at, metadata"
+    )
+
     def create_task(self, task: Task) -> Task:
         self._request(
             """
@@ -49,6 +54,10 @@ class TaskRepositoryMixin:
 
     def get_task(self, task_id: str) -> Optional[Task]:
         row = self._fetchone("SELECT * FROM tasks WHERE id = ?", [task_id])
+        return self._row_to_task(row) if row else None
+
+    def get_task_snapshot(self, task_id: str) -> Optional[Task]:
+        row = self._fetchone(f"SELECT {self.TASK_SNAPSHOT_COLUMNS} FROM tasks WHERE id = ?", [task_id])
         return self._row_to_task(row) if row else None
 
     def update_task(self, task_id: str, **kwargs) -> bool:
@@ -100,7 +109,7 @@ class TaskRepositoryMixin:
             where.append("t.task_type = ?")
             params.append(task_type)
         if status:
-            where.append("LOWER(t.status) = ?")
+            where.append("t.status = ?")
             params.append(str(status).strip().lower())
         if date_from:
             where.append("t.created_at >= ?")
@@ -251,12 +260,44 @@ class TaskRepositoryMixin:
         normalized_statuses = [str(status).strip().lower() for status in (statuses or []) if str(status).strip()]
         if normalized_statuses:
             placeholders = ", ".join(["?"] * len(normalized_statuses))
-            where.append(f"LOWER(status) IN ({placeholders})")
+            where.append(f"status IN ({placeholders})")
             params.extend(normalized_statuses)
         if not include_deleted:
             where.append("deleted_at IS NULL")
         row = self._fetchone(f"SELECT COUNT(*) AS c FROM tasks WHERE {' AND '.join(where)}", params)
         return int(row["c"]) if row else 0
+
+    def aggregate_user_tasks_today(self, owner_id: str, tz_offset_hours: int = 8, *, include_deleted: bool = False, occupied_statuses: Optional[List[str]] = None) -> Dict[str, Dict[str, int]]:
+        del tz_offset_hours
+        start_iso, end_iso = local_recent_day_window_to_utc(1)
+        normalized_statuses = [str(status).strip().lower() for status in (occupied_statuses or []) if str(status).strip()]
+        placeholders = ", ".join(["?"] * len(normalized_statuses)) if normalized_statuses else ""
+        occupied_sql = (
+            f"SUM(CASE WHEN status IN ({placeholders}) THEN 1 ELSE 0 END) AS occupied_count"
+            if normalized_statuses
+            else "0 AS occupied_count"
+        )
+        where = ["owner_id = ?", "created_at >= ?", "created_at < ?"]
+        params: List[Any] = [owner_id, start_iso, end_iso]
+        if not include_deleted:
+            where.append("deleted_at IS NULL")
+        rows = self._fetchall(
+            f"""
+            SELECT task_type, COUNT(*) AS created_count, {occupied_sql}
+            FROM tasks
+            WHERE {' AND '.join(where)}
+            GROUP BY task_type
+            """,
+            normalized_statuses + params,
+        )
+        aggregated: Dict[str, Dict[str, int]] = {}
+        for row in rows:
+            task_type = str(row.get("task_type") or "").strip().lower() or "unknown"
+            aggregated[task_type] = {
+                "created_count": int(row.get("created_count") or 0),
+                "occupied_count": int(row.get("occupied_count") or 0),
+            }
+        return aggregated
 
     def get_statistics(self) -> Dict[str, Any]:
         rows = self._fetchall("SELECT status, COUNT(*) AS count FROM tasks WHERE deleted_at IS NULL GROUP BY status")

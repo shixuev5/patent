@@ -72,7 +72,7 @@ class SystemLogsRepositoryMixin:
             return False
         result = self._request(
             """
-            INSERT OR REPLACE INTO system_logs (
+            INSERT INTO system_logs (
                 log_id, timestamp, category, event_name, level,
                 owner_id, task_id, task_type, request_id, trace_id,
                 method, path, status_code, duration_ms,

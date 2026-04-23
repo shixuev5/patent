@@ -423,6 +423,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_task_type ON tasks(task_type);
 CREATE INDEX IF NOT EXISTS idx_tasks_deleted_created_at ON tasks(deleted_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_deleted_owner_id ON tasks(deleted_at, owner_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_owner_created_deleted_type ON tasks(owner_id, created_at, deleted_at, task_type);
+CREATE INDEX IF NOT EXISTS idx_tasks_owner_created_deleted_type_status ON tasks(owner_id, created_at, deleted_at, task_type, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_deleted_status_created_at ON tasks(deleted_at, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_deleted_task_type_created_at ON tasks(deleted_at, task_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_patent_analyses_completed_at ON patent_analyses(first_completed_at);
 CREATE INDEX IF NOT EXISTS idx_users_authing_sub ON users(authing_sub);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -444,12 +448,15 @@ CREATE INDEX IF NOT EXISTS idx_refresh_sessions_revoked_at ON refresh_sessions(r
 CREATE INDEX IF NOT EXISTS idx_wechat_bindings_owner_status ON wechat_bindings(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_wechat_bindings_account_status ON wechat_bindings(bot_account_id, status);
 CREATE INDEX IF NOT EXISTS idx_wechat_bindings_delivery_peer_status ON wechat_bindings(bot_account_id, delivery_peer_id, status);
+CREATE INDEX IF NOT EXISTS idx_wechat_bindings_status_updated_at ON wechat_bindings(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_owner_status ON wechat_login_sessions(owner_id, status);
 CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_expires_at ON wechat_login_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_status_created_at ON wechat_login_sessions(status, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_wechat_flow_sessions_owner_type_status ON wechat_flow_sessions(owner_id, flow_type, status);
 CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_owner_status ON wechat_conversation_sessions(owner_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_binding_peer ON wechat_conversation_sessions(binding_id, peer_id);
 CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_context ON wechat_conversation_sessions(active_context_kind, active_context_session_id);
 CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_next_attempt ON wechat_delivery_jobs(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_created_at ON wechat_delivery_jobs(status, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_owner_status ON wechat_delivery_jobs(owner_id, status);
 """ + AI_SEARCH_STORAGE_SQL

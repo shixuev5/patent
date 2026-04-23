@@ -846,7 +846,11 @@ async def post_internal_wechat_delivery_jobs_claim(
         jobs = []
     items: List[Dict[str, object]] = []
     for job in jobs:
-        task = task_manager.storage.get_task(job.task_id) if job.task_id else None
+        task = (
+            task_manager.storage.get_task_snapshot(job.task_id)
+            if job.task_id and hasattr(task_manager.storage, "get_task_snapshot")
+            else task_manager.storage.get_task(job.task_id) if job.task_id else None
+        )
         binding = task_manager.storage.get_wechat_binding_by_owner(job.owner_id)
         items.append(_build_internal_wechat_delivery_job_item(job, task=task, binding=binding))
     return {"items": items, "total": len(items)}
@@ -878,7 +882,11 @@ async def post_internal_wechat_delivery_job_progress(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="delivery job not found")
-    task = task_manager.storage.get_task(updated.task_id) if updated.task_id else None
+    task = (
+        task_manager.storage.get_task_snapshot(updated.task_id)
+        if updated.task_id and hasattr(task_manager.storage, "get_task_snapshot")
+        else task_manager.storage.get_task(updated.task_id) if updated.task_id else None
+    )
     binding = task_manager.storage.get_wechat_binding_by_owner(updated.owner_id)
     return _build_internal_wechat_delivery_job_item(updated, task=task, binding=binding)
 

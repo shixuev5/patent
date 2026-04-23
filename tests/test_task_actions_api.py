@@ -254,3 +254,28 @@ def test_list_tasks_hides_ai_search_sessions(monkeypatch, tmp_path: Path) -> Non
     returned_ids = {item["id"] for item in result["tasks"]}
     assert analysis_task.id in returned_ids
     assert search_task.id not in returned_ids
+
+
+def test_get_task_route_returns_snapshot_shape(monkeypatch, tmp_path: Path) -> None:
+    manager = _mount_task_manager(monkeypatch, tmp_path)
+    task = manager.create_task(owner_id="authing:user-11", task_type="patent_analysis", pn="CN11", title="CN11")
+    manager.storage.update_task(
+        task.id,
+        progress=45,
+        current_step="生成检索要素",
+        error_message="temporary",
+        metadata={"output_files": {"pdf": "dummy.pdf"}},
+    )
+
+    result = asyncio.run(tasks_route.get_task(task.id, CurrentUser(user_id="authing:user-11")))
+
+    assert result["id"] == task.id
+    assert result["pn"] == "CN11"
+    assert result["title"] == "CN11"
+    assert result["taskType"] == "patent_analysis"
+    assert result["status"] == "pending"
+    assert result["progress"] == 45
+    assert result["step"] == "生成检索要素"
+    assert result["error"] == "temporary"
+    assert result["created_at"]
+    assert result["updated_at"]

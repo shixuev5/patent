@@ -127,3 +127,34 @@ def test_ai_search_paused_task_still_occupies_points(monkeypatch, tmp_path):
     assert result.remainingPoints == 1.5
     assert result.createdToday.searchCount == 1
     assert result.canCreateRequestedTask is True
+
+
+def test_usage_aggregation_keeps_deleted_tasks_in_created_counts(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    owner_id = "guest_deleted"
+    _create_task(storage, owner_id, TaskType.PATENT_ANALYSIS.value, "t-d-1", status=TaskStatus.COMPLETED)
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-d-2", status=TaskStatus.PROCESSING)
+    storage.delete_task("t-d-2")
+
+    result = usage._get_user_usage(owner_id, task_type=TaskType.PATENT_ANALYSIS.value)
+
+    assert result.createdToday.analysisCount == 1
+    assert result.createdToday.replyCount == 1
+    assert result.createdToday.totalCount == 2
+    assert result.usedPoints == 3.0
+    assert result.remainingPoints == 0.0
+
+
+def test_usage_aggregation_ignores_failed_and_cancelled_for_occupied_counts(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    owner_id = "guest_terminal_mix"
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-m-1", status=TaskStatus.FAILED)
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-m-2", status=TaskStatus.CANCELLED)
+    _create_task(storage, owner_id, TaskType.AI_REPLY.value, "t-m-3", status=TaskStatus.PENDING)
+
+    result = usage._get_user_usage(owner_id, task_type=TaskType.AI_REPLY.value)
+
+    assert result.createdToday.replyCount == 3
+    assert result.usedPoints == 2.0
+    assert result.remainingPoints == 1.0
+    assert result.canCreateRequestedTask is False

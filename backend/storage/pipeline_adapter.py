@@ -177,6 +177,11 @@ class PipelineTaskManager:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.storage.get_task(task_id)
 
+    def get_task_snapshot(self, task_id: str) -> Optional[Task]:
+        if hasattr(self.storage, "get_task_snapshot"):
+            return self.storage.get_task_snapshot(task_id)
+        return self.storage.get_task(task_id)
+
     def list_tasks(
         self,
         status: Optional[TaskStatus] = None,

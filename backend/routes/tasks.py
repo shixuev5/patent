@@ -2216,7 +2216,11 @@ async def create_task(
 
 @router.get("/api/tasks/{task_id}")
 async def get_task(task_id: str, current_user: CurrentUser = Depends(_get_current_user)):
-    task = _get_owned_task(task_id, current_user.user_id)
+    task = task_manager.get_task_snapshot(task_id) if hasattr(task_manager, "get_task_snapshot") else task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在。")
+    if task.owner_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="任务不存在。")
     return _task_to_response(task)
 
 

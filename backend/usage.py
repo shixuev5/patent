@@ -112,14 +112,21 @@ def _today_point_occupied_count(owner_id: str, task_type: str) -> int:
 def _get_user_usage(owner_id: str, task_type: Optional[str] = None) -> UsageResponse:
     auth_type = _auth_type_for_owner_id(owner_id)
     daily_limit_units = _daily_point_limit_units_for_auth_type(auth_type)
-    analysis_count = _today_created_count(owner_id, TaskType.PATENT_ANALYSIS.value)
-    review_count = _today_created_count(owner_id, TaskType.AI_REVIEW.value)
-    reply_count = _today_created_count(owner_id, TaskType.AI_REPLY.value)
-    search_count = _today_created_count(owner_id, TaskType.AI_SEARCH.value)
-    analysis_occupied_count = _today_point_occupied_count(owner_id, TaskType.PATENT_ANALYSIS.value)
-    review_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REVIEW.value)
-    reply_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_REPLY.value)
-    search_occupied_count = _today_point_occupied_count(owner_id, TaskType.AI_SEARCH.value)
+    aggregated_today = task_manager.storage.aggregate_user_tasks_today(
+        owner_id,
+        tz_offset_hours=APP_TZ_OFFSET_HOURS,
+        include_deleted=True,
+        occupied_statuses=list(POINT_OCCUPIED_STATUSES),
+    )
+
+    def _counts(task_type_key: str) -> tuple[int, int]:
+        row = aggregated_today.get(task_type_key, {})
+        return int(row.get("created_count") or 0), int(row.get("occupied_count") or 0)
+
+    analysis_count, analysis_occupied_count = _counts(TaskType.PATENT_ANALYSIS.value)
+    review_count, review_occupied_count = _counts(TaskType.AI_REVIEW.value)
+    reply_count, reply_occupied_count = _counts(TaskType.AI_REPLY.value)
+    search_count, search_occupied_count = _counts(TaskType.AI_SEARCH.value)
     used_units = (
         analysis_occupied_count * TASK_POINT_COST_UNITS[TaskType.PATENT_ANALYSIS.value]
         + review_occupied_count * TASK_POINT_COST_UNITS[TaskType.AI_REVIEW.value]

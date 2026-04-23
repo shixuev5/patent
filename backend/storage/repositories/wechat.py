@@ -9,6 +9,22 @@ from ..models import WeChatBinding, WeChatConversationSession, WeChatDeliveryJob
 
 
 class WeChatRepositoryMixin:
+    WECHAT_LOGIN_SESSION_COLUMNS = (
+        "login_session_id, owner_id, status, qr_url, expires_at, bot_account_id, "
+        "wechat_user_id, wechat_display_name, error_message, online_at, created_at, updated_at"
+    )
+    WECHAT_BINDING_COLUMNS = (
+        "binding_id, owner_id, status, bot_account_id, wechat_user_id, wechat_display_name, "
+        "delivery_peer_id, delivery_peer_name, push_task_completed, push_task_failed, "
+        "push_ai_search_pending_action, bound_at, disconnected_at, last_inbound_at, "
+        "last_outbound_at, created_at, updated_at"
+    )
+    WECHAT_DELIVERY_JOB_COLUMNS = (
+        "delivery_job_id, owner_id, binding_id, task_id, event_type, status, delivery_stage, "
+        "payload_json, stage_details_json, attempt_count, max_attempts, next_attempt_at, "
+        "claimed_at, completed_at, failed_at, last_error, created_at, updated_at"
+    )
+
     def create_wechat_login_session(self, session: WeChatLoginSession) -> WeChatLoginSession:
         self._request(
             """
@@ -43,7 +59,7 @@ class WeChatRepositoryMixin:
 
     def list_pending_wechat_login_sessions(self) -> List[WeChatLoginSession]:
         rows = self._fetchall(
-            "SELECT * FROM wechat_login_sessions WHERE status IN ('pending', 'qr_ready', 'scanned') ORDER BY created_at ASC",
+            f"SELECT {self.WECHAT_LOGIN_SESSION_COLUMNS} FROM wechat_login_sessions WHERE status IN ('pending', 'qr_ready', 'scanned') ORDER BY created_at ASC",
             [],
         )
         return [self._row_to_wechat_login_session(row) for row in rows]
@@ -82,7 +98,7 @@ class WeChatRepositoryMixin:
 
     def list_active_wechat_bindings(self) -> List[WeChatBinding]:
         rows = self._fetchall(
-            "SELECT * FROM wechat_bindings WHERE status = 'active' ORDER BY updated_at DESC",
+            f"SELECT {self.WECHAT_BINDING_COLUMNS} FROM wechat_bindings WHERE status = 'active' ORDER BY updated_at DESC",
             [],
         )
         return [self._row_to_wechat_binding(row) for row in rows]
@@ -316,7 +332,7 @@ class WeChatRepositoryMixin:
         normalized_limit = max(1, int(limit or 1))
         now_iso = utc_now_z()
         rows = self._fetchall(
-            "SELECT * FROM wechat_delivery_jobs WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at ASC LIMIT ?",
+            f"SELECT {self.WECHAT_DELIVERY_JOB_COLUMNS} FROM wechat_delivery_jobs WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at ASC LIMIT ?",
             [now_iso, normalized_limit],
         )
         jobs: List[WeChatDeliveryJob] = []
