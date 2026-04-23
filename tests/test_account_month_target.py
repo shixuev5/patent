@@ -1233,7 +1233,45 @@ def test_im_gateway_marks_delivery_failed_instead_of_complete_when_artifact_uplo
     )
 
     assert completed == []
-    assert failed == [('job-001', 'CDN upload failed: HTTP 500', True, 5)]
+    assert failed == [('job-001', 'RuntimeError: CDN upload failed: HTTP 500', True, 5)]
+
+
+def test_im_gateway_marks_delivery_failed_with_described_empty_exception(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    failed: list[tuple[str, str, bool | None, int | None]] = []
+
+    class EmptySdkError(RuntimeError):
+        def __str__(self) -> str:
+            return ''
+
+    class FakeBackend:
+        async def fail_delivery_job(self, delivery_job_id: str, error_message: str, *, retryable=None, retry_after_seconds=None):
+            failed.append((delivery_job_id, error_message, retryable, retry_after_seconds))
+
+        async def complete_delivery_job(self, delivery_job_id: str):
+            raise AssertionError(f'unexpected completion for {delivery_job_id}')
+
+    class FakeRuntime:
+        async def send_delivery_job(self, _job):
+            inner = RuntimeError('CDN upload failed: HTTP 502')
+            raise EmptySdkError() from inner
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+    monkeypatch.setattr(gateway, '_runtime_for_job', lambda _job: FakeRuntime())
+
+    asyncio.run(
+        gateway._deliver_job(
+            {
+                'deliveryJobId': 'job-001',
+                'ownerId': 'authing:owner-1',
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+            }
+        )
+    )
+
+    assert failed == [('job-001', 'EmptySdkError <- RuntimeError: CDN upload failed: HTTP 502', True, 5)]
 
 
 def test_im_gateway_formats_pending_action_delivery(monkeypatch):

@@ -152,6 +152,7 @@ class AccountRuntime:
 
         task = job.get("task") if isinstance(job.get("task"), dict) else {}
         download_path = str(task.get("downloadPath") or "").strip()
+        summary = self._build_delivery_text(job)
         if download_path:
             try:
                 await self._update_delivery_job_progress(
@@ -164,7 +165,7 @@ class AccountRuntime:
                 await self._update_delivery_job_progress(
                     delivery_job_id,
                     stage="retry_waiting" if self._is_retryable_media_error(exc) else "failed",
-                    stage_details={"error": str(exc)},
+                    stage_details={"error": self._describe_exception(exc)},
                 )
                 raise
         await self._update_delivery_job_progress(
@@ -173,7 +174,6 @@ class AccountRuntime:
             stage_details={"startedAt": utc_now().isoformat()},
         )
 
-        summary = self._build_delivery_text(job)
         if summary:
             await bot.send(peer_id, summary)
 
@@ -314,7 +314,7 @@ class AccountRuntime:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[im-gateway] owner={self.owner_id} async inbound follow-up failed: {exc}")
+            print(f"[im-gateway] owner={self.owner_id} async inbound follow-up failed: {self._describe_exception(exc)}")
             await self._send_messages(
                 bot=bot,
                 peer_id=peer_id,
@@ -446,7 +446,10 @@ class AccountRuntime:
                 stage_details=stage_details or {},
             )
         except Exception as exc:
-            print(f"[im-gateway] owner={self.owner_id} delivery progress update failed: job={delivery_job_id} stage={stage} error={exc}")
+            print(
+                f"[im-gateway] owner={self.owner_id} delivery progress update failed: "
+                f"job={delivery_job_id} stage={stage} error={self._describe_exception(exc)}"
+            )
 
     async def _reply_with_media(
         self,
@@ -537,7 +540,8 @@ class AccountRuntime:
             if exc is not None:
                 print(
                     f"[im-gateway] owner={self.owner_id} retrying media upload: "
-                    f"peer_id={peer_id} file_name={file_name} attempt={attempt}/{MEDIA_UPLOAD_MAX_ATTEMPTS} error={exc}"
+                    f"peer_id={peer_id} file_name={file_name} attempt={attempt}/{MEDIA_UPLOAD_MAX_ATTEMPTS} "
+                    f"error={self._describe_exception(exc)}"
                 )
             if MEDIA_UPLOAD_RETRY_DELAY_SECONDS > 0:
                 await asyncio.sleep(MEDIA_UPLOAD_RETRY_DELAY_SECONDS)
@@ -562,7 +566,7 @@ class AccountRuntime:
 
     @staticmethod
     def _is_retryable_media_error(exc: Exception) -> bool:
-        message = str(exc or "").strip().lower()
+        message = AccountRuntime._describe_exception(exc).strip().lower()
         return "cdn upload failed" in message and "http 5" in message
 
     def _log_media_upload_failure(
@@ -578,7 +582,7 @@ class AccountRuntime:
         print(
             f"[im-gateway] owner={self.owner_id} {log_label}: "
             f"peer_id={peer_id} file_name={file_name} content_type={content_type or '-'} "
-            f"size_bytes={size_bytes} error={error}"
+            f"size_bytes={size_bytes} error={self._describe_exception(error)}"
         )
 
     async def _send_typing_indicator(self, bot: Any, peer_id: str) -> None:
@@ -662,7 +666,7 @@ class AccountRuntime:
                 wechat_display_name=None,
             )
         except Exception as exc:
-            print(f"[im-gateway] owner={self.owner_id} failed to report online state: {exc}")
+            print(f"[im-gateway] owner={self.owner_id} failed to report online state: {self._describe_exception(exc)}")
 
     async def _report_login_failure(self, exc: Exception) -> None:
         login_session_id = str(self._attempt_login_session_id or "").strip()
@@ -673,10 +677,10 @@ class AccountRuntime:
             await self.backend.update_login_session_state(
                 login_session_id=login_session_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=self._describe_exception(exc),
             )
         except Exception as report_exc:
-            print(f"[im-gateway] owner={self.owner_id} failed to report login error: {report_exc}")
+            print(f"[im-gateway] owner={self.owner_id} failed to report login error: {self._describe_exception(report_exc)}")
 
     def _resolve_account_id(self, bot: Any, *, creds: Any | None = None) -> str:
         resolved_creds = creds
@@ -733,7 +737,7 @@ class AccountRuntime:
 
     def _on_error(self, exc: Exception) -> None:
         login_session_id = str(self._attempt_login_session_id or "").strip()
-        print(f"[im-gateway] owner={self.owner_id} sdk error: {exc}")
+        print(f"[im-gateway] owner={self.owner_id} sdk error: {self._describe_exception(exc)}")
         if not login_session_id:
             return
         self._login_terminal_state_reported = True
@@ -741,7 +745,7 @@ class AccountRuntime:
             self.backend.update_login_session_state(
                 login_session_id=login_session_id,
                 status="failed",
-                error_message=str(exc),
+                error_message=self._describe_exception(exc),
             )
         )
         self._track_background_task(task)
@@ -784,6 +788,24 @@ class AccountRuntime:
     @staticmethod
     def _file_delivery_failure_text() -> str:
         return "结果文件发送失败了，我这边会继续重试。你先不用重复发送。"
+
+    @staticmethod
+    def _describe_exception(exc: Exception) -> str:
+        parts: List[str] = []
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            current_type = type(current).__name__
+            current_text = str(current).strip()
+            if current_text:
+                parts.append(f"{current_type}: {current_text}")
+            else:
+                args = getattr(current, "args", ())
+                normalized_args = ", ".join(str(item).strip() for item in args if str(item).strip())
+                parts.append(f"{current_type}: {normalized_args}" if normalized_args else current_type)
+            current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        return " <- ".join(parts) if parts else "UnknownError"
 
     @staticmethod
     def _build_delivery_text(job: Dict[str, Any]) -> str:
@@ -952,7 +974,7 @@ class WeChatGateway:
             if delivery_job_id:
                 await self.backend.fail_delivery_job(
                     delivery_job_id,
-                    str(exc),
+                    AccountRuntime._describe_exception(exc),
                     retryable=self._is_retryable_delivery_error(exc),
                     retry_after_seconds=self._retry_after_seconds(exc),
                 )
@@ -977,7 +999,7 @@ class WeChatGateway:
 
     @staticmethod
     def _is_retryable_delivery_error(exc: Exception) -> bool:
-        message = str(exc or "").strip().lower()
+        message = AccountRuntime._describe_exception(exc).strip().lower()
         return "cdn upload failed" in message and "http 5" in message
 
     @classmethod
