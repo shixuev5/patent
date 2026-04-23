@@ -118,6 +118,29 @@ class BackendClient:
         )
         return await self._parse_json(response)
 
+    async def await_delivery_event(self, *, cursor: int = 0, timeout_seconds: float = 30.0) -> Dict[str, Any]:
+        response = await self._client.get(
+            f"{self.api_base_url}/api/internal/wechat/delivery-events/await",
+            headers=self._headers,
+            params={"cursor": cursor, "timeoutSeconds": timeout_seconds},
+            timeout=max(5.0, float(timeout_seconds or 0.0) + 5.0),
+        )
+        return await self._parse_json(response)
+
+    async def update_delivery_job_progress(
+        self,
+        delivery_job_id: str,
+        *,
+        stage: str,
+        stage_details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        response = await self._client.post(
+            f"{self.api_base_url}/api/internal/wechat/delivery-jobs/{delivery_job_id}/progress",
+            headers=self._headers,
+            json={"stage": stage, "stageDetails": stage_details or {}},
+        )
+        return await self._parse_json(response)
+
     async def complete_delivery_job(self, delivery_job_id: str) -> None:
         response = await self._client.post(
             f"{self.api_base_url}/api/internal/wechat/delivery-jobs/{delivery_job_id}/complete",
@@ -126,11 +149,22 @@ class BackendClient:
         )
         response.raise_for_status()
 
-    async def fail_delivery_job(self, delivery_job_id: str, error_message: str) -> None:
+    async def fail_delivery_job(
+        self,
+        delivery_job_id: str,
+        error_message: str,
+        *,
+        retryable: Optional[bool] = None,
+        retry_after_seconds: Optional[int] = None,
+    ) -> None:
         response = await self._client.post(
             f"{self.api_base_url}/api/internal/wechat/delivery-jobs/{delivery_job_id}/fail",
             headers=self._headers,
-            json={"errorMessage": error_message},
+            json={
+                "errorMessage": error_message,
+                "retryable": retryable,
+                "retryAfterSeconds": retry_after_seconds,
+            },
         )
         response.raise_for_status()
 

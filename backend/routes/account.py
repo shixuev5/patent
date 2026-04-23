@@ -34,6 +34,7 @@ from backend.models import (
     CurrentUser,
     DailyActivityPoint,
     InternalWeChatDeliveryJobClaimRequest,
+    InternalWeChatDeliveryJobProgressRequest,
     InternalWeChatDeliveryJobResolveRequest,
     InternalWeChatLoginSessionStateUpdateRequest,
     TaskWindowCounts,
@@ -43,6 +44,7 @@ from backend.utils import _build_r2_storage
 from backend.storage import TaskType, WeChatBinding, WeChatLoginSession, get_pipeline_manager
 from backend.storage.errors import StorageUnavailableError
 from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
+from backend.wechat_delivery_events import delivery_event_broker
 from config import settings
 
 
@@ -218,6 +220,34 @@ def _build_wechat_login_session_response(session: WeChatLoginSession) -> Account
         createdAt=session.created_at.isoformat() if session.created_at else None,
         updatedAt=session.updated_at.isoformat() if session.updated_at else None,
     )
+
+
+def _build_internal_wechat_delivery_job_item(job, *, task=None, binding=None) -> Dict[str, object]:
+    return {
+        "deliveryJobId": job.delivery_job_id,
+        "ownerId": job.owner_id,
+        "bindingId": job.binding_id,
+        "taskId": job.task_id,
+        "eventType": job.event_type,
+        "status": job.status,
+        "deliveryStage": getattr(job, "delivery_stage", "queued"),
+        "stageDetails": getattr(job, "stage_details", {}) if isinstance(getattr(job, "stage_details", {}), dict) else {},
+        "payload": job.payload,
+        "binding": {
+            "bindingId": binding.binding_id,
+            "accountId": binding.bot_account_id,
+            "peerId": (job.payload or {}).get("peerId") or binding.delivery_peer_id,
+            "peerName": (job.payload or {}).get("peerName") or binding.delivery_peer_name,
+        } if binding else None,
+        "task": {
+            "id": getattr(task, "id", None),
+            "title": getattr(task, "title", None),
+            "taskType": getattr(task, "task_type", None),
+            "status": getattr(getattr(task, "status", None), "value", getattr(task, "status", None)),
+            "metadata": getattr(task, "metadata", None),
+            "downloadPath": f"/api/internal/wechat/tasks/{job.task_id}/download" if task and str(getattr(getattr(task, 'status', None), 'value', getattr(task, 'status', None)) or '') == "completed" else None,
+        } if task else None,
+    }
 
 
 def _expire_login_session_if_needed(session: WeChatLoginSession | None) -> WeChatLoginSession | None:
@@ -818,32 +848,39 @@ async def post_internal_wechat_delivery_jobs_claim(
     for job in jobs:
         task = task_manager.storage.get_task(job.task_id) if job.task_id else None
         binding = task_manager.storage.get_wechat_binding_by_owner(job.owner_id)
-        items.append(
-            {
-                "deliveryJobId": job.delivery_job_id,
-                "ownerId": job.owner_id,
-                "bindingId": job.binding_id,
-                "taskId": job.task_id,
-                "eventType": job.event_type,
-                "status": job.status,
-                "payload": job.payload,
-                "binding": {
-                    "bindingId": binding.binding_id,
-                    "accountId": binding.bot_account_id,
-                    "peerId": (job.payload or {}).get("peerId") or binding.delivery_peer_id,
-                    "peerName": (job.payload or {}).get("peerName") or binding.delivery_peer_name,
-                } if binding else None,
-                "task": {
-                    "id": getattr(task, "id", None),
-                    "title": getattr(task, "title", None),
-                    "taskType": getattr(task, "task_type", None),
-                    "status": getattr(getattr(task, "status", None), "value", getattr(task, "status", None)),
-                    "metadata": getattr(task, "metadata", None),
-                    "downloadPath": f"/api/internal/wechat/tasks/{job.task_id}/download" if task and str(getattr(getattr(task, 'status', None), 'value', getattr(task, 'status', None)) or '') == "completed" else None,
-                } if task else None,
-            }
-        )
+        items.append(_build_internal_wechat_delivery_job_item(job, task=task, binding=binding))
     return {"items": items, "total": len(items)}
+
+
+@router.get("/api/internal/wechat/delivery-events/await")
+def get_internal_wechat_delivery_event_wait(
+    cursor: int = Query(default=0),
+    timeoutSeconds: float = Query(default=30.0, ge=0.0, le=60.0),
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    next_cursor = delivery_event_broker.wait_for_event(cursor, timeoutSeconds)
+    return {"cursor": next_cursor, "hasEvent": next_cursor > int(cursor or 0)}
+
+
+@router.post("/api/internal/wechat/delivery-jobs/{delivery_job_id}/progress")
+async def post_internal_wechat_delivery_job_progress(
+    delivery_job_id: str,
+    payload: InternalWeChatDeliveryJobProgressRequest,
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    updated = task_manager.storage.update_wechat_delivery_job(
+        delivery_job_id,
+        delivery_stage=str(payload.stage or "").strip() or "queued",
+        stage_details=payload.stageDetails,
+        updated_at=utc_now(),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="delivery job not found")
+    task = task_manager.storage.get_task(updated.task_id) if updated.task_id else None
+    binding = task_manager.storage.get_wechat_binding_by_owner(updated.owner_id)
+    return _build_internal_wechat_delivery_job_item(updated, task=task, binding=binding)
 
 
 @router.post("/api/internal/wechat/delivery-jobs/{delivery_job_id}/complete")
@@ -856,6 +893,7 @@ async def post_internal_wechat_delivery_job_complete(
     updated = task_manager.storage.update_wechat_delivery_job(
         delivery_job_id,
         status="completed",
+        delivery_stage="completed",
         completed_at=utc_now(),
         updated_at=utc_now(),
         last_error=None,
@@ -876,12 +914,14 @@ async def post_internal_wechat_delivery_job_fail(
 ):
     _ensure_wechat_integration_enabled()
     error_message = _sanitize_profile_text(payload.errorMessage) or "delivery_failed"
-    next_attempt_at = utc_now() + timedelta(minutes=1)
+    retry_after_seconds = payload.retryAfterSeconds if payload.retryable else None
+    next_attempt_at = utc_now() + timedelta(seconds=max(1, int(retry_after_seconds or 60)))
     updated = task_manager.storage.update_wechat_delivery_job(
         delivery_job_id,
-        status="pending",
+        status="pending" if payload.retryable else "failed",
+        delivery_stage="retry_waiting" if payload.retryable else "failed",
         failed_at=utc_now(),
-        next_attempt_at=next_attempt_at,
+        next_attempt_at=next_attempt_at if payload.retryable else None,
         updated_at=utc_now(),
         last_error=error_message,
     )
@@ -891,6 +931,7 @@ async def post_internal_wechat_delivery_job_fail(
         task_manager.storage.update_wechat_delivery_job(
             delivery_job_id,
             status="failed",
+            delivery_stage="failed",
             updated_at=utc_now(),
             failed_at=utc_now(),
             last_error=error_message,

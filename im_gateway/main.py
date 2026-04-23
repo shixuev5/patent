@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import unquote
 
 import httpx
+from backend.time_utils import utc_now
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 from dotenv import load_dotenv
@@ -27,6 +28,11 @@ DEFAULT_BACKEND_PORT = str(os.getenv("PORT", "7860") or "7860").strip() or "7860
 API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}")
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
+DELIVERY_EVENT_WAIT_SECONDS = max(5.0, float(os.getenv("IM_GATEWAY_DELIVERY_EVENT_WAIT_SECONDS", "5") or "5"))
+DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS = max(
+    POLL_INTERVAL_SECONDS,
+    int(os.getenv("IM_GATEWAY_DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS", "30") or "30"),
+)
 LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
 INBOUND_REPLY_WAIT_SECONDS = max(1.0, float(os.getenv("IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS", "5") or "5"))
 INBOUND_REQUEST_TIMEOUT_SECONDS = max(
@@ -135,6 +141,7 @@ class AccountRuntime:
         if bot is None:
             raise RuntimeError(f"owner {self.owner_id} runtime is offline")
 
+        delivery_job_id = str(job.get("deliveryJobId") or "").strip()
         binding = job.get("binding") if isinstance(job.get("binding"), dict) else {}
         account_id = str(binding.get("accountId") or "").strip()
         peer_id = str(binding.get("peerId") or "").strip()
@@ -147,9 +154,24 @@ class AccountRuntime:
         download_path = str(task.get("downloadPath") or "").strip()
         if download_path:
             try:
-                await self._send_delivery_artifact(bot=bot, peer_id=peer_id, download_path=download_path)
-            except Exception:
+                await self._update_delivery_job_progress(
+                    delivery_job_id,
+                    stage="downloading_artifact",
+                    stage_details={"startedAt": utc_now().isoformat(), "downloadPath": download_path},
+                )
+                await self._send_delivery_artifact(bot=bot, peer_id=peer_id, download_path=download_path, delivery_job_id=delivery_job_id)
+            except Exception as exc:
+                await self._update_delivery_job_progress(
+                    delivery_job_id,
+                    stage="retry_waiting" if self._is_retryable_media_error(exc) else "failed",
+                    stage_details={"error": str(exc)},
+                )
                 await bot.send(peer_id, self._file_delivery_failure_text())
+        await self._update_delivery_job_progress(
+            delivery_job_id,
+            stage="sending_summary",
+            stage_details={"startedAt": utc_now().isoformat()},
+        )
 
         summary = self._build_delivery_text(job)
         if summary:
@@ -254,12 +276,6 @@ class AccountRuntime:
         try:
             result = await asyncio.wait_for(asyncio.shield(inbound_task), timeout=INBOUND_REPLY_WAIT_SECONDS)
         except asyncio.TimeoutError:
-            await self._send_messages(
-                bot=bot,
-                peer_id=peer_id,
-                incoming_msg=msg,
-                messages=[{"type": "text", "text": self._slow_processing_text()}],
-            )
             followup = asyncio.create_task(
                 self._deliver_inbound_result_later(
                     bot=bot,
@@ -294,12 +310,6 @@ class AccountRuntime:
         try:
             result = await inbound_task
         except httpx.ReadTimeout:
-            await self._send_messages(
-                bot=bot,
-                peer_id=peer_id,
-                incoming_msg=incoming_msg,
-                messages=[{"type": "text", "text": self._slow_processing_timeout_text()}],
-            )
             return
         except asyncio.CancelledError:
             raise
@@ -388,13 +398,23 @@ class AccountRuntime:
             else:
                 await bot.send(peer_id, text)
 
-    async def _send_delivery_artifact(self, *, bot: Any, peer_id: str, download_path: str) -> None:
+    async def _send_delivery_artifact(self, *, bot: Any, peer_id: str, download_path: str, delivery_job_id: str) -> None:
         content, content_type, filename = await self.backend.download_task_artifact(download_path)
         resolved_name = unquote(str(filename or "").strip()) or "result.bin"
         send_media = getattr(bot, "send_media", None)
         if not callable(send_media):
             raise RuntimeError("wechat gateway send_media is unavailable")
         size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else -1
+        await self._update_delivery_job_progress(
+            delivery_job_id,
+            stage="uploading_media",
+            stage_details={
+                "startedAt": utc_now().isoformat(),
+                "fileName": resolved_name,
+                "contentType": content_type,
+                "sizeBytes": size_bytes,
+            },
+        )
         await self._send_media_with_retry(
             send_media=send_media,
             peer_id=peer_id,
@@ -404,6 +424,29 @@ class AccountRuntime:
             size_bytes=size_bytes,
             log_label="delivery artifact upload failed",
         )
+        await self._update_delivery_job_progress(
+            delivery_job_id,
+            stage="sending_summary",
+            stage_details={"artifactUploadedAt": utc_now().isoformat(), "fileName": resolved_name},
+        )
+
+    async def _update_delivery_job_progress(
+        self,
+        delivery_job_id: str,
+        *,
+        stage: str,
+        stage_details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not str(delivery_job_id or "").strip():
+            return
+        try:
+            await self.backend.update_delivery_job_progress(
+                delivery_job_id,
+                stage=stage,
+                stage_details=stage_details or {},
+            )
+        except Exception as exc:
+            print(f"[im-gateway] owner={self.owner_id} delivery progress update failed: job={delivery_job_id} stage={stage} error={exc}")
 
     async def _reply_with_media(
         self,
@@ -735,14 +778,6 @@ class AccountRuntime:
         return mapping.get(str(media_type or "").strip(), ".bin")
 
     @staticmethod
-    def _slow_processing_text() -> str:
-        return "收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。"
-
-    @staticmethod
-    def _slow_processing_timeout_text() -> str:
-        return "抱歉，让你久等了。这条消息处理得比预期慢一些，我这边还没拿到最终结果。你先不用重复发送，我会继续留意后续进展。"
-
-    @staticmethod
     def _friendly_inbound_failure_text() -> str:
         return "抱歉，刚才处理这条消息时出了点小问题。你可以稍后再发一次，我会继续帮你接着看。"
 
@@ -787,7 +822,9 @@ class WeChatGateway:
         await self.backend.wait_until_ready()
         print("[im-gateway] backend ready")
 
-        poller = asyncio.create_task(self._poll_delivery_jobs(), name="wechat-delivery-poller")
+        event_listener = asyncio.create_task(self._listen_delivery_events(), name="wechat-delivery-events")
+        poller = asyncio.create_task(self._poll_delivery_jobs_fallback(), name="wechat-delivery-fallback-poller")
+        self._track_background_task(event_listener)
         self._track_background_task(poller)
         await asyncio.sleep(0)
         try:
@@ -801,7 +838,10 @@ class WeChatGateway:
                     print(f"[im-gateway] reconcile failed: {exc}")
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
         finally:
+            event_listener.cancel()
             poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await event_listener
             with contextlib.suppress(asyncio.CancelledError):
                 await poller
             await self._shutdown_runtimes(clear_credentials=False)
@@ -871,18 +911,34 @@ class WeChatGateway:
 
         return desired
 
-    async def _poll_delivery_jobs(self) -> None:
+    async def _listen_delivery_events(self) -> None:
+        cursor = 0
         while True:
             try:
-                payload = await self.backend.claim_delivery_jobs(limit=5)
-                items = payload.get("items") if isinstance(payload, dict) else []
-                for job in items or []:
-                    await self._deliver_job(job)
+                payload = await self.backend.await_delivery_event(cursor=cursor, timeout_seconds=DELIVERY_EVENT_WAIT_SECONDS)
+                cursor = int(payload.get("cursor") or cursor)
+                await self._claim_and_deliver_jobs(limit=5)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"[im-gateway] poll failed: {exc}")
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                print(f"[im-gateway] delivery event wait failed: {exc}")
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+    async def _poll_delivery_jobs_fallback(self) -> None:
+        while True:
+            try:
+                await self._claim_and_deliver_jobs(limit=5)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[im-gateway] fallback poll failed: {exc}")
+            await asyncio.sleep(DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS)
+
+    async def _claim_and_deliver_jobs(self, *, limit: int) -> None:
+        payload = await self.backend.claim_delivery_jobs(limit=limit)
+        items = payload.get("items") if isinstance(payload, dict) else []
+        for job in items or []:
+            await self._deliver_job(job)
 
     async def _deliver_job(self, job: Dict[str, Any]) -> None:
         delivery_job_id = str(job.get("deliveryJobId") or "").strip()
@@ -894,7 +950,12 @@ class WeChatGateway:
             await self.backend.complete_delivery_job(delivery_job_id)
         except Exception as exc:
             if delivery_job_id:
-                await self.backend.fail_delivery_job(delivery_job_id, str(exc))
+                await self.backend.fail_delivery_job(
+                    delivery_job_id,
+                    str(exc),
+                    retryable=self._is_retryable_delivery_error(exc),
+                    retry_after_seconds=self._retry_after_seconds(exc),
+                )
 
     def _runtime_for_job(self, job: Dict[str, Any]) -> Optional[AccountRuntime]:
         owner_id = str(job.get("ownerId") or "").strip()
@@ -913,6 +974,17 @@ class WeChatGateway:
                     return runtime
 
         return None
+
+    @staticmethod
+    def _is_retryable_delivery_error(exc: Exception) -> bool:
+        message = str(exc or "").strip().lower()
+        return "cdn upload failed" in message and "http 5" in message
+
+    @classmethod
+    def _retry_after_seconds(cls, exc: Exception) -> Optional[int]:
+        if not cls._is_retryable_delivery_error(exc):
+            return None
+        return 5
 
     async def _shutdown_runtimes(self, *, clear_credentials: bool) -> None:
         for owner_id, runtime in list(self._runtimes.items()):

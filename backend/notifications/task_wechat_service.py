@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from backend.storage import WeChatDeliveryJob
 from backend.time_utils import utc_now, utc_now_z
+from backend.wechat_delivery_events import delivery_event_broker
 from config import settings
 
 
@@ -101,12 +102,15 @@ class TaskWeChatNotificationService:
                 task_id=str(getattr(task, "id", "") or "").strip(),
                 event_type=f"task.{normalized_status}",
                 status="pending",
+                delivery_stage="queued",
                 payload=payload,
+                stage_details={"queued_at": utc_now_z()},
                 attempt_count=0,
                 max_attempts=int(getattr(settings, "WECHAT_DELIVERY_MAX_ATTEMPTS", 3) or 3),
                 next_attempt_at=utc_now(),
             )
         )
+        delivery_event_broker.publish()
         record = self._save_delivery_record(
             task_id,
             normalized_status,
@@ -217,12 +221,15 @@ class TaskWeChatNotificationService:
                 task_id=str(getattr(task, "id", "") or "").strip(),
                 event_type=PENDING_ACTION_EVENT,
                 status="pending",
+                delivery_stage="queued",
                 payload=payload,
+                stage_details={"queued_at": utc_now_z()},
                 attempt_count=0,
                 max_attempts=int(getattr(settings, "WECHAT_DELIVERY_MAX_ATTEMPTS", 3) or 3),
                 next_attempt_at=utc_now(),
             )
         )
+        delivery_event_broker.publish()
         record = self._save_pending_action_delivery_record(
             task_id,
             action_id,

@@ -293,13 +293,14 @@ class WeChatRepositoryMixin:
             """
             INSERT INTO wechat_delivery_jobs (
                 delivery_job_id, owner_id, binding_id, task_id, event_type, status,
-                payload_json, attempt_count, max_attempts, next_attempt_at, claimed_at,
+                delivery_stage, payload_json, stage_details_json, attempt_count, max_attempts, next_attempt_at, claimed_at,
                 completed_at, failed_at, last_error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                job.delivery_job_id, job.owner_id, job.binding_id, job.task_id, job.event_type, job.status, self._encode_json_value(job.payload),
-                job.attempt_count, job.max_attempts, to_utc_z(job.next_attempt_at, naive_strategy="utc") if job.next_attempt_at else None,
+                job.delivery_job_id, job.owner_id, job.binding_id, job.task_id, job.event_type, job.status, job.delivery_stage,
+                self._encode_json_value(job.payload), self._encode_json_value(job.stage_details), job.attempt_count, job.max_attempts,
+                to_utc_z(job.next_attempt_at, naive_strategy="utc") if job.next_attempt_at else None,
                 to_utc_z(job.claimed_at, naive_strategy="utc") if job.claimed_at else None,
                 to_utc_z(job.completed_at, naive_strategy="utc") if job.completed_at else None,
                 to_utc_z(job.failed_at, naive_strategy="utc") if job.failed_at else None,
@@ -324,7 +325,7 @@ class WeChatRepositoryMixin:
             if not delivery_job_id:
                 continue
             result = self._request(
-                "UPDATE wechat_delivery_jobs SET status = 'processing', claimed_at = ?, updated_at = ?, attempt_count = attempt_count + 1 WHERE delivery_job_id = ? AND status = 'pending'",
+                "UPDATE wechat_delivery_jobs SET status = 'processing', delivery_stage = 'claimed', claimed_at = ?, updated_at = ?, attempt_count = attempt_count + 1 WHERE delivery_job_id = ? AND status = 'pending'",
                 [now_iso, now_iso, delivery_job_id],
             )
             if self._changed_rows(result) <= 0:
@@ -339,11 +340,14 @@ class WeChatRepositoryMixin:
         if not normalized:
             return None
         normalized.setdefault("updated_at", utc_now_z())
-        assignments = ", ".join(f"{('payload_json' if key == 'payload' else key)} = ?" for key in normalized)
+        assignments = ", ".join(
+            f"{('payload_json' if key == 'payload' else 'stage_details_json' if key == 'stage_details' else key)} = ?"
+            for key in normalized
+        )
         values = []
         for key, value in normalized.items():
-            target_key = "payload_json" if key == "payload" else key
-            if target_key == "payload_json":
+            target_key = "payload_json" if key == "payload" else "stage_details_json" if key == "stage_details" else key
+            if target_key in {"payload_json", "stage_details_json"}:
                 values.append(self._encode_json_value(value))
             elif target_key in {"next_attempt_at", "claimed_at", "completed_at", "failed_at", "created_at", "updated_at"} and value is not None:
                 values.append(to_utc_z(value, naive_strategy="utc"))

@@ -95,6 +95,7 @@ class ConversationResponse:
     flow_session_id: Optional[str] = None
     task_id: Optional[str] = None
     effect: Optional[ConversationEffect] = None
+    response_kind: str = "reply_now"
 
 
 @dataclass
@@ -204,6 +205,7 @@ class WeChatRuntimeService:
         task_id: Optional[str] = None,
         messages: Optional[List[InternalWeChatOutboundMessage]] = None,
         effect: Optional[ConversationEffect] = None,
+        response_kind: str = "reply_now",
     ) -> InternalWeChatInboundMessageResponse:
         return InternalWeChatInboundMessageResponse(
             ownerId=binding.owner_id,
@@ -211,6 +213,7 @@ class WeChatRuntimeService:
             sessionType=session_type,
             flowSessionId=flow_session_id,
             taskId=task_id,
+            responseKind=response_kind,
             messages=messages or [self._text("已收到消息。")],
         )
 
@@ -358,6 +361,7 @@ class WeChatRuntimeService:
             sessionType=response.session_type,
             flowSessionId=response.flow_session_id,
             taskId=response.task_id,
+            responseKind=response.response_kind,
             messages=response.messages,
         )
 
@@ -678,6 +682,7 @@ class WeChatRuntimeService:
             session_type=FLOW_ANALYSIS,
             task_id=task.id,
             messages=[self._text(f"已创建 AI 分析任务：{task.id}\n结果完成后会主动推送到当前微信。")],
+            response_kind="task_created",
         )
 
     def start_ai_review(
@@ -699,6 +704,7 @@ class WeChatRuntimeService:
             session_type=FLOW_REVIEW,
             task_id=task.id,
             messages=[self._text(f"已创建 AI 审查任务：{task.id}\n结果完成后会主动推送到当前微信。")],
+            response_kind="task_created",
         )
 
     def begin_guided_flow(self, binding: WeChatBinding, conversation: WeChatConversationSession, flow_type: str) -> ConversationResponse:
@@ -1221,6 +1227,7 @@ class WeChatRuntimeService:
                     task_id=task.id,
                     messages=[self._text(f"已创建 AI 答复任务：{task.id}\n结果完成后会主动推送到当前微信。")],
                     effect=ConversationEffect(clear_active_context=True),
+                    response_kind="task_created",
                 )
             except HTTPException as exc:
                 if task:

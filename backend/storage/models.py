@@ -148,7 +148,9 @@ class WeChatDeliveryJob:
     task_id: Optional[str] = None
     event_type: str = ""
     status: str = "pending"
+    delivery_stage: str = "queued"
     payload: Dict[str, Any] = field(default_factory=dict)
+    stage_details: Dict[str, Any] = field(default_factory=dict)
     attempt_count: int = 0
     max_attempts: int = 3
     next_attempt_at: Optional[datetime] = None

@@ -18,6 +18,7 @@ from backend.models import (
     AccountProfileUpdateRequest,
     AccountWeChatIntegrationUpdateRequest,
     InternalWeChatDeliveryJobClaimRequest,
+    InternalWeChatDeliveryJobProgressRequest,
     InternalWeChatDeliveryJobResolveRequest,
     InternalWeChatInboundAttachment,
     InternalWeChatLoginSessionStateUpdateRequest,
@@ -909,7 +910,11 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
 
     gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
 
-    async def fake_poll_delivery_jobs():
+    async def fake_listen_delivery_events():
+        events.append('listener:start')
+        await asyncio.Event().wait()
+
+    async def fake_poll_delivery_jobs_fallback():
         events.append('poller:start')
         await asyncio.Event().wait()
 
@@ -922,7 +927,8 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
             return None
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(gateway, '_poll_delivery_jobs', fake_poll_delivery_jobs)
+    monkeypatch.setattr(gateway, '_listen_delivery_events', fake_listen_delivery_events)
+    monkeypatch.setattr(gateway, '_poll_delivery_jobs_fallback', fake_poll_delivery_jobs_fallback)
     monkeypatch.setattr(gateway, '_reconcile', fake_reconcile)
     monkeypatch.setattr(im_gateway_main.asyncio, 'sleep', fake_sleep)
 
@@ -1341,7 +1347,7 @@ def test_account_runtime_reports_login_session_updates(monkeypatch, tmp_path):
     assert updates[-1]['wechat_user_id'] == 'wx-user-001'
 
 
-def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
+def test_im_gateway_sends_final_reply_without_processing_hint(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
@@ -1383,7 +1389,7 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
         )
         await backend_started.wait()
         await asyncio.sleep(0.03)
-        assert replies == ['收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。']
+        assert replies == []
         assert task.done()
         allow_finish.set()
         await asyncio.sleep(0.03)
@@ -1392,13 +1398,10 @@ def test_im_gateway_sends_processing_hint_then_final_reply(monkeypatch):
 
     asyncio.run(run_case())
 
-    assert replies == [
-        '收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。',
-        '最终结果到了',
-    ]
+    assert replies == ['最终结果到了']
 
 
-def test_im_gateway_sends_timeout_hint_after_slow_background_failure(monkeypatch):
+def test_im_gateway_suppresses_timeout_hint_after_slow_background_failure(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
@@ -1439,10 +1442,7 @@ def test_im_gateway_sends_timeout_hint_after_slow_background_failure(monkeypatch
 
     asyncio.run(run_case())
 
-    assert replies == [
-        '收到，我正在整理这条消息，可能需要一点时间。你先不用重复发送，后续进展我会直接发到这里。',
-        '抱歉，让你久等了。这条消息处理得比预期慢一些，我这边还没拿到最终结果。你先不用重复发送，我会继续留意后续进展。',
-    ]
+    assert replies == []
 
 
 def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_path):
@@ -1501,6 +1501,8 @@ def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_p
     item = claimed['items'][0]
     assert item['taskId'] == 'task-1'
     assert item['payload']['terminalStatus'] == 'completed'
+    assert item['deliveryStage'] == 'claimed'
+    assert item['stageDetails']['queued_at']
 
     asyncio.run(
         account.post_internal_wechat_delivery_job_complete(
@@ -1511,6 +1513,35 @@ def test_wechat_terminal_notification_enqueues_and_claims_job(monkeypatch, tmp_p
     )
     jobs = storage.claim_wechat_delivery_jobs(5)
     assert jobs == []
+
+
+def test_wechat_delivery_job_progress_route_updates_stage(monkeypatch, tmp_path):
+    storage = _mount_storage(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, 'WECHAT_INTEGRATION_ENABLED', True)
+    monkeypatch.setattr(settings, 'INTERNAL_GATEWAY_TOKEN', 'internal-test-token')
+    created = storage.create_wechat_delivery_job(
+        WeChatDeliveryJob(
+            delivery_job_id='job-progress-1',
+            owner_id='authing:wx-progress',
+            binding_id='binding-progress',
+            event_type='task.completed',
+            status='processing',
+        )
+    )
+
+    updated = asyncio.run(
+        account.post_internal_wechat_delivery_job_progress(
+            delivery_job_id=created.delivery_job_id,
+            payload=InternalWeChatDeliveryJobProgressRequest(
+                stage='uploading_media',
+                stageDetails={'sizeBytes': 1234},
+            ),
+            _token='internal-test-token',
+        )
+    )
+
+    assert updated['deliveryStage'] == 'uploading_media'
+    assert updated['stageDetails']['sizeBytes'] == 1234
 
 
 def test_wechat_runtime_requires_active_binding_with_structured_detail(tmp_path):
@@ -1623,7 +1654,9 @@ def test_claim_wechat_delivery_jobs_skips_stale_rows_when_compare_and_claim_lose
                     'task_id': created.task_id,
                     'event_type': created.event_type,
                     'status': 'pending',
+                    'delivery_stage': 'queued',
                     'payload_json': '{"taskId":"task-race-1"}',
+                    'stage_details_json': '{}',
                     'attempt_count': 0,
                     'max_attempts': 3,
                     'next_attempt_at': None,
@@ -1742,6 +1775,7 @@ def test_wechat_runtime_natural_language_analysis_routes_to_task(monkeypatch, tm
         )
     )
     assert created.taskId
+    assert created.responseKind == 'task_created'
     task = storage.get_task(created.taskId)
     assert task is not None
     assert task.task_type == TaskType.PATENT_ANALYSIS.value

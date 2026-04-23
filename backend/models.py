@@ -153,6 +153,13 @@ class InternalWeChatDeliveryJobClaimRequest(BaseModel):
 
 class InternalWeChatDeliveryJobResolveRequest(BaseModel):
     errorMessage: Optional[str] = None
+    retryable: Optional[bool] = None
+    retryAfterSeconds: Optional[int] = None
+
+
+class InternalWeChatDeliveryJobProgressRequest(BaseModel):
+    stage: str
+    stageDetails: Dict[str, Any] = Field(default_factory=dict)
 
 
 class InternalWeChatInboundAttachment(BaseModel):
@@ -183,6 +190,7 @@ class InternalWeChatInboundMessageResponse(BaseModel):
     sessionType: Optional[str] = None
     flowSessionId: Optional[str] = None
     taskId: Optional[str] = None
+    responseKind: Optional[Literal["reply_now", "task_created", "accepted_async", "pending_action"]] = None
     messages: List[InternalWeChatOutboundMessage] = Field(default_factory=list)
 
 
