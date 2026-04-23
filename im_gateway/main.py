@@ -166,7 +166,7 @@ class AccountRuntime:
                     stage="retry_waiting" if self._is_retryable_media_error(exc) else "failed",
                     stage_details={"error": str(exc)},
                 )
-                await bot.send(peer_id, self._file_delivery_failure_text())
+                raise
         await self._update_delivery_job_progress(
             delivery_job_id,
             stage="sending_summary",

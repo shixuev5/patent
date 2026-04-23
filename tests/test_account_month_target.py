@@ -1123,20 +1123,15 @@ def test_im_gateway_does_not_send_completion_text_before_delivery_artifact(monke
     assert sent_texts == ['分析任务 已完成。']
 
 
-def test_im_gateway_falls_back_to_text_when_delivery_artifact_upload_fails(monkeypatch):
+def test_im_gateway_raises_when_delivery_artifact_upload_fails(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
     monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
-    sent_texts: list[str] = []
-
     class FakeBackend:
         async def download_task_artifact(self, _download_path: str):
             return b'file-bytes', 'application/pdf', 'result.pdf'
 
     class FakeBot:
-        async def send(self, _peer_id: str, text: str):
-            sent_texts.append(text)
-
         async def send_media(self, _peer_id: str, payload: dict[str, object]):
             raise RuntimeError('CDN upload failed: HTTP 500')
 
@@ -1149,21 +1144,17 @@ def test_im_gateway_falls_back_to_text_when_delivery_artifact_upload_fails(monke
     runtime.bot = FakeBot()
     runtime.current_account_id = 'bot-001'
 
-    asyncio.run(
-        runtime.send_delivery_job(
-            {
-                'deliveryJobId': 'job-001',
-                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
-                'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
-                'task': {'downloadPath': '/download/path'},
-            }
+    with pytest.raises(RuntimeError, match='CDN upload failed: HTTP 500'):
+        asyncio.run(
+            runtime.send_delivery_job(
+                {
+                    'deliveryJobId': 'job-001',
+                    'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+                    'payload': {'title': '分析任务', 'terminalStatus': 'completed'},
+                    'task': {'downloadPath': '/download/path'},
+                }
+            )
         )
-    )
-
-    assert sent_texts == [
-        '结果文件发送失败了，我这边会继续重试。你先不用重复发送。',
-        '分析任务 已完成。',
-    ]
 
 
 def test_im_gateway_retries_delivery_artifact_upload_on_transient_cdn_error(monkeypatch):
@@ -1208,6 +1199,41 @@ def test_im_gateway_retries_delivery_artifact_upload_on_transient_cdn_error(monk
 
     assert len(upload_attempts) == 2
     assert sent_texts == ['分析任务 已完成。']
+
+
+def test_im_gateway_marks_delivery_failed_instead_of_complete_when_artifact_upload_fails(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    completed: list[str] = []
+    failed: list[tuple[str, str, bool | None, int | None]] = []
+
+    class FakeBackend:
+        async def fail_delivery_job(self, delivery_job_id: str, error_message: str, *, retryable=None, retry_after_seconds=None):
+            failed.append((delivery_job_id, error_message, retryable, retry_after_seconds))
+
+        async def complete_delivery_job(self, delivery_job_id: str):
+            completed.append(delivery_job_id)
+
+    class FakeRuntime:
+        async def send_delivery_job(self, _job):
+            raise RuntimeError('CDN upload failed: HTTP 500')
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+    monkeypatch.setattr(gateway, '_runtime_for_job', lambda _job: FakeRuntime())
+
+    asyncio.run(
+        gateway._deliver_job(
+            {
+                'deliveryJobId': 'job-001',
+                'ownerId': 'authing:owner-1',
+                'binding': {'accountId': 'bot-001', 'peerId': 'wx-peer-001'},
+            }
+        )
+    )
+
+    assert completed == []
+    assert failed == [('job-001', 'CDN upload failed: HTTP 500', True, 5)]
 
 
 def test_im_gateway_formats_pending_action_delivery(monkeypatch):

@@ -23,6 +23,7 @@ def _make_access_record(path: str, status_code: int) -> logging.LogRecord:
     ("path", "status_code", "expected"),
     [
         ("/api/internal/wechat/delivery-jobs/claim", 200, True),
+        ("/api/internal/wechat/delivery-events/await", 200, True),
         ("/api/internal/wechat/runtime-snapshot", 200, True),
         ("/api/health", 200, True),
         ("/api/account/wechat-integration", 200, True),
