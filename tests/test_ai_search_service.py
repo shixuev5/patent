@@ -1335,6 +1335,52 @@ def test_stream_message_does_not_persist_message_segment_deltas(monkeypatch, tmp
     assert "message.segment.completed" in stored_types
 
 
+def test_stream_message_does_not_emit_fallback_chat_when_plan_confirmation_is_created(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    plan_markdown = "# 检索计划\n\n## 检索目标\n测试目标"
+
+    class _FakeState:
+        values = {"messages": [{"role": "assistant", "content": plan_markdown}]}
+        interrupts = ()
+
+    class _FakeAgent:
+        def __init__(self):
+            self.checkpointer = object()
+
+        async def astream(self, payload, config=None, **kwargs):
+            storage.create_ai_search_plan(
+                {
+                    **_plan_record(created.sessionId, plan_version=1, status="draft", title="检索计划"),
+                    "review_markdown": plan_markdown,
+                }
+            )
+            if False:
+                yield None
+
+        def get_state(self, config):
+            return _FakeState()
+
+    monkeypatch.setattr(ai_search_service_module, "build_main_agent", lambda storage_arg, task_id_arg: _FakeAgent())
+    monkeypatch.setattr(
+        ai_search_agent_run_service_module,
+        "extract_latest_ai_message",
+        lambda values: values["messages"][-1]["content"],
+    )
+
+    asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "请开始规划")))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    matching_assistant_messages = [
+        item
+        for item in snapshot.conversation["messages"]
+        if item["role"] == "assistant" and item["content"] == plan_markdown
+    ]
+
+    assert snapshot.session.phase == PHASE_AWAITING_PLAN_CONFIRMATION
+    assert [item["kind"] for item in matching_assistant_messages] == ["plan_confirmation"]
+
+
 def test_stream_message_ignores_root_tool_messages_and_only_streams_model_text(monkeypatch, tmp_path):
     service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")

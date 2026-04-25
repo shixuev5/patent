@@ -1766,13 +1766,14 @@ class AiSearchAgentRunService:
             self._persist_planner_review_markdown_if_needed(task.id, stream_state)
             self._reconcile_drafting_outcome(task.id)
             pre_completion_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
+            allow_main_agent_fallback = bool(persist_fallback_assistant) and pre_completion_phase not in _AWAITING_USER_ACTION_PHASES
             for event in self._complete_all_message_segments_if_needed(
                 task.id,
                 task.id,
                 pre_completion_phase,
                 stream_state,
-                allow_main_agent_fallback=True,
-                fallback_values=stream_state.get("final_values") if persist_fallback_assistant or stream_state.get("final_values") else None,
+                allow_main_agent_fallback=allow_main_agent_fallback,
+                fallback_values=stream_state.get("final_values") if allow_main_agent_fallback else None,
             ):
                 yield event
             final_snapshot = self.snapshots.get_snapshot(task.id, owner_id)
