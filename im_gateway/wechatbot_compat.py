@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -53,13 +52,12 @@ class OpenClawCompatibleWeChatBot(WeChatBot):
             f"user_id={user_id} media_type={media_type} raw_size={len(data)} "
             f"encrypted_size={len(ciphertext)} payload={_sanitize_upload_info(upload_info)}"
         )
-        upload_url = _resolve_upload_url(upload_info, filekey=filekey)
         print(
             "[im-gateway] resolved upload target: "
             f"user_id={user_id} media_type={media_type} "
-            f"target={_sanitize_upload_target(upload_url, upload_info)}"
+            f"target={_sanitize_upload_target(upload_info, filekey=filekey)}"
         )
-        encrypt_query_param = await self._upload_ciphertext(upload_url, ciphertext)
+        encrypt_query_param = await self._upload_ciphertext(upload_info, ciphertext, filekey=filekey)
 
         return UploadResult(
             media=CDNMedia(
@@ -71,30 +69,49 @@ class OpenClawCompatibleWeChatBot(WeChatBot):
             encrypted_file_size=len(ciphertext),
         )
 
-    async def _upload_ciphertext(self, upload_url: str, ciphertext: bytes) -> str:
+    async def _upload_ciphertext(self, upload_info: Any, ciphertext: bytes, *, filekey: str) -> str:
         timeout = aiohttp.ClientTimeout(total=60)
         last_error: Exception | None = None
-        for _attempt in range(1, 4):
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(
-                        upload_url,
-                        data=ciphertext,
-                        headers={"Content-Type": "application/octet-stream"},
-                    ) as resp:
-                        if resp.status >= 400:
-                            err_msg = resp.headers.get("x-error-message", f"HTTP {resp.status}")
-                            raise MediaError(f"CDN upload failed: {err_msg}")
-                        encrypt_query_param = resp.headers.get("x-encrypted-param")
-                        if not encrypt_query_param:
-                            raise MediaError("CDN upload succeeded but x-encrypted-param header missing")
-                        return encrypt_query_param
-            except MediaError as exc:
-                last_error = exc
-                if "http 5" not in str(exc).lower():
-                    raise
-            except Exception as exc:
-                last_error = exc
+        upload_targets = _resolve_upload_targets(upload_info, filekey=filekey)
+        for target in upload_targets:
+            upload_url = target["url"]
+            upload_mode = str(target["mode"])
+            for attempt in range(1, 4):
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.post(
+                            upload_url,
+                            data=ciphertext,
+                            headers={"Content-Type": "application/octet-stream"},
+                        ) as resp:
+                            if resp.status >= 400:
+                                err_msg = resp.headers.get("x-error-message", f"HTTP {resp.status}")
+                                body_preview = _preview(await resp.text(), keep=120)
+                                raise MediaError(
+                                    f"CDN upload failed via {upload_mode}: {err_msg}"
+                                    + (f" body={body_preview}" if body_preview else "")
+                                )
+                            encrypt_query_param = resp.headers.get("x-encrypted-param")
+                            if not encrypt_query_param:
+                                raise MediaError(
+                                    f"CDN upload succeeded via {upload_mode} but x-encrypted-param header missing"
+                                )
+                            return encrypt_query_param
+                except MediaError as exc:
+                    last_error = exc
+                    if "http 5" not in str(exc).lower():
+                        raise
+                    if attempt < 3:
+                        continue
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 3:
+                        continue
+            if last_error is not None:
+                print(
+                    "[im-gateway] upload target attempt exhausted: "
+                    f"target={upload_mode} error={last_error}"
+                )
         if isinstance(last_error, Exception):
             raise last_error
         raise MediaError("CDN upload failed")
@@ -104,21 +121,35 @@ def build_wechat_bot(**kwargs: Any) -> OpenClawCompatibleWeChatBot:
     return OpenClawCompatibleWeChatBot(**kwargs)
 
 
-def _resolve_upload_url(upload_info: Any, *, filekey: str) -> str:
+def _resolve_upload_targets(upload_info: Any, *, filekey: str) -> list[dict[str, str]]:
     payload = upload_info if isinstance(upload_info, dict) else {}
     upload_full_url = str(payload.get("upload_full_url") or "").strip()
     if upload_full_url:
-        return upload_full_url
+        return [{"mode": "upload_full_url", "url": upload_full_url}]
 
     upload_param = str(payload.get("upload_param") or "").strip()
     if upload_param:
-        return (
-            f"{CDN_BASE_URL}/upload"
-            f"?encrypted_query_param={quote(upload_param)}"
-            f"&filekey={quote(filekey)}"
-        )
+        default_url = _build_upload_url(upload_param, filekey=filekey, strict=False)
+        strict_url = _build_upload_url(upload_param, filekey=filekey, strict=True)
+        targets = [{"mode": "upload_param_default_quote", "url": default_url}]
+        if strict_url != default_url:
+            targets.append({"mode": "upload_param_strict_quote", "url": strict_url})
+        return targets
 
     raise MediaError("getuploadurl did not return upload URL")
+
+
+def _resolve_upload_url(upload_info: Any, *, filekey: str) -> str:
+    return _resolve_upload_targets(upload_info, filekey=filekey)[0]["url"]
+
+
+def _build_upload_url(upload_param: str, *, filekey: str, strict: bool) -> str:
+    safe = "" if strict else "/"
+    return (
+        f"{CDN_BASE_URL}/upload"
+        f"?encrypted_query_param={quote(upload_param, safe=safe)}"
+        f"&filekey={quote(filekey)}"
+    )
 
 
 def _sanitize_upload_info(upload_info: Any) -> dict[str, Any]:
@@ -138,13 +169,15 @@ def _sanitize_upload_info(upload_info: Any) -> dict[str, Any]:
     }
 
 
-def _sanitize_upload_target(upload_url: str, upload_info: Any) -> dict[str, Any]:
-    payload = upload_info if isinstance(upload_info, dict) else {}
-    upload_full_url = str(payload.get("upload_full_url") or "").strip()
+def _sanitize_upload_target(upload_info: Any, *, filekey: str) -> dict[str, Any]:
+    targets = _resolve_upload_targets(upload_info, filekey=filekey)
+    primary = targets[0]
     return {
-        "mode": "upload_full_url" if upload_full_url else "upload_param",
-        "origin": _url_origin(upload_url),
-        "path": _url_path(upload_url),
+        "mode": primary["mode"],
+        "origin": _url_origin(primary["url"]),
+        "path": _url_path(primary["url"]),
+        "candidate_count": len(targets),
+        "fallback_mode": targets[1]["mode"] if len(targets) > 1 else None,
     }
 
 
