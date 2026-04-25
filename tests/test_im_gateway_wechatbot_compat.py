@@ -64,7 +64,7 @@ def test_cdn_upload_uses_upload_full_url_from_openclaw_response(monkeypatch) -> 
     assert result.media.encrypt_query_param == "encrypted-param"
 
 
-def test_upload_ciphertext_uses_put_method(monkeypatch) -> None:
+def test_upload_ciphertext_uses_post_method(monkeypatch) -> None:
     calls: list[tuple[str, bytes, dict[str, str]]] = []
 
     class FakeResponse:
@@ -88,7 +88,7 @@ def test_upload_ciphertext_uses_put_method(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def put(self, url: str, *, data: bytes, headers: dict[str, str]):
+        def post(self, url: str, *, data: bytes, headers: dict[str, str]):
             calls.append((url, data, headers))
             return FakeResponse()
 

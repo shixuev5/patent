@@ -77,7 +77,7 @@ class OpenClawCompatibleWeChatBot(WeChatBot):
         for _attempt in range(1, 4):
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.put(
+                    async with session.post(
                         upload_url,
                         data=ciphertext,
                         headers={"Content-Type": "application/octet-stream"},
