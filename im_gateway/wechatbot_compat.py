@@ -16,7 +16,7 @@ from wechatbot.crypto import (
     generate_aes_key,
 )
 from wechatbot.errors import MediaError
-from wechatbot.protocol import CDN_BASE_URL, ILinkApi
+from wechatbot.protocol import CDN_BASE_URL
 from wechatbot.types import CDNMedia, Credentials, UploadResult
 
 
@@ -112,7 +112,11 @@ def _resolve_upload_url(upload_info: Any, *, filekey: str) -> str:
 
     upload_param = str(payload.get("upload_param") or "").strip()
     if upload_param:
-        return ILinkApi.build_cdn_upload_url(CDN_BASE_URL, upload_param, filekey)
+        return (
+            f"{CDN_BASE_URL}/upload"
+            f"?encrypted_query_param={quote(upload_param)}"
+            f"&filekey={quote(filekey)}"
+        )
 
     raise MediaError("getuploadurl did not return upload URL")
 

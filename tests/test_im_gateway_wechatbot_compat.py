@@ -29,6 +29,12 @@ def test_resolve_upload_url_falls_back_to_legacy_upload_param() -> None:
     assert resolved.endswith("encrypted_query_param=legacy-param&filekey=file-key")
 
 
+def test_resolve_upload_url_matches_sdk_quoting_for_slash_in_upload_param() -> None:
+    resolved = _resolve_upload_url({"upload_param": "legacy/param+value"}, filekey="file-key")
+
+    assert resolved.endswith("encrypted_query_param=legacy/param%2Bvalue&filekey=file-key")
+
+
 def test_cdn_upload_uses_upload_full_url_from_openclaw_response(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
