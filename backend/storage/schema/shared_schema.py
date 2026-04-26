@@ -68,6 +68,35 @@ REQUIRED_COLUMNS = {
         ("created_at", "created_at TEXT NOT NULL"),
         ("updated_at", "updated_at TEXT NOT NULL"),
     ],
+    "llm_pricing_entries": [
+        ("model", "model TEXT NOT NULL"),
+        ("region", "region TEXT NOT NULL"),
+        ("billing_mode", "billing_mode TEXT NOT NULL"),
+        ("input_tier_min_tokens", "input_tier_min_tokens INTEGER NOT NULL"),
+        ("input_tier_max_tokens", "input_tier_max_tokens INTEGER"),
+        ("prompt_price_per_million_cny", "prompt_price_per_million_cny REAL NOT NULL DEFAULT 0"),
+        ("completion_price_per_million_cny", "completion_price_per_million_cny REAL NOT NULL DEFAULT 0"),
+        ("source_url", "source_url TEXT"),
+        ("source_hash", "source_hash TEXT"),
+        ("fetched_at", "fetched_at TEXT NOT NULL"),
+        ("expires_at", "expires_at TEXT NOT NULL"),
+        ("parse_status", "parse_status TEXT NOT NULL DEFAULT 'ok'"),
+        ("parse_error", "parse_error TEXT"),
+        ("updated_at", "updated_at TEXT NOT NULL"),
+    ],
+    "llm_pricing_sync_state": [
+        ("region", "region TEXT NOT NULL"),
+        ("billing_mode", "billing_mode TEXT NOT NULL"),
+        ("cache_entry_count", "cache_entry_count INTEGER NOT NULL DEFAULT 0"),
+        ("last_success_at", "last_success_at TEXT"),
+        ("last_attempt_at", "last_attempt_at TEXT"),
+        ("expires_at", "expires_at TEXT"),
+        ("source_url", "source_url TEXT"),
+        ("source_hash", "source_hash TEXT"),
+        ("parse_status", "parse_status TEXT NOT NULL DEFAULT 'unknown'"),
+        ("last_error", "last_error TEXT"),
+        ("updated_at", "updated_at TEXT NOT NULL"),
+    ],
     "system_logs": [
         ("log_id", "log_id TEXT PRIMARY KEY"),
         ("timestamp", "timestamp TEXT NOT NULL"),
@@ -294,6 +323,39 @@ CREATE TABLE IF NOT EXISTS task_llm_usage (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS llm_pricing_entries (
+    model TEXT NOT NULL,
+    region TEXT NOT NULL,
+    billing_mode TEXT NOT NULL,
+    input_tier_min_tokens INTEGER NOT NULL,
+    input_tier_max_tokens INTEGER,
+    prompt_price_per_million_cny REAL NOT NULL DEFAULT 0,
+    completion_price_per_million_cny REAL NOT NULL DEFAULT 0,
+    source_url TEXT,
+    source_hash TEXT,
+    fetched_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    parse_status TEXT NOT NULL DEFAULT 'ok',
+    parse_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (model, region, billing_mode, input_tier_min_tokens)
+);
+
+CREATE TABLE IF NOT EXISTS llm_pricing_sync_state (
+    region TEXT NOT NULL,
+    billing_mode TEXT NOT NULL,
+    cache_entry_count INTEGER NOT NULL DEFAULT 0,
+    last_success_at TEXT,
+    last_attempt_at TEXT,
+    expires_at TEXT,
+    source_url TEXT,
+    source_hash TEXT,
+    parse_status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (region, billing_mode)
+);
+
 CREATE TABLE IF NOT EXISTS system_logs (
     log_id TEXT PRIMARY KEY,
     timestamp TEXT NOT NULL,
@@ -435,6 +497,9 @@ CREATE INDEX IF NOT EXISTS idx_task_llm_usage_owner_id ON task_llm_usage(owner_i
 CREATE INDEX IF NOT EXISTS idx_task_llm_usage_last_usage_at ON task_llm_usage(last_usage_at);
 CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_type ON task_llm_usage(task_type);
 CREATE INDEX IF NOT EXISTS idx_task_llm_usage_task_status ON task_llm_usage(task_status);
+CREATE INDEX IF NOT EXISTS idx_llm_pricing_entries_model_scope ON llm_pricing_entries(model, region, billing_mode);
+CREATE INDEX IF NOT EXISTS idx_llm_pricing_entries_expiry ON llm_pricing_entries(expires_at);
+CREATE INDEX IF NOT EXISTS idx_llm_pricing_sync_state_expiry ON llm_pricing_sync_state(expires_at);
 CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_system_logs_category ON system_logs(category);
 CREATE INDEX IF NOT EXISTS idx_system_logs_owner_id ON system_logs(owner_id);

@@ -19,6 +19,7 @@ from backend.system_logs import (
     start_system_log_cleanup_loop,
     stop_system_log_cleanup_loop,
 )
+from backend.token_pricing import configure_pricing_storage, schedule_background_refresh
 
 _app_log_file = settings.DATA_DIR / "logs" / "app.log"
 _app_log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -47,8 +48,10 @@ async def lifespan(app: FastAPI):
     configure_system_log_storage(
         LazySystemLogStorageProxy(lambda: get_pipeline_manager().storage)
     )
+    configure_pricing_storage(lambda: get_pipeline_manager().storage)
     set_system_log_db_persistence_ready(True)
     start_system_log_cleanup_loop()
+    schedule_background_refresh(force=False)
     yield
     # 关闭时的清理操作（如果需要）
     await stop_system_log_cleanup_loop()

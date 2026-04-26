@@ -118,6 +118,181 @@ class UsageRepositoryMixin:
         return [self._row_to_task_llm_usage(row) for row in rows]
 
     @staticmethod
+    def _row_to_llm_pricing_entry(row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "model": str(row.get("model") or "").strip(),
+            "region": str(row.get("region") or "").strip(),
+            "billing_mode": str(row.get("billing_mode") or "").strip(),
+            "input_tier_min_tokens": int(row.get("input_tier_min_tokens") or 0),
+            "input_tier_max_tokens": int(row["input_tier_max_tokens"]) if row.get("input_tier_max_tokens") is not None else None,
+            "prompt_price_per_million_cny": float(row.get("prompt_price_per_million_cny") or 0),
+            "completion_price_per_million_cny": float(row.get("completion_price_per_million_cny") or 0),
+            "source_url": str(row.get("source_url") or "").strip(),
+            "source_hash": str(row.get("source_hash") or "").strip(),
+            "fetched_at": row.get("fetched_at"),
+            "expires_at": row.get("expires_at"),
+            "parse_status": str(row.get("parse_status") or "").strip(),
+            "parse_error": str(row.get("parse_error") or "").strip(),
+            "updated_at": row.get("updated_at"),
+        }
+
+    @staticmethod
+    def _row_to_llm_pricing_sync_state(row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "region": str(row.get("region") or "").strip(),
+            "billing_mode": str(row.get("billing_mode") or "").strip(),
+            "cache_entry_count": int(row.get("cache_entry_count") or 0),
+            "last_success_at": row.get("last_success_at"),
+            "last_attempt_at": row.get("last_attempt_at"),
+            "expires_at": row.get("expires_at"),
+            "source_url": str(row.get("source_url") or "").strip(),
+            "source_hash": str(row.get("source_hash") or "").strip(),
+            "parse_status": str(row.get("parse_status") or "").strip(),
+            "last_error": str(row.get("last_error") or "").strip(),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def list_llm_pricing_entries(self, *, region: str, billing_mode: str) -> List[Dict[str, Any]]:
+        rows = self._fetchall(
+            """
+            SELECT * FROM llm_pricing_entries
+            WHERE region = ? AND billing_mode = ?
+            ORDER BY LOWER(model) ASC, input_tier_min_tokens ASC
+            """,
+            [str(region or "").strip(), str(billing_mode or "").strip()],
+        )
+        return [self._row_to_llm_pricing_entry(row) for row in rows]
+
+    def replace_llm_pricing_entries(self, entries: List[Dict[str, Any]], *, region: str, billing_mode: str) -> int:
+        normalized_region = str(region or "").strip()
+        normalized_billing_mode = str(billing_mode or "").strip()
+        if not normalized_region or not normalized_billing_mode:
+            return 0
+
+        self._request(
+            "DELETE FROM llm_pricing_entries WHERE region = ? AND billing_mode = ?",
+            [normalized_region, normalized_billing_mode],
+        )
+        inserted = 0
+        for entry in entries or []:
+            payload = {
+                "model": str(entry.get("model") or "").strip(),
+                "region": normalized_region,
+                "billing_mode": normalized_billing_mode,
+                "input_tier_min_tokens": int(entry.get("input_tier_min_tokens") or 0),
+                "input_tier_max_tokens": int(entry["input_tier_max_tokens"]) if entry.get("input_tier_max_tokens") is not None else None,
+                "prompt_price_per_million_cny": float(entry.get("prompt_price_per_million_cny") or 0),
+                "completion_price_per_million_cny": float(entry.get("completion_price_per_million_cny") or 0),
+                "source_url": str(entry.get("source_url") or "").strip(),
+                "source_hash": str(entry.get("source_hash") or "").strip(),
+                "fetched_at": self._normalize_usage_timestamp(entry.get("fetched_at") or utc_now_z(), field="fetched_at"),
+                "expires_at": self._normalize_usage_timestamp(entry.get("expires_at") or utc_now_z(), field="expires_at"),
+                "parse_status": str(entry.get("parse_status") or "ok").strip() or "ok",
+                "parse_error": str(entry.get("parse_error") or "").strip(),
+                "updated_at": self._normalize_usage_timestamp(entry.get("updated_at") or utc_now_z(), field="updated_at"),
+            }
+            if not payload["model"] or payload["input_tier_min_tokens"] <= 0:
+                continue
+            result = self._request(
+                """
+                INSERT INTO llm_pricing_entries (
+                    model, region, billing_mode, input_tier_min_tokens, input_tier_max_tokens,
+                    prompt_price_per_million_cny, completion_price_per_million_cny,
+                    source_url, source_hash, fetched_at, expires_at, parse_status, parse_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(model, region, billing_mode, input_tier_min_tokens) DO UPDATE SET
+                    input_tier_max_tokens = excluded.input_tier_max_tokens,
+                    prompt_price_per_million_cny = excluded.prompt_price_per_million_cny,
+                    completion_price_per_million_cny = excluded.completion_price_per_million_cny,
+                    source_url = excluded.source_url,
+                    source_hash = excluded.source_hash,
+                    fetched_at = excluded.fetched_at,
+                    expires_at = excluded.expires_at,
+                    parse_status = excluded.parse_status,
+                    parse_error = excluded.parse_error,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    payload["model"],
+                    payload["region"],
+                    payload["billing_mode"],
+                    payload["input_tier_min_tokens"],
+                    payload["input_tier_max_tokens"],
+                    payload["prompt_price_per_million_cny"],
+                    payload["completion_price_per_million_cny"],
+                    payload["source_url"],
+                    payload["source_hash"],
+                    payload["fetched_at"],
+                    payload["expires_at"],
+                    payload["parse_status"],
+                    payload["parse_error"],
+                    payload["updated_at"],
+                ],
+            )
+            inserted += max(0, self._changed_rows(result))
+        return inserted
+
+    def get_llm_pricing_sync_state(self, *, region: str, billing_mode: str) -> Optional[Dict[str, Any]]:
+        row = self._fetchone(
+            """
+            SELECT * FROM llm_pricing_sync_state
+            WHERE region = ? AND billing_mode = ?
+            LIMIT 1
+            """,
+            [str(region or "").strip(), str(billing_mode or "").strip()],
+        )
+        return self._row_to_llm_pricing_sync_state(row) if row else None
+
+    def upsert_llm_pricing_sync_state(self, state: Dict[str, Any]) -> bool:
+        payload = {
+            "region": str(state.get("region") or "").strip(),
+            "billing_mode": str(state.get("billing_mode") or "").strip(),
+            "cache_entry_count": int(state.get("cache_entry_count") or 0),
+            "last_success_at": self._normalize_usage_timestamp(state.get("last_success_at"), field="last_success_at"),
+            "last_attempt_at": self._normalize_usage_timestamp(state.get("last_attempt_at"), field="last_attempt_at"),
+            "expires_at": self._normalize_usage_timestamp(state.get("expires_at"), field="expires_at"),
+            "source_url": str(state.get("source_url") or "").strip(),
+            "source_hash": str(state.get("source_hash") or "").strip(),
+            "parse_status": str(state.get("parse_status") or "unknown").strip() or "unknown",
+            "last_error": str(state.get("last_error") or "").strip(),
+            "updated_at": self._normalize_usage_timestamp(state.get("updated_at") or utc_now_z(), field="updated_at"),
+        }
+        if not payload["region"] or not payload["billing_mode"]:
+            return False
+        result = self._request(
+            """
+            INSERT INTO llm_pricing_sync_state (
+                region, billing_mode, cache_entry_count, last_success_at, last_attempt_at,
+                expires_at, source_url, source_hash, parse_status, last_error, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(region, billing_mode) DO UPDATE SET
+                cache_entry_count = excluded.cache_entry_count,
+                last_success_at = excluded.last_success_at,
+                last_attempt_at = excluded.last_attempt_at,
+                expires_at = excluded.expires_at,
+                source_url = excluded.source_url,
+                source_hash = excluded.source_hash,
+                parse_status = excluded.parse_status,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at
+            """,
+            [
+                payload["region"],
+                payload["billing_mode"],
+                payload["cache_entry_count"],
+                payload["last_success_at"],
+                payload["last_attempt_at"],
+                payload["expires_at"],
+                payload["source_url"],
+                payload["source_hash"],
+                payload["parse_status"],
+                payload["last_error"],
+                payload["updated_at"],
+            ],
+        )
+        return self._changed_rows(result) > 0
+
+    @staticmethod
     def _normalize_usage_scope(scope: str) -> Literal["task", "user", "all"]:
         text = str(scope or "task").strip().lower()
         if text in {"task", "user", "all"}:

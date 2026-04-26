@@ -15,12 +15,18 @@ from backend.models import (
     AdminAccessResponse,
     AdminUsageDashboardResponse,
     AdminUsageOverview,
+    AdminUsagePricingRefreshResponse,
+    AdminUsagePricingStatusResponse,
     AdminUsageSummary,
     AdminUsageTableResponse,
 )
 from backend.models import CurrentUser
 from backend.time_utils import APP_TZ, to_utc_z, utc_now
-from backend.token_pricing import TOKEN_PRICING_CURRENCY
+from backend.token_pricing import (
+    TOKEN_PRICING_CURRENCY,
+    get_pricing_status,
+    refresh_pricing_cache,
+)
 from backend.storage import get_pipeline_manager
 
 
@@ -230,6 +236,27 @@ async def get_admin_usage_dashboard(
         currency=TOKEN_PRICING_CURRENCY,
         overview=overview,
         priceMissing=price_missing,
+    )
+
+
+@router.get("/api/admin/usage/pricing/status", response_model=AdminUsagePricingStatusResponse)
+async def get_admin_usage_pricing_status(current_user: CurrentUser = Depends(_get_current_user)):
+    ensure_admin_owner(current_user.user_id)
+    return AdminUsagePricingStatusResponse(**get_pricing_status())
+
+
+@router.post("/api/admin/usage/pricing/refresh", response_model=AdminUsagePricingRefreshResponse)
+async def post_admin_usage_pricing_refresh(
+    force: bool = Query(default=True),
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    ensure_admin_owner(current_user.user_id)
+    result = refresh_pricing_cache(force=force)
+    status = get_pricing_status()
+    return AdminUsagePricingRefreshResponse(
+        **status,
+        success=bool(result.get("success")),
+        refreshed=bool(result.get("refreshed")),
     )
 
 

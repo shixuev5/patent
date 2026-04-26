@@ -61,6 +61,32 @@
 
       <template v-if="activeTab === 'usage'">
         <section class="rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm shadow-slate-200 sm:p-5">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+            <div class="space-y-1 text-xs text-slate-600">
+              <p>
+                价格缓存：
+                <span class="font-semibold text-slate-900">{{ pricingStatus?.hasUsableCache ? `${pricingStatus.entryCount} 条` : '未就绪' }}</span>
+                <span v-if="pricingStatus?.isExpired" class="ml-2 text-amber-700">已过期，当前使用旧缓存估算</span>
+              </p>
+              <p>
+                最近成功同步：{{ formatDateTime(pricingStatus?.lastSuccessAt) }}
+                <span class="mx-1">·</span>
+                下次过期：{{ formatDateTime(pricingStatus?.expiresAt) }}
+              </p>
+              <p v-if="pricingStatus?.errorMessage" class="text-amber-700">
+                最近同步异常：{{ pricingStatus.errorMessage }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="loadingPricingRefresh"
+              @click="refreshPricingStatusNow"
+            >
+              {{ loadingPricingRefresh ? '刷新中...' : '刷新价格' }}
+            </button>
+          </div>
+
           <div class="mb-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -189,7 +215,7 @@
             </button>
           </div>
           <p v-if="tableData?.priceMissing" class="mt-3 text-xs text-amber-700">
-            存在未配置单价的模型，相关费用按 0 估算。
+            存在未命中价格缓存的模型，相关费用为预估值，部分条目可能未计入。
           </p>
         </section>
 
@@ -1033,6 +1059,7 @@ const EMPTY_USAGE_SUMMARY: AdminUsageSummary = {
 
 const loadingAccess = computed(() => adminStore.loadingAccess)
 const loadingTable = computed(() => adminStore.loadingTable)
+const loadingPricingRefresh = computed(() => adminStore.loadingPricingRefresh)
 const loadingSystemLogs = computed(() => adminStore.loadingSystemLogs)
 const loadingSystemSummary = computed(() => adminStore.loadingSystemSummary)
 const loadingSystemLogDetail = computed(() => adminStore.loadingSystemLogDetail)
@@ -1041,6 +1068,7 @@ const loadingEntityTasks = computed(() => adminStore.loadingEntityTasks)
 const loadingEntityTaskDetail = computed(() => adminStore.loadingEntityTaskDetail)
 const isAdmin = computed(() => adminStore.isAdmin)
 const tableData = computed(() => adminStore.tableData)
+const pricingStatus = computed(() => adminStore.pricingStatus)
 const systemLogSummary = computed(() => adminStore.systemLogSummary)
 const systemLogs = computed(() => adminStore.systemLogs)
 const systemLogDetail = computed(() => adminStore.systemLogDetail)
@@ -1242,6 +1270,17 @@ const refreshUsageAll = async () => {
   await refreshUsageTable()
 }
 
+const refreshPricingStatusNow = async () => {
+  const refreshed = await adminStore.refreshPricing(true)
+  if (!refreshed) {
+    await adminStore.fetchPricingStatus()
+    return
+  }
+  if (activeTab.value === 'usage') {
+    await refreshUsageTable()
+  }
+}
+
 const refreshSystemLogs = async () => {
   await adminStore.fetchSystemLogs({
     category: logCategory.value,
@@ -1435,6 +1474,9 @@ watch([entityTaskKeyword, entityTaskUserName, entityTaskType, entityTaskStatus, 
 
 watch(activeTab, async (value) => {
   if (value === 'usage') {
+    if (!pricingStatus.value) {
+      await adminStore.fetchPricingStatus()
+    }
     if (!tableData.value) {
       await refreshUsageAll()
     }
@@ -1474,7 +1516,10 @@ watch(activeTab, async (value) => {
 onMounted(async () => {
   await adminStore.fetchAccess(false)
   if (!adminStore.isAdmin) return
-  await refreshUsageAll()
+  await Promise.all([
+    adminStore.fetchPricingStatus(),
+    refreshUsageAll(),
+  ])
 })
 </script>
 

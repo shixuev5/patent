@@ -294,6 +294,26 @@ class AdminUsageDashboardResponse(BaseModel):
     priceMissing: bool
 
 
+class AdminUsagePricingStatusResponse(BaseModel):
+    region: str
+    billingMode: str
+    currency: str = "CNY"
+    entryCount: int
+    lastSuccessAt: Optional[str] = None
+    lastAttemptAt: Optional[str] = None
+    expiresAt: Optional[str] = None
+    sourceUrl: Optional[str] = None
+    parseStatus: str
+    errorMessage: Optional[str] = None
+    hasUsableCache: bool
+    isExpired: bool
+
+
+class AdminUsagePricingRefreshResponse(AdminUsagePricingStatusResponse):
+    success: bool
+    refreshed: bool
+
+
 class AdminUsageSummary(BaseModel):
     totalTasks: int
     totalUsers: int

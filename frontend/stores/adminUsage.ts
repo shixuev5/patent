@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { useTaskStore } from '~/stores/task'
-import { cachedGetJson } from '~/utils/apiClient'
+import { cachedGetJson, invalidateQueries, requestJson } from '~/utils/apiClient'
 import type {
   AdminAccessResponse,
   AdminEntityTaskDetailResponse,
@@ -12,6 +12,8 @@ import type {
   AdminSystemLogListResponse,
   AdminSystemLogSummaryResponse,
   AdminUsageDashboardResponse,
+  AdminUsagePricingRefreshResponse,
+  AdminUsagePricingStatusResponse,
   AdminUsageTableResponse,
   UsageRangeType,
   UsageScopeType,
@@ -89,6 +91,8 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     loadingAccess: false,
     loadingDashboard: false,
     loadingTable: false,
+    loadingPricingStatus: false,
+    loadingPricingRefresh: false,
     loadingSystemLogs: false,
     loadingSystemLogDetail: false,
     loadingSystemSummary: false,
@@ -99,6 +103,7 @@ export const useAdminUsageStore = defineStore('admin-usage', {
     loadingEntityTaskDetail: false,
     dashboard: null as AdminUsageDashboardResponse | null,
     tableData: null as AdminUsageTableResponse | null,
+    pricingStatus: null as AdminUsagePricingStatusResponse | null,
     systemLogSummary: null as AdminSystemLogSummaryResponse | null,
     systemLogs: null as AdminSystemLogListResponse | null,
     systemLogDetail: null as AdminSystemLogDetailResponse | null,
@@ -208,6 +213,47 @@ export const useAdminUsageStore = defineStore('admin-usage', {
         return data
       } finally {
         this.loadingTable = false
+      }
+    },
+
+    async fetchPricingStatus(): Promise<AdminUsagePricingStatusResponse | null> {
+      this.loadingPricingStatus = true
+      try {
+        const path = '/api/admin/usage/pricing/status'
+        const data = await this._authorizedGetJson<AdminUsagePricingStatusResponse>(
+          path,
+          ['admin', 'usage', 'pricing', 'status'],
+          15 * 1000,
+        )
+        if (!data) return null
+        this.pricingStatus = data
+        return data
+      } finally {
+        this.loadingPricingStatus = false
+      }
+    },
+
+    async refreshPricing(force = true): Promise<AdminUsagePricingRefreshResponse | null> {
+      this.loadingPricingRefresh = true
+      try {
+        const taskStore = useTaskStore()
+        const config = useRuntimeConfig()
+        const authed = await taskStore.ensureAuth()
+        if (!authed || !taskStore.authToken) return null
+        const path = withQuery('/api/admin/usage/pricing/refresh', { force: force ? 'true' : 'false' })
+        const data = await requestJson<AdminUsagePricingRefreshResponse>({
+          baseUrl: config.public.apiBaseUrl,
+          path,
+          method: 'POST',
+          token: taskStore.authToken,
+        })
+        this.pricingStatus = data
+        await invalidateQueries(['api', `${taskStore.authMode}:${taskStore.userId || 'anonymous'}`, 'admin', 'usage', 'pricing'])
+        return data
+      } catch (_error) {
+        return null
+      } finally {
+        this.loadingPricingRefresh = false
       }
     },
 

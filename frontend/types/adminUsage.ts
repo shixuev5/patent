@@ -26,6 +26,26 @@ export interface AdminUsageDashboardResponse {
   priceMissing: boolean
 }
 
+export interface AdminUsagePricingStatusResponse {
+  region: string
+  billingMode: string
+  currency: string
+  entryCount: number
+  lastSuccessAt?: string | null
+  lastAttemptAt?: string | null
+  expiresAt?: string | null
+  sourceUrl?: string | null
+  parseStatus: string
+  errorMessage?: string | null
+  hasUsableCache: boolean
+  isExpired: boolean
+}
+
+export interface AdminUsagePricingRefreshResponse extends AdminUsagePricingStatusResponse {
+  success: boolean
+  refreshed: boolean
+}
+
 export interface AdminUsageTableResponse {
   scope: UsageScopeType
   rangeType: UsageRangeType

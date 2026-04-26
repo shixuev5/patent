@@ -8,10 +8,12 @@ import pytest
 from fastapi import HTTPException
 
 from backend import admin_auth
+from backend import token_pricing
 from backend.models import CurrentUser
 from backend.routes import admin_usage
 from backend.storage import User
 from backend.storage import SQLiteTaskStorage
+from backend.time_utils import utc_now_z
 
 
 def _mount_storage(monkeypatch, tmp_path):
@@ -19,7 +21,50 @@ def _mount_storage(monkeypatch, tmp_path):
     manager = SimpleNamespace(storage=storage)
     monkeypatch.setattr(admin_auth, "task_manager", manager)
     monkeypatch.setattr(admin_usage, "task_manager", manager)
+    token_pricing.configure_pricing_storage(lambda: storage)
+    token_pricing.reset_pricing_runtime_cache()
     return storage
+
+
+def _seed_pricing(storage: SQLiteTaskStorage):
+    now_iso = utc_now_z(timespec="seconds")
+    storage.replace_llm_pricing_entries(
+        [
+            {
+                "model": "qwen3.5-flash",
+                "region": token_pricing.TOKEN_PRICING_REGION,
+                "billing_mode": token_pricing.TOKEN_PRICING_BILLING_MODE,
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+                "source_url": "https://example.com/pricing",
+                "source_hash": "seed",
+                "fetched_at": now_iso,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "parse_status": "ok",
+                "parse_error": "",
+                "updated_at": now_iso,
+            }
+        ],
+        region=token_pricing.TOKEN_PRICING_REGION,
+        billing_mode=token_pricing.TOKEN_PRICING_BILLING_MODE,
+    )
+    storage.upsert_llm_pricing_sync_state(
+        {
+            "region": token_pricing.TOKEN_PRICING_REGION,
+            "billing_mode": token_pricing.TOKEN_PRICING_BILLING_MODE,
+            "cache_entry_count": 1,
+            "last_success_at": now_iso,
+            "last_attempt_at": now_iso,
+            "expires_at": "2099-01-01T00:00:00Z",
+            "source_url": "https://example.com/pricing",
+            "source_hash": "seed",
+            "parse_status": "ok",
+            "last_error": "",
+            "updated_at": now_iso,
+        }
+    )
 
 
 def _seed_users(storage: SQLiteTaskStorage):
@@ -71,7 +116,7 @@ def _seed_users(storage: SQLiteTaskStorage):
 
 
 def _seed_usage_rows(storage: SQLiteTaskStorage):
-    now_iso = datetime.now().isoformat()
+    now_iso = utc_now_z(timespec="seconds")
     storage.upsert_task_llm_usage(
         {
             "task_id": "task-1",
@@ -132,6 +177,7 @@ def test_admin_dashboard_and_table(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
     storage = _mount_storage(monkeypatch, tmp_path)
     _seed_users(storage)
+    _seed_pricing(storage)
     _seed_usage_rows(storage)
 
     anchor = datetime.now().date().isoformat()
@@ -218,9 +264,10 @@ def test_admin_user_scope_aggregation_and_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
     storage = _mount_storage(monkeypatch, tmp_path)
     _seed_users(storage)
+    _seed_pricing(storage)
     _seed_usage_rows(storage)
 
-    now_iso = datetime.now().isoformat()
+    now_iso = utc_now_z(timespec="seconds")
     storage.upsert_task_llm_usage(
         {
             "task_id": "task-3",
@@ -318,6 +365,60 @@ def test_admin_user_scope_aggregation_and_summary(monkeypatch, tmp_path):
     assert searched_table.items[0]["ownerId"] == "authing:user-1"
     assert searched_table.summary.totalTasks == 4
     assert searched_table.summary.totalUsers == 3
+
+
+def test_admin_pricing_status_and_refresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTHING_ADMIN_ROLE_NAME", "admin")
+    storage = _mount_storage(monkeypatch, tmp_path)
+    _seed_users(storage)
+    _seed_pricing(storage)
+
+    admin_user = CurrentUser(user_id="authing:admin-1")
+
+    status = asyncio.run(admin_usage.get_admin_usage_pricing_status(current_user=admin_user))
+    assert status.entryCount == 1
+    assert status.hasUsableCache is True
+
+    monkeypatch.setattr(
+        admin_usage,
+        "refresh_pricing_cache",
+        lambda force=True: {
+            "success": True,
+            "refreshed": True,
+            "entryCount": 1,
+            "lastSuccessAt": "2026-04-26T00:00:00Z",
+            "lastAttemptAt": "2026-04-26T00:00:00Z",
+            "expiresAt": "2026-05-03T00:00:00Z",
+            "sourceUrl": "https://example.com/pricing",
+            "parseStatus": "ok",
+            "errorMessage": None,
+        },
+    )
+    monkeypatch.setattr(
+        admin_usage,
+        "get_pricing_status",
+        lambda: {
+            "region": "cn",
+            "billingMode": "payg",
+            "currency": "CNY",
+            "entryCount": 1,
+            "lastSuccessAt": "2026-04-26T00:00:00Z",
+            "lastAttemptAt": "2026-04-26T00:00:00Z",
+            "expiresAt": "2026-05-03T00:00:00Z",
+            "sourceUrl": "https://example.com/pricing",
+            "parseStatus": "ok",
+            "errorMessage": None,
+            "hasUsableCache": True,
+            "isExpired": False,
+        },
+    )
+
+    refreshed = asyncio.run(
+        admin_usage.post_admin_usage_pricing_refresh(force=True, current_user=admin_user)
+    )
+    assert refreshed.success is True
+    assert refreshed.refreshed is True
+    assert refreshed.isExpired is False
 
 
 def test_admin_usage_forbidden_for_non_admin(monkeypatch, tmp_path):
@@ -435,7 +536,7 @@ def test_admin_usage_table_includes_ai_search_rows(monkeypatch, tmp_path):
     storage = _mount_storage(monkeypatch, tmp_path)
     _seed_users(storage)
 
-    now_iso = datetime.now().isoformat()
+    now_iso = utc_now_z(timespec="seconds")
     storage.upsert_task_llm_usage(
         {
             "task_id": "search-task-1",

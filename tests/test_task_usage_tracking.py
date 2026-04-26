@@ -4,17 +4,65 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend import task_usage_tracking
+from backend import task_usage_tracking, token_pricing
 from backend.storage import SQLiteTaskStorage
-from backend.time_utils import to_utc_z
+from backend.time_utils import to_utc_z, utc_now_z
+
+
+def _seed_pricing_cache(storage: SQLiteTaskStorage, entries: list[dict]) -> None:
+    token_pricing.configure_pricing_storage(lambda: storage)
+    token_pricing.reset_pricing_runtime_cache()
+    now_iso = utc_now_z(timespec="seconds")
+    storage.replace_llm_pricing_entries(
+        [
+            {
+                "region": token_pricing.TOKEN_PRICING_REGION,
+                "billing_mode": token_pricing.TOKEN_PRICING_BILLING_MODE,
+                "source_url": "https://example.com/pricing",
+                "source_hash": "test",
+                "fetched_at": now_iso,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "parse_status": "ok",
+                "parse_error": "",
+                "updated_at": now_iso,
+                **item,
+            }
+            for item in entries
+        ],
+        region=token_pricing.TOKEN_PRICING_REGION,
+        billing_mode=token_pricing.TOKEN_PRICING_BILLING_MODE,
+    )
+    storage.upsert_llm_pricing_sync_state(
+        {
+            "region": token_pricing.TOKEN_PRICING_REGION,
+            "billing_mode": token_pricing.TOKEN_PRICING_BILLING_MODE,
+            "cache_entry_count": len(entries),
+            "last_success_at": now_iso,
+            "last_attempt_at": now_iso,
+            "expires_at": "2099-01-01T00:00:00Z",
+            "source_url": "https://example.com/pricing",
+            "source_hash": "test",
+            "parse_status": "ok",
+            "last_error": "",
+            "updated_at": now_iso,
+        }
+    )
 
 
 def test_task_usage_collector_aggregates_and_persists(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
-    )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_test.db")
+    _seed_pricing_cache(
+        storage,
+        [
+            {
+                "model": "qwen3.5-flash",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+            }
+        ],
+    )
 
     collector = task_usage_tracking.create_task_usage_collector(
         task_id="task-001",
@@ -62,11 +110,19 @@ def test_task_usage_collector_aggregates_and_persists(monkeypatch, tmp_path):
 
 
 def test_upsert_task_llm_usage_normalizes_utc_strings(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
-    )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_normalize_test.db")
+    _seed_pricing_cache(
+        storage,
+        [
+            {
+                "model": "qwen3.5-flash",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+            }
+        ],
+    )
 
     assert storage.upsert_task_llm_usage(
         {
@@ -102,11 +158,26 @@ def test_upsert_task_llm_usage_normalizes_utc_strings(monkeypatch, tmp_path):
 
 
 def test_persist_task_usage_merge_accumulates_existing_rows(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0},"qwen3.5-plus":{"prompt":0.8,"completion":4.8}}',
-    )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_merge_test.db")
+    _seed_pricing_cache(
+        storage,
+        [
+            {
+                "model": "qwen3.5-flash",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+            },
+            {
+                "model": "qwen3.5-plus",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.8,
+                "completion_price_per_million_cny": 4.8,
+            },
+        ],
+    )
 
     assert storage.upsert_task_llm_usage(
         {
@@ -174,11 +245,19 @@ def test_persist_task_usage_merge_accumulates_existing_rows(monkeypatch, tmp_pat
 
 
 def test_persist_task_usage_merge_without_new_usage_keeps_existing_totals(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
-    )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_merge_status_test.db")
+    _seed_pricing_cache(
+        storage,
+        [
+            {
+                "model": "qwen3.5-flash",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+            }
+        ],
+    )
 
     assert storage.upsert_task_llm_usage(
         {
@@ -223,11 +302,19 @@ def test_persist_task_usage_merge_without_new_usage_keeps_existing_totals(monkey
 
 
 def test_persist_task_usage_merge_skips_empty_new_task(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "TOKEN_PRICING_PER_MILLION_JSON",
-        '{"qwen3.5-flash":{"prompt":0.2,"completion":2.0}}',
-    )
     storage = SQLiteTaskStorage(tmp_path / "task_usage_tracking_empty_merge_test.db")
+    _seed_pricing_cache(
+        storage,
+        [
+            {
+                "model": "qwen3.5-flash",
+                "input_tier_min_tokens": 1,
+                "input_tier_max_tokens": 131072,
+                "prompt_price_per_million_cny": 0.2,
+                "completion_price_per_million_cny": 2.0,
+            }
+        ],
+    )
 
     collector = task_usage_tracking.create_task_usage_collector(
         task_id="task-empty",
