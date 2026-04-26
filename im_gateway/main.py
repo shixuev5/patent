@@ -20,7 +20,6 @@ from .credential_store import (
     build_owner_credential_store_from_env,
     owner_credential_local_path,
 )
-from .wechatbot_compat import build_wechat_bot
 
 load_dotenv(ROOT_DIR / ".env")
 
@@ -228,13 +227,13 @@ class AccountRuntime:
 
     def _build_bot(self) -> Any:
         try:
-            import wechatbot  # type: ignore
+            from wechatbot import WeChatBot  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on optional sdk
             raise RuntimeError(
                 "未安装 wechatbot-sdk，无法启动真实微信网关。请先执行 `pip install wechatbot-sdk`。"
             ) from exc
 
-        return build_wechat_bot(
+        return WeChatBot(
             cred_path=str(self.local_credential_path),
             on_qr_url=self._on_qr_url,
             on_scanned=self._on_scanned,
