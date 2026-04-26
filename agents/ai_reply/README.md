@@ -315,7 +315,9 @@ python -m agents.ai_reply.main \
 ## 11. 关键环境变量
 
 - `PDF_PARSER`：PDF 解析器（默认 `local`）
-- `OPENALEX_API_KEYS` / `OPENALEX_BASE_URL`：学术证据检索（支持多 key 轮换，多个 key 可用逗号/分号/换行分隔）
+- `OPENALEX_API_KEYS` / `OPENALEX_BASE_URL`：学术证据检索（生产环境应配置 API key；支持多 key 轮换，多个 key 可用逗号/分号/换行分隔）
+- `SEMANTIC_SCHOLAR_API_KEYS`：Semantic Scholar 学术检索 key，仅支持自有申请 key；支持多 key 轮换
+- `SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS` / `ACADEMIC_RETRIEVAL_CACHE_TTL_SECONDS`：Semantic Scholar 进程内节流与学术检索缓存 TTL
 - `TAVILY_API_KEYS` / `TAVILY_BASE_URL`：网页证据检索（支持多 key 轮换，单 key 也使用该变量，超限自动切换）
 - `RETRIEVAL_API_KEY` / `RETRIEVAL_BASE_URL`：本地向量检索与外部证据 rerank 共用的检索网关配置；未配置时回退 `LLM_API_KEY` / `LLM_BASE_URL`
 - `RETRIEVAL_EMBEDDING_MODEL` / `RETRIEVAL_RERANK_MODEL`：检索用 embedding 与 rerank 模型名

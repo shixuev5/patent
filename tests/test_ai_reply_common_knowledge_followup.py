@@ -99,6 +99,7 @@ def test_common_knowledge_verification_runs_followup_search_on_low_confidence(mo
         "_build_followup_engine_queries",
         lambda *args, **kwargs: {
             "openalex": [make_query_spec('"locking structure" AND textbook AND handbook', "boolean", "anchor")],
+            "semanticscholar": [make_query_spec('locking structure handbook tutorial', "boolean", "anchor")],
             "zhihuiya": [make_query_spec('"锁定结构" AND 教材 AND 手册', "lexical", "core_patent")],
             "tavily": [make_query_spec("锁定结构 教材 手册 标准 PDF 高校", "web", "reference")],
         },
@@ -124,5 +125,6 @@ def test_common_knowledge_verification_runs_followup_search_on_low_confidence(mo
     assert len(external_calls) == 2
     assert len(local_calls) == 2
     assert len(verify_calls) == 2
+    assert "semanticscholar" not in external_calls[1]
     assert result["assessment"]["verdict"] == "EXAMINER_CORRECT"
     assert result["trace"]["followup_retrieval"] != {}

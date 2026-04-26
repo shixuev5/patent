@@ -12,6 +12,22 @@ def normalize_academic_query(query: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_academic_dispatch_query(query: Any) -> str:
+    text = normalize_academic_query(query)
+    if not text:
+        return ""
+    text = re.sub(r"[;；:：()\[\]{}]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.strip("\"'`“”")
+    text = re.sub(
+        r"\b(review|tutorial|survey|background|fundamentals)\b$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
 def extract_academic_query_terms(text: Any) -> List[str]:
     query = normalize_academic_query(text)
     if not query:

@@ -22,10 +22,11 @@ from config import settings
 
 
 class _FakeResponse:
-    def __init__(self, payload, status_code: int = 200, text: str = ""):
+    def __init__(self, payload, status_code: int = 200, text: str = "", headers=None):
         self._payload = payload
         self.status_code = status_code
         self.text = text
+        self.headers = dict(headers or {})
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -40,6 +41,8 @@ def _clear_external_env(monkeypatch):
     ZhihuiyaClient._account_cooldowns.clear()
     AcademicSearchClient._provider_cooldowns.clear()
     AcademicSearchClient._provider_cooldown_log_deadlines.clear()
+    AcademicSearchClient._provider_next_request_deadlines.clear()
+    AcademicSearchClient._response_cache.clear()
     for env_name in list(os.environ):
         if env_name.startswith("ZHIHUIYA_ACCOUNTS__"):
             monkeypatch.delenv(env_name, raising=False)
@@ -148,7 +151,7 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
     def _fake_get(url, params=None, timeout=None):
         params = dict(params or {})
         calls.append(params.get("api_key"))
-        if len(calls) == 1:
+        if len(calls) <= 3:
             return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
         return _FakeResponse(
             {
@@ -167,6 +170,7 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
         )
 
     monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
 
     results = aggregator._search_openalex(
         [make_query_spec("solid electrolyte", "boolean", "anchor")],
@@ -174,7 +178,7 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
         per_query=2,
     )
 
-    assert calls == ["key-a", "key-b"]
+    assert calls == ["key-a", "key-a", "key-a", "key-b"]
     assert len(results) == 1
     assert results[0]["title"] == "paper-b"
 
@@ -289,6 +293,7 @@ def test_semanticscholar_search_uses_expected_fields(monkeypatch):
 
 
 def test_semanticscholar_requests_are_serialized(monkeypatch):
+    monkeypatch.setattr(settings, "SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS", 0.0)
     aggregator = ExternalEvidenceAggregator()
     aggregator.semanticscholar_api_keys = ["s2-key-a", "s2-key-b"]
     barrier = threading.Barrier(2)
@@ -318,8 +323,8 @@ def test_semanticscholar_requests_are_serialized(monkeypatch):
     thread_b = threading.Thread(target=_run_query, args=("query-b",))
     thread_a.start()
     thread_b.start()
-    thread_a.join(timeout=1.0)
-    thread_b.join(timeout=1.0)
+    thread_a.join(timeout=2.0)
+    thread_b.join(timeout=2.0)
 
     assert not thread_a.is_alive()
     assert not thread_b.is_alive()
@@ -342,6 +347,7 @@ def test_semanticscholar_anonymous_rate_limit_enters_cooldown_and_skips_followup
         return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
 
     monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
 
     first = aggregator._search_semanticscholar(
         [make_query_spec("query-a", "boolean", "anchor")],
@@ -356,7 +362,122 @@ def test_semanticscholar_anonymous_rate_limit_enters_cooldown_and_skips_followup
 
     assert first == []
     assert second == []
+    assert len(calls) == 3
+
+
+def test_semanticscholar_search_uses_cache_for_identical_request(monkeypatch):
+    _clear_external_env(monkeypatch)
+    aggregator = ExternalEvidenceAggregator()
+    aggregator.semanticscholar_api_keys = ["s2-key"]
+    calls = []
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        calls.append({"params": dict(params or {}), "headers": dict(headers or {})})
+        return _FakeResponse(
+            {
+                "data": [
+                    {
+                        "title": "Cached Paper",
+                        "abstract": "cached abstract",
+                        "url": "https://www.semanticscholar.org/paper/cached",
+                        "publicationDate": "2024-01-01",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    first = aggregator._search_semanticscholar(
+        [make_query_spec("cached query", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+    second = aggregator._search_semanticscholar(
+        [make_query_spec("cached query", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
     assert len(calls) == 1
+    assert first == second
+
+
+def test_semanticscholar_respects_retry_after_before_retrying(monkeypatch):
+    _clear_external_env(monkeypatch)
+    aggregator = ExternalEvidenceAggregator()
+    aggregator.semanticscholar_api_keys = ["s2-key"]
+    sleep_calls = []
+    calls = []
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(dict(params or {}))
+        if len(calls) == 1:
+            return _FakeResponse(
+                {"error": "rate limit exceeded"},
+                status_code=429,
+                text="rate limit exceeded",
+                headers={"Retry-After": "7"},
+            )
+        return _FakeResponse({"data": []})
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr(
+        "agents.common.retrieval.academic_search.time.sleep",
+        lambda seconds: sleep_calls.append(seconds),
+    )
+
+    results = aggregator._search_semanticscholar(
+        [make_query_spec("retry after query", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert results == []
+    assert len(calls) == 2
+    assert sleep_calls[0] == 7.0
+
+
+def test_openalex_cache_key_ignores_api_key_rotation(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("OPENALEX_API_KEYS", "key-a,key-b")
+    aggregator = ExternalEvidenceAggregator()
+    calls = []
+
+    def _fake_get(url, params=None, timeout=None):
+        calls.append(dict(params or {}))
+        return _FakeResponse(
+            {
+                "results": [
+                    {
+                        "display_name": "paper-cache",
+                        "primary_location": {
+                            "landing_page_url": "https://example.com/paper-cache",
+                            "source": {"display_name": "journal-cache"},
+                        },
+                        "abstract_inverted_index": {"cached": [0], "paper": [1]},
+                        "publication_date": "2024-01-01",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+
+    first = aggregator._search_openalex(
+        [make_query_spec("cache me", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+    aggregator._openalex_key_cursor = 1
+    second = aggregator._search_openalex(
+        [make_query_spec("cache me", "boolean", "anchor")],
+        priority_date="2024-12-31",
+        per_query=2,
+    )
+
+    assert len(calls) == 1
+    assert first == second
 
 
 
@@ -883,6 +1004,52 @@ def test_search_evidence_does_not_fan_out_openalex_queries_to_semanticscholar_an
     assert captured["crossref"] == []
     assert "semanticscholar" not in meta["retrieval"]
     assert "crossref" not in meta["retrieval"]
+
+
+def test_search_evidence_dedupes_academic_dispatch_queries_and_caps_to_two(monkeypatch):
+    aggregator = ExternalEvidenceAggregator()
+    captured = {"openalex": [], "semanticscholar": []}
+    monkeypatch.setattr(
+        aggregator,
+        "_search_openalex",
+        lambda queries, *args, **kwargs: captured["openalex"].append(list(queries)) or [],
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_search_semanticscholar",
+        lambda queries, *args, **kwargs: captured["semanticscholar"].append(list(queries)) or [],
+    )
+    monkeypatch.setattr(aggregator, "_search_crossref", lambda *args, **kwargs: [])
+    monkeypatch.setattr(aggregator, "_rerank_results", lambda candidates, queries_by_engine: candidates)
+
+    aggregator.search_evidence(
+        queries={
+            "openalex": [
+                make_query_spec('wireless charging coil alignment review', "boolean", "anchor"),
+                make_query_spec('wireless charging coil alignment survey', "boolean", "anchor"),
+                make_query_spec('"wireless charging coil alignment"', "boolean", "expansion"),
+                make_query_spec("battery thermal management", "boolean", "anchor"),
+            ],
+            "semanticscholar": [
+                make_query_spec('wireless charging coil alignment tutorial', "boolean", "anchor"),
+                make_query_spec('wireless charging coil alignment background', "boolean", "expansion"),
+                make_query_spec("battery thermal management fundamentals", "boolean", "anchor"),
+            ],
+        },
+        priority_date="2024-12-31",
+        limit=2,
+    )
+
+    assert len(captured["openalex"]) == 1
+    assert [item["text"] for item in captured["openalex"][0]] == [
+        "wireless charging coil alignment review",
+        "battery thermal management",
+    ]
+    assert len(captured["semanticscholar"]) == 1
+    assert [item["text"] for item in captured["semanticscholar"][0]] == [
+        "wireless charging coil alignment tutorial",
+        "battery thermal management fundamentals",
+    ]
 
 
 def test_search_evidence_limits_crossref_when_primary_academic_sources_exist(monkeypatch):

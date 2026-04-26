@@ -235,6 +235,8 @@ class TopupSearchVerificationNode:
                 primary_queries=external_queries,
                 first_assessment=parsed.get("assessment", {}),
             )
+            filtered_followup_queries = dict(followup_queries or {})
+            filtered_followup_queries.pop("semanticscholar", None)
             primary_query_keys = {
                 (
                     " ".join(str((item or {}).get("text", "")).split()),
@@ -251,7 +253,7 @@ class TopupSearchVerificationNode:
                     str((query or {}).get("intent", "")).strip().lower(),
                 ) not in primary_query_keys
                 and " ".join(str((query or {}).get("text", "")).split())
-                for engine_queries in followup_queries.values()
+                for engine_queries in filtered_followup_queries.values()
                 for query in engine_queries
             ):
                 followup_local_evidence, followup_local_trace = self._search_local_evidence(
@@ -262,7 +264,7 @@ class TopupSearchVerificationNode:
                     extra_queries=flatten_query_texts(followup_queries),
                 )
                 followup_candidates, followup_engines, followup_meta = self.external_evidence_aggregator.search_evidence(
-                    queries=followup_queries,
+                    queries=filtered_followup_queries,
                     priority_date=priority_date,
                     limit=6,
                 )

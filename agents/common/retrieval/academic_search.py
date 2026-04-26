@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html import unescape
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -140,11 +143,16 @@ def extract_publication_year(value: str | None) -> str:
 class AcademicSearchClient:
     _CROSSREF_MAX_RETRIES = 3
     _RETRY_BACKOFF_SECONDS = 0.2
+    _ACADEMIC_MAX_RETRIES = 3
     _PROVIDER_COOLDOWN_SKIP_LOG_INTERVAL_SECONDS = 30.0
     _provider_cooldowns: Dict[str, float] = {}
     _provider_cooldown_log_deadlines: Dict[str, float] = {}
     _provider_cooldown_lock = threading.Lock()
     _semanticscholar_request_lock = threading.Lock()
+    _provider_pacing_lock = threading.Lock()
+    _provider_next_request_deadlines: Dict[str, float] = {}
+    _response_cache_lock = threading.Lock()
+    _response_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Tuple[float, Dict[str, Any]]] = {}
 
     def __init__(
         self,
@@ -155,7 +163,6 @@ class AcademicSearchClient:
         self.openalex_api_keys = load_api_keys("OPENALEX_API_KEYS")
         self._openalex_key_cursor = 0
         self.openalex_base_url = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org/works").strip()
-        self.openalex_email = os.getenv("OPENALEX_EMAIL", "").strip()
 
         self.semanticscholar_api_keys = load_api_keys("SEMANTIC_SCHOLAR_API_KEYS")
         self._semanticscholar_key_cursor = 0
@@ -181,7 +188,7 @@ class AcademicSearchClient:
         )
 
         self.crossref_base_url = os.getenv("CROSSREF_BASE_URL", "https://api.crossref.org/works").strip()
-        self.crossref_mailto = os.getenv("CROSSREF_MAILTO", "").strip() or self.openalex_email
+        self.crossref_mailto = os.getenv("CROSSREF_MAILTO", "").strip()
         self.crossref_select = ",".join(
             [
                 "DOI",
@@ -195,6 +202,17 @@ class AcademicSearchClient:
                 "score",
             ]
         )
+
+    @classmethod
+    def _cleanup_expired_response_cache(cls, now: float | None = None) -> None:
+        now_ts = now if now is not None else time.monotonic()
+        expired_keys = [
+            cache_key
+            for cache_key, (expires_at, _payload) in cls._response_cache.items()
+            if expires_at <= now_ts
+        ]
+        for cache_key in expired_keys:
+            cls._response_cache.pop(cache_key, None)
 
     @classmethod
     def _cleanup_expired_provider_cooldowns(cls, now: float | None = None) -> None:
@@ -264,6 +282,157 @@ class AcademicSearchClient:
             f"remaining={self._format_cooldown_remaining(effective_until - time.monotonic())} "
             f"reason={reason}"
         )
+
+    def _pace_provider_request(self, provider: str) -> None:
+        min_interval = 0.0
+        if provider == "semanticscholar":
+            min_interval = float(settings.SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS or 0.0)
+        if min_interval <= 0:
+            return
+
+        with self._provider_pacing_lock:
+            now_ts = time.monotonic()
+            wait_seconds = max(
+                0.0,
+                float(self._provider_next_request_deadlines.get(provider, 0.0) - now_ts),
+            )
+            scheduled_at = now_ts + wait_seconds
+            self._provider_next_request_deadlines[provider] = scheduled_at + min_interval
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+    def _build_response_cache_key(self, provider: str, params: Dict[str, Any]) -> Tuple[str, Tuple[Tuple[str, str], ...]]:
+        normalized_items = tuple(
+            sorted(
+                (
+                    str(key),
+                    " ".join(str(value or "").split()),
+                )
+                for key, value in (params or {}).items()
+            )
+        )
+        return provider, normalized_items
+
+    def _get_cached_response(self, provider: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        ttl_seconds = max(int(settings.ACADEMIC_RETRIEVAL_CACHE_TTL_SECONDS or 0), 0)
+        if ttl_seconds <= 0:
+            return {}
+        cache_key = self._build_response_cache_key(provider, params)
+        now_ts = time.monotonic()
+        with self._response_cache_lock:
+            self._cleanup_expired_response_cache(now_ts)
+            cached = self._response_cache.get(cache_key)
+            if not cached:
+                return {}
+            expires_at, payload = cached
+            if expires_at <= now_ts:
+                self._response_cache.pop(cache_key, None)
+                return {}
+            return dict(payload)
+
+    def _store_cached_response(self, provider: str, params: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        ttl_seconds = max(int(settings.ACADEMIC_RETRIEVAL_CACHE_TTL_SECONDS or 0), 0)
+        if ttl_seconds <= 0 or not self._is_cacheable_payload(provider, payload):
+            return
+        cache_key = self._build_response_cache_key(provider, params)
+        expires_at = time.monotonic() + ttl_seconds
+        with self._response_cache_lock:
+            self._cleanup_expired_response_cache()
+            self._response_cache[cache_key] = (expires_at, dict(payload))
+
+    def _is_cacheable_payload(self, provider: str, payload: Dict[str, Any]) -> bool:
+        if not isinstance(payload, dict) or not payload:
+            return False
+        if provider == "openalex":
+            return isinstance(payload.get("results"), list)
+        if provider == "semanticscholar":
+            return isinstance(payload.get("data"), list)
+        return False
+
+    def _parse_retry_after_seconds(self, response: requests.Response | Any) -> float:
+        headers = getattr(response, "headers", None) or {}
+        value = str(headers.get("Retry-After", "")).strip()
+        if not value:
+            return 0.0
+        try:
+            return max(0.0, float(value))
+        except Exception:
+            pass
+        try:
+            parsed = parsedate_to_datetime(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            delta = parsed.timestamp() - datetime.now(timezone.utc).timestamp()
+            return max(0.0, delta)
+        except Exception:
+            return 0.0
+
+    def _retry_delay_seconds(self, attempt_index: int, response: requests.Response | Any = None) -> float:
+        retry_after_seconds = self._parse_retry_after_seconds(response)
+        if retry_after_seconds > 0:
+            return retry_after_seconds
+        base_delay = self._RETRY_BACKOFF_SECONDS * (2 ** max(attempt_index - 1, 0))
+        return base_delay + random.uniform(0.0, min(0.5, base_delay * 0.25))
+
+    def _request_with_retries(
+        self,
+        *,
+        provider: str,
+        provider_label: str,
+        request_fn: Callable[[], requests.Response],
+        is_limit_error: Callable[[int, Dict[str, Any], str], bool],
+        serialize: bool = False,
+    ) -> Tuple[str, Dict[str, Any], int, str]:
+        last_status_code = 0
+        last_response_text = ""
+        last_data: Dict[str, Any] = {}
+        last_exception: Exception | None = None
+
+        for attempt in range(1, self._ACADEMIC_MAX_RETRIES + 1):
+            try:
+                if serialize:
+                    with self._semanticscholar_request_lock:
+                        self._pace_provider_request(provider)
+                        response = request_fn()
+                else:
+                    self._pace_provider_request(provider)
+                    response = request_fn()
+                last_status_code = int(response.status_code)
+                last_response_text = str(response.text or "")
+                last_data = safe_json(response)
+            except Exception as ex:
+                last_exception = ex
+                if attempt < self._ACADEMIC_MAX_RETRIES:
+                    time.sleep(self._retry_delay_seconds(attempt))
+                    continue
+                logger.warning(
+                    f"{provider_label} 请求失败，重试耗尽，attempts={self._ACADEMIC_MAX_RETRIES} error={ex}"
+                )
+                return "exception", {}, 0, str(ex)
+
+            if is_limit_error(
+                status_code=last_status_code,
+                data=last_data,
+                response_text=last_response_text,
+            ) or last_status_code >= 500:
+                if attempt < self._ACADEMIC_MAX_RETRIES:
+                    time.sleep(self._retry_delay_seconds(attempt, response))
+                    continue
+                if is_limit_error(
+                    status_code=last_status_code,
+                    data=last_data,
+                    response_text=last_response_text,
+                ):
+                    return "limit", last_data, last_status_code, last_response_text
+                return "retryable_error", last_data, last_status_code, last_response_text
+
+            if last_status_code >= 400:
+                return "http_error", last_data, last_status_code, last_response_text
+            return "ok", last_data, last_status_code, last_response_text
+
+        if last_exception is not None:
+            return "exception", {}, 0, str(last_exception)
+        return "retryable_error", last_data, last_status_code, last_response_text
 
     def search_openalex(self, query: str, priority_date: Optional[str], per_query: int) -> List[Dict[str, Any]]:
         data = self.openalex_search_raw(query, priority_date, per_query)
@@ -370,31 +539,37 @@ class AcademicSearchClient:
             filters.append(f"to_publication_date:{priority_date}")
         if filters:
             base_params["filter"] = ",".join(filters)
-        if self.openalex_email:
-            base_params["mailto"] = self.openalex_email
+
+        cached_data = self._get_cached_response("openalex", base_params)
+        if cached_data:
+            return cached_data
 
         if not self.openalex_api_keys:
-            try:
-                response = self._request_get(
+            outcome, data, status_code, response_text = self._request_with_retries(
+                provider="openalex",
+                provider_label="OpenAlex",
+                request_fn=lambda: self._request_get(
                     self.openalex_base_url,
                     params=base_params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                status_code = int(response.status_code)
-                response_text = str(response.text or "")
-                data = safe_json(response)
-                if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
-                    self._mark_provider_rate_limit_cooldown(
-                        provider="openalex",
-                        provider_label="OpenAlex",
-                        reason=f"status={status_code} anonymous",
-                    )
-                    return {}
-                response.raise_for_status()
+                ),
+                is_limit_error=self._is_openalex_limit_error,
+            )
+            if outcome == "ok":
+                self._store_cached_response("openalex", base_params, data)
                 return data
-            except Exception as ex:
-                logger.warning(f"OpenAlex 检索失败，query={query[:100]} error={ex}")
+            if outcome == "limit":
+                self._mark_provider_rate_limit_cooldown(
+                    provider="openalex",
+                    provider_label="OpenAlex",
+                    reason=f"status={status_code} anonymous",
+                )
                 return {}
+            logger.warning(
+                f"OpenAlex 检索失败，query={query[:100]} outcome={outcome} "
+                f"status={status_code} body={response_text[:200]}"
+            )
+            return {}
 
         total_keys = len(self.openalex_api_keys)
         start_index = self._openalex_key_cursor
@@ -403,23 +578,33 @@ class AcademicSearchClient:
             index = (start_index + offset) % total_keys
             params = dict(base_params)
             params["api_key"] = self.openalex_api_keys[index]
-            try:
-                response = self._request_get(
+            outcome, data, status_code, response_text = self._request_with_retries(
+                provider="openalex",
+                provider_label="OpenAlex",
+                request_fn=lambda current_params=params: self._request_get(
                     self.openalex_base_url,
-                    params=params,
+                    params=current_params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                status_code = int(response.status_code)
-                response_text = str(response.text or "")
-                data = safe_json(response)
-            except Exception as ex:
-                logger.warning(f"OpenAlex 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
-                self._openalex_key_cursor = (index + 1) % total_keys
-                continue
-
-            if self._is_openalex_limit_error(status_code=status_code, data=data, response_text=response_text):
+                ),
+                is_limit_error=self._is_openalex_limit_error,
+            )
+            if outcome == "ok":
+                self._openalex_key_cursor = index
+                self._store_cached_response("openalex", base_params, data)
+                return data
+            if outcome == "limit":
                 limit_failures += 1
                 logger.warning(f"OpenAlex key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}")
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+            if outcome == "retryable_error":
+                logger.warning(
+                    f"OpenAlex 请求重试耗尽，切换下一个 key，status={status_code} query={query[:100]}"
+                )
+                self._openalex_key_cursor = (index + 1) % total_keys
+                continue
+            if outcome == "exception":
+                logger.warning(f"OpenAlex 请求失败，尝试下一个 key，query={query[:100]} error={response_text}")
                 self._openalex_key_cursor = (index + 1) % total_keys
                 continue
             if status_code >= 400:
@@ -427,8 +612,6 @@ class AcademicSearchClient:
                     f"OpenAlex 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
                 )
                 return {}
-            self._openalex_key_cursor = index
-            return data
 
         if total_keys > 0 and limit_failures == total_keys:
             self._mark_provider_rate_limit_cooldown(
@@ -456,28 +639,37 @@ class AcademicSearchClient:
             # Search endpoint accepts coarse year filtering; exact cutoff is enforced client-side.
             params["year"] = f"-{year_ceiling}"
 
+        cached_data = self._get_cached_response("semanticscholar", params)
+        if cached_data:
+            return cached_data
+
         if not self.semanticscholar_api_keys:
-            try:
-                response = self._request_get(
+            outcome, data, status_code, response_text = self._request_with_retries(
+                provider="semanticscholar",
+                provider_label="Semantic Scholar",
+                request_fn=lambda: self._request_get(
                     self.semanticscholar_base_url,
                     params=params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                )
-                status_code = int(response.status_code)
-                response_text = str(response.text or "")
-                data = safe_json(response)
-                if self._is_semanticscholar_limit_error(status_code=status_code, data=data, response_text=response_text):
-                    self._mark_provider_rate_limit_cooldown(
-                        provider="semanticscholar",
-                        provider_label="Semantic Scholar",
-                        reason=f"status={status_code} anonymous",
-                    )
-                    return {}
-                response.raise_for_status()
+                ),
+                is_limit_error=self._is_semanticscholar_limit_error,
+                serialize=True,
+            )
+            if outcome == "ok":
+                self._store_cached_response("semanticscholar", params, data)
                 return data
-            except Exception as ex:
-                logger.warning(f"Semantic Scholar 检索失败，query={query[:100]} error={ex}")
+            if outcome == "limit":
+                self._mark_provider_rate_limit_cooldown(
+                    provider="semanticscholar",
+                    provider_label="Semantic Scholar",
+                    reason=f"status={status_code} anonymous",
+                )
                 return {}
+            logger.warning(
+                f"Semantic Scholar 检索失败，query={query[:100]} outcome={outcome} "
+                f"status={status_code} body={response_text[:200]}"
+            )
+            return {}
 
         total_keys = len(self.semanticscholar_api_keys)
         start_index = self._semanticscholar_key_cursor
@@ -485,27 +677,38 @@ class AcademicSearchClient:
         for offset in range(total_keys):
             index = (start_index + offset) % total_keys
             headers = {"x-api-key": self.semanticscholar_api_keys[index]}
-            try:
-                # Semantic Scholar API is effectively single-flight for our workload.
-                with self._semanticscholar_request_lock:
-                    response = self._request_get(
-                        self.semanticscholar_base_url,
-                        params=params,
-                        headers=headers,
-                        timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
-                    )
-                status_code = int(response.status_code)
-                response_text = str(response.text or "")
-                data = safe_json(response)
-            except Exception as ex:
-                logger.warning(f"Semantic Scholar 请求失败，尝试下一个 key，query={query[:100]} error={ex}")
-                self._semanticscholar_key_cursor = (index + 1) % total_keys
-                continue
-
-            if self._is_semanticscholar_limit_error(status_code=status_code, data=data, response_text=response_text):
+            outcome, data, status_code, response_text = self._request_with_retries(
+                provider="semanticscholar",
+                provider_label="Semantic Scholar",
+                request_fn=lambda current_headers=headers: self._request_get(
+                    self.semanticscholar_base_url,
+                    params=params,
+                    headers=current_headers,
+                    timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                ),
+                is_limit_error=self._is_semanticscholar_limit_error,
+                serialize=True,
+            )
+            if outcome == "ok":
+                self._semanticscholar_key_cursor = index
+                self._store_cached_response("semanticscholar", params, data)
+                return data
+            if outcome == "limit":
                 limit_failures += 1
                 logger.warning(
                     f"Semantic Scholar key 触发限额/限流，切换下一个 key，status={status_code} query={query[:100]}"
+                )
+                self._semanticscholar_key_cursor = (index + 1) % total_keys
+                continue
+            if outcome == "retryable_error":
+                logger.warning(
+                    f"Semantic Scholar 请求重试耗尽，切换下一个 key，status={status_code} query={query[:100]}"
+                )
+                self._semanticscholar_key_cursor = (index + 1) % total_keys
+                continue
+            if outcome == "exception":
+                logger.warning(
+                    f"Semantic Scholar 请求失败，尝试下一个 key，query={query[:100]} error={response_text}"
                 )
                 self._semanticscholar_key_cursor = (index + 1) % total_keys
                 continue
@@ -514,8 +717,6 @@ class AcademicSearchClient:
                     f"Semantic Scholar 检索失败（非限额类错误），status={status_code} query={query[:100]} body={response_text[:200]}"
                 )
                 return {}
-            self._semanticscholar_key_cursor = index
-            return data
 
         if total_keys > 0 and limit_failures == total_keys:
             self._mark_provider_rate_limit_cooldown(

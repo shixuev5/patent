@@ -25,6 +25,7 @@ from agents.common.retrieval.academic_search import (
     load_api_keys,
     safe_json,
 )
+from agents.common.retrieval.academic_query_utils import normalize_academic_dispatch_query
 from agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
@@ -37,7 +38,9 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
     """统一外部检索聚合器。"""
 
     _EXTERNAL_PER_QUERY = 8
+    _ACADEMIC_PRIMARY_QUERY_LIMIT = 2
     _MAX_RERANK_CANDIDATES = 24
+    _ACADEMIC_ENGINES = {"openalex", "semanticscholar"}
     _SOURCE_RANK_PRIORS = {
         "openalex": 0.05,
         "semanticscholar": 0.04,
@@ -90,7 +93,12 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
         for key, value in (queries or {}).items():
             engine = ENGINE_ALIASES.get(str(key).strip().lower())
             if engine and isinstance(value, list):
-                queries_by_engine[engine] = normalize_query_specs(value, engine=engine, limit=4)
+                normalized_queries = normalize_query_specs(
+                    value,
+                    engine=engine,
+                    limit=max(4, self._ACADEMIC_PRIMARY_QUERY_LIMIT),
+                )
+                queries_by_engine[engine] = self._prepare_engine_queries(engine, normalized_queries)
         if not any(queries_by_engine.values()):
             return [], [], {"retrieval": {}}
 
@@ -189,6 +197,32 @@ class ExternalEvidenceAggregator(AcademicSearchClient):
             rerank_fallback_reason=rerank_fallback_reason,
         )
         return final_results, engines, retrieval_meta
+
+    def _prepare_engine_queries(self, engine: str, queries: List[QuerySpec]) -> List[QuerySpec]:
+        if engine not in self._ACADEMIC_ENGINES:
+            return list(queries or [])
+        return self._dedupe_academic_dispatch_queries(
+            queries=list(queries or []),
+            limit=self._ACADEMIC_PRIMARY_QUERY_LIMIT,
+        )
+
+    def _dedupe_academic_dispatch_queries(self, queries: List[QuerySpec], limit: int) -> List[QuerySpec]:
+        deduped: List[QuerySpec] = []
+        seen_dispatch_keys: Set[str] = set()
+        for query in queries or []:
+            query_dict = self._to_dict(query)
+            query_text = " ".join(str(query_dict.get("text", "")).split())
+            if not query_text:
+                continue
+            dispatch_key = normalize_academic_dispatch_query(query_text)
+            if dispatch_key and dispatch_key in seen_dispatch_keys:
+                continue
+            if dispatch_key:
+                seen_dispatch_keys.add(dispatch_key)
+            deduped.append(query)
+            if len(deduped) >= limit:
+                break
+        return deduped
 
     def _search_openalex(
         self,

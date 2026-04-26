@@ -130,6 +130,7 @@ def test_topup_search_verification_runs_followup_search_on_low_confidence(monkey
         "_build_followup_engine_queries",
         lambda *args, **kwargs: {
             "openalex": [make_query_spec('"rrc target acceleration" AND comparative study', "boolean", "anchor")],
+            "semanticscholar": [make_query_spec("rrc target acceleration tutorial", "boolean", "anchor")],
             "zhihuiya": [make_query_spec('"RRC 目标加速度" AND 区别特征 AND 现有技术', "lexical", "core_patent")],
             "tavily": [make_query_spec("RRC 目标加速度 区别特征 技术公开 实现方案", "web", "technical")],
         },
@@ -148,6 +149,7 @@ def test_topup_search_verification_runs_followup_search_on_low_confidence(monkey
     assert len(evaluate_calls) == 2
     assert len(local_search_calls) == 2
     assert len(external_search_calls) == 2
+    assert "semanticscholar" not in external_search_calls[1]
     assert assessment["assessment"]["verdict"] == "EXAMINER_CORRECT"
     assert assessment["trace"]["followup_retrieval"] != {}
     assert dispute["examiner_opinion"]["reasoning"] == "二次检索证据足够"
