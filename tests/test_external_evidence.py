@@ -51,6 +51,7 @@ def _clear_external_env(monkeypatch):
         "OPENALEX_API_KEY",
         "OPENALEX_EMAIL",
         "SEMANTIC_SCHOLAR_API_KEYS",
+        "SEMANTIC_SCHOLAR_BASE_URL",
         "CROSSREF_MAILTO",
         "TAVILY_API_KEYS",
         "RETRIEVAL_API_KEY",
@@ -248,6 +249,7 @@ def test_zhihuiya_search_executes_lexical_and_semantic_queries(monkeypatch):
 
 
 def test_semanticscholar_search_uses_expected_fields(monkeypatch):
+    _clear_external_env(monkeypatch)
     aggregator = ExternalEvidenceAggregator()
     aggregator.semanticscholar_api_keys = ["s2-key"]
     captured = {}
@@ -281,6 +283,7 @@ def test_semanticscholar_search_uses_expected_fields(monkeypatch):
         per_query=2,
     )
 
+    assert captured["url"].endswith("/graph/v1/paper/search/bulk")
     assert captured["params"]["fields"] == aggregator.semanticscholar_fields
     assert captured["params"]["year"] == "-2024"
     assert "publicationDateOrYear" not in captured["params"]

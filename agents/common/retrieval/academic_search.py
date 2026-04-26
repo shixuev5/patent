@@ -168,7 +168,7 @@ class AcademicSearchClient:
         self._semanticscholar_key_cursor = 0
         self.semanticscholar_base_url = os.getenv(
             "SEMANTIC_SCHOLAR_BASE_URL",
-            "https://api.semanticscholar.org/graph/v1/paper/search",
+            "https://api.semanticscholar.org/graph/v1/paper/search/bulk",
         ).strip()
         self.semanticscholar_fields = ",".join(
             [
