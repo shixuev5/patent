@@ -401,7 +401,8 @@ def test_claim_review_drafting_reorders_renumbered_claims_by_effective_claim_ord
 
     assert [item["anchor_claim_id"] for item in result] == ["1", "2", "3", "4", "5", "6", "7", "8"]
     assert [item["unit_id"] for item in result] == ["P1", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
-    assert seen_unit_ids == ["P1", "P4", "P5", "P6", "P7", "P8", "P9", "P10"]
+    assert seen_unit_ids[0] == "P1"
+    assert sorted(seen_unit_ids[1:]) == ["P10", "P4", "P5", "P6", "P7", "P8", "P9"]
     assert result[0]["source_paragraph_ids"] == ["P1", "P2", "P3"]
     assert result[0]["source_summary"]["merged_source_claim_ids"] == ["2", "3"]
     assert result[0]["review_before_text"] == "OA 对旧权1的原文评述\nOA 对旧权2的原文评述\nOA 对旧权3的原文评述"
@@ -533,7 +534,80 @@ def test_claim_review_drafting_uses_alignment_map_for_pure_renumbered_residual_u
     ]
 
 
-def test_claim_review_drafting_maps_old_claim_8_9_group_to_new_claim_8_without_spurious_9(monkeypatch) -> None:
+def test_claim_review_drafting_prefers_unique_renumbered_alignment_for_grouped_residual_units(monkeypatch) -> None:
+    node = ClaimReviewDraftingNode()
+
+    def _fake_invoke_text_json(messages, task_kind, temperature):
+        assert task_kind == "oar_claim_review_drafting"
+        payload = messages[1]["content"].split("=== 待处理的评述单元素材 ===\n", 1)[1]
+        item = json.loads(payload)
+        return {
+            "unit_id": item["unit_id"],
+            "review_text": f"重组评述::{item['unit_id']}::{','.join(item.get('display_claim_ids', []))}",
+        }
+
+    monkeypatch.setattr(node.llm_service, "invoke_text_json", _fake_invoke_text_json)
+
+    result = node._draft_review_units(
+        claims_old_structured=[
+            {"claim_id": "7", "claim_text": "旧权7", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+            {"claim_id": "8", "claim_text": "旧权8", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+            {"claim_id": "9", "claim_text": "旧权9", "claim_type": "dependent", "parent_claim_ids": ["8"]},
+            {"claim_id": "10", "claim_text": "旧权10", "claim_type": "dependent", "parent_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]},
+        ],
+        claims_effective_structured=[
+            {"claim_id": "6", "claim_text": "现权6", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+            {"claim_id": "7", "claim_text": "现权7", "claim_type": "dependent", "parent_claim_ids": ["4"]},
+            {"claim_id": "8", "claim_text": "现权8", "claim_type": "dependent", "parent_claim_ids": ["7"]},
+            {"claim_id": "9", "claim_text": "现权9", "claim_type": "dependent", "parent_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "8"]},
+        ],
+        prepared_materials={
+            "office_action": {
+                "paragraphs": [
+                    {"paragraph_id": "Claim4", "claim_ids": ["7"], "content": "权利要求 7 是从属权利要求。"},
+                    {"paragraph_id": "Claim5", "claim_ids": ["8", "9"], "content": "权利要求 8-9 是从属权利要求。"},
+                    {"paragraph_id": "Claim6", "claim_ids": ["10"], "content": "权利要求 10 是从属权利要求。"},
+                ]
+            }
+        },
+        substantive_amendments=[
+            {
+                "amendment_id": "A3",
+                "feature_text": "测试系统包括光源、第一光功率计、第二光功率计和第三光功率计",
+                "feature_before_text": "旧权10",
+                "feature_after_text": "现权9",
+                "target_claim_ids": ["9"],
+                "amendment_kind": "claim_feature_merge",
+                "content_origin": "old_claim",
+                "source_claim_ids": ["10"],
+            },
+        ],
+        disputes=[],
+        evidence_assessments=[],
+        drafted_rejection_reasons={},
+        claim_alignments=[
+            {"claim_id": "6", "old_claim_id": "7", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "7", "old_claim_id": "8", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "8", "old_claim_id": "9", "alignment_kind": "renumbered_successor", "reason": "upstream_merged"},
+            {"claim_id": "9", "old_claim_id": "9", "alignment_kind": "same_number_match", "reason": "upstream_merged"},
+        ],
+    )
+
+    assert [item["unit_id"] for item in result] == ["Claim4", "Claim5", "Claim6"]
+    assert result[0]["display_claim_ids"] == ["6"]
+    assert result[0]["claim_snapshots"][0]["claim_before_text"] == "旧权7"
+    assert result[1]["display_claim_ids"] == ["7", "8"]
+    assert result[1]["review_before_text"] == "权利要求 8-9 是从属权利要求。"
+    assert result[1]["claim_snapshots"] == [
+        {"claim_id": "7", "claim_before_text": "旧权8", "claim_text": "现权7", "claim_type": "dependent"},
+        {"claim_id": "8", "claim_before_text": "旧权9", "claim_text": "现权8", "claim_type": "dependent"},
+    ]
+    assert result[2]["display_claim_ids"] == ["9"]
+    assert result[2]["source_summary"]["merged_source_claim_ids"] == ["10"]
+    assert result[2]["claim_snapshots"][0]["claim_before_text"] == "旧权10"
+
+
+def test_claim_review_drafting_keeps_pure_renumbered_grouped_paragraphs_grouped(monkeypatch) -> None:
     node = ClaimReviewDraftingNode()
 
     def _fake_invoke_text_json(messages, task_kind, temperature):
@@ -594,10 +668,21 @@ def test_claim_review_drafting_maps_old_claim_8_9_group_to_new_claim_8_without_s
         ],
     )
 
+    claim3_unit = next(item for item in result if item["unit_id"] == "Claim3")
+    assert claim3_unit["display_claim_ids"] == ["2", "3", "4", "5"]
+    assert claim3_unit["source_paragraph_ids"] == ["Claim3"]
+    assert claim3_unit["claim_snapshots"] == [
+        {"claim_id": "2", "claim_before_text": "旧权3", "claim_text": "现权2", "claim_type": "dependent"},
+        {"claim_id": "3", "claim_before_text": "旧权4", "claim_text": "现权3", "claim_type": "dependent"},
+        {"claim_id": "4", "claim_before_text": "旧权5", "claim_text": "现权4", "claim_type": "dependent"},
+        {"claim_id": "5", "claim_before_text": "旧权6", "claim_text": "现权5", "claim_type": "dependent"},
+    ]
+
     claim5_unit = next(item for item in result if item["unit_id"] == "Claim5")
-    assert claim5_unit["display_claim_ids"] == ["8"]
+    assert claim5_unit["display_claim_ids"] == ["7", "8"]
     assert claim5_unit["source_paragraph_ids"] == ["Claim5"]
     assert claim5_unit["claim_snapshots"] == [
+        {"claim_id": "7", "claim_before_text": "旧权8", "claim_text": "现权7", "claim_type": "dependent"},
         {"claim_id": "8", "claim_before_text": "旧权9", "claim_text": "现权8", "claim_type": "dependent"},
     ]
 

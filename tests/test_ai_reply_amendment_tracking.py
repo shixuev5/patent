@@ -117,6 +117,31 @@ def test_build_claim_alignments_body_match_respects_parent_chain() -> None:
     ]
 
 
+def test_build_claim_alignments_handles_renumbered_any_of_range_reference() -> None:
+    node = AmendmentTrackingNode()
+    old_claims = [
+        {"claim_id": "7", "claim_text": "如权利要求2所述的检测方法，其特征在于，包括监视器。", "claim_type": "dependent", "parent_claim_ids": ["2"]},
+        {"claim_id": "8", "claim_text": "如权利要求5所述的检测方法，其特征在于，包括V形槽和封装胶。", "claim_type": "dependent", "parent_claim_ids": ["5"]},
+        {"claim_id": "9", "claim_text": "如权利要求8所述的检测方法，其特征在于，封装台上设有加热件。", "claim_type": "dependent", "parent_claim_ids": ["8"]},
+        {"claim_id": "10", "claim_text": "如权利要求1-9任意一项所述的检测方法，其特征在于，所述测试系统包括光源、第一光功率计、第二光功率计以及第三光功率计。", "claim_type": "dependent", "parent_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]},
+    ]
+    new_claims = [
+        {"claim_id": "6", "claim_text": "如权利要求1所述的检测方法，其特征在于，包括监视器。", "claim_type": "dependent", "parent_claim_ids": ["1"]},
+        {"claim_id": "7", "claim_text": "如权利要求4所述的检测方法，其特征在于，包括V形槽和封装胶。", "claim_type": "dependent", "parent_claim_ids": ["4"]},
+        {"claim_id": "8", "claim_text": "如权利要求7所述的检测方法，其特征在于，封装台上设有加热件。", "claim_type": "dependent", "parent_claim_ids": ["7"]},
+        {"claim_id": "9", "claim_text": "如权利要求1-8任意一项所述的检测方法，其特征在于，所述测试系统包括光源、第一光功率计、第二光功率计以及第三光功率计。", "claim_type": "dependent", "parent_claim_ids": ["1", "2", "3", "4", "5", "6", "7", "8"]},
+    ]
+
+    alignments = node._build_claim_alignments(old_claims, new_claims)
+
+    assert alignments == [
+        {"claim_id": "6", "old_claim_id": "7", "alignment_kind": "renumbered_successor", "reason": "upstream_deleted"},
+        {"claim_id": "7", "old_claim_id": "8", "alignment_kind": "renumbered_successor", "reason": "upstream_deleted"},
+        {"claim_id": "8", "old_claim_id": "9", "alignment_kind": "renumbered_successor", "reason": "upstream_deleted"},
+        {"claim_id": "9", "old_claim_id": "10", "alignment_kind": "renumbered_successor", "reason": "upstream_deleted"},
+    ]
+
+
 def test_extract_structural_adjustments_builds_renumbering_and_reference_adjustment() -> None:
     node = AmendmentTrackingNode()
     old_claims = [

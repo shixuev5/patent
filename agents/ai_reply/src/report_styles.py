@@ -457,10 +457,25 @@ th, td {
 
 .oar-change-math-block-add {
     color: var(--oar-danger-border);
-    font-weight: 700;
+    font-weight: 400;
 }
 
 .oar-change-math-block-del {
+    color: #94a3b8;
+    text-decoration: line-through;
+    text-decoration-color: #cbd5e1;
+}
+
+.oar-change-inline-math {
+    display: inline;
+    font-weight: 400;
+}
+
+.oar-change-inline-math-add {
+    color: var(--oar-danger-border);
+}
+
+.oar-change-inline-math-del {
     color: #94a3b8;
     text-decoration: line-through;
     text-decoration-color: #cbd5e1;
@@ -560,8 +575,8 @@ th, td {
 }
 
 .oar-opinion-title {
-    font-size: 14px;
-    font-weight: 700;
+    font-size: 13px;
+    font-weight: 650;
     color: var(--oar-ink);
     line-height: 1.55;
     margin-bottom: 10px;
@@ -595,6 +610,7 @@ th, td {
 .oar-opinion-body-formal {
     text-indent: 2em;
     line-height: 1.82;
+    font-weight: 400;
 }
 
 .oar-opinion-body-summary {
@@ -614,8 +630,9 @@ th, td {
 }
 
 .oar-claim-snapshot-head {
-    font-weight: 700;
-    color: var(--oar-ink);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--oar-ink-soft);
     margin-bottom: 4px;
 }
 

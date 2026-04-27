@@ -411,7 +411,7 @@ class AmendmentTrackingNode:
                 )
                 continue
 
-            if old_text:
+            if old_text and claim_id not in used_old_claim_ids:
                 used_old_claim_ids.add(claim_id)
                 alignments.append(
                     {
@@ -653,7 +653,7 @@ class AmendmentTrackingNode:
         value = str(text or "")
         value = value.split("#", 1)[0]
         value = re.sub(
-            r"权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*中任一项所述",
+            r"权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*(?:中任一项|任意一项)所述",
             "权利要求#中任一项所述",
             value,
         )
@@ -668,7 +668,7 @@ class AmendmentTrackingNode:
         value = str(text or "")
         value = value.split("#", 1)[0].strip()
         value = re.sub(
-            r"^\s*根据权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*(?:中任一项)?所述的?",
+            r"^\s*(?:根据|如)?\s*权利要求\s*\d+(?:\s*[至到-]\s*\d+)?(?:\s*[、,，或和及]\s*\d+)*\s*(?:(?:中任一项|任意一项))?所述的?",
             "",
             value,
         )

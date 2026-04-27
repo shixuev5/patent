@@ -234,7 +234,8 @@ def test_build_final_report_markdown_renders_new_six_section_layout() -> None:
     assert "整体判断" not in content
     assert "申请人主张占优" in content
     assert "重点风险" not in content
-    assert "1 项仍需重点复核" in content
+    assert "仍有待核实风险" in content
+    assert "现有证据尚不足以形成明确结论" in content
     assert "核查进度" not in content
     assert "2/2 项已核查" in content
     assert "支撑强度" not in content
@@ -311,6 +312,7 @@ def test_build_final_report_markdown_renders_claim_reviews_and_response_reply_bl
     assert "新增限定：星间激光通信模块用于星间组网 SUMMARY_FEATURE_END。" in content
     assert "评述处理：沿用上一轮审查意见骨架后完成补强。" in content
     assert "评述处理：无可复用原评述，本轮补成正式评述。" in content
+    assert "权利要求4-5｜补充评述" in content
     assert "权利要求4" in content
     assert "5（从权）" in content
     assert 'class="oar-opinion-block"' in content
@@ -404,10 +406,86 @@ def test_build_final_report_markdown_merges_consecutive_renumberings_into_one_bl
 
     content = build_final_report_markdown(report)
 
-    assert "5,6,7（从权）" in content
+    assert "5-7（从权）" in content
     assert "对应旧权利要求 6-8" in content
     assert "旧权利要求6-8因上游权项删除，顺延为现权利要求5-7。" in content
     assert content.count("编号顺延") == 1
+
+
+def test_build_final_report_markdown_merges_consecutive_same_pattern_structural_adjustments() -> None:
+    report = _sample_report()
+    report["amendment_section"]["substantive_change_groups"] = []
+    report["amendment_section"]["structural_adjustments"] = [
+        {
+            "adjustment_id": "S1",
+            "claim_id": "2",
+            "claim_type": "dependent",
+            "old_claim_id": "3",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求3",
+            "after_text": "权利要求2",
+        },
+        {
+            "adjustment_id": "S1_ref",
+            "claim_id": "2",
+            "claim_type": "dependent",
+            "old_claim_id": "3",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_deleted",
+            "before_text": "根据权利要求2所述的一种装置",
+            "after_text": "根据权利要求1所述的一种装置",
+        },
+        {
+            "adjustment_id": "S2",
+            "claim_id": "3",
+            "claim_type": "dependent",
+            "old_claim_id": "4",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求4",
+            "after_text": "权利要求3",
+        },
+        {
+            "adjustment_id": "S2_ref",
+            "claim_id": "3",
+            "claim_type": "dependent",
+            "old_claim_id": "4",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_deleted",
+            "before_text": "根据权利要求3所述的一种装置",
+            "after_text": "根据权利要求2所述的一种装置",
+        },
+        {
+            "adjustment_id": "S3",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "5",
+            "adjustment_kind": "renumbering",
+            "reason": "upstream_deleted",
+            "before_text": "权利要求5",
+            "after_text": "权利要求4",
+        },
+        {
+            "adjustment_id": "S3_ref",
+            "claim_id": "4",
+            "claim_type": "dependent",
+            "old_claim_id": "5",
+            "adjustment_kind": "reference_adjustment",
+            "reason": "upstream_deleted",
+            "before_text": "根据权利要求4所述的一种装置",
+            "after_text": "根据权利要求3所述的一种装置",
+        },
+    ]
+
+    content = build_final_report_markdown(report)
+
+    assert "2-4（从权）" in content
+    assert "对应旧权利要求 3-5" in content
+    assert "连续顺延为现权利要求2-4" in content
+    assert "引用基础已按同一顺延规律同步调整" in content
+    assert content.count("编号顺延") == 1
+    assert content.count("引用关系调整") == 1
 
 
 def test_build_final_report_markdown_html_conversion_preserves_layered_layout() -> None:
@@ -770,7 +848,7 @@ def test_build_final_report_markdown_review_summary_falls_back_without_amendment
 
     content = build_final_report_markdown(report)
 
-    assert "重组范围：围绕权利要求2、3重组剩余从权评述。" in content
+    assert "重组范围：围绕权利要求2-3重组剩余从权评述。" in content
     assert "评述处理：缺少可复用原评述，本轮按现有素材重组正式评述。" in content
     assert "新增限定：" not in content
 
@@ -866,6 +944,28 @@ def test_build_final_report_markdown_does_not_highlight_formula_spacing_noise() 
     assert "\\left(" in content
 
 
+def test_build_final_report_markdown_uses_pending_risk_copy_when_followup_exists() -> None:
+    report = _sample_report()
+    report["summary"]["verdict_distribution"]["inconclusive"] = 0
+    report["search_followup_section"] = {
+        "needed": True,
+        "status": "complete",
+        "objective": "围绕新增特征继续补检。",
+        "trigger_reasons": ["现有核查结论暂不确定"],
+        "gap_summaries": [],
+        "search_elements": [],
+        "suggested_constraints": {},
+        "source_dispute_ids": ["TOPUP_A1"],
+        "source_feature_ids": ["A1"],
+        "missing_items": [],
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "仍有待核实风险" in content
+    assert "未见明显剩余风险" not in content
+
+
 def test_build_final_report_markdown_treats_formula_as_whole_diff_token() -> None:
     report = {
         "summary": {},
@@ -905,6 +1005,42 @@ def test_build_final_report_markdown_treats_formula_as_whole_diff_token() -> Non
     assert '<div class="oar-change-math-block oar-change-math-block-add">$$A=C$$</div>' in content
 
 
+def test_build_final_report_markdown_normalizes_textcircled_formula_in_claim_snapshot_diff() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {},
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {
+            "items": [
+                {
+                    "unit_id": "P1",
+                    "unit_type": "dependent_group_restructured",
+                    "source_paragraph_ids": ["P1"],
+                    "display_claim_ids": ["1"],
+                    "anchor_claim_id": "1",
+                    "title": "权利要求1",
+                    "source_summary": {"merged_source_claim_ids": [], "amendment_ids": []},
+                    "review_before_text": "旧评述",
+                    "review_text": "新评述",
+                    "claim_snapshots": [
+                        {
+                            "claim_id": "1",
+                            "claim_before_text": r"区别特征为$\textcircled{1}$信号采集。",
+                            "claim_text": r"区别特征为$\textcircled{1}$信号采集模块。",
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert "①" in content
+    assert r"\textcircled" not in content
+
+
 def test_build_final_report_markdown_keeps_text_and_display_formula_separated_in_diff() -> None:
     report = {
         "summary": {},
@@ -942,6 +1078,87 @@ def test_build_final_report_markdown_keeps_text_and_display_formula_separated_in
 
     assert '$$P=\\frac{h}{100}$$' in content
     assert '式中，$P$ 表示目标压力值。' in content
+
+
+def test_build_final_report_markdown_renders_inline_math_without_text_diff_bold() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "9",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A9",
+                            "feature_text": r"阈值为$P_1$。",
+                            "feature_before_text": r"阈值为$P_0$。",
+                            "feature_after_text": r"阈值为$P_1$。",
+                            "contains_added_text": True,
+                            "amendment_kind": "spec_feature_addition",
+                            "content_origin": "specification",
+                            "source_claim_ids": [],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert 'class="oar-change-inline-math oar-change-inline-math-del">$P_0$</span>' in content
+    assert 'class="oar-change-inline-math oar-change-inline-math-add">$P_1$</span>' in content
+    assert 'class="oar-change-add">$P_1$</span>' not in content
+
+
+def test_build_final_report_markdown_ignores_punctuation_and_duplicate_connector_noise_in_diff() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "3",
+                    "claim_type": "dependent",
+                    "items": [
+                        {
+                            "amendment_id": "A3",
+                            "feature_text": "包括模块A,模块B以及模块C。",
+                            "feature_before_text": "包括模块A，模块B以及 以及模块C。",
+                            "feature_after_text": "包括模块A,模块B以及模块C。",
+                            "contains_added_text": False,
+                            "amendment_kind": "claim_feature_merge",
+                            "content_origin": "old_claim",
+                            "source_claim_ids": ["2"],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert 'class="oar-change-add"' not in content
+    assert 'class="oar-change-del"' not in content
+    assert "以及 以及" not in content
+    assert "包括模块A,模块B以及模块C。" in content
 
 
 def test_build_final_report_markdown_dedupes_review_units_from_report_payload() -> None:
@@ -1074,6 +1291,9 @@ def test_oar_report_css_keeps_structural_tags_single_line_and_translation_full_c
     assert "flex-wrap: wrap;" in OAR_REPORT_CSS
     assert "white-space: nowrap;" in OAR_REPORT_CSS
     assert ".oar-evidence-line-translation" not in OAR_REPORT_CSS
+    assert ".oar-change-inline-math" in OAR_REPORT_CSS
+    assert "font-size: 13px;" in OAR_REPORT_CSS
+    assert ".oar-claim-snapshot-head" in OAR_REPORT_CSS
 
 
 def test_build_final_report_markdown_renders_search_followup_section_conditionally() -> None:
@@ -1123,6 +1343,8 @@ def test_build_final_report_markdown_renders_search_followup_section_conditional
     assert "## 7. 补检/检索建议" in content
     assert "### 7.4 检索要素表" in content
     assert "星间激光通信模块" in content
+    assert "证据不足" in content
+    assert "insufficient_evidence" not in content
     assert "Block A" in content
     assert "Block B1" in content
     assert "<small style='color:#ccc;'>OR</small>" in content

@@ -84,6 +84,8 @@ def build_final_report_markdown(report: Dict[str, Any]) -> str:
         unassessed_disputes=unassessed_disputes,
         inconclusive=inconclusive,
         added_matter_risk_summary=added_matter_risk_summary,
+        followup_needed=_followup_needed(search_followup_section),
+        followup_status=str(_item_get(search_followup_section, "status", "")).strip(),
     )
     support_primary, support_secondary = _build_support_strength_card(
         assessed_disputes=assessed_disputes,
@@ -291,17 +293,20 @@ def _build_key_risk_card(
     unassessed_disputes: int,
     inconclusive: int,
     added_matter_risk_summary: str,
+    followup_needed: bool = False,
+    followup_status: str = "",
 ) -> Tuple[str, str]:
     if added_matter_risk_summary:
         return "存在修改超范围风险", added_matter_risk_summary
+    if followup_needed:
+        secondary = "当前报告仍存在待进一步核实的争议点或新增特征"
+        if followup_status == "needs_answer":
+            secondary = "当前报告存在待补强信息，相关争议点尚未闭合"
+        return "仍有待核实风险", secondary
     if inconclusive > 0:
-        primary = f"{inconclusive} 项仍需重点复核"
-        secondary = "现有证据尚不足以形成明确结论"
-        return primary, secondary
+        return "仍有待核实风险", "现有证据尚不足以形成明确结论"
     if unassessed_disputes > 0:
-        primary = f"{unassessed_disputes} 项待继续核查"
-        secondary = "仍有争议点未完成有效评估"
-        return primary, secondary
+        return "仍有待核实风险", "仍有争议点未完成有效评估"
     return "未见明显剩余风险", "已核查争议点均形成明确判断"
 
 
@@ -489,7 +494,7 @@ def _render_search_followup_section(section: Any) -> List[str]:
             claim_ids = ",".join(_item_get(item, "claim_ids", []) or []) or "-"
             lines.append(
                 f"| {claim_ids} | {_safe_table_text(_item_get(item, 'feature_text', '-') or '-')} | "
-                f"{_safe_table_text(_item_get(item, 'gap_type', '-') or '-')} | "
+                f"{_safe_table_text(_gap_type_label(_item_get(item, 'gap_type', '-') or '-'))} | "
                 f"{_safe_table_text(_item_get(item, 'gap_summary', '-') or '-')} |"
             )
         lines.append("")
@@ -536,6 +541,19 @@ def _safe_table_text(value: Any) -> str:
     return _text_or_default(value).replace("\n", "<br>").replace("|", "\\|")
 
 
+def _gap_type_label(value: Any) -> str:
+    mapping = {
+        "insufficient_evidence": "证据不足",
+        "inconclusive": "结论未定",
+        "topup_feature": "新增特征待补检",
+        "missing_document": "缺少文档",
+        "missing_support": "缺少支持",
+        "combination_gap": "组合缺口",
+    }
+    key = str(value or "").strip()
+    return mapping.get(key, key or "-")
+
+
 def _format_followup_or_terms(values: Any) -> str:
     items = values if isinstance(values, list) else [values]
     cleaned = [_safe_table_text(item) for item in items if str(item or "").strip()]
@@ -552,7 +570,7 @@ def _format_followup_block_id(value: Any) -> str:
 
 
 def _claim_group_label_html(claim_id: Any, claim_type: Any) -> str:
-    claim_label = _format_claim_ids(claim_id) or "-"
+    claim_label = _format_claim_id_display(_normalize_claim_id_list(claim_id)) or "-"
     claim_type_text = str(claim_type or "").strip()
     if claim_type_text == "independent":
         label = f"{claim_label}（独权）"
@@ -569,6 +587,8 @@ def _change_item_html(item: Any) -> str:
         return _structural_adjustment_item_html(item)
     if item_type == "merged_structural_adjustment":
         return _merged_structural_adjustment_item_html(item)
+    if item_type == "merged_consecutive_structural_adjustment":
+        return _merged_consecutive_structural_adjustment_item_html(item)
     if item_type == "merged_consecutive_renumbering":
         return _merged_consecutive_renumbering_item_html(item)
 
@@ -721,7 +741,12 @@ def _build_claim_change_groups(
 
 def _claim_change_item_sort_key(item: Dict[str, Any]) -> Tuple[int, str]:
     item_type = str(item.get("item_type", "substantive_amendment")).strip()
-    if item_type in ("structural_adjustment", "merged_structural_adjustment", "merged_consecutive_renumbering"):
+    if item_type in (
+        "structural_adjustment",
+        "merged_structural_adjustment",
+        "merged_consecutive_structural_adjustment",
+        "merged_consecutive_renumbering",
+    ):
         return (3, "")
 
     amendment_kind = str(item.get("amendment_kind", "")).strip()
@@ -977,41 +1002,107 @@ def _merged_consecutive_renumbering_item_html(merged_item: Dict[str, Any]) -> st
     )
 
 
+def _merged_consecutive_structural_adjustment_item_html(merged_item: Dict[str, Any]) -> str:
+    claim_ids = _normalize_claim_id_list(_item_get(merged_item, "claim_ids", []))
+    old_claim_ids = _normalize_claim_id_list(_item_get(merged_item, "old_claim_ids", []))
+    reason = str(_item_get(merged_item, "reason", "")).strip()
+    adjustment_kinds = set(_item_get(merged_item, "adjustment_kinds", []) or [])
+
+    if reason == "upstream_merged":
+        reason_prefix = "因上游权项并入"
+    elif reason == "upstream_deleted":
+        reason_prefix = "因上游权项删除"
+    else:
+        reason_prefix = "因结构调整"
+
+    tags: List[str] = []
+    if "renumbering" in adjustment_kinds:
+        tags.append("编号顺延")
+    if "reference_adjustment" in adjustment_kinds:
+        tags.append("引用关系调整")
+    if not tags:
+        tags.append("结构调整")
+
+    claim_range = _format_claim_id_range(claim_ids)
+    old_claim_range = _format_claim_id_range(old_claim_ids)
+    summary = f"对应旧权利要求 {old_claim_range}"
+    sentence = (
+        f"旧权利要求{old_claim_range}{reason_prefix}，连续顺延为现权利要求{claim_range}，"
+        f"且各权项的引用基础已按同一顺延规律同步调整。"
+    )
+    tags_html = "".join(
+        f'<div><span class="oar-change-source-tag oar-change-source-tag-unknown">{_html_text(tag)}</span></div>'
+        for tag in tags
+    )
+    return (
+        '<div class="oar-change-item-card oar-structural-adjustment-item">'
+        '<div class="oar-change-item-head">'
+        f'<div class="oar-change-item-title">{_html_text(summary)}</div>'
+        f'<div class="oar-change-claims oar-change-claims-compact">{tags_html}</div>'
+        "</div>"
+        '<div class="oar-change-item-body">'
+        f'<div class="oar-change-item-label">{_html_text(sentence)}</div>'
+        "</div>"
+        "</div>"
+    )
+
+
 def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: str) -> Tuple[str, bool]:
-    if normalize_for_compare(before_text) == normalize_for_compare(after_text):
-        text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
+    before_display = sanitize_for_display(before_text)
+    after_display = sanitize_for_display(after_text)
+    fallback_display = sanitize_for_display(fallback_text)
+
+    before_tokens = _tokenize_change_text(before_display)
+    after_tokens = _tokenize_change_text(after_display)
+    if _compare_tokens(before_tokens) == _compare_tokens(after_tokens):
+        text = _escape_text(_text_or_default(after_display or fallback_display, default="-"))
         return f'<div class="oar-change-diff">{text}</div>', False
 
-    before_tokens = _tokenize_change_text(before_text)
-    after_tokens = _tokenize_change_text(after_text)
     if not before_tokens and not after_tokens:
-        text = _escape_text(_text_or_default(fallback_text, default="-"))
+        text = _escape_text(_text_or_default(fallback_display, default="-"))
         return f'<div class="oar-change-diff">{text}</div>', False
 
     parts: List[str] = []
     contains_added_text = False
-    matcher = SequenceMatcher(a=before_tokens, b=after_tokens)
+    matcher = SequenceMatcher(a=_compare_tokens(before_tokens), b=_compare_tokens(after_tokens))
     for tag, start_before, end_before, start_after, end_after in matcher.get_opcodes():
+        before_chunk_tokens = before_tokens[start_before:end_before]
+        after_chunk_tokens = after_tokens[start_after:end_after]
         if tag == "equal":
-            parts.append(_render_diff_chunk(before_tokens[start_before:end_before]))
+            parts.append(_render_diff_chunk(before_chunk_tokens))
         elif tag == "delete":
-            parts.append(_render_diff_chunk(before_tokens[start_before:end_before], wrapper_class="oar-change-del"))
+            if _chunk_has_substantive_tokens(before_chunk_tokens):
+                parts.append(_render_diff_chunk(before_chunk_tokens, wrapper_class="oar-change-del"))
         elif tag == "insert":
-            added_chunk = _render_diff_chunk(after_tokens[start_after:end_after], wrapper_class="oar-change-add")
-            if added_chunk:
-                contains_added_text = True
-                parts.append(added_chunk)
+            if _chunk_has_substantive_tokens(after_chunk_tokens):
+                added_chunk = _render_diff_chunk(after_chunk_tokens, wrapper_class="oar-change-add")
+                if added_chunk:
+                    contains_added_text = True
+                    parts.append(added_chunk)
+            else:
+                parts.append(_render_diff_chunk(after_chunk_tokens))
         elif tag == "replace":
-            deleted_chunk = _render_diff_chunk(before_tokens[start_before:end_before], wrapper_class="oar-change-del")
-            added_chunk = _render_diff_chunk(after_tokens[start_after:end_after], wrapper_class="oar-change-add")
-            if deleted_chunk:
-                parts.append(deleted_chunk)
-            if added_chunk:
-                contains_added_text = True
-                parts.append(added_chunk)
+            before_has_substance = _chunk_has_substantive_tokens(before_chunk_tokens)
+            after_has_substance = _chunk_has_substantive_tokens(after_chunk_tokens)
+            if not before_has_substance and not after_has_substance:
+                parts.append(_render_diff_chunk(after_chunk_tokens))
+                continue
+            if before_has_substance:
+                deleted_chunk = _render_diff_chunk(before_chunk_tokens, wrapper_class="oar-change-del")
+                if deleted_chunk:
+                    parts.append(deleted_chunk)
+            if after_has_substance:
+                added_chunk = _render_diff_chunk(after_chunk_tokens, wrapper_class="oar-change-add")
+                if added_chunk:
+                    contains_added_text = True
+                    parts.append(added_chunk)
+            else:
+                plain_chunk = _render_diff_chunk(after_chunk_tokens)
+                if plain_chunk:
+                    parts.append(plain_chunk)
 
     if not parts:
-        text = _escape_text(_text_or_default(after_text or fallback_text, default="-"))
+        text = _escape_text(_text_or_default(after_display or fallback_display, default="-"))
         return f'<div class="oar-change-diff">{text}</div>', False
 
     return f'<div class="oar-change-diff">{"".join(parts)}</div>', contains_added_text
@@ -1041,12 +1132,11 @@ def _render_diff_chunk(tokens: List[str], wrapper_class: str = "") -> str:
     for token in tokens:
         if _is_display_math_token(token):
             flush_text_buffer()
-            class_attr = "oar-change-math-block"
-            if wrapper_class == "oar-change-add":
-                class_attr += " oar-change-math-block-add"
-            elif wrapper_class == "oar-change-del":
-                class_attr += " oar-change-math-block-del"
-            parts.append(f'<div class="{class_attr}">{_escape_text(token)}</div>')
+            parts.append(_render_math_diff_token(token, wrapper_class, display_mode=True))
+            continue
+        if _is_inline_math_token(token):
+            flush_text_buffer()
+            parts.append(_render_math_diff_token(token, wrapper_class, display_mode=False))
             continue
         text_buffer.append(token)
 
@@ -1059,8 +1149,30 @@ def _is_display_math_token(token: str) -> bool:
     return len(value) >= 4 and value.startswith("$$") and value.endswith("$$")
 
 
+def _is_inline_math_token(token: str) -> bool:
+    value = str(token or "")
+    return len(value) >= 2 and value.startswith("$") and value.endswith("$") and not _is_display_math_token(value)
+
+
+def _render_math_diff_token(token: str, wrapper_class: str, display_mode: bool) -> str:
+    if display_mode:
+        class_attr = "oar-change-math-block"
+        if wrapper_class == "oar-change-add":
+            class_attr += " oar-change-math-block-add"
+        elif wrapper_class == "oar-change-del":
+            class_attr += " oar-change-math-block-del"
+        return f'<div class="{class_attr}">{_escape_text(token)}</div>'
+
+    class_attr = "oar-change-inline-math"
+    if wrapper_class == "oar-change-add":
+        class_attr += " oar-change-inline-math-add"
+    elif wrapper_class == "oar-change-del":
+        class_attr += " oar-change-inline-math-del"
+    return f'<span class="{class_attr}">{_escape_text(token)}</span>'
+
+
 def _tokenize_change_text(text: Any) -> List[str]:
-    value = str(text or "")
+    value = sanitize_for_display(text)
     if not value:
         return []
     tokens: List[str] = []
@@ -1083,7 +1195,7 @@ def _tokenize_change_text(text: Any) -> List[str]:
                 tokens.append(value[index:end + 1])
                 index = end + 1
                 continue
-        match = re.match(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]|[^\sA-Za-z0-9_\u4e00-\u9fff]", value[index:])
+        match = re.match(r"\s+|[A-Za-z0-9_]+|[\u4e00-\u9fff]+|[^\sA-Za-z0-9_\u4e00-\u9fff$]+", value[index:])
         if match:
             token = match.group(0)
             tokens.append(token)
@@ -1092,6 +1204,68 @@ def _tokenize_change_text(text: Any) -> List[str]:
             tokens.append(value[index])
             index += 1
     return tokens
+
+
+def _compare_tokens(tokens: List[str]) -> List[str]:
+    return [_token_compare_key(token) for token in tokens]
+
+
+def _token_compare_key(token: str) -> str:
+    value = str(token or "")
+    if not value:
+        return ""
+    if _is_display_math_token(value) or _is_inline_math_token(value):
+        return f"MATH:{normalize_for_compare(value)}"
+    if value.isspace():
+        return "WS"
+    if re.fullmatch(r"[A-Za-z0-9_]+", value):
+        return f"ASCII:{value.lower()}"
+    if re.fullmatch(r"[\u4e00-\u9fff]+", value):
+        return f"CJK:{value}"
+    return f"PUNC:{_canonicalize_diff_punctuation(value)}"
+
+
+def _canonicalize_diff_punctuation(token: str) -> str:
+    if token in {",", "，", "、"}:
+        return ","
+    if token in {";", "；"}:
+        return ";"
+    if token in {":", "："}:
+        return ":"
+    if token in {"(", "（", "[", "【", "{", "｛"}:
+        return "("
+    if token in {")", "）", "]", "】", "}", "｝"}:
+        return ")"
+    if token in {'"', "“", "”", "'", "‘", "’"}:
+        return '"'
+    if token in {"<", "＜"}:
+        return "<"
+    if token in {">", "＞"}:
+        return ">"
+    if token in {"=", "＝"}:
+        return "="
+    if token in {"-", "－", "—"}:
+        return "-"
+    if token in {"+", "＋"}:
+        return "+"
+    if token in {"/", "／"}:
+        return "/"
+    if token in {"*", "＊"}:
+        return "*"
+    return token
+
+
+def _chunk_has_substantive_tokens(tokens: List[str]) -> bool:
+    return any(_is_substantive_diff_token(token) for token in tokens)
+
+
+def _is_substantive_diff_token(token: str) -> bool:
+    value = str(token or "")
+    if not value or value.isspace():
+        return False
+    if _is_display_math_token(value) or _is_inline_math_token(value):
+        return True
+    return bool(re.search(r"[A-Za-z0-9_\u4e00-\u9fff]", value))
 
 
 def _to_dict(item: Any) -> Dict[str, Any]:
@@ -1132,29 +1306,41 @@ def _merge_consecutive_renumbering_adjustments(
         if claim_id:
             by_claim.setdefault(claim_id, []).append(item)
 
-    eligible_claim_ids: set[str] = set()
+    eligible_entries: List[Dict[str, Any]] = []
     for claim_id, items in by_claim.items():
         if claim_id in substantive_claim_ids:
             continue
-        if len(items) != 1:
+        normalized_items = [dict(item) for item in items]
+        claim_id_text = str(_item_get(normalized_items[0], "claim_id", "")).strip()
+        old_claim_id_text = str(_item_get(normalized_items[0], "old_claim_id", "")).strip()
+        if not claim_id_text.isdigit() or not old_claim_id_text.isdigit():
             continue
-        item = items[0]
-        if str(_item_get(item, "adjustment_kind", "")).strip() != "renumbering":
+        kind_set = {str(_item_get(item, "adjustment_kind", "")).strip() for item in normalized_items}
+        if not kind_set or "renumbering" not in kind_set:
             continue
-        if not str(_item_get(item, "claim_id", "")).strip().isdigit():
+        if len(kind_set) != len(normalized_items):
             continue
-        if not str(_item_get(item, "old_claim_id", "")).strip().isdigit():
+        reference_pattern = _reference_adjustment_pattern(normalized_items)
+        if kind_set == {"renumbering", "reference_adjustment"} and reference_pattern is None:
             continue
-        eligible_claim_ids.add(claim_id)
+        if kind_set not in ({"renumbering"}, {"renumbering", "reference_adjustment"}):
+            continue
+        eligible_entries.append(
+            {
+                "claim_id": claim_id_text,
+                "old_claim_id": old_claim_id_text,
+                "claim_type": str(_item_get(normalized_items[0], "claim_type", "")).strip() or "unknown",
+                "reason": str(_item_get(normalized_items[0], "reason", "")).strip(),
+                "adjustment_kinds": tuple(sorted(kind_set)),
+                "reference_pattern": reference_pattern,
+                "items": normalized_items,
+            }
+        )
 
-    eligible_items = [
-        item for item in adjustments
-        if str(_item_get(item, "claim_id", "")).strip() in eligible_claim_ids
-    ]
-    eligible_items.sort(
-        key=lambda item: (
-            int(str(_item_get(item, "claim_id", "0")).strip() or 0),
-            int(str(_item_get(item, "old_claim_id", "0")).strip() or 0),
+    eligible_entries.sort(
+        key=lambda entry: (
+            int(str(entry.get("claim_id", "0")).strip() or 0),
+            int(str(entry.get("old_claim_id", "0")).strip() or 0),
         )
     )
 
@@ -1165,27 +1351,33 @@ def _merge_consecutive_renumbering_adjustments(
     def flush_sequence() -> None:
         nonlocal current_sequence
         if len(current_sequence) >= 2:
-            merged_sequences.append(_build_consecutive_renumbering_item(current_sequence))
+            kinds = set(current_sequence[0].get("adjustment_kinds", ()))
+            if kinds == {"renumbering"}:
+                merged_sequences.append(_build_consecutive_renumbering_item(current_sequence))
+            else:
+                merged_sequences.append(_build_consecutive_structural_adjustment_item(current_sequence))
             for seq_item in current_sequence:
-                consumed_claim_ids.add(str(_item_get(seq_item, "claim_id", "")).strip())
+                consumed_claim_ids.add(str(seq_item.get("claim_id", "")).strip())
         current_sequence = []
 
-    for item in eligible_items:
+    for entry in eligible_entries:
         if not current_sequence:
-            current_sequence = [item]
+            current_sequence = [entry]
             continue
         prev = current_sequence[-1]
-        prev_claim = int(str(_item_get(prev, "claim_id", "0")).strip() or 0)
-        prev_old = int(str(_item_get(prev, "old_claim_id", "0")).strip() or 0)
-        claim_id = int(str(_item_get(item, "claim_id", "0")).strip() or 0)
-        old_claim_id = int(str(_item_get(item, "old_claim_id", "0")).strip() or 0)
-        same_reason = str(_item_get(prev, "reason", "")).strip() == str(_item_get(item, "reason", "")).strip()
-        same_type = str(_item_get(prev, "claim_type", "")).strip() == str(_item_get(item, "claim_type", "")).strip()
-        if same_reason and same_type and claim_id == prev_claim + 1 and old_claim_id == prev_old + 1:
-            current_sequence.append(item)
+        prev_claim = int(str(prev.get("claim_id", "0")).strip() or 0)
+        prev_old = int(str(prev.get("old_claim_id", "0")).strip() or 0)
+        claim_id = int(str(entry.get("claim_id", "0")).strip() or 0)
+        old_claim_id = int(str(entry.get("old_claim_id", "0")).strip() or 0)
+        same_reason = str(prev.get("reason", "")).strip() == str(entry.get("reason", "")).strip()
+        same_type = str(prev.get("claim_type", "")).strip() == str(entry.get("claim_type", "")).strip()
+        same_kinds = tuple(prev.get("adjustment_kinds", ())) == tuple(entry.get("adjustment_kinds", ()))
+        same_pattern = prev.get("reference_pattern") == entry.get("reference_pattern")
+        if same_reason and same_type and same_kinds and same_pattern and claim_id == prev_claim + 1 and old_claim_id == prev_old + 1:
+            current_sequence.append(entry)
             continue
         flush_sequence()
-        current_sequence = [item]
+        current_sequence = [entry]
     flush_sequence()
 
     remaining_adjustments = [
@@ -1198,17 +1390,57 @@ def _merge_consecutive_renumbering_adjustments(
 def _build_consecutive_renumbering_item(sequence: List[Dict[str, Any]]) -> Dict[str, Any]:
     ordered = sorted(
         sequence,
-        key=lambda item: int(str(_item_get(item, "claim_id", "0")).strip() or 0),
+        key=lambda item: int(str(item.get("claim_id", "0")).strip() or 0),
     )
     return {
         "item_type": "merged_consecutive_renumbering",
-        "claim_ids": [str(_item_get(item, "claim_id", "")).strip() for item in ordered],
-        "old_claim_ids": [str(_item_get(item, "old_claim_id", "")).strip() for item in ordered],
-        "claim_type": str(_item_get(ordered[0], "claim_type", "")).strip() or "unknown",
-        "reason": str(_item_get(ordered[0], "reason", "")).strip(),
-        "adjustments": ordered,
+        "claim_ids": [str(item.get("claim_id", "")).strip() for item in ordered],
+        "old_claim_ids": [str(item.get("old_claim_id", "")).strip() for item in ordered],
+        "claim_type": str(ordered[0].get("claim_type", "")).strip() or "unknown",
+        "reason": str(ordered[0].get("reason", "")).strip(),
+        "adjustments": [sub_item for item in ordered for sub_item in item.get("items", [])],
         "has_ai_assessment": False,
     }
+
+
+def _build_consecutive_structural_adjustment_item(sequence: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ordered = sorted(
+        sequence,
+        key=lambda item: int(str(item.get("claim_id", "0")).strip() or 0),
+    )
+    return {
+        "item_type": "merged_consecutive_structural_adjustment",
+        "claim_ids": [str(item.get("claim_id", "")).strip() for item in ordered],
+        "old_claim_ids": [str(item.get("old_claim_id", "")).strip() for item in ordered],
+        "claim_type": str(ordered[0].get("claim_type", "")).strip() or "unknown",
+        "reason": str(ordered[0].get("reason", "")).strip(),
+        "adjustment_kinds": list(ordered[0].get("adjustment_kinds", ())),
+        "adjustments": [sub_item for item in ordered for sub_item in item.get("items", [])],
+        "has_ai_assessment": False,
+    }
+
+
+def _reference_adjustment_pattern(items: List[Dict[str, Any]]) -> Tuple[int, ...] | None:
+    pattern: Tuple[int, ...] | None = ()
+    for item in items:
+        if str(_item_get(item, "adjustment_kind", "")).strip() != "reference_adjustment":
+            continue
+        before_ids = _extract_reference_claim_ids(_item_get(item, "before_text", ""))
+        after_ids = _extract_reference_claim_ids(_item_get(item, "after_text", ""))
+        if not before_ids or len(before_ids) != len(after_ids):
+            return None
+        deltas = tuple(after - before for before, after in zip(before_ids, after_ids))
+        if pattern == ():
+            pattern = deltas
+            continue
+        if deltas != pattern:
+            return None
+    return pattern
+
+
+def _extract_reference_claim_ids(text: Any) -> List[int]:
+    matches = re.findall(r"权利要求\s*(\d+)", str(text or ""))
+    return [int(match) for match in matches]
 
 
 def _dedupe_review_units(items: List[Any]) -> List[Dict[str, Any]]:
@@ -1316,8 +1548,25 @@ def _normalize_claim_id_list(value: Any) -> List[str]:
     return claim_ids
 
 
+def _format_claim_id_display(claim_ids: List[str]) -> str:
+    normalized = _normalize_claim_id_list(claim_ids)
+    if not normalized:
+        return "-"
+    if all(item.isdigit() for item in normalized):
+        numbers = [int(item) for item in normalized]
+        if len(numbers) >= 2 and all(numbers[idx] == numbers[0] + idx for idx in range(len(numbers))):
+            return f"{numbers[0]}-{numbers[-1]}"
+    return "、".join(normalized)
+
+
 def _review_claim_title(display_claim_ids: List[str], fallback_title: str) -> str:
-    return "、".join(f"权利要求{claim_id}" for claim_id in display_claim_ids) or fallback_title
+    normalized = _normalize_claim_id_list(display_claim_ids)
+    if not normalized:
+        return fallback_title
+    compressed = _format_claim_id_display(normalized)
+    if re.fullmatch(r"\d+(?:-\d+)?", compressed):
+        return f"权利要求{compressed}"
+    return "、".join(f"权利要求{claim_id}" for claim_id in normalized)
 
 
 def _build_amendment_map(substantive_amendments: List[Any]) -> Dict[str, Dict[str, Any]]:
@@ -1331,12 +1580,13 @@ def _build_amendment_map(substantive_amendments: List[Any]) -> Dict[str, Dict[st
 
 
 def _claim_label_text(claim_ids: List[str]) -> str:
-    normalized = [claim_id for claim_id in claim_ids if str(claim_id).strip()]
+    normalized = _normalize_claim_id_list(claim_ids)
     if not normalized:
         return "相关权利要求"
-    if len(normalized) == 1:
-        return f"权利要求{normalized[0]}"
-    return "权利要求" + "、".join(normalized)
+    compressed = _format_claim_id_display(normalized)
+    if re.fullmatch(r"\d+(?:-\d+)?", compressed):
+        return f"权利要求{compressed}"
+    return "、".join(f"权利要求{claim_id}" for claim_id in normalized)
 
 
 def _review_scope_summary_text(unit_type: str, display_claim_ids: List[str]) -> str:

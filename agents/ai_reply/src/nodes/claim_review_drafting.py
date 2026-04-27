@@ -106,6 +106,10 @@ class ClaimReviewDraftingNode:
             for item in (claim_alignments or [])
             if str(self._to_dict(item).get("claim_id", "")).strip()
         ]
+        normalized_claim_alignments = self._sanitize_claim_alignments(
+            normalized_claim_alignments,
+            effective_map,
+        )
         dispute_by_amendment_id = {
             str(item.get("source_feature_id", "")).strip(): item
             for item in normalized_disputes
@@ -157,21 +161,18 @@ class ClaimReviewDraftingNode:
                 continue
 
             merged_sources_in_paragraph: Dict[str, List[str]] = {}
-            aligned_sources_in_paragraph: Dict[str, List[str]] = {}
-            residual_claim_ids: List[str] = []
+            mapped_source_claim_ids_by_target: Dict[str, List[str]] = {}
             for source_claim_id in paragraph_claim_ids:
                 merged_target_claim_id = merge_target_by_source.get(source_claim_id, "")
                 if merged_target_claim_id and merged_target_claim_id in effective_map:
                     merged_sources_in_paragraph.setdefault(merged_target_claim_id, []).append(source_claim_id)
                     continue
 
-                aligned_target_claim_id = alignment_target_by_source.get(source_claim_id, "")
-                if aligned_target_claim_id and aligned_target_claim_id in effective_map:
-                    aligned_sources_in_paragraph.setdefault(aligned_target_claim_id, []).append(source_claim_id)
-                    continue
-
-                if source_claim_id in effective_map:
-                    residual_claim_ids.append(source_claim_id)
+                target_claim_id = alignment_target_by_source.get(source_claim_id, "")
+                if not target_claim_id and source_claim_id in effective_map:
+                    target_claim_id = source_claim_id
+                if target_claim_id and target_claim_id in effective_map:
+                    mapped_source_claim_ids_by_target.setdefault(target_claim_id, []).append(source_claim_id)
 
             for target_claim_id, source_claim_ids in merged_sources_in_paragraph.items():
                 claim_unit = claim_unit_by_anchor.get(target_claim_id)
@@ -207,7 +208,15 @@ class ClaimReviewDraftingNode:
                         source_claim_id,
                     )
 
-            for target_claim_id, source_claim_ids in aligned_sources_in_paragraph.items():
+            residual_target_claim_ids = sorted(
+                mapped_source_claim_ids_by_target,
+                key=lambda claim_id: float(effective_order.get(claim_id, len(effective_claims))),
+            )
+            if not residual_target_claim_ids:
+                continue
+            if len(residual_target_claim_ids) == 1:
+                target_claim_id = residual_target_claim_ids[0]
+                source_claim_ids = mapped_source_claim_ids_by_target.get(target_claim_id, [])
                 claim_unit = claim_unit_by_anchor.get(target_claim_id)
                 if not claim_unit:
                     claim_unit = self._build_unit_spec(
@@ -235,49 +244,23 @@ class ClaimReviewDraftingNode:
                     paragraph_claim_ids,
                     float(effective_order.get(target_claim_id, len(effective_claims))),
                 )
-
-            if not residual_claim_ids:
                 continue
-            if len(residual_claim_ids) == 1:
-                target_claim_id = residual_claim_ids[0]
-                claim_unit = claim_unit_by_anchor.get(target_claim_id)
-                if not claim_unit:
-                    claim_unit = self._build_unit_spec(
-                        unit_id=str(paragraph.get("paragraph_id", "")).strip(),
-                        unit_type=self._single_claim_unit_type(target_claim_id, effective_map),
-                        source_paragraph_ids=[],
-                        display_claim_ids=[target_claim_id],
-                        anchor_claim_id=target_claim_id,
-                        oa_materials=[],
-                        claim_snapshots=self._build_claim_snapshots(
-                            [target_claim_id],
-                            effective_map,
-                            old_map,
-                            claim_before_source_map,
-                        ),
-                        paragraph_order=float(effective_order.get(target_claim_id, len(effective_claims))),
-                    )
-                    claim_unit_by_anchor[target_claim_id] = claim_unit
-                    unit_by_id[claim_unit["unit_id"]] = claim_unit
-                    unit_specs.append(claim_unit)
-                self._append_paragraph_to_unit(
-                    claim_unit,
-                    paragraph,
-                    residual_claim_ids,
-                    paragraph_claim_ids,
-                    float(effective_order.get(target_claim_id, len(effective_claims))),
-                )
-                continue
-            anchor_claim_id = self._first_claim_id_by_effective_order(residual_claim_ids, effective_claims)
+            grouped_source_claim_ids: List[str] = []
+            for target_claim_id in residual_target_claim_ids:
+                for source_claim_id in mapped_source_claim_ids_by_target.get(target_claim_id, []):
+                    if source_claim_id not in grouped_source_claim_ids:
+                        grouped_source_claim_ids.append(source_claim_id)
+            anchor_claim_id = self._first_claim_id_by_effective_order(residual_target_claim_ids, effective_claims)
+            residual_unit_id = paragraph_id if paragraph_id not in unit_by_id else f"{paragraph_id}_GROUP"
             residual_unit = self._build_unit_spec(
-                unit_id=paragraph_id,
+                unit_id=residual_unit_id,
                 unit_type="dependent_group_restructured",
                 source_paragraph_ids=[paragraph_id],
-                display_claim_ids=residual_claim_ids,
+                display_claim_ids=residual_target_claim_ids,
                 anchor_claim_id=anchor_claim_id,
-                oa_materials=[self._paragraph_material(paragraph, residual_claim_ids, paragraph_claim_ids)],
+                oa_materials=[self._paragraph_material(paragraph, grouped_source_claim_ids, paragraph_claim_ids)],
                 claim_snapshots=self._build_claim_snapshots(
-                    residual_claim_ids,
+                    residual_target_claim_ids,
                     effective_map,
                     old_map,
                     claim_before_source_map,
@@ -539,6 +522,8 @@ class ClaimReviewDraftingNode:
                 continue
             if not source_claim_id:
                 continue
+            if source_claim_id in result:
+                continue
             result[source_claim_id] = target_claim_id
         return result
 
@@ -556,6 +541,11 @@ class ClaimReviewDraftingNode:
             for item in claim_alignments
             if str(item.get("claim_id", "")).strip()
         }
+        assigned_old_claim_ids = {
+            old_claim_id
+            for old_claim_id in aligned_old_claim_by_new.values()
+            if old_claim_id
+        }
         result: Dict[str, str] = {}
         for claim in effective_claims:
             claim_id = claim["claim_id"]
@@ -563,7 +553,11 @@ class ClaimReviewDraftingNode:
             if aligned_old_claim_id and aligned_old_claim_id in old_map and aligned_old_claim_id not in consumed_source_claim_ids:
                 result[claim_id] = aligned_old_claim_id
                 continue
-            if claim_id in old_map and claim_id not in consumed_source_claim_ids:
+            if (
+                claim_id in old_map
+                and claim_id not in consumed_source_claim_ids
+                and claim_id not in assigned_old_claim_ids
+            ):
                 result[claim_id] = claim_id
                 continue
             source_claim_ids = target_sources_map.get(claim_id, [])
@@ -791,6 +785,61 @@ class ClaimReviewDraftingNode:
             parent_id = parent_ids[0]
             current = effective_map.get(parent_id, {})
         return claim_id
+
+    def _sanitize_claim_alignments(
+        self,
+        claim_alignments: List[Dict[str, Any]],
+        effective_map: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        normalized_entries: List[Dict[str, Any]] = []
+        for index, item in enumerate(claim_alignments or []):
+            claim_id = str(item.get("claim_id", "")).strip()
+            old_claim_id = str(item.get("old_claim_id", "")).strip()
+            if not claim_id or not old_claim_id or claim_id not in effective_map:
+                continue
+            normalized_entries.append(
+                {
+                    **item,
+                    "claim_id": claim_id,
+                    "old_claim_id": old_claim_id,
+                    "_index": index,
+                }
+            )
+
+        if not normalized_entries:
+            return []
+
+        best_by_old_claim_id: Dict[str, Dict[str, Any]] = {}
+        for entry in normalized_entries:
+            old_claim_id = entry["old_claim_id"]
+            current = best_by_old_claim_id.get(old_claim_id)
+            if current is None or self._claim_alignment_priority(entry) > self._claim_alignment_priority(current):
+                best_by_old_claim_id[old_claim_id] = entry
+
+        filtered: List[Dict[str, Any]] = []
+        seen_claim_ids: Set[str] = set()
+        for entry in sorted(best_by_old_claim_id.values(), key=lambda item: int(item["_index"])):
+            claim_id = entry["claim_id"]
+            if claim_id in seen_claim_ids:
+                continue
+            seen_claim_ids.add(claim_id)
+            filtered.append({key: value for key, value in entry.items() if key != "_index"})
+        return filtered
+
+    def _claim_alignment_priority(self, entry: Dict[str, Any]) -> tuple[int, int, int]:
+        alignment_kind = str(entry.get("alignment_kind", "")).strip()
+        reason = str(entry.get("reason", "")).strip()
+        kind_priority = {
+            "renumbered_successor": 4,
+            "semantic_match": 3,
+            "same_number_match": 2,
+            "fallback_match": 1,
+        }.get(alignment_kind, 0)
+        reason_priority = 1 if reason == "upstream_merged" else 0
+        claim_id = str(entry.get("claim_id", "")).strip()
+        old_claim_id = str(entry.get("old_claim_id", "")).strip()
+        self_match_penalty = 0 if claim_id != old_claim_id else -1
+        return (kind_priority, reason_priority, self_match_penalty)
 
     def _insertion_order_for_claim(
         self,
