@@ -1161,6 +1161,46 @@ def test_build_final_report_markdown_ignores_punctuation_and_duplicate_connector
     assert "包括模块A,模块B以及模块C。" in content
 
 
+def test_build_final_report_markdown_falls_back_to_plain_text_for_summary_like_diff_anchor() -> None:
+    report = {
+        "summary": {},
+        "amendment_section": {
+            "substantive_change_groups": [
+                {
+                    "claim_id": "1",
+                    "claim_type": "independent",
+                    "items": [
+                        {
+                            "amendment_id": "A1",
+                            "feature_text": "熔融拉锥设备包括第一光纤固定装置、第二光纤固定装置、燃烧器和光功率探测器",
+                            "feature_before_text": "所述熔融拉锥设备包括：第一光纤固定装置，所述第一光纤固定装置用于固定光纤；第二光纤固定装置，所述第二光纤固定装置用于固定所述光纤，并与所述第一光纤固定装置间距设置；燃烧器，所述燃烧器设置在所述第一光纤固定装置和所述第二光纤固定装置；以及光功率探测器，所述光功率探测器与所述光纤的输出端连接。",
+                            "feature_after_text": "熔融拉锥设备包括第一光纤固定装置、第二光纤固定装置、燃烧器和光功率探测器，并且增加了双探测器监测端口光功率。",
+                            "contains_added_text": True,
+                            "amendment_kind": "claim_feature_merge",
+                            "content_origin": "old_claim",
+                            "source_claim_ids": ["2"],
+                            "has_ai_assessment": False,
+                            "assessment": {},
+                            "evidence": [],
+                            "final_review_reason": "",
+                        }
+                    ],
+                }
+            ],
+            "structural_adjustments": [],
+        },
+        "response_dispute_section": {"items": []},
+        "response_reply_section": {"items": []},
+        "claim_review_section": {"items": []},
+    }
+
+    content = build_final_report_markdown(report)
+
+    assert 'class="oar-change-add"' not in content
+    assert 'class="oar-change-del"' not in content
+    assert "双探测器监测端口光功率" in content
+
+
 def test_build_final_report_markdown_dedupes_review_units_from_report_payload() -> None:
     report = {
         "summary": {},

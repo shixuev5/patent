@@ -1052,6 +1052,10 @@ def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: 
     after_display = sanitize_for_display(after_text)
     fallback_display = sanitize_for_display(fallback_text)
 
+    if not _should_render_true_redline(before_display, after_display):
+        text = _escape_text(_text_or_default(after_display or fallback_display, default="-"))
+        return f'<div class="oar-change-diff">{text}</div>', False
+
     before_tokens = _tokenize_change_text(before_display)
     after_tokens = _tokenize_change_text(after_display)
     if _compare_tokens(before_tokens) == _compare_tokens(after_tokens):
@@ -1106,6 +1110,28 @@ def _change_feature_diff_html(before_text: str, after_text: str, fallback_text: 
         return f'<div class="oar-change-diff">{text}</div>', False
 
     return f'<div class="oar-change-diff">{"".join(parts)}</div>', contains_added_text
+
+
+def _should_render_true_redline(before_text: str, after_text: str) -> bool:
+    before_display = sanitize_for_display(before_text)
+    after_display = sanitize_for_display(after_text)
+    if not before_display or not after_display:
+        return True
+    if _contains_summary_ellipsis(after_display):
+        return False
+
+    before_normalized = normalize_for_compare(before_display)
+    after_normalized = normalize_for_compare(after_display)
+    if not before_normalized or not after_normalized:
+        return True
+
+    similarity = SequenceMatcher(a=before_normalized, b=after_normalized).ratio()
+    return similarity >= 0.5
+
+
+def _contains_summary_ellipsis(text: str) -> bool:
+    value = str(text or "")
+    return "..." in value or "……" in value or "…" in value
 
 
 def _render_diff_tokens(tokens: List[str]) -> str:

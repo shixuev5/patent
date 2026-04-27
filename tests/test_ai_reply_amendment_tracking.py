@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import pytest
 
 from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
 
@@ -235,6 +236,28 @@ def test_normalize_tracking_result_filters_formula_spacing_only_change() -> None
     )
 
     assert normalized["substantive_amendments"] == []
+
+
+def test_normalize_tracking_result_rejects_summary_like_feature_after_text_for_claim_merge() -> None:
+    node = AmendmentTrackingNode()
+
+    with pytest.raises(ValueError, match="真实原文片段"):
+        node._normalize_tracking_result(
+            {
+                "substantive_amendments": [
+                    {
+                        "amendment_id": "A1",
+                        "feature_text": "熔融拉锥设备包括第一光纤固定装置、第二光纤固定装置、燃烧器和光功率探测器",
+                        "feature_before_text": "所述熔融拉锥设备包括：第一光纤固定装置，所述第一光纤固定装置用于固定光纤；第二光纤固定装置，所述第二光纤固定装置用于固定所述光纤，并与所述第一光纤固定装置间距设置；燃烧器，所述燃烧器设置在所述第一光纤固定装置和所述第二光纤固定装置；以及光功率探测器，所述光功率探测器与所述光纤的输出端连接。",
+                        "feature_after_text": "所述熔融拉锥设备包括第一光纤固定装置、第二光纤固定装置、燃烧器和光功率探测器... 所述光功率探测器设有两个。",
+                        "target_claim_ids": ["1"],
+                        "amendment_kind": "claim_feature_merge",
+                        "content_origin": "old_claim",
+                        "source_claim_ids": ["2"],
+                    }
+                ]
+            }
+        )
 
 
 def test_build_changed_claim_pairs_ignores_html_and_image_placeholders() -> None:

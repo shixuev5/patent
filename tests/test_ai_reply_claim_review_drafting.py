@@ -714,9 +714,13 @@ def test_claim_review_drafting_prompt_requires_preserving_existing_detail() -> N
     assert "无实质变化时原文复用优先" in system_prompt
     assert "不得为了措辞统一而整体改写" in system_prompt
     assert "必须完整保留当前仍然成立的事实、对比文件公开内容、区别特征分析及结论" in system_prompt
+    assert "结构与句式继承原则" in system_prompt
+    assert "必须保留同样的组织方式、段落顺序和句式节奏" in system_prompt
+    assert "必须写入该段内部，并沿用该段原有开头方式和说理节奏" in system_prompt
     assert "必须返回输入中的同一个 unit_id" in system_prompt
     assert "review_text 应尽量直接沿用 review_before_text" in user_prompt
     assert "只能返回该 unit_id 对应的单个 JSON 对象" in user_prompt
+    assert "必须保持同样结构；补充内容只能写回对应原段内部" in user_prompt
 
 
 def test_claim_review_drafting_dedupes_review_units_by_unit_id_and_claims() -> None:

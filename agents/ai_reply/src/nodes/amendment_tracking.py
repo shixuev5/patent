@@ -204,8 +204,9 @@ class AmendmentTrackingNode:
 - feature_text 示例：
   - 错误示范："增加了基于RRC值控制目标加速度的逻辑"
   - 正确示范："基于轮胎的RRC值控制车辆的目标加速度"
-- feature_before_text: 旧特征原文片段。如果是说明书补入则严格填 ""；如果是从权并入，摘录来源旧权项的原文。
-- feature_after_text: 新特征原文片段。必须是精简的词组或分句，严禁返回整条权利要求的全文！应优先体现新增技术限定的核心内容，避免带入新权利要求为适配 claim 句法而出现的外层动作或连接性措辞。
+- feature_before_text: 旧特征原文片段。如果是说明书补入则严格填 ""；如果是从权并入，必须摘录来源旧权项中的真实原文片段，不得概述，不得压缩改写。
+- feature_after_text: 新特征原文片段。必须是新权利要求中的真实修改后原文片段，用于最终报告做前后 redline；不得写成摘要句、概述句、压缩句，不得使用 "..."、"……"、"等" 来替代中间内容。可以是局部原文片段，但必须保持真实原文措辞，不得另行改写。
+- 对于 `claim_feature_merge`，如果新权利要求是在旧权项原文基础上继续增加限定，则 `feature_after_text` 必须保留该旧权项对应的原文基底，再体现新增限定；绝对禁止把“原文基底 + 新增限定”改写成另一句概括话，否则会导致最终报告的删改标记错误。
 - 不要为了规避上述要求而把一个原本单一的技术限定拆得更细；保持适度概括，维持单条技术特征粒度稳定。
 
 ### 期望输出格式
@@ -244,7 +245,7 @@ class AmendmentTrackingNode:
 【分析指引与特殊处理】
 1. 关注 `changed_claims_pairs`：`target_claim_ids` 应填写发生变动的新权项的 `claim_id`。先对比 `new_text` 和 `old_text`，识别所有新增或发生实质变化的技术点。
 2. 全局检索溯源：对每个新增技术点，务必在 `full_old_claims_context` (旧权全文) 中全局搜寻。找得到就是 `claim_feature_merge`，找不到就是 `spec_feature_addition`。如果旧权以并列备选项、Markush 式列举或“至少一个”公开多个候选限定，而新权只保留其中一项，也应判定为 `claim_feature_merge`。
-3. 客观改写结果：完成溯源后，再将 `feature_text` 改写为客观技术事实，禁止出现“将A修改为B”“增加了”等元语言；`feature_after_text` 只能填写精简词组或分句，不能返回整条权利要求。
+3. 客观改写结果：完成溯源后，再将 `feature_text` 改写为客观技术事实，禁止出现“将A修改为B”“增加了”等元语言；但 `feature_after_text` 不得摘要化，必须保留新权利要求中的真实原文片段，不能返回整条权利要求全文，且禁止使用省略号或概括性改写。
 4. 全新增加的权利要求：如果某 pair 的 `old_text` 为空，说明这是一个全新添加的权利要求。仍然要先提炼该新权项中的核心技术特征，再去旧权文中找源头，判断是合并而来还是说明书引入。
 
 【差异数据】
@@ -297,6 +298,12 @@ class AmendmentTrackingNode:
                     raise ValueError("spec_feature_addition 必须对应 content_origin=specification")
                 source_claim_ids = []
 
+            self._validate_feature_anchor_texts(
+                amendment_kind=amendment_kind,
+                feature_before_text=feature_before_text,
+                feature_after_text=feature_after_text,
+            )
+
             if normalize_for_compare(feature_before_text) == normalize_for_compare(feature_after_text):
                 continue
 
@@ -317,6 +324,19 @@ class AmendmentTrackingNode:
         return {
             "substantive_amendments": amendments,
         }
+
+    def _validate_feature_anchor_texts(
+        self,
+        amendment_kind: str,
+        feature_before_text: str,
+        feature_after_text: str,
+    ) -> None:
+        if self._contains_summary_ellipsis(feature_after_text):
+            raise ValueError("feature_after_text 必须为真实原文片段，不得包含省略号或摘要化截断")
+
+    def _contains_summary_ellipsis(self, text: str) -> bool:
+        value = str(text or "")
+        return "..." in value or "……" in value or "…" in value
 
     def _build_claim_alignments(
         self,
