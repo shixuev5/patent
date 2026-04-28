@@ -148,8 +148,8 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
 
 ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     "search-elements": {
-        PHASE_COLLECTING_REQUIREMENTS: set(),
-        PHASE_DRAFTING_PLAN: set(),
+        PHASE_COLLECTING_REQUIREMENTS: {"save_search_elements"},
+        PHASE_DRAFTING_PLAN: {"save_search_elements"},
     },
     "query-executor": {
         PHASE_EXECUTE_SEARCH: {
@@ -167,10 +167,11 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "probe_search_semantic",
             "probe_search_boolean",
             "probe_count_boolean",
+            "save_probe_findings",
         },
     },
     "planner": {
-        PHASE_DRAFTING_PLAN: set(),
+        PHASE_DRAFTING_PLAN: {"save_planner_draft"},
     },
     "coarse-screener": {
         PHASE_COARSE_SCREEN: {"run_coarse_screen_batch"},

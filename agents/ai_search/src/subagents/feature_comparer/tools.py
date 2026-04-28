@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, List
+from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.stage_limits import DEFAULT_SELECTED_LIMIT
 from agents.ai_search.src.state import PHASE_FEATURE_COMPARISON
+from agents.ai_search.src.subagents.feature_comparer.schemas import FeatureCompareOutput
 from agents.ai_search.src.subagents.feature_comparer.prompt import build_feature_prompt
 
 
@@ -18,13 +19,30 @@ def build_feature_comparer_tools() -> List[Any]:
     def run_feature_compare(
         operation: str = "load",
         plan_version: int = 0,
+        payload: Dict[str, Any] | None = None,
         runtime: ToolRuntime = None,
     ) -> str:
-        """读取特征对比上下文。"""
+        """读取或提交特征对比上下文。"""
         resolved_context = resolve_agent_context(runtime)
         version = int(plan_version or resolved_context.active_plan_version() or 0)
-        if str(operation or "load").strip().lower() != "load":
-            raise ValueError("run_feature_compare 仅支持 load 模式。")
+        normalized_operation = str(operation or "load").strip().lower()
+        if normalized_operation not in {"load", "commit"}:
+            raise ValueError("run_feature_compare 仅支持 load 或 commit 模式。")
+        if normalized_operation == "commit":
+            result = FeatureCompareOutput.model_validate(payload or {})
+            feature_comparison_id = resolved_context.persist_feature_compare_result(
+                result.model_dump(mode="python"),
+                plan_version=version,
+                runtime=runtime.context if runtime else None,
+            )
+            return json.dumps(
+                {
+                    "feature_comparison_id": feature_comparison_id,
+                    "coverage_gap_count": len(result.coverage_gaps),
+                    "readiness": result.creativity_readiness,
+                },
+                ensure_ascii=False,
+            )
         selected_documents = resolved_context.storage.list_ai_search_documents(resolved_context.task_id, version, stages=["selected"])[:DEFAULT_SELECTED_LIMIT]
         selected_ids = [str(item.get("document_id") or "").strip() for item in selected_documents if str(item.get("document_id") or "").strip()]
         batch_id = uuid.uuid4().hex

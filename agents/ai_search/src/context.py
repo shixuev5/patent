@@ -25,6 +25,7 @@ from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT
+from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
     PHASE_CLOSE_READ,
@@ -564,15 +565,6 @@ class AiSearchAgentContext:
         self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, planner_draft=draft))
         self.notify_snapshot_changed(runtime, reason="planner_draft")
         return draft
-
-    def save_planner_review_markdown(self, review_markdown: str, *, runtime: Any | None = None) -> Dict[str, Any]:
-        return self._persist_planner_draft(
-            current=self.current_planner_draft(),
-            review_markdown=review_markdown,
-            draft_status="drafting",
-            finalized_at=None,
-            runtime=runtime,
-        )
 
     def save_search_elements_payload(self, payload: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
         normalized_payload = normalize_search_elements_payload(payload)

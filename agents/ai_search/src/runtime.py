@@ -9,9 +9,7 @@ from typing import Any, Dict, Optional, Sequence
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-from langchain_openai.chat_models.base import _convert_to_openai_response_format
 from langgraph.types import Command
-from pydantic import BaseModel
 
 from agents.ai_search.src.state import (
     allowed_main_agent_subagents,
@@ -60,6 +58,7 @@ TOOL_DISPLAY_LABELS = {
     "complete_session": "完成当前检索",
     "save_search_elements": "保存检索要素",
     "save_probe_findings": "保存预检信号",
+    "save_planner_draft": "保存计划草案",
     "save_plan_execution_overview": "保存计划总览",
     "append_plan_sub_plan": "追加子计划",
     "probe_search_semantic": "执行语义预检",
@@ -310,10 +309,14 @@ def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
     if name == "run_feature_compare":
         operation = str(args.get("operation") or "load").strip().lower()
         return "提交特征对比结果" if operation == "commit" else "加载特征对比上下文"
-    if name == "save_plan_execution_overview":
-        return "保存计划总览"
+    if name == "save_search_elements":
+        return "保存检索要素"
     if name == "save_probe_findings":
         return "保存预检信号"
+    if name == "save_planner_draft":
+        return "保存计划草案"
+    if name == "save_plan_execution_overview":
+        return "保存计划总览"
     if name == "append_plan_sub_plan":
         return "追加子计划"
     return format_tool_label(name)
@@ -385,23 +388,6 @@ class AiSearchChatOpenAI(ChatOpenAI):
         response_format=None,
         **kwargs: Any,
     ):
-        # DashScope rejects `tools: []` when provider-native structured output is used.
-        # In that case we can bind the response format directly without entering the
-        # OpenAI tool-calling path.
-        if not list(tools or []) and response_format:
-            bind_kwargs: Dict[str, Any] = dict(kwargs)
-            if (
-                isinstance(response_format, dict)
-                and response_format.get("type") == "json_schema"
-                and "schema" in response_format.get("json_schema", {})
-            ):
-                strict = response_format["json_schema"].get("strict", None)
-                response_format = response_format["json_schema"]["schema"]
-            bind_kwargs["response_format"] = _convert_to_openai_response_format(
-                response_format,
-                strict=strict,
-            )
-            return self.bind(**bind_kwargs)
         return super().bind_tools(
             tools,
             tool_choice=tool_choice,
@@ -410,24 +396,6 @@ class AiSearchChatOpenAI(ChatOpenAI):
             response_format=response_format,
             **kwargs,
         )
-
-
-def uses_dashscope_openai_compatible_api(model: Any) -> bool:
-    base_url = str(
-        getattr(model, "openai_api_base", None)
-        or getattr(model, "base_url", None)
-        or settings.LLM_BASE_URL
-        or ""
-    ).strip().lower()
-    return "dashscope.aliyuncs.com" in base_url
-
-
-def structured_output_system_prompt(system_prompt: str) -> str:
-    prompt = str(system_prompt or "").rstrip()
-    if "json" in prompt.lower():
-        return prompt
-    suffix = "最终输出必须是合法 JSON，只能输出 JSON 本体，不要附加解释。"
-    return f"{prompt}\n\n{suffix}" if prompt else suffix
 
 
 def build_chat_model(model_name: Optional[str]) -> ChatOpenAI:
@@ -452,26 +420,6 @@ def default_model() -> ChatOpenAI:
 def large_model() -> ChatOpenAI:
     return build_chat_model(settings.LLM_MODEL_LARGE or settings.LLM_MODEL_DEFAULT)
 
-
-def extract_json_object(text: str) -> Dict[str, Any]:
-    raw = str(text or "").strip()
-    if not raw:
-        return {}
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        parts = raw.split("\n", 1)
-        raw = parts[1] if len(parts) > 1 else raw
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        raw = raw[start : end + 1]
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
-
-
 def extract_latest_ai_message(result: Dict[str, Any]) -> str:
     messages = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(messages, list):
@@ -487,13 +435,3 @@ def extract_latest_ai_message(result: Dict[str, Any]) -> str:
                 chunks = [str(part.get("text") or "") for part in content if isinstance(part, dict)]
                 return "".join(chunks).strip()
     return ""
-
-
-def extract_structured_response(result: Dict[str, Any]) -> Dict[str, Any]:
-    structured = result.get("structured_response") if isinstance(result, dict) else None
-    if isinstance(structured, BaseModel):
-        return structured.model_dump()
-    if isinstance(structured, dict):
-        return structured
-    content = extract_latest_ai_message(result)
-    return extract_json_object(content)

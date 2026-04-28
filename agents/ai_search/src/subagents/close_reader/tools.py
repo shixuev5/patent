@@ -12,6 +12,7 @@ from langchain.tools import ToolRuntime
 from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.stage_limits import DEFAULT_SHORTLIST_LIMIT
 from agents.ai_search.src.state import PHASE_CLOSE_READ
+from agents.ai_search.src.subagents.close_reader.schemas import CloseReaderOutput
 from agents.ai_search.src.subagents.close_reader.prompt import build_close_reader_prompt
 from agents.ai_search.src.subagents.close_reader.workspace import load_document_details, prepare_close_read_workspace
 
@@ -53,13 +54,30 @@ def build_close_reader_tools() -> List[Any]:
         operation: str = "load",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
+        payload: Dict[str, Any] | None = None,
         runtime: ToolRuntime = None,
     ) -> str:
-        """准备精读批次。"""
+        """准备或提交精读批次。"""
         resolved_context = resolve_agent_context(runtime)
         version = int(plan_version or resolved_context.active_plan_version() or 0)
-        if str(operation or "load").strip().lower() != "load":
-            raise ValueError("run_close_read_batch 仅支持 load 模式。")
+        normalized_operation = str(operation or "load").strip().lower()
+        if normalized_operation not in {"load", "commit"}:
+            raise ValueError("run_close_read_batch 仅支持 load 或 commit 模式。")
+        if normalized_operation == "commit":
+            result = CloseReaderOutput.model_validate(payload or {})
+            selected_count = resolved_context.persist_close_read_result(
+                result.model_dump(mode="python"),
+                plan_version=version,
+                runtime=runtime.context if runtime else None,
+            )
+            return json.dumps(
+                {
+                    "selected_count": int(selected_count or 0),
+                    "rejected_count": len(result.rejected),
+                    "key_passage_count": len(result.key_passages),
+                },
+                ensure_ascii=False,
+            )
         records = resolved_context.storage.list_ai_search_documents(resolved_context.task_id, version)
         loaded_batch, loaded_ids = _resolve_loaded_batch(resolved_context, version)
         loaded_id_set = set(loaded_ids)

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, List
+from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.runtime_context import resolve_agent_context
 from agents.ai_search.src.stage_limits import DEFAULT_SHORTLIST_LIMIT
+from agents.ai_search.src.subagents.coarse_screener.schemas import CoarseScreenOutput
 
 
 def build_coarse_screener_tools() -> List[Any]:
@@ -17,13 +18,30 @@ def build_coarse_screener_tools() -> List[Any]:
         operation: str = "load",
         plan_version: int = 0,
         limit: int = DEFAULT_SHORTLIST_LIMIT,
+        payload: Dict[str, Any] | None = None,
         runtime: ToolRuntime = None,
     ) -> str:
-        """读取粗筛待处理批次。"""
+        """读取或提交粗筛待处理批次。"""
         resolved_context = resolve_agent_context(runtime)
         version = int(plan_version or resolved_context.active_plan_version() or 0)
-        if str(operation or "load").strip().lower() != "load":
-            raise ValueError("run_coarse_screen_batch 仅支持 load 模式。")
+        normalized_operation = str(operation or "load").strip().lower()
+        if normalized_operation not in {"load", "commit"}:
+            raise ValueError("run_coarse_screen_batch 仅支持 load 或 commit 模式。")
+        if normalized_operation == "commit":
+            result = CoarseScreenOutput.model_validate(payload or {})
+            applied = resolved_context.persist_coarse_screen_result(
+                result.keep,
+                result.discard,
+                plan_version=version,
+                runtime=runtime.context if runtime else None,
+            )
+            return json.dumps(
+                {
+                    "kept": int(applied.get("kept") or 0),
+                    "discarded": int(applied.get("discarded") or 0),
+                },
+                ensure_ascii=False,
+            )
         records = resolved_context.storage.list_ai_search_documents(resolved_context.task_id, version)
         pending = [
             item

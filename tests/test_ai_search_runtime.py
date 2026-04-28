@@ -112,6 +112,33 @@ def test_planner_phase_protocol_blocks_plan_save_tool():
     assert result.content == "工具 `publish_planner_draft` 不能在阶段 `drafting_plan` 由 `planner` 调用。"
 
 
+def test_search_elements_phase_protocol_allows_save_tool():
+    middleware = AiSearchGuardMiddleware()
+    request = _request("save_search_elements", tool_id="call-search-elements-1", phase=PHASE_DRAFTING_PLAN, role="search-elements")
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
+def test_planner_phase_protocol_allows_draft_commit_tool():
+    middleware = AiSearchGuardMiddleware()
+    request = _request("save_planner_draft", tool_id="call-planner-2", phase=PHASE_DRAFTING_PLAN, role="planner")
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
+def test_plan_prober_phase_protocol_allows_probe_commit_tool():
+    middleware = AiSearchGuardMiddleware()
+    request = _request("save_probe_findings", tool_id="call-prober-1", phase=PHASE_DRAFTING_PLAN, role="plan-prober")
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result == "ok"
+
+
 def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
     middleware = AiSearchGuardMiddleware()
     request = _request("grep", tool_id="call-6", phase=PHASE_CLOSE_READ, role="ai-search-close-reader-task-runtime")
@@ -153,14 +180,13 @@ def test_main_agent_async_tool_guard_blocks_read_file():
 
 def test_close_reader_subagent_middleware_names_are_unique():
     spec = build_close_reader_subagent()
-    runnable = spec["runnable"]
     middleware = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=StateBackend),
-        SummarizationMiddleware(model=runnable.model, backend=StateBackend),
+        SummarizationMiddleware(model=spec["model"], backend=StateBackend),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
-        *list(getattr(runnable, "middleware", [])),
+        *list(spec.get("middleware", [])),
     ]
 
     names = [item.name for item in middleware]

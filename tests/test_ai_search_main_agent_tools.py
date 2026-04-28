@@ -122,6 +122,25 @@ def test_specialists_own_domain_tools():
     assert "model" in build_coarse_screener_subagent()
     assert "model" in build_close_reader_subagent()
     assert "model" in build_feature_comparer_subagent()
+    assert "response_format" not in search_elements_spec
+    assert "response_format" not in planner_spec
+    assert "response_format" not in prober_spec
+    assert "response_format" not in build_query_executor_subagent()
+    assert "response_format" not in build_coarse_screener_subagent()
+    assert "response_format" not in build_close_reader_subagent()
+    assert "response_format" not in build_feature_comparer_subagent()
+    assert {
+        "save_search_elements",
+    } == {
+        str(getattr(tool, "__name__", ""))
+        for tool in search_elements_spec["tools"]
+    }
+    assert {
+        "save_planner_draft",
+    } == {
+        str(getattr(tool, "__name__", ""))
+        for tool in planner_spec["tools"]
+    }
     assert query_tools == {
         "run_execution_step",
         "search_trace",
@@ -138,6 +157,7 @@ def test_specialists_own_domain_tools():
         "probe_search_semantic",
         "probe_search_boolean",
         "probe_count_boolean",
+        "save_probe_findings",
     } == {
         str(getattr(tool, "__name__", ""))
         for tool in prober_spec["tools"]
@@ -168,29 +188,30 @@ def test_main_agent_prompt_uses_runtime_phase_names():
 
 
 def test_specialist_prompts_describe_allowed_tools_and_required_fields():
-    assert "`save_search_elements`" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
-    assert "系统自动持久化" in SEARCH_ELEMENTS_SYSTEM_PROMPT
+    assert "`save_search_elements`" in SEARCH_ELEMENTS_SYSTEM_PROMPT
+    assert "系统自动持久化" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert "missing_items" in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert "clarification_summary" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
     assert '"申请人"' in SEARCH_ELEMENTS_SYSTEM_PROMPT
 
     assert "`probe_search_semantic`" in PLAN_PROBER_SYSTEM_PROMPT
-    assert "`save_probe_findings`" not in PLAN_PROBER_SYSTEM_PROMPT
+    assert "`save_probe_findings`" in PLAN_PROBER_SYSTEM_PROMPT
     assert "overall_observation" not in PLAN_PROBER_SYSTEM_PROMPT
     assert "retrieval_step_refs" in PLAN_PROBER_SYSTEM_PROMPT
     assert "signals" in PLAN_PROBER_SYSTEM_PROMPT
 
+    assert "`save_planner_draft`" in PLANNER_SYSTEM_PROMPT
     assert "`save_plan_execution_overview`" not in PLANNER_SYSTEM_PROMPT
     assert "`append_plan_sub_plan`" not in PLANNER_SYSTEM_PROMPT
     assert "`save_plan_review_markdown`" not in PLANNER_SYSTEM_PROMPT
     assert "`finalize_plan_draft`" not in PLANNER_SYSTEM_PROMPT
-    assert "完整的 `review_markdown` Markdown 文档本身" in PLANNER_SYSTEM_PROMPT
     assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
     assert "activation_mode" in PLANNER_SYSTEM_PROMPT
     assert "activation_conditions" in PLANNER_SYSTEM_PROMPT
 
     assert "`prepare_lane_queries`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "`fetch_patent_details`" in QUERY_EXECUTOR_SYSTEM_PROMPT
+    assert '`run_execution_step(operation="commit")`' in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "plan_change_assessment" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "next_recommendation" not in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "adjustments`: 数组" not in QUERY_EXECUTOR_SYSTEM_PROMPT
@@ -199,10 +220,12 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert '"too_broad" | "balanced" | "too_narrow"' in QUERY_EXECUTOR_SYSTEM_PROMPT
 
     assert "`run_coarse_screen_batch`" in COARSE_SCREEN_SYSTEM_PROMPT
+    assert '`run_coarse_screen_batch(operation="commit")`' in COARSE_SCREEN_SYSTEM_PROMPT
     assert "不能遗漏" in COARSE_SCREEN_SYSTEM_PROMPT
     assert "reasoning_summary" not in COARSE_SCREEN_SYSTEM_PROMPT
 
     assert "`run_close_read_batch`" in CLOSE_READER_SYSTEM_PROMPT
+    assert '`run_close_read_batch(operation="commit")`' in CLOSE_READER_SYSTEM_PROMPT
     assert "claim_alignments" in CLOSE_READER_SYSTEM_PROMPT
     assert "selected" in CLOSE_READER_SYSTEM_PROMPT
     assert "rejected" in CLOSE_READER_SYSTEM_PROMPT
@@ -210,6 +233,7 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "coverage_summary" not in CLOSE_READER_SYSTEM_PROMPT
 
     assert "`run_feature_compare`" in FEATURE_COMPARER_SYSTEM_PROMPT
+    assert '`run_feature_compare(operation="commit")`' in FEATURE_COMPARER_SYSTEM_PROMPT
     assert "document_roles" in FEATURE_COMPARER_SYSTEM_PROMPT
     assert "creativity_readiness" in FEATURE_COMPARER_SYSTEM_PROMPT
     assert '"needs_more_evidence"' in FEATURE_COMPARER_SYSTEM_PROMPT

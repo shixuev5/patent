@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import dataclasses
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from langchain.agents.structured_output import ProviderStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.runnables import Runnable
 from langgraph.types import Command
 
-from agents.ai_search.src.runtime import (
-    structured_output_system_prompt,
-    uses_dashscope_openai_compatible_api,
-)
+from agents.ai_search.src.runtime import extract_latest_ai_message
 
 if TYPE_CHECKING:
     from agents.ai_search.src.context import AiSearchAgentContext
@@ -65,16 +59,6 @@ def ensure_deepagents_context_support() -> None:
     if getattr(subagents_module, "_ai_search_context_support_patch", False):
         return
 
-    def _persist_subagent_result(spec: dict[str, Any], result: dict[str, Any], runtime: ToolRuntime) -> None:
-        persist_result = spec.get("persist_result")
-        if not callable(persist_result):
-            return
-        structured = result.get("structured_response")
-        if structured is None:
-            return
-        resolved_context = resolve_agent_context(runtime)
-        persist_result(resolved_context, structured, runtime=runtime.context)
-
     def _build_task_tool(subagents: list[dict[str, Any]], task_description: str | None = None) -> Any:
         subagent_specs: dict[str, dict[str, Any]] = {
             str(spec["name"]): spec for spec in subagents if str(spec.get("name") or "").strip()
@@ -102,16 +86,7 @@ def ensure_deepagents_context_support() -> None:
                 for key, value in result.items()
                 if key not in subagents_module._EXCLUDED_STATE_KEYS
             }
-            structured = result.get("structured_response")
-            if structured is not None:
-                if hasattr(structured, "model_dump_json"):
-                    content: str = structured.model_dump_json()
-                elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
-                    content = json.dumps(dataclasses.asdict(structured))
-                else:
-                    content = json.dumps(structured)
-            else:
-                content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+            content = extract_latest_ai_message(result)
             return Command(
                 update={
                     **state_update,
@@ -148,7 +123,6 @@ def ensure_deepagents_context_support() -> None:
                 raise ValueError("Tool call ID is required for subagent invocation")
             subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
             result = subagent.invoke(subagent_state, context=runtime.context)
-            _persist_subagent_result(subagent_specs[subagent_type], result, runtime)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
         async def atask(
@@ -166,7 +140,6 @@ def ensure_deepagents_context_support() -> None:
                 raise ValueError("Tool call ID is required for subagent invocation")
             subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
             result = await subagent.ainvoke(subagent_state, context=runtime.context)
-            _persist_subagent_result(subagent_specs[subagent_type], result, runtime)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -200,23 +173,17 @@ def ensure_deepagents_context_support() -> None:
             interrupt_on = spec.get("interrupt_on")
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-            response_format = spec.get("response_format")
             system_prompt = str(spec.get("system_prompt") or "")
-            if uses_dashscope_openai_compatible_api(model) and response_format is not None:
-                response_format = ProviderStrategy(schema=response_format)
-                system_prompt = structured_output_system_prompt(system_prompt)
             specs.append(
                 {
                     "name": spec["name"],
                     "description": spec["description"],
-                    "persist_result": spec.get("persist_result"),
                     "runnable": create_agent(
                         model,
                         system_prompt=system_prompt,
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
-                        response_format=response_format,
                         context_schema=spec.get("context_schema"),
                     ),
                 }

@@ -97,6 +97,92 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     assert json.loads(main_tools["get_planning_context"](runtime=runtime))["planner_draft"] == {}
 
 
+def test_save_planner_draft_tool_persists_draft_explicitly(tmp_path):
+    context, _storage, _task_id = _mount_context(tmp_path)
+    runtime = _runtime(context)
+    spec = _execution_spec()
+    planner_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
+
+    result = json.loads(
+        planner_tools["save_planner_draft"](
+            review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+            execution_spec=spec.model_dump(mode="python"),
+            probe_findings={"signals": [{"tool": "probe_search_semantic", "observation": "前5篇较相关"}]},
+            runtime=runtime,
+        )
+    )
+    draft = context.current_planner_draft()
+
+    assert result["draft_status"] == "drafting"
+    assert result["sub_plan_count"] == 1
+    assert draft["review_markdown"].startswith("# 检索计划")
+    assert draft["execution_spec"]["sub_plans"][0]["sub_plan_id"] == "sub_plan_1"
+    assert draft["probe_findings"]["signals"][0]["tool"] == "probe_search_semantic"
+
+
+def test_save_search_elements_tool_persists_message_explicitly(tmp_path):
+    context, storage, task_id = _mount_context(tmp_path)
+    runtime = _runtime(context)
+    search_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_search_elements_tools()}
+
+    result = json.loads(
+        search_tools["save_search_elements"](
+            payload={
+                "status": "complete",
+                "objective": "无效检索",
+                "applicants": [],
+                "filing_date": "",
+                "priority_date": "",
+                "missing_items": ["申请人"],
+                "search_elements": [
+                    {
+                        "element_name": "参数窗口控制",
+                        "keywords_zh": ["参数窗口控制"],
+                        "keywords_en": ["parameter window control"],
+                    }
+                ],
+            },
+            runtime=runtime,
+        )
+    )
+
+    latest = context.current_search_elements()
+    messages = storage.list_ai_search_messages(task_id)
+
+    assert result["status"] == "complete"
+    assert result["search_element_count"] == 1
+    assert latest["objective"] == "无效检索"
+    assert any(str(item.get("kind") or "") == "search_elements_update" for item in messages)
+
+
+def test_save_probe_findings_tool_persists_draft_explicitly(tmp_path):
+    context, _storage, _task_id = _mount_context(tmp_path)
+    runtime = _runtime(context)
+    prober_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_plan_prober_tools()}
+
+    result = json.loads(
+        prober_tools["save_probe_findings"](
+            payload={
+                "retrieval_step_refs": ["step_1"],
+                "signals": [
+                    {
+                        "tool": "probe_search_boolean",
+                        "observation": "前5篇有3篇相关",
+                        "impact": "召回质量可接受",
+                        "recommendation": "维持原查询",
+                    }
+                ],
+            },
+            runtime=runtime,
+        )
+    )
+    draft = context.current_planner_draft()
+
+    assert result["signal_count"] == 1
+    assert result["retrieval_step_ref_count"] == 1
+    assert draft["probe_findings"]["signals"][0]["tool"] == "probe_search_boolean"
+
+
 def test_publish_planner_draft_normalizes_database_names(tmp_path):
     context, storage, task_id = _mount_context(tmp_path)
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}

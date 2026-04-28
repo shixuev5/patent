@@ -672,6 +672,47 @@ def test_run_execution_step_commit_consumes_queued_messages_and_requests_takeove
     assert snapshot.retrieval["activeTodo"] is None
 
 
+def test_planner_message_segment_no_longer_persists_draft_implicitly(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN)
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    stream_state = service.agent_runs._init_stream_state(snapshot, "")
+    events = service.agent_runs._complete_message_segment_if_needed(
+        created.sessionId,
+        created.sessionId,
+        PHASE_DRAFTING_PLAN,
+        stream_state,
+        source_agent="planner",
+        content="# 检索计划\n\n## 检索目标\n测试目标",
+    )
+    context = AiSearchAgentContext(storage, created.sessionId)
+    messages = storage.list_ai_search_messages(created.sessionId)
+
+    assert events
+    assert context.current_planner_draft() == {}
+    assert any(
+        str(item.get("kind") or "") == "chat"
+        and str((item.get("metadata") or {}).get("source_agent") or "") == "planner"
+        for item in messages
+    )
+
+
+def test_recover_cancelled_drafting_run_does_not_auto_publish_planner_draft(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    _set_phase(storage, created.sessionId, PHASE_DRAFTING_PLAN, active_plan_version=None)
+    _set_planner_draft(storage, created.sessionId, review_markdown="# 草案\n\n## 检索目标\n测试目标")
+
+    service.agent_runs._recover_cancelled_drafting_run(created.sessionId)
+
+    context = AiSearchAgentContext(storage, created.sessionId)
+
+    assert context.current_planner_draft()["review_markdown"] == "# 草案\n\n## 检索目标\n测试目标"
+    assert storage.get_ai_search_plan(created.sessionId) is None
+
+
 def test_stream_resume_rejects_when_no_failed_execution_todo(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
@@ -1214,7 +1255,7 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
     assert "run.completed" in events[-1]
 
 
-def test_stream_message_emits_planner_message_segments_and_persists_review_markdown(monkeypatch, tmp_path):
+def test_stream_message_emits_planner_message_segments_without_implicit_draft_persistence(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
     monkeypatch.setattr(ai_search_service_module, "MAIN_AGENT_PROGRESS_POLL_SECONDS", 0.01)
@@ -1288,7 +1329,7 @@ def test_stream_message_emits_planner_message_segments_and_persists_review_markd
         and event["payload"].get("sourceAgent") == "planner"
         for event in parsed
     )
-    assert planner_draft["review_markdown"] == "# 检索计划\n\n## 检索目标\n测试目标"
+    assert planner_draft == {}
 
 
 def test_stream_message_does_not_persist_message_segment_deltas(monkeypatch, tmp_path):
@@ -2797,17 +2838,15 @@ def test_stream_analysis_seed_cancelled_after_planner_draft_recovers_plan_confir
     ai_meta = (task.metadata or {}).get("ai_search") if task else {}
 
     assert task is not None
-    assert plan is not None
+    assert plan is None
     assert ai_meta is not None
-    assert ai_meta.get("analysis_seed_status") == "completed"
-    assert ai_meta.get("planner_draft") is None
-    assert ai_meta.get("active_plan_version") == 1
+    assert ai_meta.get("analysis_seed_status") == "pending"
+    assert ai_meta.get("planner_draft") is not None
+    assert ai_meta.get("planner_draft", {}).get("review_markdown") == plan_record["review_markdown"]
+    assert ai_meta.get("active_plan_version") in {None, 0}
     assert any(event["type"] == "process.started" for event in parsed)
-    assert snapshot.conversation["pendingAction"] is not None
-    assert snapshot.conversation["pendingAction"]["actionType"] == "plan_confirmation"
+    assert snapshot.conversation["pendingAction"] is None
     assert snapshot.analysisSeed is not None
-    assert snapshot.analysisSeed["status"] == "completed"
-    assert [message["kind"] for message in snapshot.conversation["messages"]] == [
-        "chat",
-        "plan_confirmation",
-    ]
+    assert snapshot.analysisSeed["status"] == "pending"
+    assert snapshot.plan["currentPlan"] is None
+    assert [message["kind"] for message in snapshot.conversation["messages"]] == ["chat"]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
@@ -21,7 +20,6 @@ from agents.ai_search.src.orchestration.action_runtime import (
     resolve_pending_action,
 )
 from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation
-from agents.ai_search.src.orchestration.planning_runtime import publish_planner_draft
 from agents.ai_search.src.runtime import (
     ALL_AI_SEARCH_SUBAGENTS,
     build_process_display_metadata,
@@ -796,9 +794,6 @@ class AiSearchAgentRunService:
         if self._current_phase_value(task_id) != PHASE_DRAFTING_PLAN:
             return
 
-        context = AiSearchAgentContext(self.storage, task_id)
-        if context.active_plan_version() <= 0 and context.current_planner_draft():
-            publish_planner_draft(context)
         self._reconcile_drafting_outcome(task_id)
 
     def _resolve_pending_action(
@@ -1394,17 +1389,6 @@ class AiSearchAgentRunService:
         )
         return events
 
-    def _persist_planner_review_markdown_if_needed(self, task_id: str, stream_state: Dict[str, Any]) -> None:
-        segment = self._message_segment_state(stream_state, "planner")
-        content = str(segment.get("buffer") or "").strip()
-        if not content:
-            return
-        context = AiSearchAgentContext(self.storage, task_id)
-        current = context.current_planner_draft()
-        if str(current.get("review_markdown") or "").strip() == content:
-            return
-        context.save_planner_review_markdown(content)
-
     def _ensure_message_segment_for_delta(self, stream_state: Dict[str, Any], source_agent: str) -> Dict[str, Any]:
         segment = self._message_segment_state(stream_state, source_agent)
         if (
@@ -1472,8 +1456,6 @@ class AiSearchAgentRunService:
             segment_id=str(segment.get("segment_id") or "").strip() or None,
             message_id=str(segment.get("message_id") or "").strip() or None,
         )
-        if str(source_agent or "").strip() == "planner":
-            self._persist_planner_review_markdown_if_needed(task_id, stream_state)
         return events
 
     def _complete_all_message_segments_if_needed(
@@ -1763,7 +1745,6 @@ class AiSearchAgentRunService:
             if not isinstance(completion_payload, dict):
                 completion_payload = {}
 
-            self._persist_planner_review_markdown_if_needed(task.id, stream_state)
             self._reconcile_drafting_outcome(task.id)
             pre_completion_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
             allow_main_agent_fallback = bool(persist_fallback_assistant) and pre_completion_phase not in _AWAITING_USER_ACTION_PHASES

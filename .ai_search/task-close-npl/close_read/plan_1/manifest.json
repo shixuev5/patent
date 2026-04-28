@@ -1,0 +1,17 @@
+{
+  "doc-npl-1": {
+    "document_id": "doc-npl-1",
+    "source_type": "openalex",
+    "pn": "",
+    "title": "A paper",
+    "abstract": "摘要级证据",
+    "claims": "",
+    "description": "",
+    "venue": "Science",
+    "doi": "10.1000/npl",
+    "url": "",
+    "detail_source": "abstract_only",
+    "detail_fingerprint": "0ec37584baf9b576e00fff0b426713dd1b2e18c8",
+    "fulltext_path": "/Users/yanhao/Documents/codes/patent/.ai_search/task-close-npl/close_read/plan_1/doc-npl-1.txt"
+  }
+}

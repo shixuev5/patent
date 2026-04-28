@@ -92,10 +92,14 @@ def test_coarse_screen_commit_rejects_missing_pending_documents(tmp_path):
     context = AiSearchAgentContext(storage, "task-coarse")
     runtime = _runtime(context)
     tool = next(tool for tool in context.build_coarse_screener_tools() if tool.__name__ == "run_coarse_screen_batch")
-    batch_id = _create_batch(storage, "task-coarse", batch_type="coarse_screen", document_ids=["doc-1", "doc-2"])
-
+    _create_batch(storage, "task-coarse", batch_type="coarse_screen", document_ids=["doc-1", "doc-2"])
     try:
-        context.persist_coarse_screen_result(["doc-1"], [], plan_version=1, runtime=runtime.context)
+        tool(
+            operation="commit",
+            payload={"keep": ["doc-1"], "discard": []},
+            plan_version=1,
+            runtime=runtime,
+        )
         raise AssertionError("expected validation failure")
     except ValueError as exc:
         assert "遗漏了待处理 document_id" in str(exc)
@@ -123,10 +127,14 @@ def test_close_read_commit_rejects_overlapping_document_ids(tmp_path):
     context = AiSearchAgentContext(storage, "task-close")
     runtime = _runtime(context)
     tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
-    batch_id = _create_batch(storage, "task-close", batch_type="close_read", document_ids=["doc-1"])
-
+    _create_batch(storage, "task-close", batch_type="close_read", document_ids=["doc-1"])
     try:
-        context.persist_close_read_result({"selected": ["doc-1"], "rejected": ["doc-1"]}, plan_version=1, runtime=runtime.context)
+        tool(
+            operation="commit",
+            payload={"selected": ["doc-1"], "rejected": ["doc-1"]},
+            plan_version=1,
+            runtime=runtime,
+        )
         raise AssertionError("expected validation failure")
     except ValueError as exc:
         assert "存在重复 document_id" in str(exc)
@@ -198,7 +206,14 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
         ],
     }
 
-    selected_count = context.persist_close_read_result(payload, plan_version=1, runtime=runtime.context)
+    selected_count = json.loads(
+        tool(
+            operation="commit",
+            payload=payload,
+            plan_version=1,
+            runtime=runtime,
+        )
+    )["selected_count"]
     documents = storage.list_ai_search_documents("task-align", 1, stages=["selected"])
 
     assert selected_count == 1
@@ -239,3 +254,56 @@ def test_close_read_load_supports_abstract_only_npl_documents(tmp_path):
     assert payload["documents"][0]["source_type"] == "openalex"
     assert payload["documents"][0]["detail_source"] == "abstract_only"
     assert payload["documents"][0]["fulltext_path"].endswith("doc-npl-1.txt")
+
+
+def test_feature_compare_commit_rejects_duplicate_batch_submission(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_feature_commit.db")
+    _create_task(storage, "task-feature", "feature_comparison")
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": "task-feature",
+                "plan_version": 1,
+                "pn": "CN4000001A",
+                "title": "文献1",
+                "stage": "selected",
+            }
+        ]
+    )
+
+    context = AiSearchAgentContext(storage, "task-feature")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_feature_comparer_tools() if tool.__name__ == "run_feature_compare")
+    json.loads(tool(operation="load", plan_version=1, runtime=runtime))
+    json.loads(
+        tool(
+            operation="commit",
+            payload={
+                "table_rows": [{"feature": "A", "document_id": "doc-1"}],
+                "document_roles": [{"document_id": "doc-1", "role": "X", "rationale": "直接公开"}],
+                "coverage_gaps": [],
+                "follow_up_search_hints": [],
+                "creativity_readiness": "ready",
+            },
+            plan_version=1,
+            runtime=runtime,
+        )
+    )
+
+    try:
+        tool(
+            operation="commit",
+            payload={
+                "table_rows": [{"feature": "A", "document_id": "doc-1"}],
+                "document_roles": [{"document_id": "doc-1", "role": "X", "rationale": "直接公开"}],
+                "coverage_gaps": [],
+                "follow_up_search_hints": [],
+                "creativity_readiness": "ready",
+            },
+            plan_version=1,
+            runtime=runtime,
+        )
+        raise AssertionError("expected duplicate commit failure")
+    except ValueError as exc:
+        assert "已提交" in str(exc)
