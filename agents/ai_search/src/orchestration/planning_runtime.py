@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.execution_state import normalize_execution_plan
 from agents.ai_search.src.orchestration.session_views import build_gap_progress
+from agents.ai_search.src.subagents.planner.schemas import PlannerExecutionSpecDraftInput
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 from backend.time_utils import utc_now_z
 
@@ -24,6 +26,55 @@ def _normalize_database_list(values: Any) -> list[str]:
     return outputs or ["zhihuiya"]
 
 
+def _canonicalize_planner_execution_spec(
+    execution_spec: Dict[str, Any],
+    *,
+    search_elements_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    draft = PlannerExecutionSpecDraftInput.model_validate(execution_spec).model_dump(mode="python")
+    search_scope = draft.get("search_scope") if isinstance(draft.get("search_scope"), dict) else {}
+    sub_plans = draft.get("sub_plans") if isinstance(draft.get("sub_plans"), list) else []
+    canonical_sub_plans = []
+    for item in sub_plans:
+        if not isinstance(item, dict):
+            continue
+        retrieval_steps = item.get("retrieval_steps") if isinstance(item.get("retrieval_steps"), list) else []
+        canonical_steps = []
+        for step in retrieval_steps:
+            if not isinstance(step, dict):
+                continue
+            canonical_steps.append({**step, "phase_key": "execute_search"})
+        canonical_sub_plans.append(
+            {
+                "sub_plan_id": str(item.get("sub_plan_id") or "").strip(),
+                "title": str(item.get("title") or "").strip(),
+                "goal": str(item.get("goal") or "").strip(),
+                "semantic_query_text": str(item.get("semantic_query_text") or "").strip(),
+                "retrieval_steps": canonical_steps,
+                "query_blueprints": item.get("query_blueprints") if isinstance(item.get("query_blueprints"), list) else [],
+            }
+        )
+    return SearchPlanExecutionSpecInput.model_validate(
+        {
+            "search_scope": {
+                **search_scope,
+                "objective": str(search_scope.get("objective") or search_elements_snapshot.get("objective") or "").strip(),
+                "applicants": search_scope.get("applicants") if isinstance(search_scope.get("applicants"), list) else search_elements_snapshot.get("applicants") or [],
+                "filing_date": search_scope.get("filing_date") or search_elements_snapshot.get("filing_date"),
+                "priority_date": search_scope.get("priority_date") or search_elements_snapshot.get("priority_date"),
+                "languages": search_scope.get("languages") if isinstance(search_scope.get("languages"), list) else [],
+                "databases": _normalize_database_list(search_scope.get("databases")),
+                "excluded_items": search_scope.get("excluded_items") if isinstance(search_scope.get("excluded_items"), list) else [],
+                "source": search_scope.get("source") if isinstance(search_scope.get("source"), dict) else {},
+            },
+            "constraints": draft.get("constraints") if isinstance(draft.get("constraints"), dict) else {},
+            "execution_policy": draft.get("execution_policy") if isinstance(draft.get("execution_policy"), dict) else {},
+            "sub_plans": canonical_sub_plans,
+            "search_elements_snapshot": search_elements_snapshot,
+        }
+    ).model_dump(mode="python")
+
+
 def publish_planner_draft(context: Any, *, runtime: Any | None = None) -> Dict[str, Any]:
     draft = context.current_planner_draft()
     if not draft:
@@ -35,18 +86,11 @@ def publish_planner_draft(context: Any, *, runtime: Any | None = None) -> Dict[s
     if not execution_spec:
         raise ValueError("planner draft 缺少 execution_spec。")
     search_elements_snapshot = normalize_search_elements_payload(context.current_search_elements() or {})
-    normalized_plan = normalize_execution_plan(execution_spec, search_elements_snapshot)
-    search_scope = normalized_plan.get("search_scope") if isinstance(normalized_plan.get("search_scope"), dict) else {}
-    search_scope = {
-        "objective": str(search_scope.get("objective") or search_elements_snapshot.get("objective") or "").strip(),
-        "applicants": search_scope.get("applicants") if isinstance(search_scope.get("applicants"), list) else search_elements_snapshot.get("applicants") or [],
-        "filing_date": search_scope.get("filing_date") or search_elements_snapshot.get("filing_date"),
-        "priority_date": search_scope.get("priority_date") or search_elements_snapshot.get("priority_date"),
-        "languages": search_scope.get("languages") if isinstance(search_scope.get("languages"), list) else [],
-        "databases": _normalize_database_list(search_scope.get("databases")),
-        "excluded_items": search_scope.get("excluded_items") if isinstance(search_scope.get("excluded_items"), list) else [],
-        "source": search_scope.get("source") if isinstance(search_scope.get("source"), dict) else {},
-    }
+    canonical_execution_spec = _canonicalize_planner_execution_spec(
+        execution_spec,
+        search_elements_snapshot=search_elements_snapshot,
+    )
+    normalized_plan = normalize_execution_plan(canonical_execution_spec)
     latest_plan = context.storage.get_ai_search_plan(context.task_id)
     if latest_plan:
         context.storage.update_ai_search_plan(
@@ -62,12 +106,7 @@ def publish_planner_draft(context: Any, *, runtime: Any | None = None) -> Dict[s
             "plan_version": plan_version,
             "status": "draft",
             "review_markdown": review_markdown,
-            "execution_spec_json": {
-                "search_scope": search_scope,
-                "constraints": normalized_plan.get("constraints") or {},
-                "execution_policy": normalized_plan.get("execution_policy") or {},
-                "sub_plans": normalized_plan.get("sub_plans") or [],
-            },
+            "execution_spec_json": normalized_plan,
         }
     )
     current_todo = context.current_todo()

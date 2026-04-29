@@ -205,9 +205,13 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "`append_plan_sub_plan`" not in PLANNER_SYSTEM_PROMPT
     assert "`save_plan_review_markdown`" not in PLANNER_SYSTEM_PROMPT
     assert "`finalize_plan_draft`" not in PLANNER_SYSTEM_PROMPT
+    assert "不允许提交 `probe_findings`" in PLANNER_SYSTEM_PROMPT
     assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
     assert "activation_mode" in PLANNER_SYSTEM_PROMPT
     assert "activation_conditions" in PLANNER_SYSTEM_PROMPT
+    assert "feature_combination` 必须是**单个字符串**" in PLANNER_SYSTEM_PROMPT
+    assert "只能表示**可执行检索步骤**" in PLANNER_SYSTEM_PROMPT
+    assert "“去重”“合并”“初筛”" in PLANNER_SYSTEM_PROMPT
 
     assert "`prepare_lane_queries`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "`fetch_patent_details`" in QUERY_EXECUTOR_SYSTEM_PROMPT
@@ -229,6 +233,7 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "claim_alignments" in CLOSE_READER_SYSTEM_PROMPT
     assert "selected" in CLOSE_READER_SYSTEM_PROMPT
     assert "rejected" in CLOSE_READER_SYSTEM_PROMPT
+    assert "`document_assessments` 不要重复提交 `decision`" in CLOSE_READER_SYSTEM_PROMPT
     assert "follow_up_hints`: 数组" not in CLOSE_READER_SYSTEM_PROMPT
     assert "coverage_summary" not in CLOSE_READER_SYSTEM_PROMPT
 

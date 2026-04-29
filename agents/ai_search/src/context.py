@@ -21,10 +21,10 @@ from agents.ai_search.src.orchestration.execution_runtime import (
     build_gap_progress,
     complete_session,
 )
-from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT
+from agents.ai_search.src.subagents.planner.schemas import PlannerExecutionSpecDraftInput
 from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
@@ -582,32 +582,6 @@ class AiSearchAgentContext:
         self.notify_snapshot_changed(runtime, reason="search_elements")
         return normalized_payload
 
-    def save_planner_execution_overview(
-        self,
-        *,
-        search_scope: Dict[str, Any],
-        constraints: Dict[str, Any],
-        execution_policy: Dict[str, Any],
-        probe_findings: Optional[Dict[str, Any]] = None,
-        runtime: Any | None = None,
-    ) -> Dict[str, Any]:
-        current = self.current_planner_draft()
-        current_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
-        next_spec = {
-            "search_scope": search_scope if isinstance(search_scope, dict) else {},
-            "constraints": constraints if isinstance(constraints, dict) else {},
-            "execution_policy": execution_policy if isinstance(execution_policy, dict) else (current_spec.get("execution_policy") or DEFAULT_EXECUTION_POLICY),
-            "sub_plans": current_spec.get("sub_plans") if isinstance(current_spec.get("sub_plans"), list) else [],
-        }
-        return self._persist_planner_draft(
-            current=current,
-            execution_spec=next_spec,
-            probe_findings=probe_findings,
-            draft_status="drafting",
-            finalized_at=None,
-            runtime=runtime,
-        )
-
     def save_planner_probe_findings(
         self,
         probe_findings: Optional[Dict[str, Any]],
@@ -627,10 +601,10 @@ class AiSearchAgentContext:
         *,
         review_markdown: str,
         execution_spec: Dict[str, Any],
-        probe_findings: Optional[Dict[str, Any]] = None,
+        probe_findings: Any = _UNSET,
         runtime: Any | None = None,
     ) -> Dict[str, Any]:
-        validated_spec = SearchPlanExecutionSpecInput.model_validate(execution_spec).model_dump(mode="python")
+        validated_spec = PlannerExecutionSpecDraftInput.model_validate(execution_spec).model_dump(mode="python")
         return self._persist_planner_draft(
             current=self.current_planner_draft(),
             review_markdown=str(review_markdown or "").strip(),
@@ -888,7 +862,6 @@ class AiSearchAgentContext:
             if not document_id:
                 continue
             assessments_by_doc[document_id] = {
-                "decision": str(item.get("decision") or "").strip(),
                 "confidence": float(item.get("confidence") or 0.0),
                 "evidence_sufficiency": str(item.get("evidence_sufficiency") or "").strip(),
                 "missing_evidence": item.get("missing_evidence") or [],
@@ -1036,7 +1009,7 @@ class AiSearchAgentContext:
         if not review_markdown:
             raise ValueError("planner draft 缺少 review_markdown。")
         execution_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
-        normalized = SearchPlanExecutionSpecInput.model_validate(execution_spec).model_dump(mode="python")
+        normalized = PlannerExecutionSpecDraftInput.model_validate(execution_spec).model_dump(mode="python")
         return self._persist_planner_draft(
             current=current,
             execution_spec=normalized,
@@ -1045,46 +1018,14 @@ class AiSearchAgentContext:
             runtime=runtime,
         )
 
-    def _search_scope_from_execution_spec(self, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
-        return execution_spec.get("search_scope") if isinstance(execution_spec.get("search_scope"), dict) else {}
-
-    def _sub_plans_from_execution_spec(self, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
-        raw = execution_spec.get("sub_plans") if isinstance(execution_spec.get("sub_plans"), list) else []
-        return [item for item in raw if isinstance(item, dict)]
-
-    def _aggregated_search_elements_from_execution_spec(self, execution_spec: Dict[str, Any]) -> Dict[str, Any]:
-        search_scope = self._search_scope_from_execution_spec(execution_spec)
-        aggregated: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-        for sub_plan in self._sub_plans_from_execution_spec(execution_spec):
-            for item in sub_plan.get("search_elements") or []:
-                if not isinstance(item, dict):
-                    continue
-                element_name = str(item.get("element_name") or item.get("feature") or item.get("name") or "").strip()
-                block_id = str(item.get("block_id") or "").strip().upper()
-                signature = f"{block_id}:{element_name}".strip(":")
-                if not element_name or signature in seen:
-                    continue
-                seen.add(signature)
-                aggregated.append(item)
-        return {
-            "status": "complete" if aggregated else "needs_answer",
-            "objective": str(search_scope.get("objective") or "").strip(),
-            "applicants": search_scope.get("applicants") if isinstance(search_scope.get("applicants"), list) else [],
-            "filing_date": search_scope.get("filing_date"),
-            "priority_date": search_scope.get("priority_date"),
-            "search_elements": aggregated,
-            "sub_plans": self._sub_plans_from_execution_spec(execution_spec),
-        }
-
     def current_search_elements(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
         if version > 0:
             plan = self.storage.get_ai_search_plan(self.task_id, version) or {}
             execution_spec = plan.get("execution_spec_json")
             if isinstance(execution_spec, dict):
-                payload = self._aggregated_search_elements_from_execution_spec(execution_spec)
-                if payload.get("search_elements"):
+                payload = execution_spec.get("search_elements_snapshot")
+                if isinstance(payload, dict) and payload:
                     return payload
         for item in reversed(self.storage.list_ai_search_messages(self.task_id)):
             if str(item.get("kind") or "") != "search_elements_update":
@@ -1289,7 +1230,7 @@ class AiSearchAgentContext:
         execution_plan = self.execution_plan_json(plan_version)
         if not execution_plan:
             return dict(DEFAULT_EXECUTION_POLICY)
-        normalized = normalize_execution_plan(execution_plan, self.current_search_elements(plan_version))
+        normalized = normalize_execution_plan(execution_plan)
         policy = normalized.get("execution_policy") if isinstance(normalized.get("execution_policy"), dict) else {}
         return {**DEFAULT_EXECUTION_POLICY, **policy}
 
@@ -1484,5 +1425,5 @@ class AiSearchAgentContext:
     def execution_todos_from_plan(self, plan_version: int, execution_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         from agents.ai_search.src.execution_state import build_execution_todos
 
-        normalized = normalize_execution_plan(execution_spec, self.current_search_elements(plan_version))
+        normalized = normalize_execution_plan(execution_spec)
         return build_execution_todos(plan_version, normalized)

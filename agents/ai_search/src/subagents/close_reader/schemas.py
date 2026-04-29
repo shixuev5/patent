@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class KeyPassageOutput(BaseModel):
@@ -15,19 +15,21 @@ class KeyPassageOutput(BaseModel):
 
 
 class ClaimAlignmentOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     document_id: str
     claim_id: str
     limitation_id: str = ""
     passage: str
-    support: str = ""
     reason: str = ""
     location: Optional[str] = None
 
 
 class LimitationCoverageOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     claim_id: str
     limitation_id: str = ""
-    status: str = ""
     supporting_document_ids: List[str] = Field(default_factory=list)
     reason: str = ""
 
@@ -42,8 +44,9 @@ class LimitationGapOutput(BaseModel):
 
 
 class DocumentAssessmentOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     document_id: str
-    decision: str = ""
     confidence: float = 0.0
     evidence_sufficiency: str = ""
     missing_evidence: List[str] = Field(default_factory=list)

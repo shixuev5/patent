@@ -4,9 +4,9 @@ AI 检索执行状态模型与步骤级计划补全。
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Literal, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 ALLOWED_STEP_PHASE_KEYS = {
@@ -14,16 +14,6 @@ ALLOWED_STEP_PHASE_KEYS = {
     "coarse_screen",
     "close_read",
     "feature_comparison",
-}
-STEP_PHASE_KEY_ALIASES = {
-    "primary_search": "execute_search",
-    "secondary_search": "execute_search",
-    "supplementary_search": "execute_search",
-    "search": "execute_search",
-    "screen": "coarse_screen",
-    "coarse_screener": "coarse_screen",
-    "close_reader": "close_read",
-    "feature_compare": "feature_comparison",
 }
 ALLOWED_ACTIVATION_MODES = {"immediate", "conditional"}
 
@@ -38,20 +28,32 @@ DEFAULT_EXECUTION_POLICY = {
 }
 
 
+AiSearchRecallQuality = Literal["too_broad", "balanced", "too_narrow"]
+
+
+class ExecutionPlanChangeAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requires_replan: bool = False
+    reason: str = ""
+
+
+class ExecutionOutcomeSignals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_goal_reached: bool = False
+    recall_quality: AiSearchRecallQuality = "balanced"
+    triggered_by_adjustment: bool = False
+
+
 class ExecutionStepSummary(BaseModel):
     todo_id: str
     step_id: str
     sub_plan_id: str
-    plan_change_assessment: Dict[str, Any] = Field(default_factory=dict)
+    plan_change_assessment: ExecutionPlanChangeAssessment = Field(default_factory=ExecutionPlanChangeAssessment)
     candidate_pool_size: int = 0
     new_unique_candidates: int = 0
-    outcome_signals: Dict[str, Any] = Field(
-        default_factory=lambda: {
-            "primary_goal_reached": False,
-            "recall_quality": "balanced",
-            "triggered_by_adjustment": False,
-        }
-    )
+    outcome_signals: ExecutionOutcomeSignals = Field(default_factory=ExecutionOutcomeSignals)
 
 
 class PlanProbeFindings(BaseModel):
@@ -107,7 +109,6 @@ def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_
             f"sub_plan `{sub_plan_id}` step `{step_id}` 引用了未定义的 query_blueprints: {', '.join(invalid_refs)}。"
         )
     phase_key = str(step.get("phase_key") or "execute_search").strip().lower() or "execute_search"
-    phase_key = STEP_PHASE_KEY_ALIASES.get(phase_key, phase_key)
     if phase_key not in ALLOWED_STEP_PHASE_KEYS:
         raise ValueError(f"sub_plan `{sub_plan_id}` step `{step_id}` 使用了不支持的 phase_key `{phase_key}`。")
     activation_mode = str(step.get("activation_mode") or "immediate").strip().lower() or "immediate"
@@ -133,7 +134,7 @@ def _normalize_retrieval_step(step: Dict[str, Any], sub_plan_id: str, blueprint_
     }
 
 
-def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_execution_plan(plan_json: Dict[str, Any]) -> Dict[str, Any]:
     source = plan_json if isinstance(plan_json, dict) else {}
     sub_plans = source.get("sub_plans") if isinstance(source.get("sub_plans"), list) else []
     if not sub_plans:
@@ -146,7 +147,6 @@ def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[st
         sub_plan_id = str(item.get("sub_plan_id") or item.get("id") or f"sub_plan_{sub_index}").strip() or f"sub_plan_{sub_index}"
         title = str(item.get("title") or f"子计划 {sub_index}").strip() or f"子计划 {sub_index}"
         goal = str(item.get("goal") or title).strip() or title
-        sub_plan_search_elements = item.get("search_elements") if isinstance(item.get("search_elements"), list) else []
         raw_query_blueprints = item.get("query_blueprints") if isinstance(item.get("query_blueprints"), list) else []
         query_blueprints = [
             _normalize_blueprint(batch, sub_plan_id, index)
@@ -168,10 +168,8 @@ def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[st
                 "title": title,
                 "goal": goal,
                 "semantic_query_text": str(item.get("semantic_query_text") or item.get("semanticQueryText") or "").strip(),
-                "search_elements": [element for element in sub_plan_search_elements if isinstance(element, dict)],
                 "retrieval_steps": retrieval_steps,
                 "query_blueprints": query_blueprints,
-                "classification_hints": [hint for hint in (item.get("classification_hints") or []) if isinstance(hint, dict)],
             }
         )
 
@@ -194,13 +192,14 @@ def normalize_execution_plan(plan_json: Dict[str, Any], search_elements: Dict[st
 
     search_scope = source.get("search_scope") if isinstance(source.get("search_scope"), dict) else {}
     constraints = source.get("constraints") if isinstance(source.get("constraints"), dict) else {}
+    search_elements_snapshot = source.get("search_elements_snapshot") if isinstance(source.get("search_elements_snapshot"), dict) else {}
     return {
         **source,
         "search_scope": search_scope,
         "constraints": constraints,
         "sub_plans": normalized_sub_plans,
         "execution_policy": normalized_execution_policy,
-        "search_elements_snapshot": search_elements if isinstance(search_elements, dict) else {},
+        "search_elements_snapshot": search_elements_snapshot,
     }
 
 

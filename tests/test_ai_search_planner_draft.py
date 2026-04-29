@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from agents.ai_search.src.context import AiSearchAgentContext
-from agents.ai_search.src.main_agent.schemas import SearchPlanExecutionSpecInput
 from agents.ai_search.src.runtime_context import build_runtime_context
 from agents.ai_search.src.state import default_ai_search_meta
+from agents.ai_search.src.subagents.planner.schemas import PlannerExecutionSpecDraftInput
 from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 
@@ -25,8 +25,8 @@ def _runtime(context: AiSearchAgentContext) -> SimpleNamespace:
     return SimpleNamespace(context=build_runtime_context(context.storage, context.task_id))
 
 
-def _execution_spec() -> SearchPlanExecutionSpecInput:
-    return SearchPlanExecutionSpecInput.model_validate(
+def _execution_spec() -> PlannerExecutionSpecDraftInput:
+    return PlannerExecutionSpecDraftInput.model_validate(
         {
             "search_scope": {"objective": "测试目标", "applicants": [], "languages": ["zh"], "databases": ["zhihuiya"]},
             "constraints": {},
@@ -37,14 +37,6 @@ def _execution_spec() -> SearchPlanExecutionSpecInput:
                     "title": "子计划 1",
                     "goal": "测试目标",
                     "semantic_query_text": "",
-                    "search_elements": [
-                        {
-                            "element_name": "要素A",
-                            "keywords_zh": ["要素A"],
-                            "keywords_en": ["feature a"],
-                            "block_id": "B1",
-                        }
-                    ],
                     "retrieval_steps": [
                         {
                             "step_id": "step_1",
@@ -57,11 +49,9 @@ def _execution_spec() -> SearchPlanExecutionSpecInput:
                             "expected_recall": "20-50",
                             "fallback_action": "扩词",
                             "query_blueprint_refs": ["b1"],
-                            "phase_key": "execute_search",
                         }
                     ],
                     "query_blueprints": [{"batch_id": "b1", "goal": "测试目标", "sub_plan_id": "sub_plan_1"}],
-                    "classification_hints": [],
                 }
             ],
         }
@@ -89,6 +79,8 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     assert fetched["planner_draft"] == {}
     plan = _storage.get_ai_search_plan(_task_id, payload["plan_version"])
     assert plan["execution_spec_json"]["sub_plans"][0]["retrieval_steps"][0]["query_blueprint_refs"] == ["b1"]
+    assert plan["execution_spec_json"]["sub_plans"][0]["retrieval_steps"][0]["phase_key"] == "execute_search"
+    assert plan["execution_spec_json"]["search_elements_snapshot"]["search_elements"] == []
     assert plan["review_markdown"].startswith("# 检索计划")
 
     context.clear_planner_draft()
@@ -97,17 +89,17 @@ def test_planner_draft_commit_read_and_clear(tmp_path):
     assert json.loads(main_tools["get_planning_context"](runtime=runtime))["planner_draft"] == {}
 
 
-def test_save_planner_draft_tool_persists_draft_explicitly(tmp_path):
+def test_save_planner_draft_tool_persists_draft_and_preserves_existing_probe_findings(tmp_path):
     context, _storage, _task_id = _mount_context(tmp_path)
     runtime = _runtime(context)
     spec = _execution_spec()
     planner_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_planner_tools()}
+    context.save_planner_probe_findings({"signals": [{"tool": "probe_search_semantic", "observation": "前5篇较相关"}]})
 
     result = json.loads(
         planner_tools["save_planner_draft"](
             review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
             execution_spec=spec.model_dump(mode="python"),
-            probe_findings={"signals": [{"tool": "probe_search_semantic", "observation": "前5篇较相关"}]},
             runtime=runtime,
         )
     )
@@ -117,6 +109,7 @@ def test_save_planner_draft_tool_persists_draft_explicitly(tmp_path):
     assert result["sub_plan_count"] == 1
     assert draft["review_markdown"].startswith("# 检索计划")
     assert draft["execution_spec"]["sub_plans"][0]["sub_plan_id"] == "sub_plan_1"
+    assert "phase_key" not in draft["execution_spec"]["sub_plans"][0]["retrieval_steps"][0]
     assert draft["probe_findings"]["signals"][0]["tool"] == "probe_search_semantic"
 
 
@@ -188,7 +181,7 @@ def test_publish_planner_draft_normalizes_database_names(tmp_path):
     main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
     runtime = _runtime(context)
     spec = _execution_spec().model_copy(deep=True)
-    spec.search_scope["databases"] = ["zhihuiya", "openalex", "bad-db", "crossref", "openalex"]
+    spec.search_scope.databases = ["zhihuiya", "openalex", "crossref", "openalex"]
 
     context.save_planner_draft_payload(
         review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
@@ -199,6 +192,65 @@ def test_publish_planner_draft_normalizes_database_names(tmp_path):
 
     assert plan is not None
     assert plan["execution_spec_json"]["search_scope"]["databases"] == ["zhihuiya", "openalex", "crossref"]
+
+
+def test_save_planner_draft_rejects_internal_phase_key_field(tmp_path):
+    context, _storage, _task_id = _mount_context(tmp_path)
+    spec = _execution_spec().model_dump(mode="python")
+    spec["sub_plans"][0]["retrieval_steps"][0]["phase_key"] = "execute_search"
+
+    with pytest.raises(Exception) as exc_info:
+        context.save_planner_draft_payload(
+            review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+            execution_spec=spec,
+        )
+
+    assert "phase_key" in str(exc_info.value)
+
+
+def test_save_planner_draft_rejects_invalid_database_name(tmp_path):
+    context, _storage, _task_id = _mount_context(tmp_path)
+    spec = _execution_spec().model_dump(mode="python")
+    spec["search_scope"]["databases"] = ["zhihuiya", "bad-db"]
+
+    with pytest.raises(Exception) as exc_info:
+        context.save_planner_draft_payload(
+            review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+            execution_spec=spec,
+        )
+
+    assert "databases" in str(exc_info.value)
+
+
+def test_current_search_elements_reads_plan_level_snapshot(tmp_path):
+    context, _storage, _task_id = _mount_context(tmp_path)
+    main_tools = {getattr(tool, "__name__", ""): tool for tool in context.build_main_agent_tools()}
+    runtime = _runtime(context)
+    spec = _execution_spec()
+
+    context.save_search_elements_payload(
+        {
+            "status": "complete",
+            "objective": "原始检索目标",
+            "applicants": [],
+            "filing_date": "",
+            "priority_date": "",
+            "missing_items": [],
+            "search_elements": [{"element_name": "要素A", "keywords_zh": ["要素A"], "keywords_en": ["feature a"], "block_id": "B1"}],
+        },
+        runtime=runtime,
+    )
+    context.save_planner_draft_payload(
+        review_markdown="# 检索计划\n\n## 检索目标\n测试目标",
+        execution_spec=spec.model_dump(mode="python"),
+        runtime=runtime,
+    )
+    plan_version = json.loads(main_tools["publish_planner_draft"](runtime=runtime))["plan_version"]
+
+    current = context.current_search_elements(plan_version)
+
+    assert current["objective"] == "原始检索目标"
+    assert current["search_elements"][0]["element_name"] == "要素A"
 
 
 @pytest.mark.parametrize("probe_findings", ["", "None", "{}", '{"signals":[{"type":"semantic_probe","count":2}]}'])

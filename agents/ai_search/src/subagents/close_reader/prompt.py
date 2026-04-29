@@ -94,7 +94,8 @@ CLOSE_READER_SYSTEM_PROMPT = """
 
 **[极其重要的结构化数组]**：
 - `document_assessments`: 记录每篇文献的总体评估。
-  *(必填字段: `document_id`, `decision` (枚举 selected/rejected), `confidence` (0-1), `evidence_sufficiency` (字符串说明证据充分度))*
+  *(必填字段: `document_id`, `confidence` (0-1), `evidence_sufficiency` (字符串说明证据充分度))*
+  *注意：`selected` / `rejected` 已经表达最终裁决，`document_assessments` 不要重复提交 `decision`。*
 - `key_passages`: 记录提取的通用关键段落。
   *(必填字段: `document_id`, `passage` (原文引用), `reason` (说明该段落公开了什么), `location` (如"说明书第5段"))*
 - `claim_alignments`: 记录与权利要求对应的对齐段落。

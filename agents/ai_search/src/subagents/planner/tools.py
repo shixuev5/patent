@@ -15,7 +15,6 @@ def build_planner_tools() -> List[Any]:
     def save_planner_draft(
         review_markdown: str,
         execution_spec: Dict[str, Any],
-        probe_findings: Dict[str, Any] | None = None,
         runtime: ToolRuntime = None,
     ) -> str:
         """保存 planner draft。"""
@@ -24,13 +23,11 @@ def build_planner_tools() -> List[Any]:
             {
                 "review_markdown": review_markdown,
                 "execution_spec": execution_spec,
-                "probe_findings": probe_findings,
             }
         )
         draft = resolved_context.save_planner_draft_payload(
             review_markdown=payload.review_markdown,
             execution_spec=payload.execution_spec.model_dump(mode="python"),
-            probe_findings=payload.probe_findings,
             runtime=runtime.context if runtime else None,
         )
         target_plan_version = int(draft.get("target_plan_version") or draft.get("plan_version") or 0)

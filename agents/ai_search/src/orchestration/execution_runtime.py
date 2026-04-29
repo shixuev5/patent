@@ -36,7 +36,7 @@ from backend.time_utils import utc_now_z
 def build_step_directive(context: Any, plan_version: int) -> Dict[str, Any]:
     plan = context.storage.get_ai_search_plan(context.task_id, int(plan_version)) or {}
     execution_spec = plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
-    normalized_plan = normalize_execution_plan(execution_spec, context.current_search_elements(plan_version))
+    normalized_plan = normalize_execution_plan(execution_spec)
     current_todo = context.current_todo()
     if not current_todo:
         return {
@@ -111,7 +111,7 @@ def build_conditional_todos_for_completed_step(context: Any, plan_version: int, 
     if not execution_plan:
         return []
 
-    normalized = normalize_execution_plan(execution_plan, context.current_search_elements(plan_version))
+    normalized = normalize_execution_plan(execution_plan)
     completed_step_ids = {
         str(item.get("step_id") or "").strip()
         for item in context._current_todos()
@@ -319,7 +319,7 @@ def advance_workflow(
         execution_spec = plan.get("execution_spec_json") if isinstance(plan.get("execution_spec_json"), dict) else {}
         run = context.ensure_run(version, phase=PHASE_EXECUTE_SEARCH)
         if not context._current_todos():
-            context.replace_todos(build_execution_todos(version, normalize_execution_plan(execution_spec, context.current_search_elements(version))), runtime=runtime)
+            context.replace_todos(build_execution_todos(version, normalize_execution_plan(execution_spec)), runtime=runtime)
         todo = context.first_pending_todo(phase_key=PHASE_EXECUTE_SEARCH) or context.first_pending_todo()
         if not todo:
             return {"status": "no_pending_todos"}

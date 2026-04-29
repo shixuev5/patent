@@ -142,6 +142,13 @@ def ensure_deepagents_context_support() -> None:
             result = await subagent.ainvoke(subagent_state, context=runtime.context)
             return _return_command_with_state_update(result, runtime.tool_call_id)
 
+        # `StructuredTool._injected_args_keys` reads raw signature annotations instead
+        # of resolved type hints. Under postponed evaluation, `runtime` would be a
+        # string annotation and the injected ToolRuntime arg gets dropped before
+        # async execution.
+        task.__annotations__["runtime"] = ToolRuntime
+        atask.__annotations__["runtime"] = ToolRuntime
+
         return StructuredTool.from_function(
             name="task",
             func=task,

@@ -535,7 +535,7 @@ def test_run_execution_step_commit_persists_step_summary(tmp_path):
             "todo_id": "plan_1:sub_plan_1:step_1",
             "step_id": "step_1",
             "sub_plan_id": "sub_plan_1",
-            "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
+            "plan_change_assessment": {"requires_replan": False, "reason": ""},
             "new_unique_candidates": 2,
             "candidate_pool_size": 3,
         },

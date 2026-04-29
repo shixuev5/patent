@@ -3,15 +3,19 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import deepagents.middleware.subagents as subagents_module
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import TodoListMiddleware
+from langchain.tools import ToolRuntime
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+from langchain_core.messages import AIMessage
+from langgraph.types import Command
 
 from agents.ai_search.src.runtime import AiSearchGuardMiddleware
-from agents.ai_search.src.runtime_context import build_runtime_context
+from agents.ai_search.src.runtime_context import build_runtime_context, ensure_deepagents_context_support
 from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -192,3 +196,50 @@ def test_close_reader_subagent_middleware_names_are_unique():
     names = [item.name for item in middleware]
 
     assert len(set(names)) == len(names)
+
+
+def test_task_tool_async_invocation_preserves_injected_runtime():
+    ensure_deepagents_context_support()
+
+    class _DummyRunnable:
+        async def ainvoke(self, state, context=None):
+            assert state["messages"][-1].content == "整理检索要素"
+            assert context == "runtime-context"
+            return {"messages": [AIMessage(content="子 agent 已完成")], "phase": "drafting_plan"}
+
+        def invoke(self, state, context=None):
+            assert state["messages"][-1].content == "整理检索要素"
+            assert context == "runtime-context"
+            return {"messages": [AIMessage(content="子 agent 已完成")], "phase": "drafting_plan"}
+
+    tool = subagents_module._build_task_tool(
+        [{"name": "search-elements", "description": "检索要素整理", "runnable": _DummyRunnable()}]
+    )
+    runtime = ToolRuntime(
+        state={"messages": []},
+        context="runtime-context",
+        config={},
+        stream_writer=lambda _chunk: None,
+        tool_call_id="call-search-elements-1",
+        store=None,
+    )
+
+    result = asyncio.run(
+        tool.ainvoke(
+            {
+                "type": "tool_call",
+                "id": "call-search-elements-1",
+                "name": "task",
+                "args": {
+                    "description": "整理检索要素",
+                    "subagent_type": "search-elements",
+                    "runtime": runtime,
+                },
+            }
+        )
+    )
+
+    assert tool._injected_args_keys == frozenset({"runtime"})
+    assert isinstance(result, Command)
+    assert result.update["phase"] == "drafting_plan"
+    assert result.update["messages"][0].content == "子 agent 已完成"

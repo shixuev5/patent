@@ -7,6 +7,7 @@ from agents.ai_search.src.execution_state import (
 
 def _plan() -> dict:
     return {
+        "search_elements_snapshot": {"objective": "检索异常检测方案"},
         "sub_plans": [
             {
                 "sub_plan_id": "sub_plan_1",
@@ -65,9 +66,9 @@ def test_normalize_execution_plan_requires_retrieval_steps():
                         "query_blueprints": [{"batch_id": "b1"}],
                         "retrieval_steps": [],
                     }
-                ]
-            },
-            {},
+                ],
+                "search_elements_snapshot": {},
+            }
         )
     except ValueError as exc:
         assert "retrieval_steps" in str(exc)
@@ -99,9 +100,9 @@ def test_normalize_execution_plan_rejects_cross_sub_plan_query_refs():
                             }
                         ],
                     }
-                ]
-            },
-            {},
+                ],
+                "search_elements_snapshot": {},
+            }
         )
     except ValueError as exc:
         assert "query_blueprints" in str(exc)
@@ -110,7 +111,7 @@ def test_normalize_execution_plan_rejects_cross_sub_plan_query_refs():
 
 
 def test_build_execution_todos_comes_from_retrieval_steps():
-    normalized = normalize_execution_plan(_plan(), {"objective": "检索异常检测方案"})
+    normalized = normalize_execution_plan(_plan())
     todos = build_execution_todos(1, normalized)
 
     assert [item["todo_id"] for item in todos] == ["plan_1:sub_plan_1:step_1"]
@@ -119,7 +120,7 @@ def test_build_execution_todos_comes_from_retrieval_steps():
 
 
 def test_normalize_execution_plan_keeps_conditional_activation_fields():
-    normalized = normalize_execution_plan(_plan(), {"objective": "检索异常检测方案"})
+    normalized = normalize_execution_plan(_plan())
     conditional_step = normalized["sub_plans"][0]["retrieval_steps"][1]
 
     assert conditional_step["activation_mode"] == "conditional"
@@ -128,19 +129,19 @@ def test_normalize_execution_plan_keeps_conditional_activation_fields():
     assert conditional_step["activation_summary"] == "命中主目标或结果过宽时激活。"
 
 
-def test_normalize_execution_plan_coerces_supported_phase_key_aliases():
+def test_normalize_execution_plan_rejects_unsupported_phase_key():
     plan = _plan()
     plan["sub_plans"][0]["retrieval_steps"][0]["phase_key"] = "primary_search"
-    plan["sub_plans"][0]["retrieval_steps"][1]["phase_key"] = "supplementary_search"
-
-    normalized = normalize_execution_plan(plan, {"objective": "检索异常检测方案"})
-
-    assert normalized["sub_plans"][0]["retrieval_steps"][0]["phase_key"] == "execute_search"
-    assert normalized["sub_plans"][0]["retrieval_steps"][1]["phase_key"] == "execute_search"
+    try:
+        normalize_execution_plan(plan)
+    except ValueError as exc:
+        assert "phase_key" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
 
 
 def test_resolve_plan_step_returns_matching_sub_plan_and_step():
-    normalized = normalize_execution_plan(_plan(), {})
+    normalized = normalize_execution_plan(_plan())
     sub_plan, step = resolve_plan_step(normalized, "sub_plan_1", "step_1")
 
     assert sub_plan["sub_plan_id"] == "sub_plan_1"

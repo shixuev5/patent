@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from agents.ai_search.src.context import AiSearchAgentContext
 from agents.ai_search.src.runtime_context import build_runtime_context
 from backend.storage import Task, TaskStatus, TaskType
@@ -199,7 +201,6 @@ def test_close_read_commit_uses_claim_alignments_for_claim_ids_and_locations(tmp
         "document_assessments": [
             {
                 "document_id": "doc-1",
-                "decision": "selected",
                 "confidence": 0.9,
                 "evidence_sufficiency": "sufficient",
             }
@@ -307,3 +308,175 @@ def test_feature_compare_commit_rejects_duplicate_batch_submission(tmp_path):
         raise AssertionError("expected duplicate commit failure")
     except ValueError as exc:
         assert "已提交" in str(exc)
+
+
+def test_search_elements_save_rejects_invalid_status(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_search_elements_validation.db")
+    _create_task(storage, "task-elements", "drafting_plan")
+    context = AiSearchAgentContext(storage, "task-elements")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_search_elements_tools() if tool.__name__ == "save_search_elements")
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            payload={
+                "status": "unknown",
+                "objective": "检索异常检测方案",
+                "search_elements": [{"element_name": "异常检测", "keywords_zh": ["异常检测"], "keywords_en": ["anomaly detection"]}],
+            },
+            runtime=runtime,
+        )
+
+    assert "status" in str(exc_info.value)
+
+
+def test_query_executor_commit_rejects_invalid_recall_quality(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_execution_commit_validation.db")
+    _create_task(storage, "task-exec", "execute_search")
+    context = AiSearchAgentContext(storage, "task-exec")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_query_executor_tools() if tool.__name__ == "run_execution_step")
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            operation="commit",
+            plan_version=1,
+            payload={
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "step_id": "step_1",
+                "sub_plan_id": "sub_plan_1",
+                "candidate_pool_size": 10,
+                "new_unique_candidates": 2,
+                "outcome_signals": {
+                    "primary_goal_reached": False,
+                    "recall_quality": "wide",
+                    "triggered_by_adjustment": False,
+                },
+                "plan_change_assessment": {"requires_replan": False},
+            },
+            runtime=runtime,
+        )
+
+    assert "recall_quality" in str(exc_info.value)
+
+
+def test_query_executor_commit_rejects_removed_reason_codes_field(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_execution_reason_codes_validation.db")
+    _create_task(storage, "task-exec-reason-codes", "execute_search")
+    context = AiSearchAgentContext(storage, "task-exec-reason-codes")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_query_executor_tools() if tool.__name__ == "run_execution_step")
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            operation="commit",
+            plan_version=1,
+            payload={
+                "todo_id": "plan_1:sub_plan_1:step_1",
+                "step_id": "step_1",
+                "sub_plan_id": "sub_plan_1",
+                "candidate_pool_size": 10,
+                "new_unique_candidates": 0,
+                "outcome_signals": {
+                    "primary_goal_reached": False,
+                    "recall_quality": "balanced",
+                    "triggered_by_adjustment": False,
+                },
+                "plan_change_assessment": {"requires_replan": False, "reason_codes": []},
+            },
+            runtime=runtime,
+        )
+
+    assert "reason_codes" in str(exc_info.value)
+
+
+def test_close_reader_commit_rejects_removed_document_assessment_decision_field(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_close_reader_decision_validation.db")
+    _create_task(storage, "task-close-decision", "close_read")
+    storage.upsert_ai_search_documents(
+        [
+            {
+                "document_id": "doc-1",
+                "task_id": "task-close-decision",
+                "plan_version": 1,
+                "pn": "CN2000001A",
+                "title": "文献1",
+                "stage": "shortlisted",
+                "coarse_status": "kept",
+                "close_read_status": "pending",
+            }
+        ]
+    )
+    context = AiSearchAgentContext(storage, "task-close-decision")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_close_reader_tools() if tool.__name__ == "run_close_read_batch")
+    _create_batch(storage, "task-close-decision", batch_type="close_read", document_ids=["doc-1"])
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            operation="commit",
+            plan_version=1,
+            payload={
+                "selected": ["doc-1"],
+                "rejected": [],
+                "document_assessments": [
+                    {
+                        "document_id": "doc-1",
+                        "decision": "selected",
+                        "confidence": 0.9,
+                        "evidence_sufficiency": "sufficient",
+                    }
+                ],
+            },
+            runtime=runtime,
+        )
+
+    assert "decision" in str(exc_info.value)
+
+
+def test_feature_compare_commit_rejects_invalid_document_role(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_feature_role_validation.db")
+    _create_task(storage, "task-feature-role", "feature_comparison")
+    context = AiSearchAgentContext(storage, "task-feature-role")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_feature_comparer_tools() if tool.__name__ == "run_feature_compare")
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            operation="commit",
+            plan_version=1,
+            payload={
+                "table_rows": [],
+                "document_roles": [{"document_id": "doc-1", "role": "B", "rationale": "未知角色"}],
+                "coverage_gaps": [],
+                "follow_up_search_hints": [],
+                "creativity_readiness": "ready",
+            },
+            runtime=runtime,
+        )
+
+    assert "role" in str(exc_info.value)
+
+
+def test_feature_compare_commit_rejects_invalid_readiness(tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "ai_search_feature_readiness_validation.db")
+    _create_task(storage, "task-feature-readiness", "feature_comparison")
+    context = AiSearchAgentContext(storage, "task-feature-readiness")
+    runtime = _runtime(context)
+    tool = next(tool for tool in context.build_feature_comparer_tools() if tool.__name__ == "run_feature_compare")
+
+    with pytest.raises(Exception) as exc_info:
+        tool(
+            operation="commit",
+            plan_version=1,
+            payload={
+                "table_rows": [],
+                "document_roles": [{"document_id": "doc-1", "role": "X", "rationale": "直接公开"}],
+                "coverage_gaps": [],
+                "follow_up_search_hints": [],
+                "creativity_readiness": "unknown",
+            },
+            runtime=runtime,
+        )
+
+    assert "creativity_readiness" in str(exc_info.value)
