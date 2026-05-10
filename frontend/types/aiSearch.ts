@@ -137,6 +137,19 @@ export interface AiSearchStreamEvent {
   payload: any
 }
 
+export interface AiSearchActivityTrace {
+  traceId: string
+  traceType: 'thinking' | 'tool' | 'agent' | string
+  status: 'running' | 'completed' | 'failed' | string
+  label: string
+  actorName?: string | null
+  toolName?: string | null
+  specialistType?: string | null
+  detail?: string | null
+  startedAt?: string | null
+  endedAt?: string | null
+}
+
 export interface AiSearchActiveRun {
   runKey: string
   sessionId: string

@@ -1189,6 +1189,8 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
 
     assert events[0].startswith("data: ")
     assert parsed[0]["type"] == "run.started"
+    assert any(event["type"] == "trace.started" and event["payload"]["traceType"] == "thinking" for event in parsed)
+    assert any(event["type"] == "trace.completed" and event["payload"]["traceType"] == "thinking" for event in parsed)
     assert any(item.startswith(": keepalive") for item in events)
     assert any(event["type"] == "message.created" for event in parsed)
     assert events[-1].startswith("data: ")
@@ -1423,6 +1425,8 @@ def test_stream_message_dedupes_phase_markers_and_ignores_tool_updates(monkeypat
 
     assert [event["type"] for event in parsed].count("phase.changed") == 0
     assert parsed[0]["type"] == "run.started"
+    assert any(event["type"] == "trace.started" and event["payload"]["traceType"] == "agent" for event in parsed)
+    assert any(event["type"] == "trace.completed" and event["payload"]["traceType"] == "agent" for event in parsed)
 
 
 def test_stream_message_ignores_tool_updates_without_subgraphs(monkeypatch, tmp_path):
@@ -1483,6 +1487,18 @@ def test_stream_message_ignores_tool_updates_without_subgraphs(monkeypatch, tmp_
     parsed = _parse_data_events(events)
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
 
+    assert any(
+        event["type"] == "trace.started"
+        and event["payload"]["traceType"] == "tool"
+        and event["payload"]["toolName"] == "get_workflow_context"
+        for event in parsed
+    )
+    assert any(
+        event["type"] == "trace.completed"
+        and event["payload"]["traceType"] == "tool"
+        and event["payload"]["toolName"] == "get_workflow_context"
+        for event in parsed
+    )
     assert not any(message["kind"] == "assistant_stage_message" for message in snapshot.conversation["messages"])
     assert snapshot.stream["lastEventSeq"] > 0
 

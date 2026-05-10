@@ -150,6 +150,7 @@
         <AiSearchConversationView
           :session-id="currentSession?.session.sessionId"
           :entries="conversationRenderEntries"
+          :activity-traces="activityTraces"
           :structured-plan-execution-spec="structuredPlanExecutionSpec"
           :active-plan-version="activePlanVersion"
           :has-pending-plan-confirmation="hasPendingPlanConfirmation"
@@ -348,6 +349,7 @@ const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
 const {
+  activityTraces,
   currentSession,
   error,
   loading,

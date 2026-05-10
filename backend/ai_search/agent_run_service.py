@@ -78,6 +78,40 @@ _AWAITING_USER_ACTION_PHASES = {
     PHASE_AWAITING_HUMAN_DECISION,
 }
 
+_TRACE_THINKING = "thinking"
+_TRACE_TOOL = "tool"
+_TRACE_AGENT = "agent"
+
+_PHASE_ACTIVITY_LABELS = {
+    PHASE_COLLECTING_REQUIREMENTS: "我先整理检索需求，再决定下一步。",
+    PHASE_DRAFTING_PLAN: "我先起草检索计划，并检查是否还缺关键信息。",
+    PHASE_EXECUTE_SEARCH: "我先推进当前检索步骤，再根据结果判断下一步。",
+    PHASE_COARSE_SCREEN: "我先筛一轮候选文献，再决定哪些值得继续看。",
+    PHASE_CLOSE_READ: "我先精读已选文献，再整理关键命中点。",
+    PHASE_FEATURE_COMPARISON: "我先做特征对比，再判断是否继续检索。",
+}
+
+_SPECIALIST_TRACE_LABELS = {
+    "query-executor": "调用检索执行 agent",
+    "coarse-screener": "调用粗筛 agent",
+    "close-reader": "调用精读 agent",
+    "feature-comparer": "调用特征对比 agent",
+}
+
+_TOOL_TRACE_LABELS = {
+    "get_workflow_context": "读取工作流上下文",
+    "get_workflow_options": "读取可选动作",
+    "start_plan_drafting": "进入起草计划",
+    "request_user_question": "发起补充提问",
+    "request_plan_confirmation": "发起计划确认",
+    "probe_search_semantic": "执行语义预检",
+    "probe_search_boolean": "执行布尔预检",
+    "probe_count_boolean": "估算结果规模",
+    "compile_confirmed_search_plan": "编译结构化计划",
+    "advance_workflow": "推进工作流",
+    "finalize_search_session": "完成当前结果",
+}
+
 
 class AiSearchAgentRunService:
     def __init__(self, facade: Any) -> None:
@@ -169,6 +203,276 @@ class AiSearchAgentRunService:
             "payload": payload,
         }
         return f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
+
+    def _thinking_activity_label(self, phase: str) -> str:
+        return _PHASE_ACTIVITY_LABELS.get(str(phase or "").strip(), "思考中")
+
+    def _trace_event(
+        self,
+        event_type: str,
+        session_id: str,
+        phase: str,
+        payload: Dict[str, Any],
+    ) -> str:
+        normalized = dict(payload or {})
+        trace_id = str(normalized.get("traceId") or normalized.get("eventId") or "").strip()
+        if trace_id:
+            normalized.setdefault("eventId", trace_id)
+        return self._format_event(event_type, session_id, phase, normalized)
+
+    def _trace_state(self, stream_state: Dict[str, Any]) -> Dict[str, Any]:
+        current = stream_state.get("trace_state")
+        if isinstance(current, dict):
+            return current
+        current = {
+            "thinking_trace_id": "",
+            "traces_by_id": {},
+            "tool_call_to_trace_id": {},
+        }
+        stream_state["trace_state"] = current
+        return current
+
+    def _start_trace(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> Optional[str]:
+        trace_id = str(payload.get("traceId") or payload.get("eventId") or "").strip()
+        if not trace_id:
+            return None
+        trace_state = self._trace_state(stream_state)
+        traces_by_id = trace_state["traces_by_id"]
+        if trace_id in traces_by_id:
+            return None
+        normalized = {
+            **payload,
+            "traceId": trace_id,
+            "eventId": trace_id,
+            "status": str(payload.get("status") or "running").strip() or "running",
+            "startedAt": str(payload.get("startedAt") or utc_now_z()),
+            "endedAt": payload.get("endedAt"),
+        }
+        traces_by_id[trace_id] = normalized
+        tool_call_id = str(normalized.get("toolCallId") or "").strip()
+        if tool_call_id:
+            trace_state["tool_call_to_trace_id"][tool_call_id] = trace_id
+        if str(normalized.get("traceType") or "").strip() == _TRACE_THINKING:
+            trace_state["thinking_trace_id"] = trace_id
+        return self._trace_event("trace.started", session_id, phase, normalized)
+
+    def _finish_trace(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+        trace_id: str,
+        *,
+        status: str,
+    ) -> Optional[str]:
+        normalized_trace_id = str(trace_id or "").strip()
+        if not normalized_trace_id:
+            return None
+        trace_state = self._trace_state(stream_state)
+        traces_by_id = trace_state["traces_by_id"]
+        current = traces_by_id.get(normalized_trace_id)
+        if not isinstance(current, dict):
+            return None
+        if str(current.get("status") or "").strip() != "running":
+            return None
+        updated = {
+            **current,
+            "status": str(status or "completed").strip() or "completed",
+            "endedAt": utc_now_z(),
+        }
+        traces_by_id[normalized_trace_id] = updated
+        tool_call_id = str(updated.get("toolCallId") or "").strip()
+        if tool_call_id:
+            trace_state["tool_call_to_trace_id"].pop(tool_call_id, None)
+        if trace_state.get("thinking_trace_id") == normalized_trace_id:
+            trace_state["thinking_trace_id"] = ""
+        return self._trace_event("trace.completed", session_id, phase, updated)
+
+    def _start_thinking_trace(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+    ) -> Optional[str]:
+        trace_state = self._trace_state(stream_state)
+        existing = str(trace_state.get("thinking_trace_id") or "").strip()
+        if existing:
+            return None
+        return self._start_trace(
+            session_id,
+            phase,
+            stream_state,
+            {
+                "traceId": f"thinking-{uuid.uuid4().hex[:12]}",
+                "traceType": _TRACE_THINKING,
+                "label": self._thinking_activity_label(phase),
+                "actorName": "main-agent",
+                "status": "running",
+                "startedAt": utc_now_z(),
+            },
+        )
+
+    def _finish_thinking_trace(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+        *,
+        status: str = "completed",
+    ) -> Optional[str]:
+        trace_state = self._trace_state(stream_state)
+        thinking_trace_id = str(trace_state.get("thinking_trace_id") or "").strip()
+        if not thinking_trace_id:
+            return None
+        return self._finish_trace(session_id, phase, stream_state, thinking_trace_id, status=status)
+
+    def _specialist_actor_name(self, specialist_type: str) -> str:
+        return str(specialist_type or "").strip() or "specialist"
+
+    def _tool_trace_payload(self, tool_call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(tool_call, dict):
+            return None
+        tool_call_id = str(tool_call.get("id") or "").strip()
+        tool_name = str(tool_call.get("name") or "").strip()
+        if not tool_call_id or not tool_name:
+            return None
+        args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
+        specialist_type = str(args.get("specialist_type") or args.get("subagent_type") or "").strip()
+        trace_type = _TRACE_AGENT if tool_name in {"task", "run_search_specialist"} and specialist_type else _TRACE_TOOL
+        label = (
+            _SPECIALIST_TRACE_LABELS.get(specialist_type)
+            if trace_type == _TRACE_AGENT
+            else _TOOL_TRACE_LABELS.get(tool_name)
+        ) or f"调用 {tool_name}"
+        detail = ""
+        if trace_type == _TRACE_AGENT:
+            description = str(args.get("description") or "").strip()
+            detail = description[:120] if description else ""
+        elif tool_name == "advance_workflow":
+            action = str(args.get("action") or "").strip()
+            if action:
+                detail = f"动作：{action}"
+        elif tool_name in {"probe_search_semantic", "probe_search_boolean", "probe_count_boolean"}:
+            query_text = str(args.get("query_text") or "").strip()
+            if query_text:
+                detail = query_text[:120]
+        payload = {
+            "traceId": f"trace-{tool_call_id}",
+            "traceType": trace_type,
+            "label": label,
+            "actorName": self._specialist_actor_name(specialist_type) if trace_type == _TRACE_AGENT else "main-agent",
+            "toolName": tool_name,
+            "toolCallId": tool_call_id,
+            "status": "running",
+            "startedAt": utc_now_z(),
+        }
+        if specialist_type:
+            payload["specialistType"] = specialist_type
+        if detail:
+            payload["detail"] = detail
+        return payload
+
+    def _iter_trace_message_objects(self, payload: Any) -> Any:
+        if payload is None:
+            return
+        if isinstance(payload, tuple):
+            if payload:
+                yield from self._iter_trace_message_objects(payload[0])
+            return
+        if self._is_tool_message_chunk(payload) or hasattr(payload, "tool_calls"):
+            yield payload
+            return
+        if isinstance(payload, dict):
+            messages = payload.get("messages")
+            if isinstance(messages, list):
+                for item in messages:
+                    yield from self._iter_trace_message_objects(item)
+            for key, value in payload.items():
+                if key == "messages":
+                    continue
+                if isinstance(value, (dict, list, tuple)):
+                    yield from self._iter_trace_message_objects(value)
+            return
+        if isinstance(payload, list):
+            for item in payload:
+                yield from self._iter_trace_message_objects(item)
+
+    def _message_tool_calls(self, message: Any) -> List[Dict[str, Any]]:
+        raw = getattr(message, "tool_calls", None)
+        if raw is None and isinstance(message, dict):
+            raw = message.get("tool_calls")
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def _message_tool_result(self, message: Any) -> Optional[Dict[str, Any]]:
+        tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+        if not tool_call_id and isinstance(message, dict):
+            tool_call_id = str(message.get("tool_call_id") or "").strip()
+        if not tool_call_id:
+            return None
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        return {
+            "toolCallId": tool_call_id,
+            "content": self._content_to_text(content),
+        }
+
+    def _trace_events_from_payload(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+        payload: Any,
+    ) -> List[str]:
+        events: List[str] = []
+        trace_state = self._trace_state(stream_state)
+        for message in self._iter_trace_message_objects(payload):
+            for tool_call in self._message_tool_calls(message):
+                thinking_event = self._finish_thinking_trace(session_id, phase, stream_state)
+                if thinking_event:
+                    events.append(thinking_event)
+                trace_payload = self._tool_trace_payload(tool_call)
+                if not isinstance(trace_payload, dict):
+                    continue
+                event = self._start_trace(session_id, phase, stream_state, trace_payload)
+                if event:
+                    events.append(event)
+            result = self._message_tool_result(message)
+            if not isinstance(result, dict):
+                continue
+            trace_id = str(trace_state["tool_call_to_trace_id"].get(str(result.get("toolCallId") or "").strip()) or "").strip()
+            if not trace_id:
+                continue
+            event = self._finish_trace(session_id, phase, stream_state, trace_id, status="completed")
+            if event:
+                events.append(event)
+        return events
+
+    def _finish_open_traces(
+        self,
+        session_id: str,
+        phase: str,
+        stream_state: Dict[str, Any],
+        *,
+        status: str,
+    ) -> List[str]:
+        trace_state = self._trace_state(stream_state)
+        events: List[str] = []
+        for trace_id, payload in list(trace_state["traces_by_id"].items()):
+            if str((payload or {}).get("status") or "").strip() != "running":
+                continue
+            event = self._finish_trace(session_id, phase, stream_state, str(trace_id), status=status)
+            if event:
+                events.append(event)
+        return events
 
     def _completion_payload_for_phase(self, phase: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_phase = str(phase or "").strip()
@@ -1079,6 +1383,9 @@ class AiSearchAgentRunService:
         initial_phase = self.snapshots._snapshot_phase(initial_snapshot)
         if emit_run_started:
             yield self._format_event("run.started", session_id, initial_phase, {})
+            thinking_event = self._start_thinking_trace(session_id, initial_phase, stream_state)
+            if thinking_event:
+                yield thinking_event
 
         try:
             iterator = agent.astream(
@@ -1103,6 +1410,8 @@ class AiSearchAgentRunService:
                 continue
             mode, raw_payload = self._normalize_stream_item(item)
             if mode == "updates":
+                for event in self._trace_events_from_payload(session_id, self._current_phase_value(task_id, initial_phase), stream_state, raw_payload):
+                    yield event
                 async for event in self._emit_current_snapshot_diff_events(
                     session_id=session_id,
                     owner_id=owner_id,
@@ -1126,6 +1435,9 @@ class AiSearchAgentRunService:
             if mode != "messages":
                 continue
 
+            for event in self._trace_events_from_payload(session_id, self._current_phase_value(task_id, initial_phase), stream_state, raw_payload):
+                yield event
+
             if not self._is_main_agent_message_stream(raw_payload):
                 continue
             delta = self._extract_message_delta(raw_payload)
@@ -1133,6 +1445,13 @@ class AiSearchAgentRunService:
                 continue
             if not forward_model_text:
                 continue
+            thinking_event = self._finish_thinking_trace(
+                session_id,
+                self._current_phase_value(task_id, initial_phase),
+                stream_state,
+            )
+            if thinking_event:
+                yield thinking_event
             message_state = self._main_agent_message_state(stream_state)
             if not str(message_state.get("created_at") or "").strip():
                 message_state["created_at"] = utc_now_z()
@@ -1158,6 +1477,9 @@ class AiSearchAgentRunService:
             agent = self.facade._build_main_agent(self.storage, task.id) if self.facade._uses_default_run_main_agent() else None
             if hasattr(agent, "astream") and callable(getattr(agent, "astream")):
                 yield self._format_event("run.started", task.id, initial_phase, {})
+                thinking_event = self._start_thinking_trace(task.id, initial_phase, stream_state)
+                if thinking_event:
+                    yield thinking_event
                 async for event in self._consume_live_agent_stream(
                     session_id=task.id,
                     owner_id=owner_id,
@@ -1177,6 +1499,9 @@ class AiSearchAgentRunService:
                 stream_state["final_values"] = state.values if state is not None else {}
             else:
                 yield self._format_event("run.started", task.id, initial_phase, {})
+                thinking_event = self._start_thinking_trace(task.id, initial_phase, stream_state)
+                if thinking_event:
+                    yield thinking_event
                 result = await asyncio.to_thread(
                     self.facade._run_main_agent,
                     task.id,
@@ -1221,6 +1546,8 @@ class AiSearchAgentRunService:
             stream_state["last_snapshot"] = final_snapshot
 
             final_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot))
+            for event in self._finish_open_traces(task.id, final_phase, stream_state, status="completed"):
+                yield event
             yield self._format_event(
                 "run.completed",
                 task.id,
@@ -1251,16 +1578,19 @@ class AiSearchAgentRunService:
                 pass
             raise
         except Exception as exc:
+            failed_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot))
+            for event in self._finish_open_traces(task.id, failed_phase, stream_state, status="failed"):
+                yield event
             for event in self._fail_open_stage_events(
                 task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                failed_phase,
                 self._stream_error_payload(exc).get("message", "当前流式轮次执行失败。"),
             ):
                 yield event
             yield self._format_event(
                 "run.failed",
                 task.id,
-                self._current_phase_value(task.id, self.snapshots._snapshot_phase(initial_snapshot)),
+                failed_phase,
                 self._stream_error_payload(exc),
             )
 

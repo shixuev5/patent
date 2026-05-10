@@ -1,6 +1,8 @@
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="messageListRef" class="flex min-h-0 h-full flex-col overflow-y-auto px-4 py-4">
+      <AiSearchActivityTimeline v-if="activityTraces.length" :items="activityTraces" class="mb-3" />
+
       <div v-if="!entries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
         描述检索目标、技术方案、核心效果或约束条件。
       </div>
@@ -160,17 +162,19 @@
 <script setup lang="ts">
 import { ArrowDownIcon, ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AiSearchActivityTimeline from '~/components/ai-search/AiSearchActivityTimeline.vue'
 import AiSearchDownloadAttachment from '~/components/ai-search/AiSearchDownloadAttachment.vue'
 import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
 import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
 import AiSearchPlanConfirmationCard from '~/components/ai-search/AiSearchPlanConfirmationCard.vue'
 import AiSearchQuestionCard from '~/components/ai-search/AiSearchQuestionCard.vue'
-import type { AiSearchArtifactAttachment } from '~/types/aiSearch'
+import type { AiSearchActivityTrace, AiSearchArtifactAttachment } from '~/types/aiSearch'
 import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 
 const props = withDefaults(defineProps<{
   sessionId?: string
   entries: Array<Record<string, any>>
+  activityTraces?: AiSearchActivityTrace[]
   structuredPlanExecutionSpec?: Record<string, any> | null
   activePlanVersion?: number
   hasPendingPlanConfirmation?: boolean
@@ -187,6 +191,7 @@ const props = withDefaults(defineProps<{
   resumeAttemptCount?: number
 }>(), {
   sessionId: '',
+  activityTraces: () => [],
   structuredPlanExecutionSpec: null,
   activePlanVersion: 0,
   hasPendingPlanConfirmation: false,

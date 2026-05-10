@@ -3,6 +3,7 @@ import { requestJson, requestRaw } from '~/utils/apiClient'
 import { useTaskStore } from '~/stores/task'
 import type {
   AiSearchActiveRun,
+  AiSearchActivityTrace,
   AiSearchActivityState,
   AiSearchArtifactAttachment,
   AiSearchBatchSummary,
@@ -20,6 +21,7 @@ const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'feat
 
 interface AiSearchSessionRuntime {
   activeRun: AiSearchActiveRun | null
+  activityTraces: AiSearchActivityTrace[]
   phaseMarkers: AiSearchPhaseMarker[]
   lastEventSeq: number
   streaming: boolean
@@ -95,6 +97,7 @@ const resumeAction = (snapshot?: AiSearchSnapshot | null): Record<string, any> |
 
 const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   activeRun: null,
+  activityTraces: [],
   phaseMarkers: [],
   lastEventSeq: 0,
   streaming: false,
@@ -188,6 +191,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
       return sessionId ? (this.sessionRuntimeById[sessionId]?.phaseMarkers || []) : []
     },
 
+    activityTraces(): AiSearchActivityTrace[] {
+      const sessionId = String(this.currentSessionId || '').trim()
+      return sessionId ? (this.sessionRuntimeById[sessionId]?.activityTraces || []) : []
+    },
+
     streaming(): boolean {
       const sessionId = String(this.currentSessionId || '').trim()
       return !!(sessionId && this.sessionRuntimeById[sessionId]?.streaming)
@@ -238,6 +246,31 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this._setRuntime(sessionId, {
         activeRun: null,
       })
+    },
+
+    _upsertActivityTrace(sessionId: string, trace: AiSearchActivityTrace) {
+      const runtime = this._ensureRuntime(sessionId)
+      const traceId = String(trace?.traceId || '').trim()
+      if (!traceId) return
+      const traces = Array.isArray(runtime.activityTraces) ? [...runtime.activityTraces] : []
+      const index = traces.findIndex(item => String(item.traceId || '').trim() === traceId)
+      const nextTrace = {
+        ...(index >= 0 ? traces[index] : {}),
+        ...trace,
+        traceId,
+      }
+      if (index >= 0) {
+        traces[index] = nextTrace
+      } else {
+        traces.push(nextTrace)
+      }
+      traces.sort((left, right) => {
+        const leftTime = toMillis(left.startedAt || left.endedAt || '')
+        const rightTime = toMillis(right.startedAt || right.endedAt || '')
+        if (leftTime !== rightTime) return leftTime - rightTime
+        return String(left.traceId || '').localeCompare(String(right.traceId || ''))
+      })
+      runtime.activityTraces = traces
     },
 
     _setRuntimeError(sessionId: string, message: string) {
@@ -488,6 +521,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
+        runtime.activityTraces = []
         this._startActiveRun(sessionId)
         this._ensurePhaseMarker(sessionId, phase)
         return
@@ -521,6 +555,24 @@ export const useAiSearchStore = defineStore('aiSearch', {
             attachments: Array.isArray(payload.artifacts.attachments) ? payload.artifacts.attachments as AiSearchArtifactAttachment[] : [],
           }
         }
+        return
+      }
+
+      if (event.type === 'trace.started' || event.type === 'trace.completed' || event.type === 'trace.updated') {
+        const traceId = String(payload?.traceId || event.entityId || '').trim()
+        if (!traceId) return
+        this._upsertActivityTrace(sessionId, {
+          traceId,
+          traceType: String(payload?.traceType || '').trim() || 'tool',
+          status: String(payload?.status || (event.type === 'trace.started' ? 'running' : 'completed')).trim() || 'completed',
+          label: String(payload?.label || '').trim() || '进行中',
+          actorName: String(payload?.actorName || '').trim() || null,
+          toolName: String(payload?.toolName || '').trim() || null,
+          specialistType: String(payload?.specialistType || '').trim() || null,
+          detail: String(payload?.detail || '').trim() || null,
+          startedAt: String(payload?.startedAt || event.timestamp || '').trim() || null,
+          endedAt: String(payload?.endedAt || '').trim() || null,
+        })
         return
       }
 
