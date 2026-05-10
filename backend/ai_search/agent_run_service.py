@@ -454,6 +454,9 @@ class AiSearchAgentRunService:
             event = self._finish_trace(session_id, phase, stream_state, trace_id, status="completed")
             if event:
                 events.append(event)
+            next_thinking = self._start_thinking_trace(session_id, phase, stream_state)
+            if next_thinking:
+                events.append(next_thinking)
         return events
 
     def _finish_open_traces(

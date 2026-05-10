@@ -9,22 +9,48 @@
       <li
         v-for="item in items"
         :key="item.traceId"
-        class="grid grid-cols-[1rem,minmax(0,1fr),auto] items-start gap-3 rounded-xl px-0.5 py-1"
+        :class="item.traceType === 'thinking'
+          ? 'rounded-xl px-0.5 py-1.5'
+          : 'grid grid-cols-[1rem,minmax(0,1fr),auto] items-start gap-3 rounded-xl px-0.5 py-1'"
       >
+        <div v-if="item.traceType === 'thinking'" class="flex items-start gap-3">
+          <span class="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+            <ArrowPathIcon
+              v-if="item.status === 'running'"
+              class="h-4 w-4 animate-spin text-slate-500"
+            />
+            <CheckCircleIcon
+              v-else-if="item.status === 'completed'"
+              class="h-4 w-4 text-slate-400"
+            />
+            <XCircleIcon
+              v-else
+              class="h-4 w-4 text-rose-500"
+            />
+          </span>
+          <div class="min-w-0">
+            <p class="whitespace-pre-wrap text-[14px] leading-7 text-slate-800">
+              {{ item.label }}
+            </p>
+          </div>
+        </div>
+
+        <template v-else>
         <span class="mt-1 inline-flex h-4 w-4 items-center justify-center">
           <ArrowPathIcon
-            v-if="item.status === 'running' && item.traceType === 'thinking'"
-            class="h-4 w-4 animate-spin text-slate-500"
+            v-if="item.status === 'running'"
+            class="h-4 w-4"
+            :class="item.traceType === 'agent' ? 'text-slate-500' : 'text-slate-500'"
           />
           <CpuChipIcon
             v-else-if="item.traceType === 'agent'"
             class="h-4 w-4"
-            :class="item.status === 'failed' ? 'text-rose-500' : item.status === 'running' ? 'text-slate-500' : 'text-slate-400'"
+            :class="item.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
           />
           <WrenchScrewdriverIcon
             v-else-if="item.traceType === 'tool'"
             class="h-4 w-4"
-            :class="item.status === 'failed' ? 'text-rose-500' : item.status === 'running' ? 'text-slate-500' : 'text-slate-400'"
+            :class="item.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
           />
           <CheckCircleIcon
             v-else-if="item.status === 'completed'"
@@ -58,6 +84,7 @@
         <p class="whitespace-nowrap pt-0.5 text-[11px] text-slate-400">
           {{ durationText(item) }}
         </p>
+        </template>
       </li>
     </ol>
   </section>
@@ -113,7 +140,6 @@ const statusClass = (item: AiSearchActivityTrace): string => {
 }
 
 const summaryText = (item: AiSearchActivityTrace): string => {
-  if (item.traceType === 'thinking') return item.label || '主 agent 思考中'
   if (item.traceType === 'agent') {
     return item.actorName ? `${item.label} · ${item.actorName}` : item.label
   }
