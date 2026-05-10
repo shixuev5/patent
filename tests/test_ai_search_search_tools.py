@@ -41,41 +41,11 @@ def _mount_context(tmp_path):
     return AiSearchAgentContext(storage, task.id), storage
 
 
-def test_prepare_lane_queries_includes_gap_seed_fields():
+def test_build_search_tools_does_not_expose_prepare_lane_queries():
     tools = build_search_tools()
-    prepare_lane_queries = next(tool for tool in tools if str(getattr(tool, "__name__", "")) == "prepare_lane_queries")
+    tool_names = {str(getattr(tool, "__name__", "")) for tool in tools}
 
-    payload = json.loads(
-        prepare_lane_queries(
-            1,
-            json.dumps(
-                {
-                    "batch_id": "gap-1",
-                    "goal": "补强限制",
-                    "gap_type": "missing_support",
-                    "claim_id": "1",
-                    "limitation_id": "1-L2",
-                    "seed_terms": ["参数窗口", "约束条件"],
-                    "pivot_terms": ["边缘端部署"],
-                },
-                ensure_ascii=False,
-            ),
-            json.dumps({"priority_date": "2023-10-15"}, ensure_ascii=False),
-            "semantic",
-        )
-    )
-
-    assert payload["gap_type"] == "missing_support"
-    assert payload["claim_id"] == "1"
-    assert payload["limitation_id"] == "1-L2"
-    assert payload["seed_terms"] == ["参数窗口", "约束条件"]
-    assert payload["pivot_terms"] == ["边缘端部署"]
-    assert "参数窗口" in payload["query_text"]
-    assert "目标限制：1 1-L2" in payload["semantic_text"]
-    assert payload["academic_query_text"]
-    assert payload["academic_semantic_text"]
-    assert payload["crossref_query_text"]
-    assert payload["cutoff_date"] == "2023-10-15"
+    assert "prepare_lane_queries" not in tool_names
 
 
 def test_search_academic_openalex_persists_npl_and_dedupes_by_doi(tmp_path, monkeypatch):

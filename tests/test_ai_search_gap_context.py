@@ -170,35 +170,35 @@ def _seed_gap_results(storage: SQLiteTaskStorage, task_id: str = "task-gap", *, 
     return run_id, feature_batch_id
 
 
-def test_get_planning_context_reads_latest_close_read_and_feature_compare_results(tmp_path):
+def test_get_workflow_context_reads_latest_close_read_and_feature_compare_results(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_context.db")
     _create_task(storage)
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
     runtime = _runtime(context)
-    get_planning_context = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
+    get_workflow_context = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_workflow_context"
     )
 
-    payload = json.loads(get_planning_context(runtime=runtime))
+    payload = json.loads(get_workflow_context(runtime=runtime))["planning"]
 
     assert payload["gap_context"]["close_read_result"]["limitation_gaps"][0]["limitation_id"] == "1-L2"
     assert payload["gap_context"]["feature_compare_result"]["creativity_readiness"] == "needs_more_evidence"
 
 
-def test_get_planning_context_reports_replan_when_gaps_remain(tmp_path):
+def test_get_workflow_context_reports_replan_when_gaps_remain(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_eval.db")
     _create_task(storage)
     _seed_gap_results(storage)
 
     context = AiSearchAgentContext(storage, "task-gap")
     runtime = _runtime(context)
-    get_planning_context = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_planning_context"
+    get_workflow_context = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_workflow_context"
     )
 
-    payload = json.loads(get_planning_context(runtime=runtime))
+    payload = json.loads(get_workflow_context(runtime=runtime))["planning"]
 
     assert payload["gap_progress"]["should_continue_search"] is True
     assert payload["gap_progress"]["recommended_action"] == "replan_search"
@@ -383,7 +383,7 @@ def test_evaluate_exhaustion_payload_triggers_human_takeover_on_no_progress_limi
     assert payload["should_request_decision"] is True
 
 
-def test_complete_session_is_blocked_when_gap_replan_is_required(tmp_path):
+def test_finalize_search_session_is_blocked_when_gap_replan_is_required(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_gap_block.db")
     _create_task(storage)
     run_id = _create_run(storage, "task-gap", plan_version=1, phase="feature_comparison")
@@ -402,11 +402,11 @@ def test_complete_session_is_blocked_when_gap_replan_is_required(tmp_path):
 
     context = AiSearchAgentContext(storage, "task-gap")
     runtime = _runtime(context)
-    complete_session = next(
-        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "complete_session"
+    finalize_search_session = next(
+        tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "finalize_search_session"
     )
 
-    payload = json.loads(complete_session(plan_version=1, runtime=runtime))
+    payload = json.loads(finalize_search_session(plan_version=1, runtime=runtime))
 
     assert payload["blocked"] is True
     assert payload["reason"] == "gap_replan_required"
@@ -486,10 +486,10 @@ def test_advance_workflow_begin_execution_sets_resume_metadata_on_todo(tmp_path)
     advance_workflow = next(
         tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "advance_workflow"
     )
-    get_execution_context = next(tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_execution_context")
+    get_workflow_context = next(tool for tool in context.build_main_agent_tools() if str(getattr(tool, "__name__", "")) == "get_workflow_context")
 
     advance_workflow(action="begin_execution", plan_version=1, runtime=runtime)
-    payload = json.loads(get_execution_context(plan_version=1, runtime=runtime))
+    payload = json.loads(get_workflow_context(plan_version=1, runtime=runtime))["execution"]
     todos = context._current_todos()
     execute_todo = next(item for item in todos if item["todo_id"] == "plan_1:sub_plan_1:step_1")
 

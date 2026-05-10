@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
+from agents.ai_search.src.search_elements import normalize_search_elements_payload
 
 
 def _safe_text(value: Any) -> str:

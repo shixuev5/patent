@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from agents.ai_search.src.query_constraints import build_search_constraints
+def _search_bounds(search_elements: Dict[str, Any]) -> Dict[str, Any]:
+    source = search_elements if isinstance(search_elements, dict) else {}
+    applicants = source.get("applicants") if isinstance(source.get("applicants"), list) else []
+    return {
+        "applicants": [str(item or "").strip() for item in applicants if str(item or "").strip()],
+        "filing_date": str(source.get("filing_date") or "").strip(),
+        "priority_date": str(source.get("priority_date") or "").strip(),
+    }
 
 
 def build_feature_prompt(
@@ -13,7 +20,7 @@ def build_feature_prompt(
     selected_documents: List[Dict[str, Any]],
     gap_context: Dict[str, Any] | None = None,
 ) -> str:
-    constraints = build_search_constraints(search_elements)
+    constraints = _search_bounds(search_elements)
     
     # 构建精简版的已选文献 Payload
     payload = []

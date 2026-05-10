@@ -5,7 +5,7 @@ from agents.ai_search.src.orchestration.execution_runtime import (
     build_execution_context,
     build_gap_progress,
     build_step_directive,
-    complete_session,
+    finalize_search_session,
 )
 from agents.ai_search.src.orchestration.phase_machine import (
     enter_drafting_plan,
@@ -13,7 +13,7 @@ from agents.ai_search.src.orchestration.phase_machine import (
 )
 from agents.ai_search.src.orchestration.planning_runtime import (
     build_planning_context,
-    publish_planner_draft,
+    compile_confirmed_search_plan,
 )
 from agents.ai_search.src.orchestration.session_views import (
     build_session_context,
@@ -26,8 +26,8 @@ __all__ = [
     "build_planning_context",
     "build_session_context",
     "build_step_directive",
-    "complete_session",
     "enter_drafting_plan",
+    "finalize_search_session",
     "phase_from_todo",
-    "publish_planner_draft",
+    "compile_confirmed_search_plan",
 ]

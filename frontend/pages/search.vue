@@ -152,7 +152,7 @@
           :entries="conversationRenderEntries"
           :structured-plan-execution-spec="structuredPlanExecutionSpec"
           :active-plan-version="activePlanVersion"
-          :confirmation-plan-version="confirmationPlanVersion"
+          :has-pending-plan-confirmation="hasPendingPlanConfirmation"
           :plan-confirmation-label="planConfirmationLabel"
           :pending-question="pendingQuestion"
           :human-decision-action="humanDecisionAction"
@@ -348,11 +348,9 @@ const { showMessage } = useGlobalMessage()
 const route = useRoute()
 const router = useRouter()
 const {
-  activeSubagentStatuses,
   currentSession,
   error,
   loading,
-  messageSegments,
   phaseMarkers,
   sessions,
   streaming,
@@ -367,7 +365,6 @@ const executionPanelOpen = ref(true)
 
 const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
-const processEvents = computed(() => currentSession.value?.conversation?.processEvents || [])
 const currentPendingAction = computed<Record<string, any> | null>(() => {
   const value = currentSession.value?.conversation?.pendingAction
   return value && typeof value === 'object' ? value as Record<string, any> : null
@@ -396,7 +393,6 @@ const selectedReviewDocuments = computed<Array<Record<string, any>>>(() => selec
 const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
 const hasActiveExecutionWork = computed(() => (
   executionTodos.value.some((todo) => todo.status === 'in_progress')
-  || activeSubagentList.value.length > 0
 ))
 const activeExecutionTodoTitle = computed(() => {
   const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
@@ -407,22 +403,19 @@ const activeExecutionTodoTitle = computed(() => {
 const currentExecutionHint = computed(() => {
   const segments = [
     activeExecutionTodoTitle.value,
-    activeSubagentList.value.map(item => String(item?.label || '').trim()).filter(Boolean).join('、'),
   ].filter(Boolean)
   return segments.join(' · ')
 })
 
 const activePlanVersion = computed(() => {
-  const candidate = pendingConfirmation.value?.plan_version
-    || pendingConfirmation.value?.planVersion
-    || currentSession.value?.plan?.currentPlan?.planVersion
+  const candidate = currentSession.value?.plan?.currentPlan?.planVersion
     || currentSession.value?.run?.planVersion
     || currentSession.value?.session.activePlanVersion
   const value = Number(candidate || 0)
   return Number.isFinite(value) && value > 0 ? value : 0
 })
 
-const confirmationPlanVersion = computed(() => Number(pendingConfirmation.value?.plan_version || pendingConfirmation.value?.planVersion || activePlanVersion.value || 0))
+const hasPendingPlanConfirmation = computed(() => !!pendingConfirmation.value)
 const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmation_label || pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
 const structuredPlanExecutionSpec = computed<Record<string, any> | null>(() => {
   const executionSpec = currentSession.value?.plan?.currentPlan?.executionSpec
@@ -432,7 +425,6 @@ const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '
 const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
-const activeSubagentList = computed(() => Object.values(activeSubagentStatuses.value || {}).filter((item) => item.name !== 'plan-prober'))
 const resumeActionCard = computed(() => {
   if (!resumeAction.value?.available) return null
   return {
@@ -453,7 +445,6 @@ const humanDecisionCard = computed(() => {
 })
 const showExecutionPanel = computed(() => (
   executionTodos.value.length > 0
-  || activeSubagentList.value.length > 0
   || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(activePhase.value || '')
 ))
 
@@ -483,11 +474,9 @@ const canSubmitHeaderRename = computed(() => {
 const { conversationRenderEntries } = useAiSearchConversation({
   messages,
   phaseMarkers,
-  messageSegments,
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
-  processEvents,
 })
 
 const {
@@ -721,8 +710,8 @@ const deleteQueuedExecutionMessage = async (queueMessageId: string) => {
 }
 
 const confirmPlan = async () => {
-  if (!confirmationPlanVersion.value) return
-  await aiSearchStore.confirmPlan(confirmationPlanVersion.value)
+  if (!pendingConfirmation.value) return
+  await aiSearchStore.confirmPlan()
 }
 
 const resumeExecution = async () => {

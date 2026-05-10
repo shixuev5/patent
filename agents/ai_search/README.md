@@ -1,6 +1,6 @@
 # AI Search Agent
 
-`agents/ai_search` 现在采用单主 agent + specialist 子 agent 的结构，并按“角色职责”组织目录。
+`agents/ai_search` 现在采用单主 agent + 执行阶段 specialist 子 agent 的结构，并按“角色职责”组织目录。主 agent 是唯一决策者和唯一对话者。
 
 ## Directory Shape
 
@@ -20,7 +20,7 @@
 当前目录原则是：
 
 - 主 agent 有自己的包目录，不再把 prompt 和 tools 混在单文件里。
-- 每个 specialist 各自拥有 `agent.py`、`prompt.py`、`tools.py`，需要结构化输出时再加 `schemas.py`。
+- 每个执行阶段 specialist 各自拥有 `agent.py`、`prompt.py`、`tools.py`，需要结构化输出时再加 `schemas.py`。
 - 接近某个 specialist 的 helper 直接放进该 specialist 目录，不再保留独立的 `toolkits`、`tools`、`evidence` 顶层目录。
 
 ## Main Agent
@@ -30,18 +30,18 @@
 它负责：
 
 - 读取会话 / 规划 / 执行三个聚合上下文 read model
-- 调 `search-elements` 整理检索要素
-- 必要时调 `plan-prober` 做轻量预检
-- 生成并确认检索计划
+- 直接整理检索要素
+- 必要时直接调用轻量预检工具
+- 直接生成、保存并确认检索计划
 - 决定何时调 `query-executor`、`coarse-screener`、`close-reader`、`feature-comparer`
 - 汇总 specialist 结果并决定继续、重规划、追问或结束
 - 在 `close-reader` / `feature-comparer` 之后读取 gap 上下文，判断是否继续补检索直到足以支撑创造性评价
 
 主 agent 遵循固定阶段协议：
 
-- `collect_requirements`
-- `draft_plan`
-- `await_plan_confirmation`
+- `collecting_requirements`
+- `drafting_plan`
+- `awaiting_plan_confirmation`
 - `execute_search`
 - `coarse_screen`
 - `close_read`
@@ -51,16 +51,19 @@
 主 agent 工具现在分成两类：
 
 - 读模型工具：
-  - `get_session_context`
-  - `get_planning_context`
-  - `get_execution_context`
+  - `get_workflow_context`
+  - `get_workflow_options`
+- 规划阶段工具：
+  - `probe_search_semantic`
+  - `probe_search_boolean`
+  - `probe_count_boolean`
+  - `compile_confirmed_search_plan`
 - 高层命令工具：
   - `start_plan_drafting`
-  - `publish_planner_draft`
   - `request_user_question`
   - `request_plan_confirmation`
   - `advance_workflow`
-  - `complete_session`
+  - `finalize_search_session`
 
 执行阶段切换不再依赖多个细粒度写工具，而是统一由 `advance_workflow` 承接：
 
@@ -79,7 +82,7 @@
 - `execution_runtime`
 - `session_views`
 
-这些模块负责 phase 合法迁移、planner draft 发布、todo 物化与条件激活、round / exhaustion 判定，以及 session / planning / execution read model 聚合。
+这些模块负责 phase 合法迁移、检索计划草案发布、todo 物化与条件激活、round / exhaustion 判定，以及 session / planning / execution read model 聚合。
 
 用户态执行进度使用业务自定义的 `executionTodos`：
 
@@ -90,12 +93,10 @@
 
 ## Specialist Agents
 
-specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents)：
+执行阶段 specialist 位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents)：
 
 - [search_elements](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/search_elements)
-  从用户输入和上下文抽取结构化检索要素；`normalize.py` 负责 payload 归一化。
-- [plan_prober](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/plan_prober)
-  在 `draft_plan` 阶段做低成本、非持久化 probe，只返回规划信号。
+  仅保留 schema 与 `normalize.py`，由主 agent 的规划工具直接使用。
 - [query_executor](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/query_executor)
   执行当前 retrieval step，并输出 `execution_step_summary`。
 - [coarse_screener](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/coarse_screener)
@@ -109,7 +110,7 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 
 - specialist 只做自己领域内的单一任务
 - specialist 自己持有对应领域工具和结果持久化工具
-- 主 agent 只负责调度和阶段推进
+- 主 agent 直接负责规划阶段，并只在正式执行、粗筛、精读和特征对比阶段调度 specialist
 
 ## Evidence Flow
 
@@ -122,10 +123,9 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 - `close-reader` 会输出 `limitation_coverage`、`limitation_gaps` 和 `follow_up_hints`
 - 若模型没有给出足够证据，系统会用关键词命中生成 fallback passages
 - `feature-comparer` 统一消费 `key_passages_json`，并输出 `difference_highlights`、`coverage_gaps`、`follow_up_search_hints` 和 `creativity_readiness`
-- 主 agent 通过 `get_planning_context` / `get_execution_context` 中的 `gap_context` 和 `gap_progress` 驱动下一轮检索修正
+- 主 agent 通过 `get_workflow_context` 中的 `gap_context` 和 `gap_progress` 驱动下一轮检索修正
 - `build_gap_strategy_seed` 会把最新 limitation / coverage gaps 转成下一轮可直接消费的 `targeted_gaps` 和 `seed_batch_specs`
 - `query-executor` 会在当前 step directive 中拿到最新 gap 上下文，用于优先围绕 targeted gaps 调整当前步骤
-- `prepare_lane_queries` 会把 `seed_terms`、`pivot_terms`、`gap_type`、`claim_id`、`limitation_id` 编进当前执行查询
 - 正式检索命中的文献会写入 `ai_search_documents`，并记录 `source_sub_plans_json` 与 `source_steps_json`
 
 ## Runtime
@@ -133,26 +133,26 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 共享运行时定义在 [runtime.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/runtime.py)。
 
 - 权限控制按 agent 角色区分
-- `main-agent` 可调度 specialist，但不能直接使用文件系统工具
+- `main-agent` 可调度执行阶段 specialist，但不能直接使用文件系统工具
 - `close-reader` 允许只读文件系统工具：`ls`、`read_file`、`glob`、`grep`
 - `close-reader` 禁止：`write_file`、`edit_file`、`execute`
-- `plan-prober` 只允许 `probe_count_boolean`、`probe_search_boolean`、`probe_search_semantic`
 
 当前流式约定也在这套运行时里配合后端消费层落地：
 
 - deepagents / langgraph 统一使用 `astream(..., stream_mode=["updates", "messages", "custom"], version="v2", subgraphs=True)`
-- `updates` 是唯一的 process lifecycle 来源：主 agent 的 `task` tool call 映射为 specialist 的 `process.started` / `process.completed` / `process.failed`，普通工具调用也从 `updates` 推导
+- 后端不再向前端展示 subagent / tool lifecycle 过程事件
 - `messages` 只负责主 agent / specialist 的 Markdown 增量输出
 - `custom` 只保留业务事件，例如 `snapshot.changed`，不再承载 subagent / tool lifecycle
-- specialist 不再挂自定义 streaming middleware，所有 lifecycle 都由 deepagents / langgraph 原生流推导
+- specialist 不再挂自定义 streaming middleware
 
 ## Imports
 
 当前代码直接从具体实现模块导入：
 
 - 主 agent: [main_agent/agent.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/main_agent/agent.py)
-- search elements 归一化: [subagents/search_elements/normalize.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/subagents/search_elements/normalize.py)
-- 各 specialist subagent spec: 对应目录下的 `agent.py`
+- 主 agent 规划工具: [main_agent/planning_tools.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/main_agent/planning_tools.py)
+- search elements 归一化: [search_elements.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/search_elements.py)
+- 各执行阶段 specialist subagent spec: 对应目录下的 `agent.py`
 - runtime 响应抽取: [runtime.py](/Users/yanhao/Documents/codes/patent/agents/ai_search/src/runtime.py)
 
 ## Service Boundary
@@ -182,5 +182,5 @@ specialist 全部位于 [subagents](/Users/yanhao/Documents/codes/patent/agents/
 
 其中 SSE 流事件的职责边界是：
 
-- `agent_run_service` 负责把 deepagents 原生 `updates/messages/custom` 归一成前端消费的 `process.*`、`message.segment.*`、`run.updated` 等业务事件
+- `agent_run_service` 负责把 deepagents 原生 `updates/messages/custom` 归一成前端消费的 `run.*`、`message.created`、`run.updated` 等业务事件
 - `snapshot_service` 不解析 deepagents 原生流，只消费已持久化的业务流事件和当前存储状态

@@ -295,11 +295,11 @@ class AiSearchService:
         ):
             yield event
 
-    async def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+    async def stream_plan_confirmation(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(
             session_id,
             owner_id,
-            lambda: self.agent_runs.stream_plan_confirmation(session_id, owner_id, plan_version),
+            lambda: self.agent_runs.stream_plan_confirmation(session_id, owner_id),
         ):
             yield event
 

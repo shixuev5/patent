@@ -12,11 +12,6 @@ from urllib.parse import urlparse
 from langchain.tools import ToolRuntime
 
 from agents.ai_search.src.runtime_context import resolve_agent_context
-from agents.ai_search.src.query_constraints import build_search_constraints, build_query_text, build_semantic_text
-from agents.common.retrieval.academic_query_utils import (
-    to_crossref_bibliographic_query,
-    to_semantic_academic_query,
-)
 from agents.common.retrieval.academic_search import AcademicSearchClient
 from agents.common.search_clients.factory import SearchClientFactory
 from backend.storage.ai_search_ids import (
@@ -675,46 +670,6 @@ def build_search_tools() -> List[Any]:
         fingerprint = _detail_fingerprint(detail)
         return _json_dumps({**detail, "detail_fingerprint": fingerprint})
 
-    def prepare_lane_queries(plan_version: int, batch_payload_json: str, search_elements_json: str, lane_type: str) -> str:
-        """
-        根据 batch 与检索要素生成对应 lane 的执行文本。
-        """
-        try:
-            batch = json.loads(batch_payload_json) if batch_payload_json else {}
-        except Exception:
-            batch = {}
-        try:
-            search_elements = json.loads(search_elements_json) if search_elements_json else {}
-        except Exception:
-            search_elements = {}
-        batch = {
-            **batch,
-            "lane_type": str(lane_type or "").strip(),
-        }
-        constraints = build_search_constraints(search_elements)
-        academic_query_text = build_query_text(batch, search_elements)
-        payload: Dict[str, Any] = {
-            "plan_version": int(plan_version),
-            "lane_type": str(lane_type or "").strip(),
-            "batch_id": str(batch.get("batch_id") or "").strip(),
-            "sub_plan_id": str(batch.get("sub_plan_id") or "").strip(),
-            "gap_type": str(batch.get("gap_type") or "").strip(),
-            "claim_id": str(batch.get("claim_id") or "").strip(),
-            "limitation_id": str(batch.get("limitation_id") or "").strip(),
-            "seed_terms": batch.get("seed_terms") or [],
-            "pivot_terms": batch.get("pivot_terms") or [],
-            "query_text": build_query_text(batch, search_elements),
-            "semantic_text": build_semantic_text(batch, search_elements),
-            "academic_query_text": academic_query_text,
-            "academic_semantic_text": to_semantic_academic_query(academic_query_text),
-            "crossref_query_text": to_crossref_bibliographic_query(academic_query_text),
-            "cutoff_date": str(constraints.get("effective_cutoff_date") or ""),
-            "applicant_terms": constraints.get("applicant_terms") or [],
-            "result_limit": int(batch.get("result_limit") or 50),
-            "seed_pn": str(batch.get("seed_pn") or batch.get("seed_publication_number") or "").strip().upper(),
-        }
-        return _json_dumps(payload)
-
     return [
         search_trace,
         search_semantic,
@@ -724,5 +679,4 @@ def build_search_tools() -> List[Any]:
         search_academic_crossref,
         count_boolean,
         fetch_patent_details,
-        prepare_lane_queries,
     ]

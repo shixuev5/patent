@@ -18,7 +18,6 @@ from backend.ai_search.models import (
     AiSearchExecutionQueueMessageRequest,
     AiSearchFeatureComparisonRequest,
     AiSearchMessageRequest,
-    AiSearchPlanConfirmRequest,
     AiSearchSessionUpdateRequest,
 )
 from backend.ai_search.service import AiSearchService
@@ -181,11 +180,10 @@ async def stream_ai_search_answers(
 @router.post("/api/ai-search/sessions/{session_id}/plan/confirm/stream")
 async def stream_ai_search_plan_confirmation(
     session_id: str,
-    request: AiSearchPlanConfirmRequest,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return StreamingResponse(
-        service.stream_plan_confirmation(session_id, current_user.user_id, request.planVersion),
+        service.stream_plan_confirmation(session_id, current_user.user_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

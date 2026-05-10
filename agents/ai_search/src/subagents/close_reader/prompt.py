@@ -5,8 +5,17 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from agents.ai_search.src.query_constraints import build_search_constraints
 from agents.ai_search.src.subagents.close_reader.passages import collect_key_terms
+
+
+def _search_bounds(search_elements: Dict[str, Any]) -> Dict[str, Any]:
+    source = search_elements if isinstance(search_elements, dict) else {}
+    applicants = source.get("applicants") if isinstance(source.get("applicants"), list) else []
+    return {
+        "applicants": [str(item or "").strip() for item in applicants if str(item or "").strip()],
+        "filing_date": str(source.get("filing_date") or "").strip(),
+        "priority_date": str(source.get("priority_date") or "").strip(),
+    }
 
 
 def build_close_reader_prompt(
@@ -14,7 +23,7 @@ def build_close_reader_prompt(
     documents: List[Dict[str, Any]],
     file_map: Dict[str, str],
 ) -> str:
-    constraints = build_search_constraints(search_elements)
+    constraints = _search_bounds(search_elements)
     # 取 Top32 高频词供大模型参考，前 12 个重点传递
     target_terms = list(dict.fromkeys(collect_key_terms(search_elements)))[:32]
     

@@ -14,7 +14,7 @@ from loguru import logger
 from agents.ai_reply.src.state import SearchFollowupSection
 from agents.ai_reply.src.utils import PipelineCancelled, ensure_not_cancelled, get_node_cache
 from agents.ai_reply.src.retrieval_followup import should_run_followup_by_assessment
-from agents.ai_search.src.subagents.search_elements.normalize import (
+from agents.ai_search.src.search_elements import (
     normalize_date_text,
     normalize_search_elements_payload,
 )

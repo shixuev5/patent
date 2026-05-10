@@ -310,26 +310,6 @@ def test_feature_compare_commit_rejects_duplicate_batch_submission(tmp_path):
         assert "已提交" in str(exc)
 
 
-def test_search_elements_save_rejects_invalid_status(tmp_path):
-    storage = SQLiteTaskStorage(tmp_path / "ai_search_search_elements_validation.db")
-    _create_task(storage, "task-elements", "drafting_plan")
-    context = AiSearchAgentContext(storage, "task-elements")
-    runtime = _runtime(context)
-    tool = next(tool for tool in context.build_search_elements_tools() if tool.__name__ == "save_search_elements")
-
-    with pytest.raises(Exception) as exc_info:
-        tool(
-            payload={
-                "status": "unknown",
-                "objective": "检索异常检测方案",
-                "search_elements": [{"element_name": "异常检测", "keywords_zh": ["异常检测"], "keywords_en": ["anomaly detection"]}],
-            },
-            runtime=runtime,
-        )
-
-    assert "status" in str(exc_info.value)
-
-
 def test_query_executor_commit_rejects_invalid_recall_quality(tmp_path):
     storage = SQLiteTaskStorage(tmp_path / "ai_search_execution_commit_validation.db")
     _create_task(storage, "task-exec", "execute_search")

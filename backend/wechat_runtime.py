@@ -852,8 +852,7 @@ class WeChatRuntimeService:
             normalized_text = str(text or "").strip()
             if normalized_text in SEARCH_CONTROL_TOKENS:
                 if normalized_text == "确认计划":
-                    plan_version = int((pending_action or {}).get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or snapshot.run.get("planVersion") or 0)
-                    if plan_version <= 0:
+                    if action_type != "plan_confirmation":
                         raise HTTPException(
                             status_code=409,
                             detail={
@@ -862,7 +861,7 @@ class WeChatRuntimeService:
                                 "suggestion": "你可以先补充要求，等我给出计划后再回复“确认计划”。",
                             },
                         )
-                    await self.confirm_ai_search_plan(session_id, binding.owner_id, plan_version)
+                    await self.confirm_ai_search_plan(session_id, binding.owner_id)
                 elif normalized_text == "继续检索":
                     await self.continue_ai_search(session_id, binding.owner_id)
                 else:
@@ -922,8 +921,8 @@ class WeChatRuntimeService:
     async def answer_ai_search_question(self, session_id: str, owner_id: str, question_id: str, answer: str) -> None:
         await self._drain(self.ai_search_service.stream_answer(session_id, owner_id, question_id, answer))
 
-    async def confirm_ai_search_plan(self, session_id: str, owner_id: str, plan_version: int) -> None:
-        await self._drain(self.ai_search_service.stream_plan_confirmation(session_id, owner_id, plan_version))
+    async def confirm_ai_search_plan(self, session_id: str, owner_id: str) -> None:
+        await self._drain(self.ai_search_service.stream_plan_confirmation(session_id, owner_id))
 
     async def continue_ai_search(self, session_id: str, owner_id: str) -> None:
         await self._drain(self.ai_search_service.stream_decision_continue(session_id, owner_id))

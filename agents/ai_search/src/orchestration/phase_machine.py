@@ -24,7 +24,6 @@ def phase_from_todo(todo: Dict[str, Any] | None) -> str:
 
 def enter_drafting_plan(context: Any, *, runtime: Any | None = None, clear_pending_actions: bool = True) -> Dict[str, Any]:
     if clear_pending_actions:
-        context.clear_planner_draft(runtime=runtime)
         supersede_pending_action(context, runtime=runtime)
     context.update_task_phase(PHASE_DRAFTING_PLAN, runtime=runtime)
     return {"phase": PHASE_DRAFTING_PLAN}

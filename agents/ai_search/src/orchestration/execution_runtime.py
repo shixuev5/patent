@@ -467,7 +467,7 @@ def advance_workflow(
     raise ValueError(f"不支持的 workflow action: {action}")
 
 
-def complete_session(
+def finalize_search_session(
     context: Any,
     *,
     summary: str = "",

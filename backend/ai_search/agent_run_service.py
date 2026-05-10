@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 from agents.ai_search.src.context import AiSearchAgentContext
@@ -21,12 +21,7 @@ from agents.ai_search.src.orchestration.action_runtime import (
 )
 from agents.ai_search.src.orchestration.execution_runtime import commit_round_evaluation
 from agents.ai_search.src.runtime import (
-    ALL_AI_SEARCH_SUBAGENTS,
-    build_process_display_metadata,
-    build_tool_event_payload,
     extract_latest_ai_message,
-    format_subagent_label,
-    normalize_ai_search_role,
 )
 from agents.ai_search.src.state import (
     ACTIVE_EXECUTION_PHASES,
@@ -193,9 +188,6 @@ class AiSearchAgentRunService:
             payload.update(extra)
         return payload
 
-    def _should_hide_process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
-        return False
-
     def _current_run_id(self, task_id: str) -> Optional[str]:
         run = self.storage.get_ai_search_run(task_id)
         value = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
@@ -233,23 +225,13 @@ class AiSearchAgentRunService:
             return str(((payload.get("run") or {}).get("runId")) or "").strip() or self._current_run_id(str(event.get("taskId") or "").strip())
         return None
 
-    def _normalize_process_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        event_type = str(event.get("type") or "").strip()
-        if event_type not in {"process.started", "process.completed", "process.failed"}:
-            return event
-        payload = dict(event.get("payload") or {})
-        if self._should_hide_process_event(event_type, payload):
-            return {}
-        return {**event, "payload": payload}
-
     def _normalize_stream_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(event, dict):
             return {}
-        normalized = self._normalize_process_stream_event(event)
-        return normalized if isinstance(normalized, dict) else {}
+        return event
 
     def _should_persist_stream_event(self, event: Dict[str, Any]) -> bool:
-        return str(event.get("type") or "").strip() != "message.segment.delta"
+        return bool(str(event.get("type") or "").strip())
 
     def _stream_event_to_record(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         normalized = self._normalize_stream_event(event)
@@ -373,7 +355,9 @@ class AiSearchAgentRunService:
         self._stream_subscribers.setdefault(session_id, set()).add(queue)
         for row in self.storage.list_ai_search_stream_events(session_id, after_seq=replayed_seq):
             replayed_seq = max(replayed_seq, int(row.get("seq") or 0))
-            yield self._format_persisted_stream_event(row)
+            formatted = self._format_persisted_stream_event(row)
+            if formatted:
+                yield formatted
         try:
             while True:
                 task = self._stream_tasks.get(session_id)
@@ -483,36 +467,6 @@ class AiSearchAgentRunService:
             )
         run_id = str(item.get("run_id") or "").strip()
         return self._execution_queue_response(task.id, run_id)
-
-    def _append_process_message(self, task_id: str, phase: str, payload: Dict[str, Any]) -> None:
-        summary = str(payload.get("summary") or payload.get("statusText") or payload.get("label") or payload.get("toolLabel") or "").strip()
-        if not summary:
-            return
-        process_type = str(payload.get("processType") or "").strip()
-        display_metadata = build_process_display_metadata(
-            process_type=process_type,
-            event_id=str(payload.get("eventId") or "").strip(),
-            subagent_name=str(payload.get("subagentName") or payload.get("name") or "").strip(),
-            tool_name=str(payload.get("toolName") or "").strip(),
-            label=str(payload.get("label") or payload.get("toolLabel") or "").strip(),
-            summary=summary,
-        )
-        self.storage.create_ai_search_message(
-            {
-                "message_id": uuid.uuid4().hex,
-                "task_id": task_id,
-                "plan_version": self._current_active_plan_version(task_id) or None,
-                "role": "assistant",
-                "kind": "process",
-                "content": summary,
-                "stream_status": "completed",
-                "metadata": {
-                    **payload,
-                    **display_metadata,
-                    "phase": phase,
-                },
-            }
-        )
 
     def _fail_open_stage_events(
         self,
@@ -642,7 +596,7 @@ class AiSearchAgentRunService:
             "你现在必须立刻调用 `request_human_decision` 发起人工决策 interrupt，"
             "不要重新检索，不要自己替用户做决定。"
             "当 interrupt 恢复后：如果用户选择 `continue_search`，就回到 `drafting_plan` 并重新起草计划；"
-            "如果用户选择 `complete_current_results`，就调用 `complete_session(force_from_decision=true)` 结束当前结果。\n\n"
+            "如果用户选择 `complete_current_results`，就调用 `finalize_search_session(force_from_decision=true)` 结束当前结果。\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -702,19 +656,6 @@ class AiSearchAgentRunService:
             raise HTTPException(status_code=409, detail={"code": error_code, "message": message})
         return pending
 
-    def _has_plan_confirmation_message(self, task_id: str, plan_version: int) -> bool:
-        target_plan_version = int(plan_version or 0)
-        for item in reversed(self.storage.list_ai_search_messages(task_id)):
-            if str(item.get("role") or "").strip() != "assistant":
-                continue
-            if str(item.get("kind") or "").strip() != "plan_confirmation":
-                continue
-            if target_plan_version > 0 and int(item.get("plan_version") or 0) != target_plan_version:
-                continue
-            if str(item.get("content") or "").strip():
-                return True
-        return False
-
     def _reconcile_drafting_outcome(self, task_id: str) -> None:
         if self._current_phase_value(task_id) != PHASE_DRAFTING_PLAN:
             return
@@ -723,7 +664,9 @@ class AiSearchAgentRunService:
         pending = context.current_pending_action()
         if isinstance(pending, dict):
             action_type = str(pending.get("action_type") or "").strip()
-            active_plan_version = int(pending.get("plan_version") or context.active_plan_version() or 0) or None
+            active_plan_version = int(pending.get("plan_version") or 0) or None
+            if not active_plan_version and action_type != "plan_confirmation":
+                active_plan_version = int(context.active_plan_version() or 0) or None
             run_id = str(pending.get("run_id") or "").strip() or None
             if action_type == "question":
                 context.update_task_phase(
@@ -739,56 +682,6 @@ class AiSearchAgentRunService:
                     run_id=run_id,
                 )
                 return
-
-        active_plan_version = context.active_plan_version()
-        if active_plan_version <= 0:
-            return
-        plan = self.storage.get_ai_search_plan(task_id, active_plan_version)
-        if not isinstance(plan, dict):
-            return
-        plan_status = str(plan.get("status") or "").strip()
-        if plan_status in {"confirmed", "superseded"}:
-            return
-
-        plan_summary = str(plan.get("review_markdown") or "").strip()
-        if not plan_summary:
-            return
-
-        if not self._has_plan_confirmation_message(task_id, active_plan_version):
-            self.storage.create_ai_search_message(
-                {
-                    "message_id": uuid.uuid4().hex,
-                    "task_id": task_id,
-                    "plan_version": active_plan_version,
-                    "role": "assistant",
-                    "kind": "plan_confirmation",
-                    "content": plan_summary,
-                    "stream_status": "completed",
-                    "metadata": {
-                        "plan_version": active_plan_version,
-                        "plan_summary": plan_summary,
-                        "confirmation_label": "实施此计划",
-                    },
-                }
-            )
-
-        self.storage.update_ai_search_plan(task_id, active_plan_version, status="awaiting_confirmation")
-        context.create_pending_action(
-            "plan_confirmation",
-            {
-                "plan_version": active_plan_version,
-                "plan_summary": plan_summary,
-                "confirmation_label": "实施此计划",
-            },
-            run_id=context.active_run_id(active_plan_version),
-            plan_version=active_plan_version,
-            source="plan_gate",
-        )
-        context.update_task_phase(
-            PHASE_AWAITING_PLAN_CONFIRMATION,
-            active_plan_version=active_plan_version,
-            run_id=context.active_run_id(active_plan_version),
-        )
 
     def _recover_cancelled_drafting_run(self, task_id: str) -> None:
         if self._current_phase_value(task_id) != PHASE_DRAFTING_PLAN:
@@ -823,10 +716,15 @@ class AiSearchAgentRunService:
             "final_values": {},
             "known_message_ids": known_message_ids,
             "last_snapshot": snapshot,
-            "message_segments": {},
-            "pending_process_calls": {},
-            "seen_process_call_ids": set(),
+            "main_agent_message": {
+                "buffer": "",
+                "message_id": "",
+                "created_at": "",
+                "persisted": False,
+            },
             "previous_assistant": str(previous_assistant or "").strip(),
+            "last_snapshot_diff_monotonic": 0.0,
+            "snapshot_diff_pending": False,
         }
 
     async def _iterate_stream_with_keepalive(self, iterator: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -864,35 +762,6 @@ class AiSearchAgentRunService:
                     mode = str(only_key)
                     payload = item[only_key]
         return namespace, str(mode or ""), payload
-
-    def _is_root_namespace(self, namespace: Any) -> bool:
-        if namespace is None:
-            return True
-        if isinstance(namespace, str):
-            return not namespace.strip()
-        if isinstance(namespace, (tuple, list, set)):
-            return len(namespace) == 0
-        return False
-
-    def _flatten_namespace(self, namespace: Any) -> List[str]:
-        if namespace is None:
-            return []
-        if isinstance(namespace, str):
-            value = namespace.strip()
-            return [value] if value else []
-        if isinstance(namespace, (tuple, list, set)):
-            parts: List[str] = []
-            for item in namespace:
-                parts.extend(self._flatten_namespace(item))
-            return parts
-        value = str(namespace or "").strip()
-        return [value] if value else []
-
-    def _namespace_contains_role(self, namespace: Any, role: str) -> bool:
-        needle = str(role or "").strip().lower()
-        if not needle:
-            return False
-        return any(needle in part.lower() for part in self._flatten_namespace(namespace))
 
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -942,33 +811,17 @@ class AiSearchAgentRunService:
             return True
         return False
 
-    def _normalize_source_agent_name(self, value: Any) -> str:
-        return normalize_ai_search_role(value)
-
-    def _source_role_for_agent(self, source_agent: str) -> str:
-        return "main_agent" if str(source_agent or "").strip() == "main-agent" else "subagent"
-
-    def _process_source_agent(self, namespace: Any) -> str:
-        if self._is_root_namespace(namespace):
-            return "main-agent"
-        for candidate in ALL_AI_SEARCH_SUBAGENTS:
-            if self._namespace_contains_role(namespace, candidate):
-                return candidate
-        return "main-agent"
-
-    def _message_stream_source_agent(self, namespace: Any, payload: Any) -> Optional[str]:
+    def _is_main_agent_message_stream(self, namespace: Any, payload: Any) -> bool:
         chunk, metadata = self._split_message_payload(payload)
         if not self._is_model_text_chunk(chunk, metadata):
-            return None
-        if self._is_root_namespace(namespace):
-            return "main-agent"
-        for candidate in ALL_AI_SEARCH_SUBAGENTS:
-            if self._namespace_contains_role(namespace, candidate):
-                return candidate
-        agent_name = self._normalize_source_agent_name(metadata.get("lc_agent_name"))
-        if agent_name:
-            return agent_name
-        return None
+            return False
+        if namespace is None:
+            return True
+        if isinstance(namespace, str):
+            return not namespace.strip()
+        if isinstance(namespace, (tuple, list, set)):
+            return len(namespace) == 0
+        return False
 
     def _extract_message_delta(self, payload: Any) -> str:
         chunk, _metadata = self._split_message_payload(payload)
@@ -995,252 +848,6 @@ class AiSearchAgentRunService:
             return event_type, {}
         return event_type, {"value": event_payload}
 
-    def _update_messages(self, payload: Any) -> List[Any]:
-        if not isinstance(payload, dict):
-            return []
-        messages: List[Any] = []
-        for value in payload.values():
-            if isinstance(value, dict):
-                nested = value.get("messages")
-                if isinstance(nested, list):
-                    messages.extend(nested)
-                elif nested is not None:
-                    messages.append(nested)
-            elif isinstance(value, list):
-                messages.extend(value)
-        return messages
-
-    def _message_tool_calls(self, message: Any) -> List[Dict[str, Any]]:
-        if isinstance(message, AIMessage):
-            return [dict(item) for item in message.tool_calls if isinstance(item, dict)]
-        if isinstance(message, dict) and str(message.get("type") or "").strip() == "ai":
-            calls = message.get("tool_calls")
-            if isinstance(calls, list):
-                return [dict(item) for item in calls if isinstance(item, dict)]
-        return []
-
-    def _tool_message_payload(self, message: Any) -> Optional[Dict[str, Any]]:
-        if isinstance(message, ToolMessage):
-            return {
-                "tool_call_id": str(message.tool_call_id or "").strip(),
-                "status": str(message.status or "success").strip() or "success",
-                "content": self._content_to_text(message.content),
-            }
-        if isinstance(message, dict) and str(message.get("type") or "").strip() == "tool":
-            return {
-                "tool_call_id": str(message.get("tool_call_id") or "").strip(),
-                "status": str(message.get("status") or "success").strip() or "success",
-                "content": self._content_to_text(message.get("content")),
-            }
-        return None
-
-    def _build_subagent_process_payload(
-        self,
-        *,
-        subagent_name: str,
-        tool_call_id: str,
-        status: str,
-        error_message: str = "",
-    ) -> Dict[str, Any]:
-        normalized_name = str(subagent_name or "").strip()
-        label = format_subagent_label(normalized_name)
-        normalized_status = str(status or "running").strip() or "running"
-        if normalized_status == "completed":
-            status_text = f"{label}已完成"
-        elif normalized_status == "failed":
-            status_text = f"{label}失败"
-        else:
-            status_text = f"{label}开始执行"
-        event_id = f"{tool_call_id or normalized_name}:{normalized_status}"
-        return {
-            "eventId": event_id,
-            "processType": "subagent",
-            "status": normalized_status,
-            "name": normalized_name,
-            "label": label,
-            "summary": label,
-            "statusText": status_text,
-            "subagentName": normalized_name,
-            "subagentLabel": label,
-            "errorMessage": str(error_message or "").strip() or None,
-            **build_process_display_metadata(
-                process_type="subagent",
-                event_id=event_id,
-                subagent_name=normalized_name,
-                label=label,
-                summary=label,
-            ),
-        }
-
-    def _start_process_call(
-        self,
-        stream_state: Dict[str, Any],
-        *,
-        source_agent: str,
-        tool_call: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        tool_call_id = str(tool_call.get("id") or "").strip()
-        if not tool_call_id:
-            return None
-        seen_process_call_ids = stream_state.setdefault("seen_process_call_ids", set())
-        pending_process_calls = stream_state.setdefault("pending_process_calls", {})
-        if tool_call_id in seen_process_call_ids or tool_call_id in pending_process_calls:
-            return None
-        tool_name = str(tool_call.get("name") or "").strip()
-        args = tool_call.get("args") if isinstance(tool_call.get("args"), dict) else {}
-        if tool_name == "task":
-            subagent_name = str(args.get("subagent_type") or "").strip()
-            if subagent_name not in ALL_AI_SEARCH_SUBAGENTS:
-                return None
-            payload = self._build_subagent_process_payload(
-                subagent_name=subagent_name,
-                tool_call_id=tool_call_id,
-                status="running",
-            )
-            pending_process_calls[tool_call_id] = {
-                "processType": "subagent",
-                "subagentName": subagent_name,
-                "toolCallId": tool_call_id,
-            }
-            seen_process_call_ids.add(tool_call_id)
-            return {"event_type": "process.started", "payload": payload}
-        payload = build_tool_event_payload(
-            role=source_agent,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            args=args,
-            status="running",
-        )
-        pending_process_calls[tool_call_id] = {
-            "processType": "tool",
-            "role": source_agent,
-            "toolName": tool_name,
-            "toolCallId": tool_call_id,
-            "args": args,
-        }
-        seen_process_call_ids.add(tool_call_id)
-        return {"event_type": "process.started", "payload": payload}
-
-    def _complete_process_call(self, stream_state: Dict[str, Any], tool_message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        tool_call_id = str(tool_message.get("tool_call_id") or "").strip()
-        if not tool_call_id:
-            return None
-        pending_process_calls = stream_state.setdefault("pending_process_calls", {})
-        pending = pending_process_calls.pop(tool_call_id, None)
-        if not isinstance(pending, dict):
-            return None
-        normalized_status = "failed" if str(tool_message.get("status") or "").strip() == "error" else "completed"
-        error_message = str(tool_message.get("content") or "").strip() if normalized_status == "failed" else ""
-        if str(pending.get("processType") or "").strip() == "subagent":
-            payload = self._build_subagent_process_payload(
-                subagent_name=str(pending.get("subagentName") or "").strip(),
-                tool_call_id=tool_call_id,
-                status=normalized_status,
-                error_message=error_message,
-            )
-        else:
-            payload = build_tool_event_payload(
-                role=str(pending.get("role") or "main-agent").strip() or "main-agent",
-                tool_name=str(pending.get("toolName") or "").strip(),
-                tool_call_id=tool_call_id,
-                args=pending.get("args") if isinstance(pending.get("args"), dict) else {},
-                status=normalized_status,
-                error_message=error_message,
-            )
-        event_type = "process.failed" if normalized_status == "failed" else "process.completed"
-        return {"event_type": event_type, "payload": payload}
-
-    def _process_events_from_update(
-        self,
-        *,
-        task_id: str,
-        session_id: str,
-        phase: str,
-        namespace: Any,
-        payload: Any,
-        stream_state: Dict[str, Any],
-    ) -> List[str]:
-        events: List[str] = []
-        source_agent = self._process_source_agent(namespace)
-        for message in self._update_messages(payload):
-            for tool_call in self._message_tool_calls(message):
-                started = self._start_process_call(
-                    stream_state,
-                    source_agent=source_agent,
-                    tool_call=tool_call,
-                )
-                if not isinstance(started, dict):
-                    continue
-                started_payload = started.get("payload") if isinstance(started.get("payload"), dict) else {}
-                if str(started_payload.get("processType") or "").strip() == "subagent":
-                    subagent_name = str(started_payload.get("subagentName") or started_payload.get("name") or "").strip()
-                    events.extend(
-                        self._complete_message_segment_if_needed(
-                            task_id,
-                            session_id,
-                            phase,
-                            stream_state,
-                            source_agent="main-agent",
-                        )
-                    )
-                    if subagent_name in ALL_AI_SEARCH_SUBAGENTS:
-                        events.extend(
-                            self._complete_message_segment_if_needed(
-                                task_id,
-                                session_id,
-                                phase,
-                                stream_state,
-                                source_agent=subagent_name,
-                            )
-                        )
-                        self._reset_message_segment_state(stream_state, subagent_name)
-                events.append(self._format_event(str(started.get("event_type") or ""), session_id, phase, started_payload))
-            tool_message = self._tool_message_payload(message)
-            if not isinstance(tool_message, dict):
-                continue
-            completed = self._complete_process_call(stream_state, tool_message)
-            if not isinstance(completed, dict):
-                continue
-            completed_payload = completed.get("payload") if isinstance(completed.get("payload"), dict) else {}
-            if str(completed_payload.get("processType") or "").strip() == "subagent":
-                subagent_name = str(completed_payload.get("subagentName") or completed_payload.get("name") or "").strip()
-                if subagent_name in ALL_AI_SEARCH_SUBAGENTS:
-                    events.extend(
-                        self._complete_message_segment_if_needed(
-                            task_id,
-                            session_id,
-                            phase,
-                            stream_state,
-                            source_agent=subagent_name,
-                        )
-                    )
-            events.append(self._format_event(str(completed.get("event_type") or ""), session_id, phase, completed_payload))
-        return events
-
-    def _normalize_subagent_payload(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        name = str(payload.get("name") or "").strip()
-        label = str(payload.get("label") or "").strip() or format_subagent_label(name)
-        default_status = f"{label}执行中。" if event_type == "subagent.started" else f"{label}已完成。"
-        event_id = str(payload.get("eventId") or f"{name}:{'started' if event_type == 'subagent.started' else 'completed'}").strip()
-        return {
-            "name": name,
-            "label": label,
-            "eventId": event_id,
-            "processType": "subagent",
-            "status": "running" if event_type == "subagent.started" else "completed",
-            "statusText": str(payload.get("statusText") or "").strip() or default_status,
-            "summary": str(payload.get("summary") or "").strip() or label,
-            "subagentName": str(payload.get("subagentName") or name).strip() or None,
-            "subagentLabel": str(payload.get("subagentLabel") or label).strip() or None,
-            **build_process_display_metadata(
-                process_type="subagent",
-                event_id=event_id,
-                subagent_name=str(payload.get("subagentName") or name).strip(),
-                label=label,
-                summary=str(payload.get("summary") or "").strip() or label,
-            ),
-        }
-
     def _run_updated_payload(self, snapshot: AiSearchSnapshotResponse) -> Dict[str, Any]:
         return {
             "session": snapshot.session.model_dump(mode="python"),
@@ -1249,242 +856,125 @@ class AiSearchAgentRunService:
             "artifacts": snapshot.artifacts.model_dump(mode="python"),
         }
 
-    def _message_segment_state(self, stream_state: Dict[str, Any], source_agent: str) -> Dict[str, Any]:
-        message_segments = stream_state.setdefault("message_segments", {})
-        current = message_segments.get(source_agent)
+    def _main_agent_message_state(self, stream_state: Dict[str, Any]) -> Dict[str, Any]:
+        current = stream_state.get("main_agent_message")
         if isinstance(current, dict):
             return current
         current = {
-            "source_agent": str(source_agent or "").strip(),
-            "source_role": self._source_role_for_agent(source_agent),
-            "segment_id": "",
+            "buffer": "",
             "message_id": "",
-            "buffer": "",
-            "started": False,
-            "completed": False,
+            "created_at": "",
             "persisted": False,
-            "content_type": "markdown",
-            "created_at": utc_now_z(),
         }
-        message_segments[source_agent] = current
+        stream_state["main_agent_message"] = current
         return current
 
-    def _reset_message_segment_state(self, stream_state: Dict[str, Any], source_agent: str) -> Dict[str, Any]:
-        message_segments = stream_state.setdefault("message_segments", {})
-        current = {
-            "source_agent": str(source_agent or "").strip(),
-            "source_role": self._source_role_for_agent(source_agent),
-            "segment_id": uuid.uuid4().hex,
-            "message_id": uuid.uuid4().hex,
-            "buffer": "",
-            "started": False,
-            "completed": False,
-            "persisted": False,
-            "content_type": "markdown",
-            "created_at": utc_now_z(),
-        }
-        message_segments[source_agent] = current
-        return current
-
-    def _message_segment_started_event(
+    def _build_message_created_event(
         self,
         session_id: str,
         phase: str,
-        stream_state: Dict[str, Any],
-        *,
-        source_agent: str,
-        segment_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ) -> Optional[str]:
-        segment = self._message_segment_state(stream_state, source_agent)
-        if segment["started"]:
-            return None
-        resolved_segment_id = str(segment_id or segment.get("segment_id") or uuid.uuid4().hex).strip()
-        resolved_message_id = str(message_id or segment.get("message_id") or uuid.uuid4().hex).strip()
-        segment["segment_id"] = resolved_segment_id
-        segment["message_id"] = resolved_message_id
-        segment["started"] = True
-        return self._format_event(
-            "message.segment.started",
-            session_id,
-            phase,
-            {
-                "segmentId": resolved_segment_id,
-                "messageId": resolved_message_id,
-                "sourceAgent": str(segment.get("source_agent") or source_agent).strip(),
-                "sourceRole": str(segment.get("source_role") or self._source_role_for_agent(source_agent)).strip(),
-                "contentType": "markdown",
-            },
-        )
+        message: Dict[str, Any],
+    ) -> str:
+        return self._format_event("message.created", session_id, phase, message)
 
-    def _persist_message_segment_if_needed(self, task_id: str, segment: Dict[str, Any]) -> bool:
-        content = str(segment.get("buffer") or "")
-        if not content.strip() or bool(segment.get("persisted")):
-            return False
-        message_id = str(segment.get("message_id") or uuid.uuid4().hex).strip()
+    def _persist_main_agent_message_if_needed(
+        self,
+        task_id: str,
+        stream_state: Dict[str, Any],
+        content: str,
+    ) -> Optional[Dict[str, Any]]:
+        message_state = self._main_agent_message_state(stream_state)
+        if bool(message_state.get("persisted")):
+            message_id = str(message_state.get("message_id") or "").strip()
+            return self.storage.get_ai_search_message(message_id) if message_id else None
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            return None
+        for item in reversed(self.storage.list_ai_search_messages(task_id)):
+            if str(item.get("kind") or "").strip() != "plan_confirmation":
+                continue
+            if str(item.get("content") or "").strip() == normalized_content:
+                message_state["persisted"] = True
+                message_state["message_id"] = str(item.get("message_id") or "").strip()
+                return None
+        message_id = str(message_state.get("message_id") or uuid.uuid4().hex).strip()
+        created_at = str(message_state.get("created_at") or utc_now_z())
         self.facade._append_message(
             task_id,
             "assistant",
             "chat",
-            content,
+            normalized_content,
             message_id=message_id,
             plan_version=self._current_active_plan_version(task_id) or None,
-            metadata={
-                "source_agent": str(segment.get("source_agent") or "").strip() or None,
-                "source_role": str(segment.get("source_role") or "").strip() or None,
-                "segment_id": str(segment.get("segment_id") or "").strip() or None,
-                "content_type": str(segment.get("content_type") or "markdown").strip() or "markdown",
-            },
+            metadata={},
         )
-        segment["persisted"] = True
-        segment["message_id"] = message_id
-        return True
-
-    def _message_segment_completed_events(
-        self,
-        session_id: str,
-        phase: str,
-        stream_state: Dict[str, Any],
-        *,
-        source_agent: str,
-        content: str,
-        segment_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-    ) -> List[str]:
-        resolved_content = str(content or "")
-        if not resolved_content.strip():
-            return []
-        segment = self._message_segment_state(stream_state, source_agent)
-        resolved_segment_id = str(segment_id or segment.get("segment_id") or uuid.uuid4().hex).strip()
-        resolved_message_id = str(message_id or segment.get("message_id") or uuid.uuid4().hex).strip()
-        events: List[str] = []
-        started_event = self._message_segment_started_event(
-            session_id,
-            phase,
-            stream_state,
-            source_agent=source_agent,
-            segment_id=resolved_segment_id,
-            message_id=resolved_message_id,
+        self.storage.update_ai_search_message(
+            message_id,
+            created_at=created_at,
         )
-        if started_event:
-            events.append(started_event)
-        segment["buffer"] = resolved_content
-        segment["segment_id"] = resolved_segment_id
-        segment["message_id"] = resolved_message_id
-        segment["completed"] = True
-        events.append(
-            self._format_event(
-                "message.segment.completed",
-                session_id,
-                phase,
-                {
-                    "segmentId": resolved_segment_id,
-                    "messageId": resolved_message_id,
-                    "sourceAgent": str(segment.get("source_agent") or source_agent).strip(),
-                    "sourceRole": str(segment.get("source_role") or self._source_role_for_agent(source_agent)).strip(),
-                    "content": resolved_content,
-                    "contentType": "markdown",
-                },
-            )
-        )
-        return events
+        message_state["persisted"] = True
+        message_state["message_id"] = message_id
+        message_state["created_at"] = created_at
+        stored = self.storage.get_ai_search_message(message_id)
+        if isinstance(stored, dict):
+            stream_state["known_message_ids"].add(message_id)
+            return stored
+        return {
+            "message_id": message_id,
+            "task_id": task_id,
+            "plan_version": self._current_active_plan_version(task_id) or None,
+            "role": "assistant",
+            "kind": "chat",
+            "content": normalized_content,
+            "stream_status": "completed",
+            "question_id": None,
+            "metadata": {},
+            "created_at": created_at,
+        }
 
-    def _ensure_message_segment_for_delta(self, stream_state: Dict[str, Any], source_agent: str) -> Dict[str, Any]:
-        segment = self._message_segment_state(stream_state, source_agent)
-        if (
-            bool(segment.get("completed"))
-            or not str(segment.get("segment_id") or "").strip()
-            or not str(segment.get("message_id") or "").strip()
-        ):
-            segment = self._reset_message_segment_state(stream_state, source_agent)
-        return segment
-
-    def _message_segment_content(
+    def _main_agent_message_content(
         self,
         stream_state: Dict[str, Any],
         *,
-        source_agent: str,
         allow_model_fallback: bool = False,
         fallback_values: Optional[Dict[str, Any]] = None,
     ) -> str:
-        segment = self._message_segment_state(stream_state, source_agent)
-        if bool(segment.get("completed")):
-            return ""
-        content = str(segment.get("buffer") or "")
+        message_state = self._main_agent_message_state(stream_state)
+        content = str(message_state.get("buffer") or "")
         if allow_model_fallback and not content.strip() and isinstance(fallback_values, dict):
             fallback = extract_latest_ai_message(fallback_values)
-            if fallback and (
-                str(source_agent or "").strip() != "main-agent"
-                or fallback != str(stream_state.get("previous_assistant") or "").strip()
-            ):
+            if fallback and fallback != str(stream_state.get("previous_assistant") or "").strip():
                 content = fallback
         return str(content or "")
 
-    def _complete_message_segment_if_needed(
+    def _flush_main_agent_message_if_needed(
         self,
         task_id: str,
         session_id: str,
         phase: str,
         stream_state: Dict[str, Any],
         *,
-        source_agent: str,
         content: Optional[str] = None,
         allow_model_fallback: bool = False,
         fallback_values: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
-        segment = self._message_segment_state(stream_state, source_agent)
-        if bool(segment.get("completed")):
+        message_state = self._main_agent_message_state(stream_state)
+        if bool(message_state.get("persisted")):
             return []
         resolved_content = str(content or "").strip()
         if not resolved_content:
-            resolved_content = self._message_segment_content(
+            resolved_content = self._main_agent_message_content(
                 stream_state,
-                source_agent=source_agent,
                 allow_model_fallback=allow_model_fallback,
                 fallback_values=fallback_values,
             ).strip()
         if not resolved_content:
             return []
-        segment["buffer"] = resolved_content
-        self._persist_message_segment_if_needed(task_id, segment)
-        events = self._message_segment_completed_events(
-            session_id,
-            phase,
-            stream_state,
-            source_agent=source_agent,
-            content=resolved_content,
-            segment_id=str(segment.get("segment_id") or "").strip() or None,
-            message_id=str(segment.get("message_id") or "").strip() or None,
-        )
-        return events
-
-    def _complete_all_message_segments_if_needed(
-        self,
-        task_id: str,
-        session_id: str,
-        phase: str,
-        stream_state: Dict[str, Any],
-        *,
-        allow_main_agent_fallback: bool = False,
-        fallback_values: Optional[Dict[str, Any]] = None,
-    ) -> List[str]:
-        events: List[str] = []
-        source_agents = list((stream_state.get("message_segments") or {}).keys())
-        if allow_main_agent_fallback and "main-agent" not in source_agents:
-            source_agents.append("main-agent")
-        for source_agent in source_agents:
-            events.extend(
-                self._complete_message_segment_if_needed(
-                    task_id,
-                    session_id,
-                    phase,
-                    stream_state,
-                    source_agent=source_agent,
-                    allow_model_fallback=allow_main_agent_fallback and source_agent == "main-agent",
-                    fallback_values=fallback_values if source_agent == "main-agent" else None,
-                )
-            )
-        return events
+        message_state["buffer"] = resolved_content
+        stored = self._persist_main_agent_message_if_needed(task_id, stream_state, resolved_content)
+        if not isinstance(stored, dict):
+            return []
+        return [self._build_message_created_event(session_id, phase, stored)]
 
     async def _emit_snapshot_diff_events(
         self,
@@ -1556,6 +1046,30 @@ class AiSearchAgentRunService:
                 },
             )
 
+    async def _emit_current_snapshot_diff_events(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        stream_state: Dict[str, Any],
+        force: bool = False,
+    ) -> AsyncIterator[str]:
+        now = time.monotonic()
+        last = float(stream_state.get("last_snapshot_diff_monotonic") or 0.0)
+        if not force and last > 0 and now - last < 0.5:
+            stream_state["snapshot_diff_pending"] = True
+            return
+        snapshot = self.snapshots.get_snapshot(session_id, owner_id)
+        async for event in self._emit_snapshot_diff_events(
+            stream_state["last_snapshot"],
+            snapshot,
+            stream_state=stream_state,
+        ):
+            yield event
+        stream_state["last_snapshot"] = snapshot
+        stream_state["last_snapshot_diff_monotonic"] = now
+        stream_state["snapshot_diff_pending"] = False
+
     async def _consume_live_agent_stream(
         self,
         *,
@@ -1566,7 +1080,6 @@ class AiSearchAgentRunService:
         payload: Any,
         stream_state: Dict[str, Any],
         initial_snapshot: AiSearchSnapshotResponse,
-        previous_phase: str = "",
         config: Optional[Dict[str, Any]] = None,
         forward_model_text: bool = True,
         emit_run_started: bool = True,
@@ -1600,96 +1113,40 @@ class AiSearchAgentRunService:
                 continue
             namespace, mode, raw_payload = self._normalize_stream_item(item)
             if mode == "updates":
-                current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
-                for event in self._process_events_from_update(
-                    task_id=task_id,
+                async for event in self._emit_current_snapshot_diff_events(
                     session_id=session_id,
-                    phase=current_phase,
-                    namespace=namespace,
-                    payload=raw_payload,
+                    owner_id=owner_id,
                     stream_state=stream_state,
                 ):
                     yield event
-                snapshot = self.snapshots.get_snapshot(session_id, owner_id)
-                async for event in self._emit_snapshot_diff_events(
-                    stream_state["last_snapshot"],
-                    snapshot,
-                    stream_state=stream_state,
-                ):
-                    yield event
-                stream_state["last_snapshot"] = snapshot
                 continue
             if mode == "custom":
-                event_type, event_payload = self._normalize_custom_event(raw_payload)
+                event_type, _event_payload = self._normalize_custom_event(raw_payload)
                 if not event_type:
                     continue
                 if event_type == "snapshot.changed":
-                    snapshot = self.snapshots.get_snapshot(session_id, owner_id)
-                    async for event in self._emit_snapshot_diff_events(
-                        stream_state["last_snapshot"],
-                        snapshot,
+                    async for event in self._emit_current_snapshot_diff_events(
+                        session_id=session_id,
+                        owner_id=owner_id,
                         stream_state=stream_state,
                     ):
                         yield event
-                    stream_state["last_snapshot"] = snapshot
                 continue
 
             if mode != "messages":
                 continue
 
-            source_agent = self._message_stream_source_agent(namespace, raw_payload)
-            if source_agent is None:
+            if not self._is_main_agent_message_stream(namespace, raw_payload):
                 continue
             delta = self._extract_message_delta(raw_payload)
             if not delta:
                 continue
-            current_phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
-            if source_agent == "main-agent" and not forward_model_text:
+            if not forward_model_text:
                 continue
-            segment = self._ensure_message_segment_for_delta(stream_state, source_agent)
-            started_event = self._message_segment_started_event(
-                session_id,
-                current_phase,
-                stream_state,
-                source_agent=source_agent,
-                segment_id=str(segment.get("segment_id") or uuid.uuid4().hex),
-                message_id=str(segment.get("message_id") or uuid.uuid4().hex),
-            )
-            if started_event:
-                yield started_event
-            segment["buffer"] = f"{segment.get('buffer') or ''}{delta}"
-            yield self._format_event(
-                "message.segment.delta",
-                session_id,
-                current_phase,
-                {
-                    "segmentId": segment["segment_id"],
-                    "messageId": segment["message_id"],
-                    "sourceAgent": str(segment.get("source_agent") or source_agent).strip(),
-                    "sourceRole": str(segment.get("source_role") or self._source_role_for_agent(source_agent)).strip(),
-                    "delta": delta,
-                    "contentType": "markdown",
-                },
-            )
-
-    async def _emit_final_message_segments_if_needed(
-        self,
-        task_id: str,
-        stream_state: Dict[str, Any],
-        *,
-        allow_main_agent_fallback: bool = False,
-        fallback_values: Optional[Dict[str, Any]] = None,
-    ) -> AsyncIterator[str]:
-        phase = self._current_phase_value(task_id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
-        for event in self._complete_all_message_segments_if_needed(
-            task_id,
-            task_id,
-            phase,
-            stream_state,
-            allow_main_agent_fallback=allow_main_agent_fallback,
-            fallback_values=fallback_values,
-        ):
-            yield event
+            message_state = self._main_agent_message_state(stream_state)
+            if not str(message_state.get("created_at") or "").strip():
+                message_state["created_at"] = utc_now_z()
+            message_state["buffer"] = f"{message_state.get('buffer') or ''}{delta}"
 
     async def _stream_main_agent_execution(
         self,
@@ -1698,7 +1155,6 @@ class AiSearchAgentRunService:
         owner_id: str,
         thread_id: str,
         payload: Any,
-        previous_phase: str = "",
         for_resume: bool = False,
         persist_fallback_assistant: bool = False,
         post_run: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
@@ -1720,7 +1176,6 @@ class AiSearchAgentRunService:
                     payload=payload,
                     stream_state=stream_state,
                     initial_snapshot=initial_snapshot,
-                    previous_phase=previous_phase,
                     config=self._main_agent_config(thread_id, for_resume=for_resume),
                     forward_model_text=True,
                     emit_run_started=False,
@@ -1747,13 +1202,21 @@ class AiSearchAgentRunService:
 
             self._reconcile_drafting_outcome(task.id)
             pre_completion_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(stream_state["last_snapshot"]))
+            if bool(stream_state.get("snapshot_diff_pending")):
+                async for event in self._emit_current_snapshot_diff_events(
+                    session_id=task.id,
+                    owner_id=owner_id,
+                    stream_state=stream_state,
+                    force=True,
+                ):
+                    yield event
             allow_main_agent_fallback = bool(persist_fallback_assistant) and pre_completion_phase not in _AWAITING_USER_ACTION_PHASES
-            for event in self._complete_all_message_segments_if_needed(
+            for event in self._flush_main_agent_message_if_needed(
                 task.id,
                 task.id,
                 pre_completion_phase,
                 stream_state,
-                allow_main_agent_fallback=allow_main_agent_fallback,
+                allow_model_fallback=allow_main_agent_fallback,
                 fallback_values=stream_state.get("final_values") if allow_main_agent_fallback else None,
             ):
                 yield event
@@ -1766,12 +1229,6 @@ class AiSearchAgentRunService:
             ):
                 yield event
             stream_state["last_snapshot"] = final_snapshot
-
-            async for event in self._emit_final_message_segments_if_needed(
-                task.id,
-                stream_state,
-            ):
-                yield event
 
             final_phase = self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot))
             yield self._format_event(
@@ -1794,7 +1251,6 @@ class AiSearchAgentRunService:
                 owner_id=owner_id,
                 thread_id=thread_id,
                 payload={"messages": [{"role": "user", "content": exc.takeover_prompt}]},
-                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(handoff_snapshot)),
                 persist_fallback_assistant=True,
             ):
                 yield event
@@ -1841,9 +1297,10 @@ class AiSearchAgentRunService:
         if phase not in self.facade.DEFAULT_MESSAGE_PHASES:
             self.sessions._raise_invalid_phase(phase, "当前阶段不允许发送普通消息。")
 
-        if phase == PHASE_AWAITING_PLAN_CONFIRMATION and meta.get("active_plan_version"):
-            active_plan_version = int(meta["active_plan_version"])
-            self.storage.update_ai_search_plan(task.id, active_plan_version, status="superseded", superseded_at=utc_now_z())
+        if phase == PHASE_AWAITING_PLAN_CONFIRMATION:
+            active_plan_version = int(meta.get("active_plan_version") or 0)
+            if active_plan_version > 0:
+                self.storage.update_ai_search_plan(task.id, active_plan_version, status="superseded", superseded_at=utc_now_z())
             pending = self._pending_action(task.id, expected_type="plan_confirmation")
             if pending:
                 self._resolve_pending_action(
@@ -1861,7 +1318,6 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             thread_id=thread_id,
             payload={"messages": [{"role": "user", "content": content}]},
-            previous_phase=phase,
             persist_fallback_assistant=True,
         ):
             yield event
@@ -1941,13 +1397,12 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             thread_id=thread_id,
             payload=Command(resume=answer),
-            previous_phase=phase,
             for_resume=True,
             persist_fallback_assistant=True,
         ):
             yield event
 
-    async def _stream_plan_confirmation_events(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
+    async def _stream_plan_confirmation_events(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or "")
@@ -1966,22 +1421,13 @@ class AiSearchAgentRunService:
             error_code=PLAN_CONFIRMATION_REQUIRED_CODE,
             message="当前没有待确认的检索计划。",
         )
-        pending_payload = pending_action.get("payload") if isinstance(pending_action, dict) else {}
-        pending_plan_version = int(pending_payload.get("plan_version") or 0)
-        active_plan_version = int(meta.get("active_plan_version") or 0)
-        if pending_plan_version != plan_version or active_plan_version != plan_version:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": STALE_PLAN_CONFIRMATION_CODE,
-                    "message": "当前计划版本已经失效了。",
-                    "suggestion": "你可以刷新后再试，或者直接告诉我新的修改意见。",
-                },
-            )
         thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
 
         def _post_run(_: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            updated_plan = self.storage.get_ai_search_plan(task.id, plan_version)
+            updated_task = self.storage.get_task(task.id)
+            updated_meta = get_ai_search_meta(updated_task)
+            active_plan_version = int(updated_meta.get("active_plan_version") or 0)
+            updated_plan = self.storage.get_ai_search_plan(task.id, active_plan_version) if active_plan_version > 0 else None
             if not updated_plan or str(updated_plan.get("status") or "") != "confirmed":
                 raise HTTPException(
                     status_code=409,
@@ -1997,8 +1443,7 @@ class AiSearchAgentRunService:
             task=task,
             owner_id=owner_id,
             thread_id=thread_id,
-            payload=Command(resume={"confirmed": True, "plan_version": plan_version}),
-            previous_phase=phase,
+            payload=Command(resume={"confirmed": True}),
             for_resume=True,
             post_run=_post_run,
         ):
@@ -2048,7 +1493,6 @@ class AiSearchAgentRunService:
                 owner_id=owner_id,
                 thread_id=thread_id,
                 payload={"messages": [{"role": "user", "content": seed_prompt}]},
-                previous_phase=phase,
             ):
                 if event.startswith("data: "):
                     try:
@@ -2201,7 +1645,6 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             thread_id=thread_id,
             payload=Command(resume={"decision": "continue_search"}),
-            previous_phase=phase,
             for_resume=True,
             persist_fallback_assistant=True,
             post_run=_post_run,
@@ -2249,7 +1692,7 @@ class AiSearchAgentRunService:
                     detail={
                         "code": HUMAN_DECISION_REQUIRED_CODE,
                         "message": "人工决策恢复后还没有完成当前结果。",
-                        "suggestion": "请检查主控代理在恢复后是否调用了 complete_session(force_from_decision=true)。",
+                        "suggestion": "请检查主控代理在恢复后是否调用了 finalize_search_session(force_from_decision=true)。",
                     },
                 )
             self.artifacts._finalize_terminal_artifacts(task.id, plan_version, termination_reason=termination_reason)
@@ -2261,7 +1704,6 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             thread_id=thread_id,
             payload=Command(resume={"decision": "complete_current_results"}),
-            previous_phase=phase,
             for_resume=True,
             post_run=_post_run,
         ):
@@ -2435,7 +1877,6 @@ class AiSearchAgentRunService:
                 owner_id=owner_id,
                 thread_id=thread_id,
                 payload={"messages": [{"role": "user", "content": self._build_resume_close_read_prompt(task.id)}]},
-                previous_phase=PHASE_AWAITING_HUMAN_DECISION,
                 persist_fallback_assistant=True,
             ):
                 yield event
@@ -2453,7 +1894,6 @@ class AiSearchAgentRunService:
                 owner_id=owner_id,
                 thread_id=thread_id,
                 payload={"messages": [{"role": "user", "content": self._build_resume_feature_comparison_prompt(task.id)}]},
-                previous_phase=self._current_phase_value(task.id),
                 persist_fallback_assistant=True,
             ):
                 yield event
@@ -2479,7 +1919,6 @@ class AiSearchAgentRunService:
                 owner_id=owner_id,
                 thread_id=thread_id,
                 payload={"messages": [{"role": "user", "content": self._build_human_decision_prompt(task.id, decision_action)}]},
-                previous_phase=self._current_phase_value(task.id, self.snapshots._snapshot_phase(final_snapshot)),
                 persist_fallback_assistant=True,
             ):
                 yield event
@@ -2507,7 +1946,6 @@ class AiSearchAgentRunService:
         selected_documents = self.storage.list_ai_search_documents(task.id, plan_version, stages=["selected"])
         if not selected_documents:
             self.sessions._raise_invalid_phase(PHASE_FEATURE_COMPARISON, "当前没有已选对比文件。")
-        previous_phase = str(meta.get("current_phase") or "")
         self.facade._update_phase(
             task.id,
             PHASE_FEATURE_COMPARISON,
@@ -2530,7 +1968,6 @@ class AiSearchAgentRunService:
             owner_id=owner_id,
             thread_id=thread_id,
             payload={"messages": [{"role": "user", "content": self._build_resume_feature_comparison_prompt(task.id)}]},
-            previous_phase=previous_phase,
             persist_fallback_assistant=True,
             post_run=_post_run,
         ):
@@ -2571,30 +2008,18 @@ class AiSearchAgentRunService:
         if phase not in self.facade.DEFAULT_MESSAGE_PHASES:
             self.sessions._raise_invalid_phase(phase, "当前阶段不允许发送普通消息。")
 
-    def _validate_stream_plan_confirmation_request(self, session_id: str, owner_id: str, plan_version: int) -> None:
+    def _validate_stream_plan_confirmation_request(self, session_id: str, owner_id: str) -> None:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
         phase = str(meta.get("current_phase") or PHASE_COLLECTING_REQUIREMENTS)
         if phase != PHASE_AWAITING_PLAN_CONFIRMATION:
             self.sessions._raise_invalid_phase(phase, "当前阶段不允许确认计划。")
-        pending_action = self._require_pending_action(
+        self._require_pending_action(
             task.id,
             expected_type="plan_confirmation",
             error_code=PLAN_CONFIRMATION_REQUIRED_CODE,
             message="当前没有待确认的计划。",
         )
-        pending_payload = pending_action.get("payload") if isinstance(pending_action.get("payload"), dict) else {}
-        pending_plan_version = int(pending_payload.get("plan_version") or 0)
-        active_plan_version = int(meta.get("active_plan_version") or 0)
-        if pending_plan_version != plan_version or active_plan_version != plan_version:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": STALE_PLAN_CONFIRMATION_CODE,
-                    "message": "当前计划版本已经失效了。",
-                    "suggestion": "你可以刷新后再试，或者直接告诉我新的修改意见。",
-                },
-            )
 
     def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         self._validate_stream_message_request(session_id, owner_id)
@@ -2625,14 +2050,14 @@ class AiSearchAgentRunService:
         ):
             yield event
 
-    def stream_plan_confirmation(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        self._validate_stream_plan_confirmation_request(session_id, owner_id, plan_version)
+    def stream_plan_confirmation(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
+        self._validate_stream_plan_confirmation_request(session_id, owner_id)
 
         async def _runner() -> AsyncIterator[str]:
             async for event in self._start_and_subscribe(
                 session_id,
                 owner_id,
-                lambda: self._stream_plan_confirmation_events(session_id, owner_id, plan_version),
+                lambda: self._stream_plan_confirmation_events(session_id, owner_id),
             ):
                 yield event
 

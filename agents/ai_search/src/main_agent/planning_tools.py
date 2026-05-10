@@ -1,4 +1,4 @@
-"""计划起草阶段的预检工具。"""
+"""Planning-phase tools owned by the AI Search main agent."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from typing import Any, Dict, List
 
 from langchain.tools import ToolRuntime
 
-from agents.ai_search.src.execution_state import PlanProbeFindings
-from agents.common.search_clients.factory import SearchClientFactory
+from agents.ai_search.src.orchestration.planning_runtime import compile_confirmed_search_plan
 from agents.ai_search.src.runtime_context import resolve_agent_context
+from agents.common.search_clients.factory import SearchClientFactory
 
 
 def _json_dumps(payload: Dict[str, Any]) -> str:
@@ -35,7 +35,7 @@ def _trim_probe_results(raw_items: Any, *, limit: int) -> List[Dict[str, Any]]:
     return items
 
 
-def build_plan_prober_tools() -> List[Any]:
+def build_planning_tools() -> List[Any]:
     def probe_search_semantic(query_text: str, limit: int = 5) -> str:
         """执行非持久化语义预检。"""
         client = SearchClientFactory.get_client("zhihuiya")
@@ -68,20 +68,27 @@ def build_plan_prober_tools() -> List[Any]:
                 count = int(info.get("TOTAL") or info.get("total") or 0)
         return _json_dumps({"query_text": str(query_text or "").strip(), "count": count})
 
-    def save_probe_findings(
-        payload: Dict[str, Any],
+    def compile_confirmed_search_plan_command(
+        review_markdown: str,
+        execution_spec: Dict[str, Any],
         runtime: ToolRuntime = None,
     ) -> str:
-        """保存预检信号。"""
+        """将已确认的计划 Markdown 编译并发布为正式结构化检索计划。"""
         resolved_context = resolve_agent_context(runtime)
-        normalized = PlanProbeFindings.model_validate(payload).model_dump(mode="python")
-        draft = resolved_context.save_planner_probe_findings(normalized, runtime=runtime.context if runtime else None)
         return _json_dumps(
-            {
-                "signal_count": len(normalized.get("signals") or []),
-                "retrieval_step_ref_count": len(normalized.get("retrieval_step_refs") or []),
-                "draft_status": str(draft.get("draft_status") or "").strip() or "drafting",
-            }
+            compile_confirmed_search_plan(
+                resolved_context,
+                review_markdown=review_markdown,
+                execution_spec=execution_spec,
+                runtime=runtime,
+            )
         )
 
-    return [probe_search_semantic, probe_search_boolean, probe_count_boolean, save_probe_findings]
+    compile_confirmed_search_plan_command.__name__ = "compile_confirmed_search_plan"
+
+    return [
+        probe_search_semantic,
+        probe_search_boolean,
+        probe_count_boolean,
+        compile_confirmed_search_plan_command,
+    ]

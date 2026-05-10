@@ -207,12 +207,13 @@ class TaskWeChatNotificationService:
             "pendingActionId": action_id,
             "pendingActionType": action_type,
             "prompt": prompt,
-            "planVersion": plan_version,
             "selectedCount": selected_count,
             "accountId": getattr(binding, "bot_account_id", None),
             "peerId": peer_id,
             "peerName": peer_name,
         }
+        if plan_version is not None:
+            payload["planVersion"] = plan_version
         job = self.storage.create_wechat_delivery_job(
             WeChatDeliveryJob(
                 delivery_job_id=f"wdj-{uuid4().hex[:12]}",

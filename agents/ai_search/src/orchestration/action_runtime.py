@@ -73,10 +73,13 @@ def sync_phase_from_pending_action(
     next_phase = PENDING_ACTION_PHASE_MAP.get(str(pending.get("action_type") or "").strip())
     if not next_phase:
         return None
+    resolved_plan_version = int(pending.get("plan_version") or 0) or None
+    if not resolved_plan_version and str(pending.get("action_type") or "").strip() != "plan_confirmation":
+        resolved_plan_version = int(context.active_plan_version() or 0) or None
     context.update_task_phase(
         next_phase,
         runtime=runtime,
-        active_plan_version=int(pending.get("plan_version") or context.active_plan_version() or 0) or None,
+        active_plan_version=resolved_plan_version,
         run_id=str(pending.get("run_id") or "").strip() or None,
     )
     return next_phase

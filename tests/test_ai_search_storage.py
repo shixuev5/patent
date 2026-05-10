@@ -57,8 +57,8 @@ def test_ai_search_storage_roundtrip(tmp_path):
                 "phase": "drafting_plan",
                 "payload": {
                     "messageId": "msg-1",
-                    "stageKind": "planner",
-                    "stageInstanceId": "planner:plan-1",
+                    "stageKind": "search_plan",
+                    "stageInstanceId": "search-plan:plan-1",
                 },
             },
         }
@@ -67,7 +67,7 @@ def test_ai_search_storage_roundtrip(tmp_path):
     assert event["seq"] >= 1
     listed_events = storage.list_ai_search_stream_events("task-ai-search", after_seq=0)
     assert listed_events[0]["event_type"] == "assistant.stage.started"
-    assert listed_events[0]["payload"]["payload"]["stageKind"] == "planner"
+    assert listed_events[0]["payload"]["payload"]["stageKind"] == "search_plan"
     assert storage.get_latest_ai_search_stream_event("task-ai-search")["event_id"] == "evt-1"
 
     assert storage.create_ai_search_plan(

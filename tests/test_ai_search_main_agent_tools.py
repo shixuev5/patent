@@ -47,17 +47,11 @@ from agents.ai_search.src.runtime_context import AiSearchRuntimeContext
 from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
 from agents.ai_search.src.subagents.coarse_screener.agent import build_coarse_screener_subagent
 from agents.ai_search.src.subagents.feature_comparer.agent import build_feature_comparer_subagent
-from agents.ai_search.src.subagents.planner.agent import build_planner_subagent
-from agents.ai_search.src.subagents.plan_prober.agent import build_plan_prober_subagent
 from agents.ai_search.src.subagents.close_reader.prompt import CLOSE_READER_SYSTEM_PROMPT, build_close_reader_prompt
 from agents.ai_search.src.subagents.coarse_screener.prompt import COARSE_SCREEN_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.feature_comparer.prompt import FEATURE_COMPARER_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.planner.prompt import PLANNER_SYSTEM_PROMPT
-from agents.ai_search.src.subagents.plan_prober.prompt import PLAN_PROBER_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.query_executor.prompt import QUERY_EXECUTOR_SYSTEM_PROMPT
 from agents.ai_search.src.subagents.query_executor.agent import build_query_executor_subagent
-from agents.ai_search.src.subagents.search_elements.agent import build_search_elements_subagent
-from agents.ai_search.src.subagents.search_elements.prompt import SEARCH_ELEMENTS_SYSTEM_PROMPT
 
 
 def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
@@ -75,29 +69,28 @@ def test_build_main_agent_exposes_orchestration_tools_only(monkeypatch):
     tools = captured.get("tools")
     assert isinstance(tools, list)
     assert tools
-    assert all(callable(tool) for tool in tools)
-    assert all(str(getattr(tool, "__doc__", "") or "").strip() for tool in tools)
 
-    tool_names = {str(getattr(tool, "__name__", "")) for tool in tools}
+    tool_names = {str(getattr(tool, "name", "") or getattr(tool, "__name__", "")) for tool in tools}
     assert tool_names == {
-        "get_session_context",
-        "get_planning_context",
-        "get_execution_context",
+        "get_workflow_context",
+        "get_workflow_options",
+        "probe_search_semantic",
+        "probe_search_boolean",
+        "probe_count_boolean",
+        "compile_confirmed_search_plan",
         "start_plan_drafting",
-        "publish_planner_draft",
         "request_user_question",
         "request_plan_confirmation",
         "request_human_decision",
         "advance_workflow",
-        "complete_session",
+        "finalize_search_session",
+        "run_search_specialist",
     }
     assert captured.get("context_schema") is AiSearchRuntimeContext
+    assert "subagents" not in captured
 
 
-def test_specialists_own_domain_tools():
-    search_elements_spec = build_search_elements_subagent()
-    planner_spec = build_planner_subagent()
-    prober_spec = build_plan_prober_subagent()
+def test_remaining_specialists_own_execution_domain_tools():
     query_tools = {
         str(getattr(tool, "__name__", ""))
         for tool in build_query_executor_subagent()["tools"]
@@ -115,32 +108,14 @@ def test_specialists_own_domain_tools():
         for tool in build_feature_comparer_subagent()["tools"]
     }
 
-    assert "model" in search_elements_spec
-    assert "model" in planner_spec
-    assert "model" in prober_spec
     assert "model" in build_query_executor_subagent()
     assert "model" in build_coarse_screener_subagent()
     assert "model" in build_close_reader_subagent()
     assert "model" in build_feature_comparer_subagent()
-    assert "response_format" not in search_elements_spec
-    assert "response_format" not in planner_spec
-    assert "response_format" not in prober_spec
     assert "response_format" not in build_query_executor_subagent()
     assert "response_format" not in build_coarse_screener_subagent()
     assert "response_format" not in build_close_reader_subagent()
     assert "response_format" not in build_feature_comparer_subagent()
-    assert {
-        "save_search_elements",
-    } == {
-        str(getattr(tool, "__name__", ""))
-        for tool in search_elements_spec["tools"]
-    }
-    assert {
-        "save_planner_draft",
-    } == {
-        str(getattr(tool, "__name__", ""))
-        for tool in planner_spec["tools"]
-    }
     assert query_tools == {
         "run_execution_step",
         "search_trace",
@@ -148,19 +123,9 @@ def test_specialists_own_domain_tools():
         "search_boolean",
         "count_boolean",
         "fetch_patent_details",
-        "prepare_lane_queries",
         "search_academic_openalex",
         "search_academic_semanticscholar",
         "search_academic_crossref",
-    }
-    assert {
-        "probe_search_semantic",
-        "probe_search_boolean",
-        "probe_count_boolean",
-        "save_probe_findings",
-    } == {
-        str(getattr(tool, "__name__", ""))
-        for tool in prober_spec["tools"]
     }
     assert coarse_tools == {"run_coarse_screen_batch"}
     assert close_tools == {"run_close_read_batch"}
@@ -174,11 +139,18 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "`collect_requirements`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`draft_plan`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "`await_plan_confirmation`" not in MAIN_AGENT_SYSTEM_PROMPT
-    assert "get_planning_context" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "get_execution_context" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_workflow_context" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_workflow_options" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_planning_context" not in MAIN_AGENT_SYSTEM_PROMPT
+    assert "get_execution_context" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "write_stage_log" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "advance_workflow" in MAIN_AGENT_SYSTEM_PROMPT
-    assert "`planner`" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`compile_confirmed_search_plan`" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`save_search_plan_draft`" not in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`finalize_search_session`" in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`search-elements`" not in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`plan-prober`" not in MAIN_AGENT_SYSTEM_PROMPT
+    assert "`planner`" not in MAIN_AGENT_SYSTEM_PROMPT
     assert "缺少申请人、申请日、优先权日时" in MAIN_AGENT_SYSTEM_PROMPT
     assert "异常处理与防死循环" in MAIN_AGENT_SYSTEM_PROMPT
     assert "私下决策检查清单" in MAIN_AGENT_SYSTEM_PROMPT
@@ -187,33 +159,7 @@ def test_main_agent_prompt_uses_runtime_phase_names():
     assert "越权零容忍" in MAIN_AGENT_SYSTEM_PROMPT
 
 
-def test_specialist_prompts_describe_allowed_tools_and_required_fields():
-    assert "`save_search_elements`" in SEARCH_ELEMENTS_SYSTEM_PROMPT
-    assert "系统自动持久化" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
-    assert "missing_items" in SEARCH_ELEMENTS_SYSTEM_PROMPT
-    assert "clarification_summary" not in SEARCH_ELEMENTS_SYSTEM_PROMPT
-    assert '"申请人"' in SEARCH_ELEMENTS_SYSTEM_PROMPT
-
-    assert "`probe_search_semantic`" in PLAN_PROBER_SYSTEM_PROMPT
-    assert "`save_probe_findings`" in PLAN_PROBER_SYSTEM_PROMPT
-    assert "overall_observation" not in PLAN_PROBER_SYSTEM_PROMPT
-    assert "retrieval_step_refs" in PLAN_PROBER_SYSTEM_PROMPT
-    assert "signals" in PLAN_PROBER_SYSTEM_PROMPT
-
-    assert "`save_planner_draft`" in PLANNER_SYSTEM_PROMPT
-    assert "`save_plan_execution_overview`" not in PLANNER_SYSTEM_PROMPT
-    assert "`append_plan_sub_plan`" not in PLANNER_SYSTEM_PROMPT
-    assert "`save_plan_review_markdown`" not in PLANNER_SYSTEM_PROMPT
-    assert "`finalize_plan_draft`" not in PLANNER_SYSTEM_PROMPT
-    assert "不允许提交 `probe_findings`" in PLANNER_SYSTEM_PROMPT
-    assert "query_blueprint_refs" in PLANNER_SYSTEM_PROMPT
-    assert "activation_mode" in PLANNER_SYSTEM_PROMPT
-    assert "activation_conditions" in PLANNER_SYSTEM_PROMPT
-    assert "feature_combination` 必须是**单个字符串**" in PLANNER_SYSTEM_PROMPT
-    assert "只能表示**可执行检索步骤**" in PLANNER_SYSTEM_PROMPT
-    assert "“去重”“合并”“初筛”" in PLANNER_SYSTEM_PROMPT
-
-    assert "`prepare_lane_queries`" in QUERY_EXECUTOR_SYSTEM_PROMPT
+def test_execution_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "`fetch_patent_details`" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert '`run_execution_step(operation="commit")`' in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "plan_change_assessment" in QUERY_EXECUTOR_SYSTEM_PROMPT
@@ -222,6 +168,7 @@ def test_specialist_prompts_describe_allowed_tools_and_required_fields():
     assert "result_summary" not in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert "outcome_signals" in QUERY_EXECUTOR_SYSTEM_PROMPT
     assert '"too_broad" | "balanced" | "too_narrow"' in QUERY_EXECUTOR_SYSTEM_PROMPT
+    assert "不要依赖工具帮你拼接 query text" in QUERY_EXECUTOR_SYSTEM_PROMPT
 
     assert "`run_coarse_screen_batch`" in COARSE_SCREEN_SYSTEM_PROMPT
     assert '`run_coarse_screen_batch(operation="commit")`' in COARSE_SCREEN_SYSTEM_PROMPT

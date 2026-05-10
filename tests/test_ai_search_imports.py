@@ -6,10 +6,8 @@ import importlib
 def test_ai_search_concrete_modules_import_without_cycles():
     module_names = [
         "agents.ai_search.src.main_agent.agent",
-        "agents.ai_search.src.subagents.search_elements.agent",
-        "agents.ai_search.src.subagents.search_elements.normalize",
-        "agents.ai_search.src.subagents.planner.agent",
-        "agents.ai_search.src.subagents.plan_prober.agent",
+        "agents.ai_search.src.main_agent.planning_tools",
+        "agents.ai_search.src.search_elements",
         "agents.ai_search.src.subagents.query_executor.agent",
         "agents.ai_search.src.subagents.query_executor.search_backend_tools",
         "agents.ai_search.src.subagents.coarse_screener.agent",

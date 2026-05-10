@@ -92,7 +92,6 @@ export interface AiSearchSnapshot {
   conversation: {
     messages: Array<Record<string, any>>
     pendingAction: AiSearchPendingAction | null
-    processEvents?: Array<Record<string, any>>
   }
   stream?: {
     lastEventSeq?: number
@@ -138,17 +137,6 @@ export interface AiSearchStreamEvent {
   payload: any
 }
 
-export interface AiSearchMessageSegment {
-  segmentId: string
-  messageId: string
-  sourceAgent: string
-  sourceRole: 'main_agent' | 'subagent'
-  content: string
-  contentType: string
-  createdAt: string
-  completed: boolean
-}
-
 export interface AiSearchActiveRun {
   runKey: string
   sessionId: string
@@ -162,11 +150,4 @@ export interface AiSearchPhaseMarker {
   phase: string
   createdAt: string
   endedAt?: string | null
-}
-
-export interface AiSearchSubagentStatus {
-  name: string
-  label: string
-  statusText: string
-  startedAt: string
 }

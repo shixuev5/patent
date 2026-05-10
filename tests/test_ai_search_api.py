@@ -45,23 +45,6 @@ def _parse_events(body: str):
     return events
 
 
-def _set_planner_draft(service, session_id: str):
-    task = service.storage.get_task(session_id)
-    service.storage.update_task(
-        session_id,
-        metadata=merge_ai_search_meta(
-            task,
-            planner_draft={
-                "draft_id": "draft-1",
-                "draft_version": 1,
-                "phase": "drafting_plan",
-                "review_markdown": "# 计划",
-                "execution_spec": {},
-            },
-        ),
-    )
-
-
 def _set_current_plan(service, session_id: str, *, plan_version: int = 1, review_markdown: str = "# 计划") -> None:
     service.storage.create_ai_search_plan(
         {
@@ -151,9 +134,7 @@ def test_stream_message_endpoint_surfaces_direct_reply_even_without_state_transi
     events = _parse_events(body)
 
     assert events[0]["type"] == "run.started"
-    assert any(event["type"] == "message.segment.started" for event in events)
-    assert any(event["type"] == "message.segment.delta" for event in events)
-    assert any(event["type"] == "message.segment.completed" for event in events)
+    assert any(event["type"] == "message.created" for event in events)
     assert events[-1]["type"] == "run.completed"
 
 
@@ -174,7 +155,29 @@ def test_stream_message_endpoint_reconciles_plan_confirmation_when_plan_ready(mo
             self.checkpointer = object()
 
         async def astream(self, payload, config=None, **kwargs):
-            _set_current_plan(service, session_id, plan_version=1, review_markdown="# 计划\n\n- 检索路线 A")
+            context = AiSearchAgentContext(service.storage, session_id)
+            service.storage.create_ai_search_message(
+                {
+                    "message_id": "msg-plan-confirmation",
+                    "task_id": session_id,
+                    "role": "assistant",
+                    "kind": "plan_confirmation",
+                    "content": "# 计划\n\n- 检索路线 A",
+                    "stream_status": "completed",
+                    "metadata": {
+                        "plan_summary": "# 计划\n\n- 检索路线 A",
+                        "confirmation_label": "实施此计划",
+                    },
+                }
+            )
+            context.create_pending_action(
+                "plan_confirmation",
+                {
+                    "plan_summary": "# 计划\n\n- 检索路线 A",
+                    "confirmation_label": "实施此计划",
+                },
+                source="plan_gate",
+            )
             await asyncio.sleep(0)
             if False:
                 yield None
@@ -198,7 +201,7 @@ def test_stream_message_endpoint_reconciles_plan_confirmation_when_plan_ready(mo
     pending_action = snapshot.conversation["pendingAction"]
     assert pending_action["actionType"] == "plan_confirmation"
     assert snapshot.session.phase == "awaiting_plan_confirmation"
-    assert snapshot.plan["currentPlan"]["status"] == "awaiting_confirmation"
+    assert snapshot.plan["currentPlan"] is None
     assert any(
         item["kind"] == "plan_confirmation" and item["content"] == "# 计划\n\n- 检索路线 A"
         for item in snapshot.conversation["messages"]
@@ -289,7 +292,7 @@ def test_stream_message_endpoint_surfaces_direct_assistant_reply(monkeypatch, tm
     assert response.status_code == 200
     events = _parse_events(response.text)
     assert events[-1]["type"] == "run.completed"
-    assert any(event["type"] == "message.segment.completed" for event in events)
+    assert any(event["type"] == "message.created" for event in events)
 
     snapshot = service.get_snapshot(session_id, "guest_ai_search")
     assert snapshot.session.phase == "drafting_plan"

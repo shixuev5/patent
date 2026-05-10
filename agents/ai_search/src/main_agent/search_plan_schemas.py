@@ -1,4 +1,4 @@
-"""Planner subagent schemas."""
+"""Search plan draft schemas."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from agents.ai_search.src.main_agent.schemas import (
 )
 
 
-class PlannerRetrievalStepInput(BaseModel):
+class SearchPlanRetrievalStepInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     step_id: str = Field(..., min_length=1)
@@ -36,18 +36,18 @@ class PlannerRetrievalStepInput(BaseModel):
     @classmethod
     def _reject_internal_fields(cls, value: Any) -> Any:
         if isinstance(value, dict) and "phase_key" in value:
-            raise ValueError("planner draft 中不允许包含 retrieval_steps[*].phase_key。")
+            raise ValueError("检索计划草案中不允许包含 retrieval_steps[*].phase_key。")
         return value
 
 
-class PlannerSubPlanInput(BaseModel):
+class SearchPlanSubPlanInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     sub_plan_id: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1)
     goal: str = Field(..., min_length=1)
     semantic_query_text: str = ""
-    retrieval_steps: list[PlannerRetrievalStepInput] = Field(..., min_length=1)
+    retrieval_steps: list[SearchPlanRetrievalStepInput] = Field(..., min_length=1)
     query_blueprints: list[QueryBlueprintInput] = Field(..., min_length=1)
 
     @model_validator(mode="before")
@@ -57,20 +57,19 @@ class PlannerSubPlanInput(BaseModel):
             return value
         forbidden = [field for field in ("search_elements", "classification_hints") if field in value]
         if forbidden:
-            raise ValueError(f"planner draft 中不允许包含 {', '.join(forbidden)}。")
+            raise ValueError(f"检索计划草案中不允许包含 {', '.join(forbidden)}。")
         return value
 
 
-class PlannerExecutionSpecDraftInput(BaseModel):
+class SearchPlanExecutionSpecDraftInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     search_scope: SearchScopeInput = Field(default_factory=SearchScopeInput)
     constraints: Dict[str, Any] = Field(default_factory=dict)
     execution_policy: Dict[str, Any] = Field(default_factory=dict)
-    sub_plans: list[PlannerSubPlanInput] = Field(..., min_length=1)
+    sub_plans: list[SearchPlanSubPlanInput] = Field(..., min_length=1)
 
 
-class PlannerDraftOutput(BaseModel):
+class SearchPlanDraftOutput(BaseModel):
     review_markdown: str = Field(..., min_length=1)
-    execution_spec: PlannerExecutionSpecDraftInput
-    planner_summary: str = ""
+    execution_spec: SearchPlanExecutionSpecDraftInput

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agents.ai_search.src.subagents.search_elements.normalize import (
+from agents.ai_search.src.search_elements import (
     normalize_date_text,
     normalize_search_elements_payload,
 )

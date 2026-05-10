@@ -89,10 +89,6 @@ class AiSearchAnswerRequest(BaseModel):
     answer: str = Field(..., min_length=1)
 
 
-class AiSearchPlanConfirmRequest(BaseModel):
-    planVersion: int = Field(..., ge=1)
-
-
 class AiSearchDocumentReviewRequest(BaseModel):
     planVersion: int = Field(..., ge=1)
     reviewDocumentIds: Optional[List[str]] = None

@@ -19,13 +19,11 @@ from agents.ai_search.src.orchestration.action_runtime import (
 )
 from agents.ai_search.src.orchestration.execution_runtime import (
     build_gap_progress,
-    complete_session,
 )
 from agents.ai_search.src.main_agent.tools import build_main_agent_tools
 from agents.ai_search.src.runtime import write_stream_event
 from agents.ai_search.src.stage_limits import DEFAULT_KEY_PASSAGES_LIMIT
-from agents.ai_search.src.subagents.planner.schemas import PlannerExecutionSpecDraftInput
-from agents.ai_search.src.subagents.search_elements.normalize import normalize_search_elements_payload
+from agents.ai_search.src.search_elements import normalize_search_elements_payload
 from agents.ai_search.src.state import (
     PHASE_AWAITING_HUMAN_DECISION,
     PHASE_CLOSE_READ,
@@ -167,16 +165,6 @@ class AiSearchAgentContext:
         task = self.storage.get_task(self.task_id)
         meta = get_ai_search_meta(task)
         return str(meta.get("current_phase") or "").strip()
-
-    def target_plan_version(self) -> int:
-        current = self.current_planner_draft()
-        version = int(current.get("plan_version") or current.get("target_plan_version") or 0)
-        if version > 0:
-            return version
-        active_version = int(self.active_plan_version() or 0)
-        if active_version > 0 and self.current_phase() == "drafting_plan":
-            return active_version
-        return int(self.storage.get_next_ai_search_plan_version(self.task_id) or 1)
 
     def active_run(self, plan_version: Optional[int] = None) -> Optional[Dict[str, Any]]:
         version = int(plan_version or self.active_plan_version() or 0)
@@ -511,109 +499,6 @@ class AiSearchAgentContext:
             if str(item.get("question_id") or "") == str(question_id):
                 return item
         return None
-
-    def current_planner_draft(self) -> Dict[str, Any]:
-        task = self.storage.get_task(self.task_id)
-        meta = get_ai_search_meta(task)
-        draft = meta.get("planner_draft")
-        return dict(draft) if isinstance(draft, dict) else {}
-
-    def clear_planner_draft(self, *, runtime: Any | None = None) -> None:
-        task = self.storage.get_task(self.task_id)
-        self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, planner_draft=None))
-        self.notify_snapshot_changed(runtime, reason="planner_draft")
-
-    def _persist_planner_draft(
-        self,
-        *,
-        current: Dict[str, Any],
-        review_markdown: Any = _UNSET,
-        execution_spec: Any = _UNSET,
-        probe_findings: Any = _UNSET,
-        draft_status: Any = _UNSET,
-        finalized_at: Any = _UNSET,
-        runtime: Any | None = None,
-    ) -> Dict[str, Any]:
-        task = self.storage.get_task(self.task_id)
-        draft_version = int(current.get("draft_version") or 0) + 1
-        next_execution_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
-        next_probe_findings = current.get("probe_findings") if isinstance(current.get("probe_findings"), dict) else None
-        next_status = str(current.get("draft_status") or "drafting").strip() or "drafting"
-        next_finalized_at = current.get("finalized_at")
-        if review_markdown is not _UNSET:
-            current["review_markdown"] = str(review_markdown or "").strip()
-        if execution_spec is not _UNSET:
-            next_execution_spec = execution_spec if isinstance(execution_spec, dict) else {}
-        if probe_findings is not _UNSET:
-            next_probe_findings = probe_findings if isinstance(probe_findings, dict) and probe_findings else None
-        if draft_status is not _UNSET:
-            next_status = str(draft_status or "").strip() or next_status
-        if finalized_at is not _UNSET:
-            next_finalized_at = finalized_at
-        draft = {
-            "draft_id": str(current.get("draft_id") or uuid.uuid4().hex[:12]),
-            "draft_version": draft_version,
-            "plan_version": int(current.get("plan_version") or self.target_plan_version() or 0) or None,
-            "phase": self.current_phase() or "drafting_plan",
-            "review_markdown": str(current.get("review_markdown") or "").strip(),
-            "execution_spec": next_execution_spec,
-            "probe_findings": next_probe_findings,
-            "draft_status": next_status,
-            "finalized_at": next_finalized_at,
-            "committed_at": utc_now_z(),
-        }
-        self.storage.update_task(self.task_id, metadata=merge_ai_search_meta(task, planner_draft=draft))
-        self.notify_snapshot_changed(runtime, reason="planner_draft")
-        return draft
-
-    def save_search_elements_payload(self, payload: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
-        normalized_payload = normalize_search_elements_payload(payload)
-        self.storage.create_ai_search_message(
-            {
-                "message_id": uuid.uuid4().hex,
-                "task_id": self.task_id,
-                "role": "assistant",
-                "kind": "search_elements_update",
-                "content": str(normalized_payload.get("objective") or "").strip() or None,
-                "stream_status": "completed",
-                "metadata": normalized_payload,
-            }
-        )
-        self.notify_snapshot_changed(runtime, reason="search_elements")
-        return normalized_payload
-
-    def save_planner_probe_findings(
-        self,
-        probe_findings: Optional[Dict[str, Any]],
-        *,
-        runtime: Any | None = None,
-    ) -> Dict[str, Any]:
-        return self._persist_planner_draft(
-            current=self.current_planner_draft(),
-            probe_findings=probe_findings,
-            draft_status="drafting",
-            finalized_at=None,
-            runtime=runtime,
-        )
-
-    def save_planner_draft_payload(
-        self,
-        *,
-        review_markdown: str,
-        execution_spec: Dict[str, Any],
-        probe_findings: Any = _UNSET,
-        runtime: Any | None = None,
-    ) -> Dict[str, Any]:
-        validated_spec = PlannerExecutionSpecDraftInput.model_validate(execution_spec).model_dump(mode="python")
-        return self._persist_planner_draft(
-            current=self.current_planner_draft(),
-            review_markdown=str(review_markdown or "").strip(),
-            execution_spec=validated_spec,
-            probe_findings=probe_findings,
-            draft_status="drafting",
-            finalized_at=None,
-            runtime=runtime,
-        )
 
     def persist_execution_step_summary(self, payload: Dict[str, Any], *, plan_version: Optional[int] = None, runtime: Any | None = None) -> None:
         version = int(plan_version or self.active_plan_version() or 0)
@@ -973,51 +858,6 @@ class AiSearchAgentContext:
             raise takeover
         return selected_count
 
-    def append_planner_sub_plan(self, sub_plan: Dict[str, Any], *, runtime: Any | None = None) -> Dict[str, Any]:
-        current = self.current_planner_draft()
-        current_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
-        current_sub_plans = [item for item in (current_spec.get("sub_plans") or []) if isinstance(item, dict)]
-        normalized_sub_plan = sub_plan if isinstance(sub_plan, dict) else {}
-        sub_plan_id = str(normalized_sub_plan.get("sub_plan_id") or "").strip()
-        next_sub_plans: List[Dict[str, Any]] = []
-        replaced = False
-        for item in current_sub_plans:
-            if sub_plan_id and str(item.get("sub_plan_id") or "").strip() == sub_plan_id:
-                next_sub_plans.append(normalized_sub_plan)
-                replaced = True
-            else:
-                next_sub_plans.append(item)
-        if not replaced:
-            next_sub_plans.append(normalized_sub_plan)
-        next_spec = {
-            "search_scope": current_spec.get("search_scope") if isinstance(current_spec.get("search_scope"), dict) else {},
-            "constraints": current_spec.get("constraints") if isinstance(current_spec.get("constraints"), dict) else {},
-            "execution_policy": current_spec.get("execution_policy") if isinstance(current_spec.get("execution_policy"), dict) else DEFAULT_EXECUTION_POLICY,
-            "sub_plans": next_sub_plans,
-        }
-        return self._persist_planner_draft(
-            current=current,
-            execution_spec=next_spec,
-            draft_status="drafting",
-            finalized_at=None,
-            runtime=runtime,
-        )
-
-    def finalize_planner_draft(self, *, runtime: Any | None = None) -> Dict[str, Any]:
-        current = self.current_planner_draft()
-        review_markdown = str(current.get("review_markdown") or "").strip()
-        if not review_markdown:
-            raise ValueError("planner draft 缺少 review_markdown。")
-        execution_spec = current.get("execution_spec") if isinstance(current.get("execution_spec"), dict) else {}
-        normalized = PlannerExecutionSpecDraftInput.model_validate(execution_spec).model_dump(mode="python")
-        return self._persist_planner_draft(
-            current=current,
-            execution_spec=normalized,
-            draft_status="finalized",
-            finalized_at=utc_now_z(),
-            runtime=runtime,
-        )
-
     def current_search_elements(self, plan_version: Optional[int] = None) -> Dict[str, Any]:
         version = int(plan_version or self.active_plan_version() or 0)
         if version > 0:
@@ -1160,7 +1000,6 @@ class AiSearchAgentContext:
                     status="consumed",
                     consumed_at=utc_now_z(),
                 )
-        self.clear_planner_draft(runtime=runtime)
         self.update_task_phase(
             "drafting_plan",
             runtime=runtime,
@@ -1241,41 +1080,6 @@ class AiSearchAgentContext:
         close_read_result = self.storage.get_latest_ai_search_close_read_result(run_id) or {}
         feature_compare_result = self.storage.get_ai_search_feature_comparison(self.task_id, run_id) or {}
         return {"close_read_result": close_read_result, "feature_compare_result": feature_compare_result}
-
-    def latest_agent_markdown_message(
-        self,
-        source_agent: str,
-        *,
-        plan_version: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        normalized_source_agent = str(source_agent or "").strip()
-        target_plan_version = int(plan_version or 0)
-        for item in reversed(self.storage.list_ai_search_messages(self.task_id)):
-            if str(item.get("role") or "").strip() != "assistant":
-                continue
-            if str(item.get("kind") or "").strip() != "chat":
-                continue
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-            if str(metadata.get("source_agent") or "").strip() != normalized_source_agent:
-                continue
-            if target_plan_version > 0 and int(item.get("plan_version") or 0) != target_plan_version:
-                continue
-            return item
-        return {}
-
-    def latest_agent_markdown_content(
-        self,
-        source_agent: str,
-        *,
-        plan_version: Optional[int] = None,
-    ) -> str:
-        return str(
-            self.latest_agent_markdown_message(
-                source_agent,
-                plan_version=plan_version,
-            ).get("content")
-            or ""
-        ).strip()
 
     def reset_execution_control(
         self,
@@ -1387,25 +1191,10 @@ class AiSearchAgentContext:
     def build_main_agent_tools(self) -> List[Any]:
         return build_main_agent_tools()
 
-    def build_search_elements_tools(self) -> List[Any]:
-        from agents.ai_search.src.subagents.search_elements.tools import build_search_elements_tools
-
-        return build_search_elements_tools()
-
-    def build_planner_tools(self) -> List[Any]:
-        from agents.ai_search.src.subagents.planner.tools import build_planner_tools
-
-        return build_planner_tools()
-
     def build_query_executor_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.query_executor.tools import build_query_executor_tools
 
         return build_query_executor_tools()
-
-    def build_plan_prober_tools(self) -> List[Any]:
-        from agents.ai_search.src.subagents.plan_prober.tools import build_plan_prober_tools
-
-        return build_plan_prober_tools()
 
     def build_coarse_screener_tools(self) -> List[Any]:
         from agents.ai_search.src.subagents.coarse_screener.tools import build_coarse_screener_tools

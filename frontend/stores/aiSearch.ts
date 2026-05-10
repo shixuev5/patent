@@ -8,23 +8,19 @@ import type {
   AiSearchBatchSummary,
   AiSearchCreateSessionResponse,
   AiSearchExecutionQueueResponse,
-  AiSearchMessageSegment,
   AiSearchPendingAction,
   AiSearchPhaseMarker,
   AiSearchSessionSummary,
   AiSearchSessionListResponse,
   AiSearchSnapshot,
   AiSearchStreamEvent,
-  AiSearchSubagentStatus,
 } from '~/types/aiSearch'
 
 const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison']
 
 interface AiSearchSessionRuntime {
   activeRun: AiSearchActiveRun | null
-  messageSegments: AiSearchMessageSegment[]
   phaseMarkers: AiSearchPhaseMarker[]
-  activeSubagentStatuses: Record<string, AiSearchSubagentStatus>
   lastEventSeq: number
   streaming: boolean
   error: string
@@ -45,16 +41,6 @@ const phaseToActivityState = (phase: string): AiSearchActivityState => {
 }
 
 const isExecutionPhase = (phase: string): boolean => EXECUTION_PHASES.includes(String(phase || '').trim())
-
-const formatSubagentName = (name: string): string => {
-  if (name === 'search-elements') return '检索要素整理'
-  if (name === 'plan-prober') return '计划预检'
-  if (name === 'query-executor') return '检索执行'
-  if (name === 'coarse-screener') return '候选粗筛'
-  if (name === 'close-reader') return '重点精读'
-  if (name === 'feature-comparer') return '特征对比'
-  return name || '子 agent'
-}
 
 const parseErrorMessage = async (response: Response): Promise<string> => {
   const contentType = String(response.headers.get('content-type') || '').toLowerCase()
@@ -85,8 +71,6 @@ const toMillis = (value?: string | null): number => {
 
 const nowIso = (): string => new Date().toISOString()
 
-const shouldDisplayProcessEvent = (event?: Record<string, any> | null): boolean => !!event && typeof event === 'object'
-
 const pendingAction = (snapshot?: AiSearchSnapshot | null): AiSearchPendingAction | null => {
   const value = snapshot?.conversation?.pendingAction
   return value && typeof value === 'object' ? value as AiSearchPendingAction : null
@@ -111,9 +95,7 @@ const resumeAction = (snapshot?: AiSearchSnapshot | null): Record<string, any> |
 
 const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   activeRun: null,
-  messageSegments: [],
   phaseMarkers: [],
-  activeSubagentStatuses: {},
   lastEventSeq: 0,
   streaming: false,
   error: '',
@@ -149,7 +131,6 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   conversation: {
     messages: [],
     pendingAction: null,
-    processEvents: [],
   },
   stream: {
     lastEventSeq: 0,
@@ -202,19 +183,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
       return activePhase(this.currentSession)
     },
 
-    messageSegments(): AiSearchMessageSegment[] {
-      const sessionId = String(this.currentSessionId || '').trim()
-      return sessionId ? (this.sessionRuntimeById[sessionId]?.messageSegments || []) : []
-    },
-
     phaseMarkers(): AiSearchPhaseMarker[] {
       const sessionId = String(this.currentSessionId || '').trim()
       return sessionId ? (this.sessionRuntimeById[sessionId]?.phaseMarkers || []) : []
-    },
-
-    activeSubagentStatuses(): Record<string, AiSearchSubagentStatus> {
-      const sessionId = String(this.currentSessionId || '').trim()
-      return sessionId ? (this.sessionRuntimeById[sessionId]?.activeSubagentStatuses || {}) : {}
     },
 
     streaming(): boolean {
@@ -266,8 +237,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
     _resetTransientRunState(sessionId: string) {
       this._setRuntime(sessionId, {
         activeRun: null,
-        messageSegments: [],
-        activeSubagentStatuses: {},
       })
     },
 
@@ -343,11 +312,8 @@ export const useAiSearchStore = defineStore('aiSearch', {
         [sessionId]: {
           ...snapshot,
           conversation: {
-            ...(snapshot.conversation || { messages: [], pendingAction: null, processEvents: [] }),
+            ...(snapshot.conversation || { messages: [], pendingAction: null }),
             messages: normalizeMessages(snapshot.conversation?.messages),
-            processEvents: Array.isArray(snapshot.conversation?.processEvents)
-              ? snapshot.conversation?.processEvents.filter(item => shouldDisplayProcessEvent(item))
-              : [],
           },
           stream: {
             lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0),
@@ -400,40 +366,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
         }
       }
       snapshot.conversation.messages = [...messages, message]
-    },
-
-    _upsertProcessEvent(sessionId: string, event: Record<string, any>) {
-      const snapshot = this._getSnapshot(sessionId)
-      if (!snapshot) return
-      if (!shouldDisplayProcessEvent(event)) return
-      const current = Array.isArray(snapshot.conversation?.processEvents) ? snapshot.conversation.processEvents : []
-      const seq = Number(event.seq || 0)
-      if (seq > 0) {
-        const index = current.findIndex((item) => Number(item.seq || 0) === seq)
-        if (index >= 0) {
-          current[index] = { ...current[index], ...event }
-          snapshot.conversation.processEvents = [...current]
-          return
-        }
-      }
-      snapshot.conversation.processEvents = [...current, event]
-    },
-
-    _pushAssistantMessage(sessionId: string, content: string, options: {
-      messageId?: string
-      createdAt?: string
-      metadata?: Record<string, any>
-    } = {}) {
-      const text = String(content || '')
-      if (!text.trim()) return
-      this._pushMessage(sessionId, {
-        message_id: options.messageId || `assistant-${Date.now()}`,
-        role: 'assistant',
-        kind: 'chat',
-        content: text,
-        created_at: options.createdAt || nowIso(),
-        metadata: options.metadata || undefined,
-      })
     },
 
     _pushUserMessage(sessionId: string, content: string, kind: 'chat' | 'answer' = 'chat', questionId?: string) {
@@ -525,52 +457,12 @@ export const useAiSearchStore = defineStore('aiSearch', {
           startedAt: createdAt,
           phase: nextPhase,
         }
-        runtime.activeSubagentStatuses = {}
         return
       }
       runtime.activeRun = {
         ...runtime.activeRun,
         phase: nextPhase || runtime.activeRun.phase,
       }
-    },
-
-    _upsertMessageSegment(sessionId: string, segmentId: string, patch: Partial<AiSearchMessageSegment>) {
-      const runtime = this._ensureRuntime(sessionId)
-      const current = Array.isArray(runtime.messageSegments) ? [...runtime.messageSegments] : []
-      const normalizedSegmentId = String(segmentId || '').trim() || `segment-${Date.now()}`
-      const index = current.findIndex(item => String(item.segmentId || '').trim() === normalizedSegmentId)
-      const base: AiSearchMessageSegment = index >= 0
-        ? current[index]
-        : {
-            segmentId: normalizedSegmentId,
-            messageId: String(patch.messageId || `assistant-${Date.now()}`).trim(),
-            sourceAgent: String(patch.sourceAgent || 'main-agent').trim(),
-            sourceRole: String(patch.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
-            content: '',
-            contentType: 'markdown',
-            createdAt: nowIso(),
-            completed: false,
-          }
-      const next = {
-        ...base,
-        ...patch,
-        segmentId: normalizedSegmentId,
-        messageId: String(patch.messageId || base.messageId || `assistant-${Date.now()}`).trim(),
-        sourceAgent: String(patch.sourceAgent || base.sourceAgent || 'main-agent').trim(),
-        sourceRole: String(patch.sourceRole || base.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
-      } as AiSearchMessageSegment
-      if (index >= 0) current[index] = next
-      else current.push(next)
-      runtime.messageSegments = current
-    },
-
-    _clearMessageSegments(sessionId: string, predicate?: (segment: AiSearchMessageSegment) => boolean) {
-      const runtime = this._ensureRuntime(sessionId)
-      if (!predicate) {
-        runtime.messageSegments = []
-        return
-      }
-      runtime.messageSegments = runtime.messageSegments.filter(segment => !predicate(segment))
     },
 
     _setStreaming(sessionId: string, streaming: boolean) {
@@ -597,58 +489,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
         this._startActiveRun(sessionId)
-        runtime.messageSegments = []
         this._ensurePhaseMarker(sessionId, phase)
-        return
-      }
-
-      if (event.type === 'message.segment.started') {
-        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
-        this._upsertMessageSegment(sessionId, segmentId, {
-          messageId: String(payload?.messageId || '').trim() || `assistant-${Date.now()}`,
-          sourceAgent: String(payload?.sourceAgent || 'main-agent').trim() || 'main-agent',
-          sourceRole: String(payload?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
-          contentType: String(payload?.contentType || 'markdown'),
-          completed: false,
-        })
-        return
-      }
-
-      if (event.type === 'message.segment.delta') {
-        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
-        const current = runtime.messageSegments.find(item => item.segmentId === segmentId)
-        const delta = String(payload?.delta || '')
-        this._upsertMessageSegment(sessionId, segmentId, {
-          messageId: String(payload?.messageId || current?.messageId || '').trim() || `assistant-${Date.now()}`,
-          sourceAgent: String(payload?.sourceAgent || current?.sourceAgent || 'main-agent').trim() || 'main-agent',
-          sourceRole: String(payload?.sourceRole || current?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent',
-          content: `${current?.content || ''}${delta}`,
-          contentType: String(payload?.contentType || current?.contentType || 'markdown'),
-          completed: false,
-        })
-        return
-      }
-
-      if (event.type === 'message.segment.completed') {
-        const segmentId = String(payload?.segmentId || '').trim() || `segment-${Date.now()}`
-        const current = runtime.messageSegments.find(item => item.segmentId === segmentId)
-        const messageId = String(payload?.messageId || current?.messageId || '').trim() || `assistant-${Date.now()}`
-        const content = String(payload?.content || current?.content || '')
-        const sourceAgent = String(payload?.sourceAgent || current?.sourceAgent || 'main-agent').trim() || 'main-agent'
-        const sourceRole = String(payload?.sourceRole || current?.sourceRole || 'main_agent').trim() === 'subagent' ? 'subagent' : 'main_agent'
-        if (content.trim()) {
-          this._pushAssistantMessage(sessionId, content, {
-            messageId,
-            createdAt: current?.createdAt || nowIso(),
-            metadata: {
-              source_agent: sourceAgent,
-              source_role: sourceRole,
-              segment_id: segmentId,
-              content_type: String(payload?.contentType || current?.contentType || 'markdown'),
-            },
-          })
-        }
-        this._clearMessageSegments(sessionId, segment => segment.segmentId === segmentId)
         return
       }
 
@@ -656,9 +497,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'message.created') {
         this._pushMessage(sessionId, payload)
-        if (String(payload?.kind || '').trim() === 'plan_confirmation') {
-          this._clearMessageSegments(sessionId, segment => segment.sourceAgent === 'planner')
-        }
         return
       }
 
@@ -733,39 +571,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
         return
       }
 
-      if (event.type === 'process.started' || event.type === 'process.completed' || event.type === 'process.failed') {
-        this._upsertProcessEvent(sessionId, {
-          ...(payload || {}),
-          seq: seq || payload?.seq || 0,
-          createdAt: event.timestamp || payload?.timestamp || nowIso(),
-        })
-        const processType = String(payload?.processType || '').trim()
-        const name = String(payload?.subagentName || payload?.name || '').trim()
-        if (processType === 'subagent' && event.type === 'process.started' && name) {
-          runtime.activeSubagentStatuses = {
-            ...runtime.activeSubagentStatuses,
-            [name]: {
-              name,
-              label: String(payload?.subagentLabel || payload?.label || formatSubagentName(name)),
-              statusText: String(payload?.statusText || `${formatSubagentName(name)}执行中。`),
-              startedAt: String(event.timestamp || nowIso()),
-            },
-          }
-          return
-        }
-        if (processType === 'subagent' && (event.type === 'process.completed' || event.type === 'process.failed') && name && runtime.activeSubagentStatuses[name]) {
-          const nextStatuses = { ...runtime.activeSubagentStatuses }
-          delete nextStatuses[name]
-          runtime.activeSubagentStatuses = nextStatuses
-        }
-        return
-      }
-
       if (event.type === 'run.completed') {
         this._closeLatestPhaseMarker(sessionId)
         runtime.activeRun = null
-        runtime.messageSegments = []
-        runtime.activeSubagentStatuses = {}
         runtime.streaming = false
         return
       }
@@ -1176,7 +984,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
-    async confirmPlan(planVersion: number) {
+    async confirmPlan() {
       const sessionId = String(this.currentSessionId || '').trim()
       const snapshot = this._getSnapshot(sessionId)
       if (!sessionId || !snapshot) return
@@ -1186,7 +994,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       try {
         await this._postStream(
           `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/plan/confirm/stream`,
-          { planVersion },
+          {},
         )
       } catch (error: any) {
         this._setRuntimeError(sessionId, error?.message || '确认计划失败')

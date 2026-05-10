@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import deepagents.middleware.subagents as subagents_module
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -15,7 +14,9 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from agents.ai_search.src.runtime import AiSearchGuardMiddleware
-from agents.ai_search.src.runtime_context import build_runtime_context, ensure_deepagents_context_support
+from agents.ai_search.src.runtime_context import build_runtime_context
+import agents.ai_search.src.main_agent.specialist_tool as specialist_tool_module
+from agents.ai_search.src.main_agent.specialist_tool import build_search_specialist_tool
 from agents.ai_search.src.subagents.close_reader.agent import build_close_reader_subagent
 from agents.ai_search.src.state import (
     PHASE_AWAITING_PLAN_CONFIRMATION,
@@ -89,13 +90,13 @@ def test_main_agent_blocks_removed_subagent_type():
     assert result.content == "子 agent `legacy-search-worker` 不允许由 `main-agent` 调用。"
 
 
-def test_main_agent_allows_named_planner_subagent_call_in_drafting_plan():
+def test_main_agent_blocks_removed_planning_subagent_call():
     middleware = AiSearchGuardMiddleware()
-    request = _request("planner", tool_id="call-topic-3", phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
+    request = _request("legacy-plan-worker", tool_id="call-topic-3", phase=PHASE_DRAFTING_PLAN, role="ai-search-main-agent-task-runtime")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result == "ok"
+    assert result.content == "工具 `legacy-plan-worker` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
 def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_phase():
@@ -107,40 +108,40 @@ def test_query_executor_phase_protocol_blocks_execution_tools_outside_search_pha
     assert result.content == "工具 `search_semantic` 不能在阶段 `drafting_plan` 由 `query-executor` 调用。"
 
 
-def test_planner_phase_protocol_blocks_plan_save_tool():
+def test_main_agent_phase_protocol_allows_confirmed_plan_compile_tool():
     middleware = AiSearchGuardMiddleware()
-    request = _request("publish_planner_draft", tool_id="call-planner-1", phase=PHASE_DRAFTING_PLAN, role="planner")
-
-    result = middleware.wrap_tool_call(request, lambda _request: "ok")
-
-    assert result.content == "工具 `publish_planner_draft` 不能在阶段 `drafting_plan` 由 `planner` 调用。"
-
-
-def test_search_elements_phase_protocol_allows_save_tool():
-    middleware = AiSearchGuardMiddleware()
-    request = _request("save_search_elements", tool_id="call-search-elements-1", phase=PHASE_DRAFTING_PLAN, role="search-elements")
+    request = _request("compile_confirmed_search_plan", tool_id="call-plan-1", phase=PHASE_DRAFTING_PLAN, role="main-agent")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
     assert result == "ok"
 
 
-def test_planner_phase_protocol_allows_draft_commit_tool():
+def test_main_agent_phase_protocol_blocks_removed_save_search_elements_tool():
     middleware = AiSearchGuardMiddleware()
-    request = _request("save_planner_draft", tool_id="call-planner-2", phase=PHASE_DRAFTING_PLAN, role="planner")
+    request = _request("save_search_elements", tool_id="call-search-elements-1", phase=PHASE_DRAFTING_PLAN, role="main-agent")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result == "ok"
+    assert result.content == "工具 `save_search_elements` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
-def test_plan_prober_phase_protocol_allows_probe_commit_tool():
+def test_main_agent_phase_protocol_blocks_removed_search_plan_draft_tool():
     middleware = AiSearchGuardMiddleware()
-    request = _request("save_probe_findings", tool_id="call-prober-1", phase=PHASE_DRAFTING_PLAN, role="plan-prober")
+    request = _request("save_search_plan_draft", tool_id="call-plan-2", phase=PHASE_DRAFTING_PLAN, role="main-agent")
 
     result = middleware.wrap_tool_call(request, lambda _request: "ok")
 
-    assert result == "ok"
+    assert result.content == "工具 `save_search_plan_draft` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
+
+
+def test_main_agent_phase_protocol_blocks_removed_probe_commit_tool():
+    middleware = AiSearchGuardMiddleware()
+    request = _request("save_probe_findings", tool_id="call-prober-1", phase=PHASE_DRAFTING_PLAN, role="main-agent")
+
+    result = middleware.wrap_tool_call(request, lambda _request: "ok")
+
+    assert result.content == "工具 `save_probe_findings` 不能在阶段 `drafting_plan` 由 `main-agent` 调用。"
 
 
 def test_close_reader_phase_protocol_allows_readonly_filesystem_in_close_read():
@@ -198,29 +199,31 @@ def test_close_reader_subagent_middleware_names_are_unique():
     assert len(set(names)) == len(names)
 
 
-def test_task_tool_async_invocation_preserves_injected_runtime():
-    ensure_deepagents_context_support()
-
+def test_search_specialist_tool_async_invocation_preserves_injected_runtime(monkeypatch):
     class _DummyRunnable:
         async def ainvoke(self, state, context=None):
-            assert state["messages"][-1].content == "整理检索要素"
+            assert state["messages"][-1].content == "执行检索"
             assert context == "runtime-context"
             return {"messages": [AIMessage(content="子 agent 已完成")], "phase": "drafting_plan"}
 
         def invoke(self, state, context=None):
-            assert state["messages"][-1].content == "整理检索要素"
+            assert state["messages"][-1].content == "执行检索"
             assert context == "runtime-context"
             return {"messages": [AIMessage(content="子 agent 已完成")], "phase": "drafting_plan"}
 
-    tool = subagents_module._build_task_tool(
-        [{"name": "search-elements", "description": "检索要素整理", "runnable": _DummyRunnable()}]
+    monkeypatch.setattr(
+        specialist_tool_module,
+        "_specialist_specs",
+        lambda: [{"name": "query-executor", "description": "执行检索", "model": object(), "tools": [], "system_prompt": ""}],
     )
+    monkeypatch.setattr(specialist_tool_module, "_compile_specialist", lambda _spec: _DummyRunnable())
+    tool = build_search_specialist_tool()
     runtime = ToolRuntime(
         state={"messages": []},
         context="runtime-context",
         config={},
         stream_writer=lambda _chunk: None,
-        tool_call_id="call-search-elements-1",
+        tool_call_id="call-query-executor-1",
         store=None,
     )
 
@@ -228,11 +231,11 @@ def test_task_tool_async_invocation_preserves_injected_runtime():
         tool.ainvoke(
             {
                 "type": "tool_call",
-                "id": "call-search-elements-1",
-                "name": "task",
+                "id": "call-query-executor-1",
+                "name": "run_search_specialist",
                 "args": {
-                    "description": "整理检索要素",
-                    "subagent_type": "search-elements",
+                    "description": "执行检索",
+                    "specialist_type": "query-executor",
                     "runtime": runtime,
                 },
             }

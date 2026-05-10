@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Dict, Optional, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -21,53 +20,10 @@ from config import settings
 
 
 ALL_AI_SEARCH_SUBAGENTS = {
-    "search-elements",
-    "planner",
     "query-executor",
-    "plan-prober",
     "coarse-screener",
     "close-reader",
     "feature-comparer",
-}
-
-SUBAGENT_DISPLAY_LABELS = {
-    "search-elements": "检索要素整理",
-    "planner": "检索规划",
-    "query-executor": "检索执行",
-    "plan-prober": "计划预检",
-    "coarse-screener": "候选粗筛",
-    "close-reader": "重点精读",
-    "feature-comparer": "特征对比",
-}
-
-ROLE_DISPLAY_LABELS = {
-    "main-agent": "主控代理",
-    **SUBAGENT_DISPLAY_LABELS,
-}
-
-TOOL_DISPLAY_LABELS = {
-    "get_session_context": "读取会话上下文",
-    "get_planning_context": "读取规划上下文",
-    "get_execution_context": "读取执行上下文",
-    "start_plan_drafting": "进入规划阶段",
-    "publish_planner_draft": "发布计划草案",
-    "request_user_question": "请求用户补充信息",
-    "request_plan_confirmation": "请求确认计划",
-    "request_human_decision": "请求人工决策",
-    "advance_workflow": "推进工作流",
-    "complete_session": "完成当前检索",
-    "save_search_elements": "保存检索要素",
-    "save_probe_findings": "保存预检信号",
-    "save_planner_draft": "保存计划草案",
-    "save_plan_execution_overview": "保存计划总览",
-    "append_plan_sub_plan": "追加子计划",
-    "probe_search_semantic": "执行语义预检",
-    "probe_search_boolean": "执行布尔预检",
-    "probe_count_boolean": "统计布尔命中数",
-    "run_execution_step": "执行检索步骤",
-    "run_coarse_screen_batch": "执行候选粗筛",
-    "run_close_read_batch": "执行重点精读",
-    "run_feature_compare": "执行特征对比",
 }
 
 READ_ONLY_FILESYSTEM_TOOLS = {"ls", "read_file", "glob", "grep"}
@@ -79,19 +35,7 @@ ROLE_TOOL_POLICIES: dict[str, dict[str, set[str]]] = {
         "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS,
         "allowed_subagents": set(ALL_AI_SEARCH_SUBAGENTS),
     },
-    "search-elements": {
-        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
-        "allowed_subagents": set(),
-    },
     "query-executor": {
-        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
-        "allowed_subagents": set(),
-    },
-    "planner": {
-        "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
-        "allowed_subagents": set(),
-    },
-    "plan-prober": {
         "blocked_tools": READ_ONLY_FILESYSTEM_TOOLS | WRITE_FILESYSTEM_TOOLS | EXECUTION_TOOLS | {"task"},
         "allowed_subagents": set(),
     },
@@ -170,8 +114,9 @@ class AiSearchGuardMiddleware(AgentMiddleware):
         policy = self._role_policy(role)
         tool_name = str(request.tool_call.get("name") or "").strip()
         phase = self._current_task_state(request.runtime)
-        if tool_name == "task":
-            subagent_type = str((request.tool_call.get("args") or {}).get("subagent_type") or "").strip()
+        if tool_name in {"task", "run_search_specialist"}:
+            args = request.tool_call.get("args") or {}
+            subagent_type = str(args.get("specialist_type") or args.get("subagent_type") or "").strip()
             return self._guard_subagent_call(request, subagent_type, role)
         if tool_name in ALL_AI_SEARCH_SUBAGENTS:
             return self._guard_subagent_call(request, tool_name, role)
@@ -237,132 +182,6 @@ def normalize_ai_search_role(value: Any) -> str:
         if raw.startswith(f"ai-search-{candidate}-"):
             return candidate
     return ""
-
-
-def format_subagent_label(name: str) -> str:
-    return SUBAGENT_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "子 agent")
-
-
-def format_role_label(role: str) -> str:
-    return ROLE_DISPLAY_LABELS.get(str(role or "").strip(), str(role or "").strip() or "代理")
-
-
-def format_tool_label(name: str) -> str:
-    return TOOL_DISPLAY_LABELS.get(str(name or "").strip(), str(name or "").strip() or "工具")
-
-
-_PROCESS_EVENT_SUFFIX_RE = re.compile(r":(?:running|completed|failed|started)$")
-
-
-def normalize_process_dedupe_key(event_id: str, fallback: str) -> str:
-    normalized_event_id = str(event_id or "").strip()
-    if normalized_event_id:
-        dedupe_key = _PROCESS_EVENT_SUFFIX_RE.sub("", normalized_event_id)
-        if dedupe_key:
-            return dedupe_key
-    return str(fallback or "").strip()
-
-
-def build_process_display_metadata(
-    *,
-    process_type: str,
-    event_id: str = "",
-    subagent_name: str = "",
-    tool_name: str = "",
-    label: str = "",
-    summary: str = "",
-) -> Dict[str, Any]:
-    normalized_process_type = str(process_type or "").strip()
-    normalized_group_key = str(subagent_name or "").strip() or None
-    normalized_label = str(label or "").strip()
-    normalized_summary = str(summary or "").strip()
-    normalized_tool_name = str(tool_name or "").strip()
-    if normalized_process_type == "subagent":
-        fallback = f"subagent:{normalized_group_key or normalized_label or 'unknown'}"
-        return {
-            "displayKind": "group_status",
-            "displayGroupKey": normalized_group_key,
-            "dedupeKey": normalize_process_dedupe_key(event_id, fallback),
-        }
-    fallback = f"tool:{normalized_group_key or 'root'}:{normalized_tool_name or normalized_summary or normalized_label or 'unknown'}"
-    return {
-        "displayKind": "detail",
-        "displayGroupKey": normalized_group_key,
-        "dedupeKey": normalize_process_dedupe_key(event_id, fallback),
-    }
-
-
-def _tool_summary(tool_name: str, args: Dict[str, Any]) -> str:
-    name = str(tool_name or "").strip()
-    if name == "advance_workflow":
-        action = str(args.get("action") or "").strip()
-        return f"推进工作流{f'：{action}' if action else ''}"
-    if name == "run_execution_step":
-        operation = str(args.get("operation") or "load").strip().lower()
-        return "提交执行步骤摘要" if operation == "commit" else "加载当前执行步骤"
-    if name == "run_coarse_screen_batch":
-        operation = str(args.get("operation") or "load").strip().lower()
-        return "提交粗筛结果" if operation == "commit" else "加载粗筛批次"
-    if name == "run_close_read_batch":
-        operation = str(args.get("operation") or "load").strip().lower()
-        return "提交精读结果" if operation == "commit" else "加载精读批次"
-    if name == "run_feature_compare":
-        operation = str(args.get("operation") or "load").strip().lower()
-        return "提交特征对比结果" if operation == "commit" else "加载特征对比上下文"
-    if name == "save_search_elements":
-        return "保存检索要素"
-    if name == "save_probe_findings":
-        return "保存预检信号"
-    if name == "save_planner_draft":
-        return "保存计划草案"
-    if name == "save_plan_execution_overview":
-        return "保存计划总览"
-    if name == "append_plan_sub_plan":
-        return "追加子计划"
-    return format_tool_label(name)
-
-
-def build_tool_event_payload(
-    *,
-    role: str,
-    tool_name: str,
-    tool_call_id: str,
-    args: Optional[Dict[str, Any]] = None,
-    status: str,
-    error_message: str = "",
-) -> Dict[str, Any]:
-    normalized_role = str(role or "").strip() or "main-agent"
-    normalized_tool_name = str(tool_name or "").strip()
-    normalized_args = args if isinstance(args, dict) else {}
-    summary = _tool_summary(normalized_tool_name, normalized_args)
-    subagent_name = normalized_role if normalized_role != "main-agent" else None
-    subagent_label = format_role_label(normalized_role) if subagent_name else None
-    status_text = summary
-    if status == "completed":
-        status_text = f"{summary}已完成"
-    elif status == "failed":
-        status_text = f"{summary}失败"
-    display_metadata = build_process_display_metadata(
-        process_type="tool",
-        event_id=f"{tool_call_id or normalized_tool_name}:{status}",
-        subagent_name=subagent_name or "",
-        tool_name=normalized_tool_name,
-        label=format_tool_label(normalized_tool_name),
-        summary=summary,
-    )
-    return {
-        "eventId": f"{tool_call_id or normalized_tool_name}:{status}",
-        "processType": "tool",
-        "status": status,
-        "toolName": normalized_tool_name,
-        "toolLabel": format_tool_label(normalized_tool_name),
-        "summary": summary,
-        "statusText": status_text,
-        "subagentName": subagent_name,
-        "subagentLabel": subagent_label,
-        "errorMessage": str(error_message or "").strip() or None,
-        **display_metadata,
-    }
 
 
 def write_stream_event(writer: Any, payload: Dict[str, Any]) -> None:

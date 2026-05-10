@@ -74,66 +74,70 @@ ACTIVE_EXECUTION_PHASES = {
     PHASE_FEATURE_COMPARISON,
 }
 
+MAIN_AGENT_READ_TOOLS = {
+    "get_workflow_context",
+    "get_workflow_options",
+}
+
 MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
     PHASE_COLLECTING_REQUIREMENTS: {
-        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "request_user_question"},
-        "subagents": {"search-elements"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"start_plan_drafting", "request_user_question"},
+        "subagents": set(),
     },
     PHASE_DRAFTING_PLAN: {
-        "tools": {
-            "get_session_context",
-            "get_planning_context",
+        "tools": MAIN_AGENT_READ_TOOLS | {
             "start_plan_drafting",
-            "publish_planner_draft",
+            "probe_search_semantic",
+            "probe_search_boolean",
+            "probe_count_boolean",
+            "compile_confirmed_search_plan",
             "request_plan_confirmation",
             "advance_workflow",
             "request_user_question",
         },
-        "subagents": {"search-elements", "plan-prober", "planner"},
+        "subagents": set(),
     },
     PHASE_AWAITING_USER_ANSWER: {
-        "tools": {"request_user_question"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"request_user_question"},
         "subagents": set(),
     },
     PHASE_AWAITING_PLAN_CONFIRMATION: {
-        "tools": {"request_plan_confirmation"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"request_plan_confirmation", "advance_workflow"},
         "subagents": set(),
     },
     PHASE_EXECUTE_SEARCH: {
-        "tools": {
-            "get_session_context",
-            "get_execution_context",
+        "tools": MAIN_AGENT_READ_TOOLS | {
             "start_plan_drafting",
             "advance_workflow",
-            "complete_session",
+            "finalize_search_session",
+            "run_search_specialist",
         },
         "subagents": {"query-executor"},
     },
     PHASE_COARSE_SCREEN: {
-        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"start_plan_drafting", "advance_workflow", "finalize_search_session", "run_search_specialist"},
         "subagents": {"coarse-screener"},
     },
     PHASE_CLOSE_READ: {
-        "tools": {"get_session_context", "get_execution_context", "start_plan_drafting", "advance_workflow", "complete_session"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"start_plan_drafting", "advance_workflow", "finalize_search_session", "run_search_specialist"},
         "subagents": {"close-reader"},
     },
     PHASE_FEATURE_COMPARISON: {
-        "tools": {
-            "get_session_context",
-            "get_execution_context",
-            "complete_session",
+        "tools": MAIN_AGENT_READ_TOOLS | {
+            "finalize_search_session",
             "advance_workflow",
             "start_plan_drafting",
             "request_human_decision",
+            "run_search_specialist",
         },
         "subagents": {"feature-comparer"},
     },
     PHASE_AWAITING_HUMAN_DECISION: {
-        "tools": {"get_session_context", "get_planning_context", "start_plan_drafting", "complete_session"},
+        "tools": MAIN_AGENT_READ_TOOLS | {"start_plan_drafting", "finalize_search_session"},
         "subagents": set(),
     },
     PHASE_COMPLETED: {
-        "tools": {"get_session_context", "get_execution_context"},
+        "tools": MAIN_AGENT_READ_TOOLS,
         "subagents": set(),
     },
     PHASE_FAILED: {
@@ -147,10 +151,6 @@ MAIN_AGENT_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
 }
 
 ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
-    "search-elements": {
-        PHASE_COLLECTING_REQUIREMENTS: {"save_search_elements"},
-        PHASE_DRAFTING_PLAN: {"save_search_elements"},
-    },
     "query-executor": {
         PHASE_EXECUTE_SEARCH: {
             "run_execution_step",
@@ -159,19 +159,7 @@ ROLE_PHASE_TOOL_POLICY: Dict[str, Dict[str, set[str]]] = {
             "search_boolean",
             "count_boolean",
             "fetch_patent_details",
-            "prepare_lane_queries",
         },
-    },
-    "plan-prober": {
-        PHASE_DRAFTING_PLAN: {
-            "probe_search_semantic",
-            "probe_search_boolean",
-            "probe_count_boolean",
-            "save_probe_findings",
-        },
-    },
-    "planner": {
-        PHASE_DRAFTING_PLAN: {"save_planner_draft"},
     },
     "coarse-screener": {
         PHASE_COARSE_SCREEN: {"run_coarse_screen_batch"},
@@ -191,7 +179,6 @@ def default_ai_search_meta(thread_id: str) -> Dict[str, Any]:
         "current_phase": PHASE_COLLECTING_REQUIREMENTS,
         "active_plan_version": None,
         "selected_document_count": 0,
-        "planner_draft": None,
         "draft_todos": [],
         "pinned": False,
         "current_run_id": None,
