@@ -147,11 +147,21 @@ class AiSearchService:
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
         )
+        iterator = None
         try:
-            with task_usage_collection(usage_collector):
-                async for event in stream_factory():
-                    yield event
+            stream = stream_factory()
+            iterator = stream.__aiter__()
+            while True:
+                try:
+                    with task_usage_collection(usage_collector):
+                        event = await iterator.__anext__()
+                except StopAsyncIteration:
+                    break
+                yield event
         finally:
+            close_stream = getattr(iterator, "aclose", None) if iterator is not None else None
+            if callable(close_stream):
+                await close_stream()
             latest_task = self.storage.get_task(task.id)
             if latest_task:
                 latest_status = getattr(latest_task.status, "value", latest_task.status)

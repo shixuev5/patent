@@ -740,20 +740,18 @@ class AiSearchAgentRunService:
             yield item
             pending = asyncio.create_task(iterator.__anext__())
 
-    def _normalize_stream_item(self, item: Any) -> tuple[Any, str, Any]:
-        namespace: Any = ()
+    def _normalize_stream_item(self, item: Any) -> tuple[str, Any]:
         mode = ""
         payload = item
         if isinstance(item, tuple):
             if len(item) == 3:
-                namespace, mode, payload = item
+                _namespace, mode, payload = item
             elif len(item) == 2:
                 first, second = item
                 if isinstance(first, str) and first in {"updates", "messages", "custom"}:
                     mode, payload = first, second
         elif isinstance(item, dict):
             if "type" in item and "data" in item:
-                namespace = item.get("ns") or ()
                 mode = str(item.get("type") or "")
                 payload = item.get("data")
             elif len(item) == 1:
@@ -761,7 +759,7 @@ class AiSearchAgentRunService:
                 if only_key in {"updates", "messages", "custom"}:
                     mode = str(only_key)
                     payload = item[only_key]
-        return namespace, str(mode or ""), payload
+        return str(mode or ""), payload
 
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -811,17 +809,11 @@ class AiSearchAgentRunService:
             return True
         return False
 
-    def _is_main_agent_message_stream(self, namespace: Any, payload: Any) -> bool:
+    def _is_main_agent_message_stream(self, payload: Any) -> bool:
         chunk, metadata = self._split_message_payload(payload)
         if not self._is_model_text_chunk(chunk, metadata):
             return False
-        if namespace is None:
-            return True
-        if isinstance(namespace, str):
-            return not namespace.strip()
-        if isinstance(namespace, (tuple, list, set)):
-            return len(namespace) == 0
-        return False
+        return True
 
     def _extract_message_delta(self, payload: Any) -> str:
         chunk, _metadata = self._split_message_payload(payload)
@@ -1094,7 +1086,6 @@ class AiSearchAgentRunService:
                 config,
                 context=build_runtime_context(self.storage, task_id),
                 stream_mode=["updates", "messages", "custom"],
-                subgraphs=True,
                 version="v2",
             )
         except TypeError as exc:
@@ -1104,14 +1095,13 @@ class AiSearchAgentRunService:
                 payload,
                 config,
                 stream_mode=["updates", "messages", "custom"],
-                subgraphs=True,
                 version="v2",
             )
         async for item in self._iterate_stream_with_keepalive(iterator):
             if item is None:
                 yield ": keepalive\n\n"
                 continue
-            namespace, mode, raw_payload = self._normalize_stream_item(item)
+            mode, raw_payload = self._normalize_stream_item(item)
             if mode == "updates":
                 async for event in self._emit_current_snapshot_diff_events(
                     session_id=session_id,
@@ -1136,7 +1126,7 @@ class AiSearchAgentRunService:
             if mode != "messages":
                 continue
 
-            if not self._is_main_agent_message_stream(namespace, raw_payload):
+            if not self._is_main_agent_message_stream(raw_payload):
                 continue
             delta = self._extract_message_delta(raw_payload)
             if not delta:

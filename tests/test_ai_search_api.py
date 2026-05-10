@@ -102,8 +102,9 @@ def test_stream_message_endpoint_surfaces_direct_reply_even_without_state_transi
             assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS
             assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
             assert kwargs["version"] == "v2"
+            assert "subgraphs" not in kwargs
             await asyncio.sleep(0)
-            yield ((), "messages", (_FakeChunk("好的，我先整理检索计划。"), {}))
+            yield ("messages", (_FakeChunk("好的，我先整理检索计划。"), {}))
 
         def get_state(self, config):
             assert config["configurable"]["checkpoint_ns"] == ai_search_service_module.MAIN_AGENT_CHECKPOINT_NS

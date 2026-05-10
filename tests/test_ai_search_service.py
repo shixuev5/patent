@@ -1169,8 +1169,9 @@ def test_stream_message_persists_main_agent_direct_reply(monkeypatch, tmp_path):
             assert config["configurable"]["thread_id"].startswith("ai-search-")
             assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
             assert kwargs["version"] == "v2"
+            assert "subgraphs" not in kwargs
             await asyncio.sleep(0.03)
-            yield ((), "messages", (_FakeChunk("已生成计划。"), {}))
+            yield ("messages", (_FakeChunk("已生成计划。"), {}))
 
         def get_state(self, config):
             assert config["configurable"]["__pregel_checkpointer"] is self.checkpointer
@@ -1387,10 +1388,10 @@ def test_stream_message_dedupes_phase_markers_and_ignores_tool_updates(monkeypat
 
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
-            yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
-            yield ((), "custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
+            assert "subgraphs" not in kwargs
+            yield ("custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
+            yield ("custom", {"type": "phase.changed", "payload": {"phase": PHASE_DRAFTING_PLAN}})
             yield (
-                (),
                 "updates",
                 {
                     "agent": {
@@ -1410,7 +1411,7 @@ def test_stream_message_dedupes_phase_markers_and_ignores_tool_updates(monkeypat
                     }
                 },
             )
-            yield ((), "updates", {"tools": {"messages": [ToolMessage(content="done", tool_call_id="call-query-executor-2")]}})
+            yield ("updates", {"tools": {"messages": [ToolMessage(content="done", tool_call_id="call-query-executor-2")]}})
 
         def get_state(self, config):
             return _FakeState()
@@ -1424,7 +1425,7 @@ def test_stream_message_dedupes_phase_markers_and_ignores_tool_updates(monkeypat
     assert parsed[0]["type"] == "run.started"
 
 
-def test_stream_message_ignores_nested_tool_updates(monkeypatch, tmp_path):
+def test_stream_message_ignores_tool_updates_without_subgraphs(monkeypatch, tmp_path):
     service, storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
 
@@ -1438,8 +1439,8 @@ def test_stream_message_ignores_nested_tool_updates(monkeypatch, tmp_path):
 
         async def astream(self, payload, config=None, **kwargs):
             assert payload == {"messages": [{"role": "user", "content": "开始处理"}]}
+            assert "subgraphs" not in kwargs
             yield (
-                ("query-executor:task-1",),
                 "updates",
                 {
                     "agent": {
@@ -1460,7 +1461,6 @@ def test_stream_message_ignores_nested_tool_updates(monkeypatch, tmp_path):
                 },
             )
             yield (
-                ("query-executor:task-1",),
                 "updates",
                 {
                     "tools": {
@@ -1487,8 +1487,8 @@ def test_stream_message_ignores_nested_tool_updates(monkeypatch, tmp_path):
     assert snapshot.stream["lastEventSeq"] > 0
 
 
-def test_stream_message_ignores_nested_subagent_message_chunks(monkeypatch, tmp_path):
-    service, storage = _mount_service(monkeypatch, tmp_path)
+def test_stream_message_reads_root_message_chunks_without_subgraphs(monkeypatch, tmp_path):
+    service, _storage = _mount_service(monkeypatch, tmp_path)
     created = service.create_session("guest_ai_search")
 
     class _FakeChunk:
@@ -1504,9 +1504,9 @@ def test_stream_message_ignores_nested_subagent_message_chunks(monkeypatch, tmp_
             self.checkpointer = object()
 
         async def astream(self, payload, config=None, **kwargs):
+            assert "subgraphs" not in kwargs
             meta = {"lc_agent_name": "ai-search-main-agent-test", "langgraph_node": "model"}
-            yield (("query-executor:task-1",), "messages", (_FakeChunk("子 agent 内容"), meta))
-            yield ((), "messages", (_FakeChunk("主 agent 最终答复"), meta))
+            yield ("messages", (_FakeChunk("主 agent 最终答复"), meta))
 
         def get_state(self, config):
             return _FakeState()
@@ -1518,8 +1518,6 @@ def test_stream_message_ignores_nested_subagent_message_chunks(monkeypatch, tmp_
     messages = [event["payload"]["content"] for event in parsed if event["type"] == "message.created"]
 
     assert messages == ["主 agent 最终答复"]
-    assert all("子 agent 内容" not in json.dumps(event, ensure_ascii=False) for event in parsed)
-    assert not any("子 agent 内容" == str(item.get("content") or "") for item in storage.list_ai_search_messages(created.sessionId))
 
 
 def test_subscribe_stream_replays_events_after_seq(monkeypatch, tmp_path):
@@ -2245,6 +2243,8 @@ def test_build_analysis_seed_user_message_renders_structured_effect_groups():
     assert "进一步检索" not in message
     assert "4分效果" not in message
     assert "效果锚点" not in message
+    assert "## 可用检索要素" not in message
+    assert "## 已识别子计划" not in message
     assert "{'effect':" not in message
 
 
@@ -2662,8 +2662,8 @@ def test_stream_analysis_seed_cancelled_before_confirmation_keeps_seed_pending(m
             assert config["configurable"]["thread_id"] == f"ai-search-{self.task_id}"
             assert kwargs["stream_mode"] == ["updates", "messages", "custom"]
             assert kwargs["version"] == "v2"
+            assert "subgraphs" not in kwargs
             yield (
-                (),
                 "updates",
                 {
                     "agent": {
@@ -2712,3 +2712,63 @@ def test_stream_analysis_seed_cancelled_before_confirmation_keeps_seed_pending(m
     assert snapshot.analysisSeed["status"] == "pending"
     assert snapshot.plan["currentPlan"] is None
     assert [message["kind"] for message in snapshot.conversation["messages"]] == ["chat"]
+
+
+def test_stream_with_task_usage_can_close_from_different_task(monkeypatch, tmp_path):
+    service, storage = _mount_service(monkeypatch, tmp_path)
+    created = service.create_session("guest_ai_search")
+    observed_contexts: list[dict[str, Any]] = []
+
+    async def _fake_stream():
+        observed_contexts.append(task_usage_tracking.get_current_task_usage_context())
+        task_usage_tracking.record_llm_usage(
+            model="unknown-model",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            reasoning_tokens=0,
+        )
+        yield "event-1"
+
+        observed_contexts.append(task_usage_tracking.get_current_task_usage_context())
+        task_usage_tracking.record_llm_usage(
+            model="unknown-model",
+            prompt_tokens=8,
+            completion_tokens=4,
+            total_tokens=12,
+            reasoning_tokens=0,
+        )
+        yield "event-2"
+
+    async def _run() -> None:
+        stream = service._stream_with_task_usage(
+            created.sessionId,
+            "guest_ai_search",
+            _fake_stream,
+        )
+        first = await stream.__anext__()
+        assert first == "event-1"
+
+        close_task = asyncio.create_task(stream.aclose())
+        await close_task
+
+        current_context = task_usage_tracking.get_current_task_usage_context()
+        assert current_context["task_id"] is None
+
+    asyncio.run(_run())
+
+    row = storage.get_task_llm_usage(created.sessionId)
+    assert observed_contexts == [
+        {
+            "task_id": created.sessionId,
+            "owner_id": "guest_ai_search",
+            "task_type": TaskType.AI_SEARCH.value,
+        }
+    ]
+    assert row is not None
+    assert row["task_id"] == created.sessionId
+    assert row["task_type"] == TaskType.AI_SEARCH.value
+    assert row["prompt_tokens"] == 10
+    assert row["completion_tokens"] == 5
+    assert row["total_tokens"] == 15
+    assert row["llm_call_count"] == 1

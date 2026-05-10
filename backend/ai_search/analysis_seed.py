@@ -591,14 +591,6 @@ def build_analysis_seed_user_message(
     report = analysis_payload.get("report") if isinstance(analysis_payload.get("report"), dict) else {}
     metadata = analysis_payload.get("metadata") if isinstance(analysis_payload.get("metadata"), dict) else {}
     effect_plan_groups = _effect_plan_groups(analysis_payload)
-    sub_plans = build_analysis_sub_plans(analysis_payload)
-    element_lines = []
-    for item in seeded_search_elements.get("search_elements") or []:
-        if not isinstance(item, dict):
-            continue
-        block_id = str(item.get("block_id") or "").strip().upper()
-        label = f"[Block {block_id}] " if block_id else ""
-        element_lines.append(f"- {label}{str(item.get('element_name') or '').strip()}")
     effect_lines: List[str] = []
     if effect_plan_groups:
         for group in effect_plan_groups:
@@ -622,22 +614,6 @@ def build_analysis_seed_user_message(
     else:
         technical_effects = _technical_effect_items(analysis_payload)
         effect_lines = [f"- {_safe_text(item.get('effect_text'))}" for item in technical_effects if _safe_text(item.get("effect_text"))]
-
-    plan_lines: List[str] = []
-    for index, item in enumerate(sub_plans, start=1):
-        title = _safe_text(item.get("title") or item.get("goal") or item.get("sub_plan_id")) or f"子计划 {index}"
-        plan_lines.append(f"### 方案{index}：{title}")
-        for step_index, step in enumerate(item.get("retrieval_steps") or [], start=1):
-            if not isinstance(step, dict):
-                continue
-            activation_mode = _safe_text(step.get("activation_mode")) or "immediate"
-            activation_label = "立即执行" if activation_mode == "immediate" else "条件触发"
-            summary = _safe_text(step.get("activation_summary"))
-            line = f"- Step {step_index}（{activation_label}）：{_safe_text(step.get('title')) or f'步骤 {step_index}'}"
-            if summary:
-                line += f"。{summary}"
-            plan_lines.append(line)
-        plan_lines.append("")
     return "\n".join(
         [
             "以下是从 AI 分析带入的检索上下文，请基于这些信息生成一份可审核的检索计划。",
@@ -656,12 +632,6 @@ def build_analysis_seed_user_message(
             "",
             "## 核心效果",
             *(effect_lines or ["- -"]),
-            "",
-            "## 可用检索要素",
-            *(element_lines or ["- -"]),
-            "",
-            "## 已识别子计划",
-            *(plan_lines or ["- 子计划 1"]),
             "",
             "## 已知边界",
             f"- 申请人：{'、'.join(seeded_search_elements.get('applicants') or []) or '-'}",
