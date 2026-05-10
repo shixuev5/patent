@@ -150,8 +150,6 @@
         <AiSearchConversationView
           :session-id="currentSession?.session.sessionId"
           :entries="conversationRenderEntries"
-          :activity-traces="activityTraces"
-          :structured-plan-execution-spec="structuredPlanExecutionSpec"
           :active-plan-version="activePlanVersion"
           :has-pending-plan-confirmation="hasPendingPlanConfirmation"
           :plan-confirmation-label="planConfirmationLabel"
@@ -163,7 +161,6 @@
           :resume-last-error="resumeLastError"
           :resume-attempt-count="resumeAttemptCount"
           :phase="activePhase"
-          :workspace-title="workspaceTitle"
           :attachments="currentSession?.artifacts?.attachments || []"
           @confirm-plan="confirmPlan"
           @resume-execution="resumeExecution"
@@ -419,10 +416,6 @@ const activePlanVersion = computed(() => {
 
 const hasPendingPlanConfirmation = computed(() => !!pendingConfirmation.value)
 const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmation_label || pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
-const structuredPlanExecutionSpec = computed<Record<string, any> | null>(() => {
-  const executionSpec = currentSession.value?.plan?.currentPlan?.executionSpec
-  return executionSpec && typeof executionSpec === 'object' ? executionSpec as Record<string, any> : null
-})
 const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
 const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
@@ -475,6 +468,7 @@ const canSubmitHeaderRename = computed(() => {
 
 const { conversationRenderEntries } = useAiSearchConversation({
   messages,
+  activityTraces,
   phaseMarkers,
   currentPendingAction,
   resumeActionCard,

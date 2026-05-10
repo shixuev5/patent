@@ -1,4 +1,5 @@
 import { computed } from 'vue'
+import type { AiSearchActivityTrace } from '~/types/aiSearch'
 
 export type ConversationActionCard = {
   actionType: 'resume' | 'human_decision'
@@ -16,12 +17,14 @@ const toMillis = (value?: string | null): number => {
 
 export const useAiSearchConversation = ({
   messages,
+  activityTraces,
   phaseMarkers,
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
 }: {
   messages: { value: Array<Record<string, any>> }
+  activityTraces: { value: AiSearchActivityTrace[] }
   phaseMarkers: { value: Array<Record<string, any>> }
   currentPendingAction: { value: Record<string, any> | null }
   resumeActionCard: { value: ConversationActionCard | null }
@@ -36,6 +39,15 @@ export const useAiSearchConversation = ({
         sortKey: toMillis(message.created_at),
         order: index,
         ...message,
+      })
+    })
+    activityTraces.value.forEach((trace, index) => {
+      entries.push({
+        id: trace.traceId || `trace-${index}`,
+        entryType: 'trace',
+        sortKey: toMillis(trace.startedAt || trace.endedAt),
+        order: 500 + index,
+        ...trace,
       })
     })
     phaseMarkers.value.forEach((marker, index) => {

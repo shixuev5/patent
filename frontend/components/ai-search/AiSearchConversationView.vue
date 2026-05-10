@@ -1,8 +1,6 @@
 <template>
   <div class="relative min-h-0 flex-1">
     <div ref="messageListRef" class="flex min-h-0 h-full flex-col overflow-y-auto px-4 py-4">
-      <AiSearchActivityTimeline v-if="activityTraces.length" :items="activityTraces" class="mb-3" />
-
       <div v-if="!entries.length" class="flex min-h-full flex-1 items-center justify-center px-4 py-8 text-center text-sm text-slate-500">
         描述检索目标、技术方案、核心效果或约束条件。
       </div>
@@ -17,7 +15,7 @@
             <span class="h-px flex-1 bg-slate-200/80" />
           </article>
 
-          <article v-if="isPendingActionEntry(entry)" class="flex justify-start">
+          <article v-else-if="isPendingActionEntry(entry)" class="flex justify-start">
             <div class="w-full max-w-full">
               <section
                 v-if="entry.actionType === 'resume'"
@@ -63,6 +61,80 @@
                 @continue-search="$emit('continue-search')"
                 @complete-current-results="$emit('complete-current-results')"
               />
+            </div>
+          </article>
+
+          <article v-else-if="entry.entryType === 'trace'" class="px-1 py-1">
+            <div v-if="entry.traceType === 'thinking'" class="flex items-start gap-3">
+              <span class="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                <ArrowPathIcon
+                  v-if="entry.status === 'running'"
+                  class="h-4 w-4 animate-spin text-slate-500"
+                />
+                <CheckCircleIcon
+                  v-else-if="entry.status === 'completed'"
+                  class="h-4 w-4 text-slate-400"
+                />
+                <XCircleIcon
+                  v-else
+                  class="h-4 w-4 text-rose-500"
+                />
+              </span>
+              <div class="min-w-0">
+                <p class="whitespace-pre-wrap text-[14px] leading-7 text-slate-800">
+                  {{ entry.label }}
+                </p>
+              </div>
+            </div>
+
+            <div v-else class="grid grid-cols-[1rem,minmax(0,1fr),auto] items-start gap-3">
+              <span class="mt-1 inline-flex h-4 w-4 items-center justify-center">
+                <ArrowPathIcon
+                  v-if="entry.status === 'running'"
+                  class="h-4 w-4 text-slate-500"
+                />
+                <CpuChipIcon
+                  v-else-if="entry.traceType === 'agent'"
+                  class="h-4 w-4"
+                  :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                />
+                <WrenchScrewdriverIcon
+                  v-else-if="entry.traceType === 'tool'"
+                  class="h-4 w-4"
+                  :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                />
+                <CheckCircleIcon
+                  v-else-if="entry.status === 'completed'"
+                  class="h-4 w-4 text-slate-400"
+                />
+                <XCircleIcon
+                  v-else-if="entry.status === 'failed'"
+                  class="h-4 w-4 text-rose-500"
+                />
+                <div
+                  v-else
+                  class="h-2.5 w-2.5 rounded-full"
+                  :class="entry.status === 'running' ? 'bg-cyan-500' : 'bg-slate-300'"
+                />
+              </span>
+
+              <div class="min-w-0">
+                <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <p class="truncate text-[13px] leading-5 text-slate-700">
+                    {{ traceSummaryText(entry) }}
+                  </p>
+                  <span class="text-[11px]" :class="traceStatusClass(entry)">
+                    {{ traceStatusLabel(entry) }}
+                  </span>
+                </div>
+                <p v-if="entry.detail" class="mt-0.5 text-[12px] leading-5 text-slate-400">
+                  {{ entry.detail }}
+                </p>
+              </div>
+
+              <p class="whitespace-nowrap pt-0.5 text-[11px] text-slate-400">
+                {{ traceDurationText(entry) }}
+              </p>
             </div>
           </article>
 
@@ -160,9 +232,8 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownIcon, ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
+import { ArrowDownIcon, ArrowPathIcon, CheckCircleIcon, ClipboardDocumentIcon, CpuChipIcon, WrenchScrewdriverIcon, XCircleIcon } from '@heroicons/vue/24/outline'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import AiSearchActivityTimeline from '~/components/ai-search/AiSearchActivityTimeline.vue'
 import AiSearchDownloadAttachment from '~/components/ai-search/AiSearchDownloadAttachment.vue'
 import AiSearchExpandableContent from '~/components/ai-search/AiSearchExpandableContent.vue'
 import AiSearchHumanDecisionCard from '~/components/ai-search/AiSearchHumanDecisionCard.vue'
@@ -174,8 +245,6 @@ import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 const props = withDefaults(defineProps<{
   sessionId?: string
   entries: Array<Record<string, any>>
-  activityTraces?: AiSearchActivityTrace[]
-  structuredPlanExecutionSpec?: Record<string, any> | null
   activePlanVersion?: number
   hasPendingPlanConfirmation?: boolean
   planConfirmationLabel?: string
@@ -184,15 +253,12 @@ const props = withDefaults(defineProps<{
   selectedReviewDocuments?: Array<Record<string, any>>
   reviewCandidateDocuments?: Array<Record<string, any>>
   phase?: string
-  workspaceTitle?: string
   attachments?: AiSearchArtifactAttachment[]
   streaming?: boolean
   resumeLastError?: string
   resumeAttemptCount?: number
 }>(), {
   sessionId: '',
-  activityTraces: () => [],
-  structuredPlanExecutionSpec: null,
   activePlanVersion: 0,
   hasPendingPlanConfirmation: false,
   planConfirmationLabel: '实施此计划',
@@ -201,7 +267,6 @@ const props = withDefaults(defineProps<{
   selectedReviewDocuments: () => [],
   reviewCandidateDocuments: () => [],
   phase: '',
-  workspaceTitle: '',
   attachments: () => [],
   streaming: false,
   resumeLastError: '',
@@ -257,9 +322,6 @@ const phaseDurationText = (entry: Record<string, any>): string => {
 const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
 const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
 const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
-const isNarrationLikeEntry = (entry: Record<string, any>): boolean => (
-  entry.role === 'assistant' && !isPlanMessage(entry) && !isQuestionMessage(entry)
-)
 const planVersionOf = (entry: Record<string, any>): number => {
   const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
   return Number.isFinite(value) ? value : 0
@@ -328,18 +390,15 @@ const isUserMarkdownEntry = (entry: Record<string, any>): boolean => {
 }
 
 const messageWrapperClass = (entry: Record<string, any>): string => (
-  isNarrationLikeEntry(entry) ? 'w-full max-w-full' : 'max-w-[90%]'
+  entry.role === 'assistant' ? 'w-full max-w-full' : 'max-w-[90%]'
 )
 
 const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
   }
-  if (isNarrationLikeEntry(entry)) {
-    return 'px-1 py-1 text-slate-700'
-  }
   if (isQuestionMessage(entry)) return ''
-  return 'rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-slate-700 shadow-sm'
+  return 'px-1 py-1 text-slate-700'
 }
 
 const userMessageMode = (entry: Record<string, any>): 'markdown' | 'plaintext' => (
@@ -347,6 +406,35 @@ const userMessageMode = (entry: Record<string, any>): 'markdown' | 'plaintext' =
 )
 
 const userMessageTheme = (_entry: Record<string, any>): 'cyan' => 'cyan'
+
+const traceDurationText = (entry: AiSearchActivityTrace): string => {
+  const startedAt = toMillis(entry.startedAt)
+  if (!startedAt) return ''
+  const endedAt = toMillis(entry.endedAt)
+  if (endedAt > startedAt) return formatDuration(endedAt - startedAt)
+  if (entry.status === 'running') return `进行中 · ${formatDuration(nowTick.value - startedAt)}`
+  return ''
+}
+
+const traceStatusLabel = (entry: AiSearchActivityTrace): string => {
+  if (entry.status === 'failed') return '失败'
+  if (entry.status === 'completed') return '已完成'
+  if (entry.traceType === 'thinking') return '思考中'
+  return '运行中'
+}
+
+const traceStatusClass = (entry: AiSearchActivityTrace): string => {
+  if (entry.status === 'failed') return 'text-rose-500'
+  if (entry.status === 'completed') return 'text-slate-400'
+  return 'text-slate-500'
+}
+
+const traceSummaryText = (entry: AiSearchActivityTrace): string => {
+  if (entry.traceType === 'agent') {
+    return entry.actorName ? `${entry.label} · ${entry.actorName}` : entry.label
+  }
+  return entry.label
+}
 
 const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
 
