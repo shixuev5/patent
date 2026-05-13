@@ -153,6 +153,7 @@ class AcademicSearchClient:
     _provider_next_request_deadlines: Dict[str, float] = {}
     _response_cache_lock = threading.Lock()
     _response_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Tuple[float, Dict[str, Any]]] = {}
+    _crossref_mailto_warned: bool = False
 
     def __init__(
         self,
@@ -178,7 +179,6 @@ class AcademicSearchClient:
                 "abstract",
                 "url",
                 "venue",
-                "language",
                 "year",
                 "publicationDate",
                 "citationCount",
@@ -189,6 +189,11 @@ class AcademicSearchClient:
 
         self.crossref_base_url = os.getenv("CROSSREF_BASE_URL", "https://api.crossref.org/works").strip()
         self.crossref_mailto = os.getenv("CROSSREF_MAILTO", "").strip()
+        if not self.crossref_mailto and not AcademicSearchClient._crossref_mailto_warned:
+            logger.warning(
+                "CROSSREF_MAILTO 未配置，Crossref 将走匿名池，容易被 429 限流。建议在环境变量中配置 mailto 进入 polite pool。"
+            )
+            AcademicSearchClient._crossref_mailto_warned = True
         self.crossref_select = ",".join(
             [
                 "DOI",
@@ -487,7 +492,6 @@ class AcademicSearchClient:
                     "venue": normalize_academic_query(item.get("venue")),
                     "publication_date": published,
                     "published": published,
-                    "language": normalize_academic_query(item.get("language")),
                     "citation_count": safe_int(item.get("citationCount")),
                     "influential_citation_count": safe_int(item.get("influentialCitationCount")),
                 }
@@ -728,6 +732,12 @@ class AcademicSearchClient:
         return {}
 
     def crossref_search_raw(self, query: str, priority_date: Optional[str], per_query: int) -> Dict[str, Any]:
+        if self._provider_in_rate_limit_cooldown(
+            provider="crossref",
+            provider_label="Crossref",
+            query=query,
+        ):
+            return {}
         params: Dict[str, Any] = {
             "query.bibliographic": normalize_academic_query(query),
             "rows": per_query,
@@ -740,6 +750,10 @@ class AcademicSearchClient:
             params["filter"] = ",".join(filters)
         if self.crossref_mailto:
             params["mailto"] = self.crossref_mailto
+        request_extra_kwargs: Dict[str, Any] = {}
+        crossref_headers = self._crossref_request_headers()
+        if crossref_headers:
+            request_extra_kwargs["headers"] = crossref_headers
         last_error: Exception | None = None
         for attempt in range(self._CROSSREF_MAX_RETRIES):
             try:
@@ -747,6 +761,7 @@ class AcademicSearchClient:
                     self.crossref_base_url,
                     params=params,
                     timeout=settings.RETRIEVAL_REQUEST_TIMEOUT_SECONDS,
+                    **request_extra_kwargs,
                 )
                 status_code = int(response.status_code)
                 response_text = str(response.text or "")
@@ -761,6 +776,17 @@ class AcademicSearchClient:
                     time.sleep(self._RETRY_BACKOFF_SECONDS * (attempt + 1))
                     continue
                 logger.warning(f"Crossref 检索失败，query={query[:100]} error={ex}")
+                return {}
+
+            if status_code == 429:
+                self._mark_provider_rate_limit_cooldown(
+                    provider="crossref",
+                    provider_label="Crossref",
+                    reason=(
+                        "rate_limited"
+                        + ("" if self.crossref_mailto else " (no_mailto: not in polite pool)")
+                    ),
+                )
                 return {}
 
             if self._is_crossref_retryable_error(status_code=status_code, data=data, response_text=response_text):
@@ -786,6 +812,11 @@ class AcademicSearchClient:
 
         if last_error is not None:
             logger.warning(f"Crossref 检索失败，query={query[:100]} error={last_error}")
+        return {}
+
+    def _crossref_request_headers(self) -> Dict[str, str]:
+        if self.crossref_mailto:
+            return {"User-Agent": f"PatentAnalyzer/1.0 (mailto:{self.crossref_mailto})"}
         return {}
 
     def _is_openalex_limit_error(self, status_code: int, data: Dict[str, Any], response_text: str) -> bool:

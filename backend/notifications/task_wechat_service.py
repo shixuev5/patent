@@ -291,13 +291,15 @@ class TaskWeChatNotificationService:
         return record
 
     def _emit_delivery_log(self, event_name: str, task: Any, terminal_status: str, record: Dict[str, Any]) -> None:
+        is_failure = event_name == "task_wechat_failed"
         self.system_log_emitter(
             category="task_execution",
             event_name=event_name,
+            level="WARNING" if is_failure else "INFO",
             owner_id=str(getattr(task, "owner_id", "") or "").strip() or None,
             task_id=str(getattr(task, "id", "") or "").strip() or None,
             task_type=str(getattr(task, "task_type", "") or "").strip() or None,
-            success=record.get("status") == "queued",
+            success=not is_failure,
             message=f"任务终态微信通知{record.get('status') or 'unknown'}",
             payload={
                 "terminal_status": terminal_status,

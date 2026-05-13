@@ -490,9 +490,10 @@ def test_crossref_search_normalizes_jats_abstract(monkeypatch):
     aggregator.crossref_mailto = "patent@example.com"
     captured = {}
 
-    def _fake_get(url, params=None, timeout=None):
+    def _fake_get(url, params=None, headers=None, timeout=None):
         captured["url"] = url
         captured["params"] = dict(params or {})
+        captured["headers"] = dict(headers or {})
         return _FakeResponse(
             {
                 "message": {
@@ -520,6 +521,7 @@ def test_crossref_search_normalizes_jats_abstract(monkeypatch):
     assert captured["params"]["query.bibliographic"] == "battery separator design"
     assert captured["params"]["filter"] == "until-pub-date:2024-12-31"
     assert captured["params"]["mailto"] == "patent@example.com"
+    assert "mailto:patent@example.com" in captured["headers"].get("User-Agent", "")
     assert "language" not in captured["params"]["select"].split(",")
     assert len(results) == 1
     assert results[0]["snippet"] == "Crossref abstract content."

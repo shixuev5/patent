@@ -31,6 +31,7 @@ class OfficeActionExtractor:
         Returns:
             结构化的审查意见通知书数据
         """
+        markdown_content = self._normalize_document_content(markdown_content)
         current_notice_round, section_content = self._extract_latest_notice_section(markdown_content)
         office_action = OfficeAction(
             application_number=self._extract_application_number(markdown_content),
@@ -40,24 +41,65 @@ class OfficeActionExtractor:
         )
         return office_action
 
+    @staticmethod
+    def _normalize_document_content(text: str) -> str:
+        """对 OCR/Mineru 输出做最小限度的归一化，消除常见的不可见/全角字符差异。
+
+        刻意只折叠不可见与数字字符，保留中文标点的原貌，避免改写正文。
+
+        - 删除零宽字符（U+200B/200C/200D/2060/FEFF）
+        - 全角空格 `　` 与 NBSP `\xa0` 折叠为普通空格
+        - 全角数字 `０-９` 折叠为半角 `0-9`
+        """
+        if not text:
+            return text
+        text = re.sub(r"[​‌‍⁠﻿]", "", text)
+        text = text.replace("　", " ").replace("\xa0", " ")
+        text = text.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        return text
+
     def _extract_latest_notice_section(self, markdown_content: str) -> Tuple[int, str]:
         """提取最新一份审查意见通知书的轮次与正文区段。"""
         chapter_pattern = re.compile(
-            r"(?m)^(?:\s*#+\s*)?[\s*_]*第[\s*_]*([0-9一二三四五六七八九十百零〇两]+)[\s*_]*次[\s*_]*审[\s*_]*查[\s*_]*意[\s*_]*见[\s*_]*通[\s*_]*知[\s*_]*书[\s*_]*$"
+            r"(?m)^[|>\s]*(?:#+\s*)?[\s*_]*第[\s*_]*([0-9一二三四五六七八九十百零〇两]+)[\s*_]*次[\s*_]*审[\s*_]*查[\s*_]*意[\s*_]*见[\s*_]*通[\s*_]*知[\s*_]*书"
         )
         chapter_matches = list(re.finditer(chapter_pattern, markdown_content))
         if not chapter_matches:
-            raise ValueError("未识别审查意见通知书轮次(current_notice_round)")
+            chapter_matches = list(
+                re.finditer(
+                    r"第[\s*_]*([0-9一二三四五六七八九十百零〇两]+)[\s*_]*次[\s*_]*审[\s*_]*查[\s*_]*意[\s*_]*见[\s*_]*通[\s*_]*知[\s*_]*书",
+                    markdown_content,
+                )
+            )
+            if chapter_matches:
+                logger.warning(
+                    "未在行首匹配到带轮次的审查意见通知书标题，回退到全文搜索，"
+                    f"命中数={len(chapter_matches)}"
+                )
+        if chapter_matches:
+            last_chapter = chapter_matches[-1]
+            round_raw = str(last_chapter.group(1) or "").strip()
+            current_notice_round = self._parse_legal_number(round_raw)
+            if current_notice_round is None or current_notice_round <= 0:
+                raise ValueError(f"审查意见通知书轮次非法: {round_raw}")
+            section_content = markdown_content[last_chapter.end():].strip()
+            logger.info(f"识别到第{current_notice_round}次审查意见通知书章节，长度: {len(section_content)}")
+            return current_notice_round, section_content
 
-        last_chapter = chapter_matches[-1]
-        round_raw = str(last_chapter.group(1) or "").strip()
-        current_notice_round = self._parse_legal_number(round_raw)
-        if current_notice_round is None or current_notice_round <= 0:
-            raise ValueError(f"审查意见通知书轮次非法: {round_raw}")
+        fallback_pattern = re.compile(
+            r"[\s|>]*(?:#+\s*)?[\s*_]*审[\s*_]*查[\s*_]*意[\s*_]*见[\s*_]*通[\s*_]*知[\s*_]*书"
+        )
+        fallback_matches = list(re.finditer(fallback_pattern, markdown_content))
+        if fallback_matches:
+            last_match = fallback_matches[-1]
+            section_content = markdown_content[last_match.end():].strip()
+            logger.warning(
+                "未匹配到带轮次的审查意见通知书标题，回退使用通用标题并按第1次处理，"
+                f"匹配数={len(fallback_matches)} 章节长度={len(section_content)}"
+            )
+            return 1, section_content
 
-        section_content = markdown_content[last_chapter.end():].strip()
-        logger.info(f"识别到第{current_notice_round}次审查意见通知书章节，长度: {len(section_content)}")
-        return current_notice_round, section_content
+        raise ValueError("未识别审查意见通知书轮次(current_notice_round)")
 
     def _extract_application_number(self, markdown_content: str) -> str:
         """提取原专利申请号"""

@@ -233,7 +233,8 @@ def test_login_raises_aggregated_error_when_all_accounts_fail(monkeypatch):
     assert "user-b@example.com: login failed" in str(exc.value)
 
 
-def test_post_request_reauth_switches_account_after_auth_failure(monkeypatch):
+def test_post_request_relogins_same_account_when_token_invalidated(monkeypatch):
+    # 共享账号被其他人登录顶下线时，应该用同一账号重登抢回会话，而不是切到其他账号、把可用账号烧掉冷却。
     _set_accounts_env(
         monkeypatch,
         [
@@ -251,18 +252,16 @@ def test_post_request_reauth_switches_account_after_auth_failure(monkeypatch):
     client.headers["Authorization"] = "Bearer expired-token"
     request_auth_headers = []
     relogin_calls = []
-    warnings = []
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
+    monkeypatch.setattr(client, "_fetch_login_public_key", lambda: "fake-pem")
 
-    def _fake_login():
-        relogin_calls.append("relogin")
-        client.current_account = {
-            "username": "user-b@example.com",
-            "password": "secret-b",
-        }
+    def _fake_login_with_account(account, public_key_text):
+        relogin_calls.append(account["username"])
+        client.current_account = dict(account)
         client.token = "fresh-token"
         client.headers["Authorization"] = "Bearer fresh-token"
+
+    monkeypatch.setattr(client, "_login_with_account", _fake_login_with_account)
 
     def _fake_post(url, headers=None, json=None, timeout=None):
         request_auth_headers.append((headers or {}).get("Authorization"))
@@ -282,17 +281,89 @@ def test_post_request_reauth_switches_account_after_auth_failure(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(client, "_login", _fake_login)
     monkeypatch.setattr(client.session, "post", _fake_post)
 
     response = client._do_post_request("https://example.com/search", {"q": "battery"})
 
     assert request_auth_headers == ["Bearer expired-token", "Bearer fresh-token"]
-    assert relogin_calls == ["relogin"]
+    assert relogin_calls == ["user-a@example.com"]
     assert response["total"] == 1
-    assert client.current_account == {
-        "username": "user-b@example.com",
-        "password": "secret-b",
+    assert client.current_account["username"] == "user-a@example.com"
+    assert "user-a@example.com" not in ZhihuiyaClient._account_cooldowns
+
+
+def test_post_request_switches_account_when_same_account_relogin_still_unauthorized(monkeypatch):
+    # 同账号重登后仍 401，才进入「冷却 + 切换账号」分支。
+    _set_accounts_env(
+        monkeypatch,
+        [
+            ("user-a@example.com", "secret-a"),
+            ("user-b@example.com", "secret-b"),
+        ],
+    )
+    _reset_account_cooldowns()
+    client = ZhihuiyaClient()
+    client.current_account = {
+        "username": "user-a@example.com",
+        "password": "secret-a",
     }
+    client.token = "expired-token"
+    client.headers["Authorization"] = "Bearer expired-token"
+    request_auth_headers = []
+    relogin_with_account_calls = []
+    login_calls = []
+
+    monkeypatch.setattr(client, "_fetch_login_public_key", lambda: "fake-pem")
+
+    def _fake_login_with_account(account, public_key_text):
+        relogin_with_account_calls.append(account["username"])
+        client.current_account = dict(account)
+        client.token = "re-issued-token"
+        client.headers["Authorization"] = "Bearer re-issued-token"
+
+    monkeypatch.setattr(client, "_login_with_account", _fake_login_with_account)
+
+    def _fake_login():
+        # 模拟 `_handle_auth_failure` 清掉 token 之后再次走 `_login`：切到下一个账号。
+        login_calls.append("switch")
+        client.current_account = {
+            "username": "user-b@example.com",
+            "password": "secret-b",
+        }
+        client.token = "user-b-token"
+        client.headers["Authorization"] = "Bearer user-b-token"
+
+    monkeypatch.setattr(client, "_login", _fake_login)
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        request_auth_headers.append((headers or {}).get("Authorization"))
+        if len(request_auth_headers) <= 2:
+            return _FakeResponse(
+                {"message": "token expired"},
+                status_code=401,
+                text="token expired",
+            )
+        return _FakeResponse(
+            {
+                "status": True,
+                "data": {
+                    "patent_count": {"total_count": 2},
+                    "patent_data": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(client.session, "post", _fake_post)
+
+    response = client._do_post_request("https://example.com/search", {"q": "battery"})
+
+    assert request_auth_headers == [
+        "Bearer expired-token",
+        "Bearer re-issued-token",
+        "Bearer user-b-token",
+    ]
+    assert relogin_with_account_calls == ["user-a@example.com"]
+    assert login_calls == ["switch"]
+    assert response["total"] == 2
+    assert client.current_account["username"] == "user-b@example.com"
     assert ZhihuiyaClient._account_cooldowns["user-a@example.com"] > time.monotonic()
-    assert any("检测到鉴权失败，正在切换账号重试。 账号：user-a@example.com" in message for message in warnings)

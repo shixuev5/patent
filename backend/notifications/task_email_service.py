@@ -593,10 +593,11 @@ class TaskEmailNotificationService:
         self.system_log_emitter(
             category="task_execution",
             event_name=event_name,
+            level="INFO" if event_name != "task_email_failed" else "WARNING",
             owner_id=str(getattr(task, "owner_id", "") or "").strip() or None,
             task_id=str(getattr(task, "id", "") or "").strip() or None,
             task_type=str(getattr(task, "task_type", "") or "").strip() or None,
-            success=event_name == "task_email_sent",
+            success=event_name != "task_email_failed",
             message=f"任务终态邮件{record.get('status') or 'unknown'}",
             payload={
                 "terminal_status": terminal_status,

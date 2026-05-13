@@ -262,8 +262,11 @@ class ZhihuiyaClient(BaseSearchClient):
         request_timeout = kwargs.pop("timeout", self.request_timeout)
 
         last_response: Optional[requests.Response] = None
-        for _ in range(2):
-            if not self.token:
+        same_account_relogin_used = False
+        # 最多 3 次：①使用现有 token；②同账号重登（共享账号被他人挤下线后抢回）；③切换账号
+        for _ in range(3):
+            token_was_fresh = not self.token
+            if token_was_fresh:
                 self._login()
 
             request_headers = dict(self.headers)
@@ -276,17 +279,42 @@ class ZhihuiyaClient(BaseSearchClient):
                 **kwargs,
             )
             last_response = response
-            if self._is_auth_failure_response(response):
-                username = ""
-                if self.current_account:
-                    username = str(self.current_account.get("username") or "").strip()
+            if not self._is_auth_failure_response(response):
+                return response
+
+            username = ""
+            if self.current_account:
+                username = str(self.current_account.get("username") or "").strip()
+
+            if not token_was_fresh and not same_account_relogin_used and self.current_account:
+                # 旧 token 被拒：共享账号最常见的原因是被并发登录顶下线。
+                # 先用同一账号重新登录（抢回会话），不触发冷却，不切换账号。
+                same_account_relogin_used = True
+                account = dict(self.current_account)
                 logger.warning(
-                    "[智慧芽] 检测到鉴权失败，正在切换账号重试。"
-                    f" 账号：{username or 'unknown'}"
+                    f"[智慧芽] token 被拒（疑似共享账号会话被其他登录踢出），重新登录同一账号：{username or 'unknown'}"
                 )
-                self._handle_auth_failure("鉴权失败")
-                continue
-            return response
+                try:
+                    self._clear_auth_state()
+                    public_key_text = self._fetch_login_public_key()
+                    self._login_with_account(account, public_key_text)
+                    continue
+                except Exception as exc:
+                    logger.warning(f"[智慧芽] 同账号重新登录失败：{username or 'unknown'} - {exc}")
+                    # 重登失败再走通常的账号切换流程
+                    self._handle_auth_failure(f"重新登录失败: {exc}")
+                    continue
+
+            if token_was_fresh:
+                logger.error(
+                    "[智慧芽] 刚刚登录成功的 token 仍被 search-service 拒绝："
+                    f" 账号 {username or 'unknown'} 进入冷却，尝试其他账号。"
+                )
+            else:
+                logger.warning(
+                    f"[智慧芽] 同账号重登后仍鉴权失败，切换其他账号。 账号：{username or 'unknown'}"
+                )
+            self._handle_auth_failure("鉴权失败")
 
         if last_response is not None and self._is_auth_failure_response(last_response):
             raise RuntimeError("智慧芽鉴权失败，所有账号重试后仍不可用")
