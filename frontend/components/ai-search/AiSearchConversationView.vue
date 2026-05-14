@@ -64,77 +64,105 @@
             </div>
           </article>
 
-          <article v-else-if="entry.entryType === 'trace'" class="px-1 py-1">
-            <div v-if="entry.traceType === 'thinking'" class="flex items-start gap-3">
-              <span class="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                <ArrowPathIcon
-                  v-if="entry.status === 'running'"
-                  class="h-4 w-4 animate-spin text-slate-500"
-                />
-                <CheckCircleIcon
-                  v-else-if="entry.status === 'completed'"
-                  class="h-4 w-4 text-slate-400"
-                />
-                <XCircleIcon
-                  v-else
-                  class="h-4 w-4 text-rose-500"
-                />
-              </span>
-              <div class="min-w-0">
-                <p class="whitespace-pre-wrap text-[14px] leading-7 text-slate-800">
+          <article v-else-if="entry.entryType === 'trace-summary'" class="flex justify-start">
+            <div class="w-full max-w-full">
+              <div class="flex items-center gap-2 px-1 py-1 text-[12px] leading-5 text-slate-400">
+                <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                  <CheckCircleIcon class="h-4 w-4 text-slate-300" />
+                </span>
+                <p class="min-w-0 flex-1 truncate">
                   {{ entry.label }}
                 </p>
+                <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px]">
+                  {{ traceDurationText(entry) }}
+                </span>
               </div>
             </div>
+          </article>
 
-            <div v-else class="grid grid-cols-[1rem,minmax(0,1fr),auto] items-start gap-3">
-              <span class="mt-1 inline-flex h-4 w-4 items-center justify-center">
-                <ArrowPathIcon
-                  v-if="entry.status === 'running'"
-                  class="h-4 w-4 text-slate-500"
-                />
-                <CpuChipIcon
-                  v-else-if="entry.traceType === 'agent'"
-                  class="h-4 w-4"
-                  :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
-                />
-                <WrenchScrewdriverIcon
-                  v-else-if="entry.traceType === 'tool'"
-                  class="h-4 w-4"
-                  :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
-                />
-                <CheckCircleIcon
-                  v-else-if="entry.status === 'completed'"
-                  class="h-4 w-4 text-slate-400"
-                />
-                <XCircleIcon
-                  v-else-if="entry.status === 'failed'"
-                  class="h-4 w-4 text-rose-500"
-                />
-                <div
-                  v-else
-                  class="h-2.5 w-2.5 rounded-full"
-                  :class="entry.status === 'running' ? 'bg-cyan-500' : 'bg-slate-300'"
-                />
-              </span>
-
-              <div class="min-w-0">
-                <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                  <p class="truncate text-[13px] leading-5 text-slate-700">
-                    {{ traceSummaryText(entry) }}
-                  </p>
-                  <span class="text-[11px]" :class="traceStatusClass(entry)">
-                    {{ traceStatusLabel(entry) }}
+          <article v-else-if="entry.entryType === 'trace'" class="flex justify-start">
+            <div class="w-full max-w-full">
+              <div
+                v-if="isActiveTraceEntry(entry)"
+                class="rounded-2xl border border-slate-200/80 bg-slate-50/85 px-3.5 py-2.5 text-slate-700"
+              >
+                <div class="flex items-start gap-2.5">
+                  <span class="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                    <ArrowPathIcon
+                      v-if="entry.status === 'running'"
+                      class="h-4 w-4 animate-spin text-cyan-600"
+                    />
+                    <CpuChipIcon
+                      v-else-if="entry.traceType === 'agent'"
+                      class="h-4 w-4"
+                      :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                    />
+                    <WrenchScrewdriverIcon
+                      v-else-if="entry.traceType === 'tool'"
+                      class="h-4 w-4"
+                      :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                    />
+                    <CheckCircleIcon
+                      v-else-if="entry.status === 'completed'"
+                      class="h-4 w-4 text-slate-400"
+                    />
+                    <XCircleIcon
+                      v-else-if="entry.status === 'failed'"
+                      class="h-4 w-4 text-rose-500"
+                    />
+                    <div
+                      v-else
+                      class="h-2.5 w-2.5 rounded-full bg-slate-300"
+                    />
                   </span>
-                </div>
-                <p v-if="entry.detail" class="mt-0.5 text-[12px] leading-5 text-slate-400">
-                  {{ entry.detail }}
-                </p>
-              </div>
 
-              <p class="whitespace-nowrap pt-0.5 text-[11px] text-slate-400">
-                {{ traceDurationText(entry) }}
-              </p>
+                  <div class="min-w-0 flex-1">
+                    <p class="whitespace-pre-wrap text-[13px] leading-6 text-slate-700">
+                      {{ traceNarrativeText(entry) }}
+                    </p>
+                    <p
+                      v-if="traceMetaText(entry)"
+                      class="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-slate-400"
+                    >
+                      {{ traceMetaText(entry) }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div
+                v-else
+                class="flex items-center gap-2 px-1 py-1 text-[12px] leading-5"
+                :class="traceHistoryToneClass(entry)"
+              >
+                <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                  <CheckCircleIcon
+                    v-if="entry.status === 'completed'"
+                    class="h-4 w-4 text-slate-300"
+                  />
+                  <XCircleIcon
+                    v-else-if="entry.status === 'failed'"
+                    class="h-4 w-4 text-rose-400"
+                  />
+                  <CpuChipIcon
+                    v-else-if="entry.traceType === 'agent'"
+                    class="h-4 w-4"
+                  />
+                  <WrenchScrewdriverIcon
+                    v-else-if="entry.traceType === 'tool'"
+                    class="h-4 w-4"
+                  />
+                  <CheckCircleIcon
+                    v-else
+                    class="h-4 w-4"
+                  />
+                </span>
+                <p class="min-w-0 flex-1 truncate">
+                  {{ traceHistoryText(entry) }}
+                </p>
+                <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px]">
+                  {{ traceDurationText(entry) }}
+                </span>
+              </div>
             </div>
           </article>
 
@@ -416,6 +444,10 @@ const traceDurationText = (entry: AiSearchActivityTrace): string => {
   return ''
 }
 
+const isActiveTraceEntry = (entry: AiSearchActivityTrace): boolean => (
+  String(entry.status || '').trim() === 'running'
+)
+
 const traceStatusLabel = (entry: AiSearchActivityTrace): string => {
   if (entry.status === 'failed') return '失败'
   if (entry.status === 'completed') return '已完成'
@@ -423,17 +455,43 @@ const traceStatusLabel = (entry: AiSearchActivityTrace): string => {
   return '运行中'
 }
 
-const traceStatusClass = (entry: AiSearchActivityTrace): string => {
-  if (entry.status === 'failed') return 'text-rose-500'
-  if (entry.status === 'completed') return 'text-slate-400'
-  return 'text-slate-500'
+const traceTypeLabel = (entry: AiSearchActivityTrace): string => {
+  if (entry.traceType === 'thinking') return '思考'
+  if (entry.traceType === 'tool') return '工具调用'
+  if (entry.traceType === 'agent') return 'Agent 调用'
+  return '处理中'
 }
 
-const traceSummaryText = (entry: AiSearchActivityTrace): string => {
-  if (entry.traceType === 'agent') {
-    return entry.actorName ? `${entry.label} · ${entry.actorName}` : entry.label
-  }
-  return entry.label
+const traceNarrativeText = (entry: AiSearchActivityTrace): string => {
+  const label = String(entry.label || '').trim() || '处理中'
+  if (entry.traceType === 'thinking') return label
+  if (entry.status === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
+  if (entry.status === 'completed') return `${traceTypeLabel(entry)}完成：${label}`
+  return `正在${traceTypeLabel(entry) === '处理中' ? '处理' : traceTypeLabel(entry).replace('调用', '')}：${label}`
+}
+
+const traceHistoryText = (entry: AiSearchActivityTrace): string => {
+  const label = String(entry.label || '').trim() || '处理中'
+  if (entry.status === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
+  if (entry.traceType === 'thinking') return label
+  return `${traceTypeLabel(entry)} · ${label}`
+}
+
+const traceMetaText = (entry: AiSearchActivityTrace): string => {
+  const parts = [
+    traceTypeLabel(entry),
+    entry.actorName ? String(entry.actorName).trim() : '',
+    entry.toolName ? String(entry.toolName).trim() : '',
+    traceStatusLabel(entry),
+    traceDurationText(entry),
+    entry.detail ? String(entry.detail).trim() : '',
+  ].filter(Boolean)
+  return parts.join(' · ')
+}
+
+const traceHistoryToneClass = (entry: AiSearchActivityTrace): string => {
+  if (entry.status === 'failed') return 'text-rose-500'
+  return 'text-slate-400'
 }
 
 const entryCopyText = (entry: Record<string, any>): string => String(entry?.content || '').trim()
@@ -444,9 +502,14 @@ const downloadAttachmentsForEntry = (entry: Record<string, any>): AiSearchArtifa
   if (String(props.phase || '').trim() !== 'completed') return []
   const attachments = Array.isArray(props.attachments) ? [...props.attachments] : []
   if (!attachments.length) return []
-  if (entry.role !== 'assistant' || isPlanMessage(entry) || isQuestionMessage(entry)) return []
-  const assistantEntries = props.entries.filter(item => item.role === 'assistant')
-  if (assistantEntries.at(-1)?.id !== entry.id) return []
+  if (entry.entryType === 'trace' || entry.entryType === 'trace-summary' || entry.entryType === 'phase') return []
+  const anchorEntry = [...props.entries].reverse().find((item) => (
+    item?.role === 'assistant'
+    && item.entryType !== 'trace'
+    && item.entryType !== 'trace-summary'
+    && item.entryType !== 'phase'
+  ))
+  if (!anchorEntry || anchorEntry.id !== entry.id) return []
   return attachments.sort((left, right) => {
     if (Boolean(left.isPrimary) !== Boolean(right.isPrimary)) return left.isPrimary ? -1 : 1
     return String(left.attachmentId || '').localeCompare(String(right.attachmentId || ''))

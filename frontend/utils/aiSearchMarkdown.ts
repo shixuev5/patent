@@ -1,12 +1,14 @@
 import MarkdownIt from 'markdown-it'
 
+type MarkdownItLinkOpenRule = NonNullable<typeof renderer.renderer.rules.link_open>
+
 const renderer = new MarkdownIt({
   html: false,
   breaks: true,
   linkify: true,
 })
 
-const defaultLinkOpen = renderer.renderer.rules.link_open || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
+const defaultLinkOpen: MarkdownItLinkOpenRule = renderer.renderer.rules.link_open || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
 
 renderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const token = tokens[idx]

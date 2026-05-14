@@ -15,6 +15,72 @@ const toMillis = (value?: string | null): number => {
   return Number.isFinite(ts) ? ts : 0
 }
 
+const isTraceEntry = (entry: ConversationEntryLike): boolean => (
+  String(entry?.entryType || '').trim() === 'trace'
+)
+
+const isCompletedTraceEntry = (entry: ConversationEntryLike): boolean => (
+  isTraceEntry(entry) && String(entry?.status || '').trim() === 'completed'
+)
+
+const isLowSignalCompletedTrace = (entry: ConversationEntryLike): boolean => (
+  isCompletedTraceEntry(entry) && String(entry?.traceType || '').trim() === 'thinking'
+)
+
+const buildTraceSummaryLabel = (items: ConversationEntryLike[]): string => {
+  const labels = items
+    .map(item => String(item?.label || '').trim())
+    .filter(Boolean)
+  const preview = labels.slice(0, 2).join('、')
+  const remaining = labels.length - Math.min(labels.length, 2)
+  if (!preview) return `已完成 ${items.length} 个步骤`
+  if (remaining > 0) return `已完成 ${items.length} 个步骤：${preview} 等`
+  return `已完成 ${items.length} 个步骤：${preview}`
+}
+
+const mergeConversationEntries = (entries: ConversationEntryLike[]): ConversationEntryLike[] => {
+  const merged: ConversationEntryLike[] = []
+  let completedTraceBuffer: ConversationEntryLike[] = []
+
+  const flushCompletedTraceBuffer = () => {
+    if (!completedTraceBuffer.length) return
+    if (completedTraceBuffer.length === 1) {
+      merged.push(completedTraceBuffer[0])
+      completedTraceBuffer = []
+      return
+    }
+    const first = completedTraceBuffer[0]
+    const last = completedTraceBuffer[completedTraceBuffer.length - 1]
+    merged.push({
+      id: `trace-summary-${String(first.id || '').trim()}-${String(last.id || '').trim()}`,
+      entryType: 'trace-summary',
+      traceType: 'summary',
+      status: 'completed',
+      label: buildTraceSummaryLabel(completedTraceBuffer),
+      aggregateCount: completedTraceBuffer.length,
+      items: completedTraceBuffer,
+      sortKey: first.sortKey,
+      order: first.order,
+      startedAt: first.startedAt || null,
+      endedAt: last.endedAt || last.startedAt || null,
+    })
+    completedTraceBuffer = []
+  }
+
+  entries.forEach((entry) => {
+    if (isLowSignalCompletedTrace(entry)) return
+    if (isCompletedTraceEntry(entry)) {
+      completedTraceBuffer.push(entry)
+      return
+    }
+    flushCompletedTraceBuffer()
+    merged.push(entry)
+  })
+
+  flushCompletedTraceBuffer()
+  return merged
+}
+
 export const useAiSearchConversation = ({
   messages,
   activityTraces,
@@ -61,10 +127,11 @@ export const useAiSearchConversation = ({
         order: 1000 + index,
       })
     })
-    return entries.sort((left, right) => {
+    const sortedEntries = entries.sort((left, right) => {
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
     })
+    return mergeConversationEntries(sortedEntries)
   })
 
   const pendingActionEntries = computed<Array<Record<string, any>>>(() => {

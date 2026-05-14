@@ -18,6 +18,7 @@ import type {
 } from '~/types/aiSearch'
 
 const EXECUTION_PHASES = ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison']
+const AI_SEARCH_PHASE_MARKERS_STORAGE_PREFIX = 'patent_ai_search_phase_markers::'
 
 interface AiSearchSessionRuntime {
   activeRun: AiSearchActiveRun | null
@@ -230,6 +231,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!targetSessionId) return createEmptyRuntime()
       if (!this.sessionRuntimeById[targetSessionId]) {
         this.sessionRuntimeById[targetSessionId] = createEmptyRuntime()
+        this._restorePhaseMarkers(targetSessionId)
       }
       return this.sessionRuntimeById[targetSessionId]
     },
@@ -324,6 +326,53 @@ export const useAiSearchStore = defineStore('aiSearch', {
       this.currentSessionId = String(sessionId || '').trim()
     },
 
+    _phaseMarkerStorageKey(sessionId: string): string {
+      const targetSessionId = String(sessionId || '').trim()
+      return targetSessionId ? `${AI_SEARCH_PHASE_MARKERS_STORAGE_PREFIX}${targetSessionId}` : ''
+    },
+
+    _persistPhaseMarkers(sessionId: string) {
+      if (!process.client) return
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      const storageKey = this._phaseMarkerStorageKey(targetSessionId)
+      if (!storageKey) return
+      try {
+        const runtime = this._ensureRuntime(targetSessionId)
+        localStorage.setItem(storageKey, JSON.stringify(runtime.phaseMarkers || []))
+      } catch (_error) {
+        // Ignore storage failures; phase markers are a UX enhancement.
+      }
+    },
+
+    _restorePhaseMarkers(sessionId: string) {
+      if (!process.client) return
+      const targetSessionId = String(sessionId || '').trim()
+      if (!targetSessionId) return
+      const runtime = this.sessionRuntimeById[targetSessionId]
+      if (!runtime || runtime.phaseMarkers.length) return
+      const storageKey = this._phaseMarkerStorageKey(targetSessionId)
+      if (!storageKey) return
+      try {
+        const raw = localStorage.getItem(storageKey)
+        if (!raw) return
+        const parsed = JSON.parse(raw)
+        if (!Array.isArray(parsed)) return
+        runtime.phaseMarkers = parsed
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            id: String(item.id || '').trim(),
+            runKey: String(item.runKey || '').trim(),
+            phase: String(item.phase || '').trim(),
+            createdAt: String(item.createdAt || '').trim(),
+            endedAt: String(item.endedAt || '').trim() || null,
+          }))
+          .filter((item) => item.id && item.runKey && item.phase && item.createdAt)
+      } catch (_error) {
+        // Ignore malformed cached phase markers.
+      }
+    },
+
     activateSession(sessionId: string) {
       const targetSessionId = String(sessionId || '').trim()
       if (!targetSessionId) return
@@ -360,6 +409,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         },
       }
       this._ensureRuntime(sessionId)
+      this._restorePhaseMarkers(sessionId)
       this._setRuntime(sessionId, { lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0) })
       this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
       if (options.activate !== false) {
@@ -442,13 +492,13 @@ export const useAiSearchStore = defineStore('aiSearch', {
       })
     },
 
-    _ensurePhaseMarker(sessionId: string, phase: string) {
+    _ensurePhaseMarker(sessionId: string, phase: string, createdAtHint?: string | null) {
         const normalizedPhase = String(phase || '').trim()
         const runtime = this._ensureRuntime(sessionId)
         const runKey = String(runtime.activeRun?.runKey || '').trim()
         if (!normalizedPhase || !runKey) return
         if (runtime.phaseMarkers.some((item) => item.runKey === runKey && item.phase === normalizedPhase)) return
-        const createdAt = nowIso()
+        const createdAt = String(createdAtHint || '').trim() || nowIso()
         const previous = runtime.phaseMarkers[runtime.phaseMarkers.length - 1]
         if (previous && !previous.endedAt) {
           runtime.phaseMarkers = [
@@ -466,22 +516,25 @@ export const useAiSearchStore = defineStore('aiSearch', {
             endedAt: null,
           },
         ]
+        this._persistPhaseMarkers(sessionId)
     },
 
-    _closeLatestPhaseMarker(sessionId: string) {
+    _closeLatestPhaseMarker(sessionId: string, endedAtHint?: string | null) {
       const runtime = this._ensureRuntime(sessionId)
       const previous = runtime.phaseMarkers[runtime.phaseMarkers.length - 1]
       if (!previous || previous.endedAt) return
+      const endedAt = String(endedAtHint || '').trim() || nowIso()
       runtime.phaseMarkers = [
         ...runtime.phaseMarkers.slice(0, -1),
-        { ...previous, endedAt: nowIso() },
+        { ...previous, endedAt },
       ]
+      this._persistPhaseMarkers(sessionId)
     },
 
-    _startActiveRun(sessionId: string, phaseHint?: string, forceNewRun: boolean = false) {
+    _startActiveRun(sessionId: string, phaseHint?: string, forceNewRun: boolean = false, startedAtHint?: string | null) {
       const snapshot = this._getSnapshot(sessionId)
       const runtime = this._ensureRuntime(sessionId)
-      const createdAt = nowIso()
+      const createdAt = String(startedAtHint || '').trim() || nowIso()
       const nextPhase = String(phaseHint || activePhase(snapshot) || '').trim()
       if (forceNewRun || !runtime.activeRun) {
         runtime.activeRun = {
@@ -522,8 +575,8 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
         runtime.activityTraces = []
-        this._startActiveRun(sessionId)
-        this._ensurePhaseMarker(sessionId, phase)
+        this._startActiveRun(sessionId, phase, false, event.timestamp)
+        this._ensurePhaseMarker(sessionId, phase, event.timestamp)
         return
       }
 
@@ -544,7 +597,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
           const nextPhase = String(payload.run.phase || phase || '').trim()
           if (nextPhase) {
             this._syncSessionPhase(sessionId, nextPhase)
-            this._ensurePhaseMarker(sessionId, nextPhase)
+            this._ensurePhaseMarker(sessionId, nextPhase, event.timestamp || payload?.updatedAt || payload?.startedAt)
           }
         }
         if (Object.prototype.hasOwnProperty.call(payload || {}, 'plan')) {
@@ -624,14 +677,16 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
 
       if (event.type === 'run.completed') {
-        this._closeLatestPhaseMarker(sessionId)
+        if (phase) this._ensurePhaseMarker(sessionId, phase, event.timestamp)
+        this._closeLatestPhaseMarker(sessionId, event.timestamp)
         runtime.activeRun = null
         runtime.streaming = false
         return
       }
 
       if (event.type === 'run.failed') {
-        this._closeLatestPhaseMarker(sessionId)
+        if (phase) this._ensurePhaseMarker(sessionId, phase, event.timestamp)
+        this._closeLatestPhaseMarker(sessionId, event.timestamp)
         runtime.error = String(payload?.message || '当前流式轮次执行失败。')
         runtime.streaming = false
         this._resetTransientRunState(sessionId)
@@ -1244,6 +1299,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
         delete this.sessionSnapshotsById[targetSessionId]
         delete this.sessionRuntimeById[targetSessionId]
         delete this.sessionMutationBusyById[targetSessionId]
+        if (process.client) {
+          const storageKey = this._phaseMarkerStorageKey(targetSessionId)
+          if (storageKey) localStorage.removeItem(storageKey)
+        }
         if (!wasActive) return
         this._setCurrentSessionId('')
         await this.fetchSessions()

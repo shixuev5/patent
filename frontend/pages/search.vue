@@ -181,7 +181,7 @@
           </button>
           <div v-if="executionPanelOpen" class="accordion-body space-y-2.5">
             <div v-if="!executionTodos.length" class="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">
-              计划确认后会在这里显示执行任务拆解和实时状态。
+              {{ executionEmptyStateText }}
             </div>
             <div v-else class="space-y-1.5">
               <p v-if="currentExecutionHint" class="px-0.5 text-[12px] leading-6 text-slate-500">
@@ -443,6 +443,12 @@ const showExecutionPanel = computed(() => (
   || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(activePhase.value || '')
 ))
 
+const executionEmptyStateText = computed(() => {
+  if (activePhase.value === 'completed') return '本轮执行已完成，本次没有可展示的任务拆解记录。'
+  if (activePhase.value === 'failed') return '本轮执行已结束，但没有保留下可展示的任务拆解记录。'
+  return '计划确认后会在这里显示执行任务拆解和实时状态。'
+})
+
 const layoutClass = computed(() => (sidebarCollapsed.value
   ? 'lg:grid-cols-[auto,minmax(0,1fr)]'
   : 'lg:grid-cols-[15rem,minmax(0,1fr)] xl:grid-cols-[15.5rem,minmax(0,1fr)]'
@@ -455,7 +461,6 @@ const sidebarClass = computed(() => (
 const showCollapsedSidebarRail = computed(() => sidebarCollapsed.value)
 const showMobileSessionDrawer = computed(() => mobileDrawerOpen.value)
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
-const canAccessAiSearch = computed(() => hasAuthingEnabled.value && authStore.isLoggedIn && adminUsageStore.isAdmin)
 const currentSessionMutating = computed(() => {
   const sessionId = String(currentSession.value?.session.sessionId || '').trim()
   return !!sessionId && aiSearchStore.isSessionMutating(sessionId)
@@ -802,12 +807,8 @@ watch(
 onMounted(async () => {
   if (hasAuthingEnabled.value) {
     await authStore.ensureInitialized()
-    await adminUsageStore.fetchAccess(true)
-  }
-  if (!canAccessAiSearch.value) {
-    showMessage('error', 'AI 检索仅对已登录管理员开放。')
-    await router.replace('/tasks')
-    return
+  } else {
+    await taskStore.ensureAuth()
   }
   if (import.meta.client) {
     const storedCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'

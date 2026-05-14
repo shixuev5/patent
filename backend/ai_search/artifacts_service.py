@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agents.ai_search.src.context import AiSearchAgentContext
+from agents.ai_search.src.state import PHASE_COMPLETED, get_ai_search_meta
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
@@ -19,6 +20,7 @@ ATTACHMENT_SPECS: dict[str, dict[str, str | bool]] = {
         "media_type": "application/zip",
         "suffix": ".zip",
         "prefix": "AI 检索结果",
+        "default_filename": "ai_search_result_bundle.zip",
         "primary": True,
     },
     "feature_comparison_csv": {
@@ -27,6 +29,7 @@ ATTACHMENT_SPECS: dict[str, dict[str, str | bool]] = {
         "media_type": "text/csv",
         "suffix": ".csv",
         "prefix": "AI 检索特征对比",
+        "default_filename": "feature_comparison.csv",
         "primary": False,
     },
     "report_pdf": {
@@ -35,6 +38,7 @@ ATTACHMENT_SPECS: dict[str, dict[str, str | bool]] = {
         "media_type": "application/pdf",
         "suffix": ".pdf",
         "prefix": "AI 检索报告",
+        "default_filename": "ai_search_report.pdf",
         "primary": False,
     },
 }
@@ -60,12 +64,24 @@ class AiSearchArtifactsService:
         output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
         output_key = str(spec.get("output_key") or "").strip()
         raw_path = str(output_files.get(output_key) or "").strip()
-        if not raw_path:
-            return None
-        path = Path(raw_path)
+        if raw_path:
+            path = Path(raw_path)
+        else:
+            output_dir = Path(str(getattr(task, "output_dir", "") or "").strip())
+            default_filename = str(spec.get("default_filename") or "").strip()
+            if not output_dir or not output_dir.exists() or not default_filename:
+                return None
+            path = output_dir / default_filename
         if not path.exists() or not path.is_file():
             return None
         return path
+
+    def _task_has_terminal_artifacts(self, task: Any) -> bool:
+        status = str(getattr(task.status, "value", task.status) or "").strip().lower()
+        if status == "completed":
+            return True
+        meta = get_ai_search_meta(task)
+        return str(meta.get("current_phase") or "").strip() == PHASE_COMPLETED
 
     def _attachment_name(self, task: Any, attachment_id: str) -> str:
         spec = ATTACHMENT_SPECS[str(attachment_id)]
@@ -76,7 +92,7 @@ class AiSearchArtifactsService:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
     def _snapshot_attachments(self, task: Any) -> list[AiSearchArtifactAttachment]:
-        if str(getattr(task.status, "value", task.status) or "").strip().lower() != "completed":
+        if not self._task_has_terminal_artifacts(task):
             return []
         attachments: list[AiSearchArtifactAttachment] = []
         for attachment_id, spec in ATTACHMENT_SPECS.items():
@@ -169,6 +185,15 @@ class AiSearchArtifactsService:
         feature_comparison = self._current_feature_comparison(task, plan_version, fallback_latest=True)
         context = AiSearchAgentContext(self.storage, task_id)
         gap_context = context.latest_gap_context()
+        feature_compare_markdown_getter = getattr(context, "latest_agent_markdown_content", None)
+        feature_compare_markdown = ""
+        if callable(feature_compare_markdown_getter):
+            try:
+                feature_compare_markdown = str(
+                    feature_compare_markdown_getter("feature-comparer", plan_version=plan_version) or ""
+                ).strip()
+            except Exception:
+                feature_compare_markdown = ""
         artifacts = self.facade._build_terminal_artifacts(
             task=task,
             current_plan=current_plan,
@@ -176,7 +201,7 @@ class AiSearchArtifactsService:
             feature_comparison=feature_comparison,
             close_read_result=gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
             feature_compare_result=gap_context.get("feature_compare_result") if isinstance(gap_context.get("feature_compare_result"), dict) else None,
-            feature_compare_markdown=context.latest_agent_markdown_content("feature-comparer", plan_version=plan_version),
+            feature_compare_markdown=feature_compare_markdown,
             source_patent_data=context.load_source_patent_data(),
             termination_reason=termination_reason,
         )

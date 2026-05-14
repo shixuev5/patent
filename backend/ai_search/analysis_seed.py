@@ -591,9 +591,10 @@ def build_analysis_seed_user_message(
     report = analysis_payload.get("report") if isinstance(analysis_payload.get("report"), dict) else {}
     metadata = analysis_payload.get("metadata") if isinstance(analysis_payload.get("metadata"), dict) else {}
     effect_plan_groups = _effect_plan_groups(analysis_payload)
+    sub_plans = build_analysis_sub_plans(analysis_payload)
     effect_lines: List[str] = []
     if effect_plan_groups:
-        for group in effect_plan_groups:
+        for group_index, group in enumerate(effect_plan_groups, start=1):
             effect_lines.append(f"### 核心效果{int(group.get('index') or 0) or 1}：{_safe_text(group.get('effect_text'))}")
             effect_lines.append("#### 语义检索文本")
             semantic_text = _safe_text(group.get("semantic_query_text"))
@@ -610,6 +611,20 @@ def build_analysis_seed_user_message(
                 effect_lines.append("")
                 effect_lines.append("#### Block C 条件分支要素表")
                 effect_lines.extend(_render_elements_table(block_c_elements))
+            sub_plan = sub_plans[group_index - 1] if group_index - 1 < len(sub_plans) else {}
+            retrieval_steps = sub_plan.get("retrieval_steps") if isinstance(sub_plan, dict) else []
+            if isinstance(retrieval_steps, list) and retrieval_steps:
+                effect_lines.append("")
+                effect_lines.append("#### 执行步骤")
+                for step_index, step in enumerate(retrieval_steps, start=1):
+                    activation_mode = str(step.get("activation_mode") or "").strip()
+                    activation_label = "条件触发" if activation_mode == "conditional" else "立即执行"
+                    step_title = _safe_text(step.get("title")) or f"步骤 {step_index}"
+                    activation_summary = _safe_text(step.get("activation_summary"))
+                    line = f"- Step {step_index}（{activation_label}）：{step_title}"
+                    if activation_summary:
+                        line = f"{line}。{activation_summary}"
+                    effect_lines.append(line)
             effect_lines.append("")
     else:
         technical_effects = _technical_effect_items(analysis_payload)
