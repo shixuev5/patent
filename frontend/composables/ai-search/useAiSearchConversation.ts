@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import type { AiSearchActivityTrace } from '~/types/aiSearch'
+import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 
 export type ConversationActionCard = {
   actionType: 'resume' | 'human_decision'
@@ -14,6 +15,16 @@ const toMillis = (value?: string | null): number => {
   const ts = Date.parse(String(value || ''))
   return Number.isFinite(ts) ? ts : 0
 }
+
+const entryMetadata = (entry: ConversationEntryLike): Record<string, any> => {
+  const value = entry?.metadata
+  return value && typeof value === 'object' ? value as Record<string, any> : {}
+}
+
+const isAnalysisSeedContextMessage = (entry: ConversationEntryLike): boolean => (
+  String(entry?.role || '').trim() === 'user'
+  && String(entryMetadata(entry).message_variant || '').trim() === 'analysis_seed_context'
+)
 
 const isTraceEntry = (entry: ConversationEntryLike): boolean => (
   String(entry?.entryType || '').trim() === 'trace'
@@ -81,6 +92,15 @@ const mergeConversationEntries = (entries: ConversationEntryLike[]): Conversatio
   return merged
 }
 
+const buildWaitingTraceLabel = (phase: string): string => {
+  const normalized = String(phase || '').trim()
+  const phaseLabel = aiSearchPhaseLabel(normalized)
+  if (!normalized) return '正在继续处理，请稍候。'
+  if (normalized === 'drafting_plan') return '正在起草检索计划，请稍候。'
+  if (normalized === 'awaiting_plan_confirmation') return '正在整理检索计划展示内容，请稍候。'
+  return `正在${phaseLabel}，请稍候。`
+}
+
 export const useAiSearchConversation = ({
   messages,
   activityTraces,
@@ -88,6 +108,8 @@ export const useAiSearchConversation = ({
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
+  streaming,
+  phase,
 }: {
   messages: { value: Array<Record<string, any>> }
   activityTraces: { value: AiSearchActivityTrace[] }
@@ -95,10 +117,13 @@ export const useAiSearchConversation = ({
   currentPendingAction: { value: Record<string, any> | null }
   resumeActionCard: { value: ConversationActionCard | null }
   humanDecisionCard: { value: ConversationActionCard | null }
+  streaming: { value: boolean }
+  phase: { value: string }
 }) => {
   const conversationEntries = computed<Array<Record<string, any>>>(() => {
     const entries: Array<Record<string, any>> = []
     messages.value.forEach((message, index) => {
+      if (isAnalysisSeedContextMessage(message)) return
       entries.push({
         id: message.message_id || `message-${index}`,
         entryType: 'message',
@@ -131,7 +156,33 @@ export const useAiSearchConversation = ({
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
     })
-    return mergeConversationEntries(sortedEntries)
+    const mergedEntries = mergeConversationEntries(sortedEntries)
+    const hasAssistantMessage = mergedEntries.some((entry) => (
+      String(entry.entryType || '').trim() === 'message'
+      && String(entry.role || '').trim() === 'assistant'
+    ))
+    const hasRunningTrace = mergedEntries.some((entry) => (
+      String(entry.entryType || '').trim() === 'trace'
+      && String(entry.status || '').trim() === 'running'
+    ))
+    const shouldShowSyntheticWaitingTrace = (!hasAssistantMessage && ['drafting_plan', 'awaiting_plan_confirmation'].includes(String(phase.value || '').trim()))
+      || (streaming.value && !hasRunningTrace)
+    if (shouldShowSyntheticWaitingTrace && !hasRunningTrace) {
+      const maxSortKey = mergedEntries.reduce((max, entry) => Math.max(max, Number(entry.sortKey || 0)), 0)
+      mergedEntries.push({
+        id: `trace-waiting-${String(phase.value || '').trim() || 'default'}`,
+        entryType: 'trace',
+        traceType: 'agent',
+        status: 'running',
+        label: buildWaitingTraceLabel(phase.value),
+        actorName: 'main-agent',
+        startedAt: new Date().toISOString(),
+        sortKey: maxSortKey + 1,
+        order: 2999,
+        synthetic: true,
+      })
+    }
+    return mergedEntries
   })
 
   const pendingActionEntries = computed<Array<Record<string, any>>>(() => {

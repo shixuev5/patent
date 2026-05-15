@@ -84,49 +84,41 @@
             <div class="w-full max-w-full">
               <div
                 v-if="isActiveTraceEntry(entry)"
-                class="rounded-2xl border border-slate-200/80 bg-slate-50/85 px-3.5 py-2.5 text-slate-700"
+                class="flex items-start gap-2 px-1 py-1 text-slate-700"
               >
-                <div class="flex items-start gap-2.5">
-                  <span class="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                    <ArrowPathIcon
-                      v-if="entry.status === 'running'"
-                      class="h-4 w-4 animate-spin text-cyan-600"
-                    />
-                    <CpuChipIcon
-                      v-else-if="entry.traceType === 'agent'"
-                      class="h-4 w-4"
-                      :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
-                    />
-                    <WrenchScrewdriverIcon
-                      v-else-if="entry.traceType === 'tool'"
-                      class="h-4 w-4"
-                      :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
-                    />
-                    <CheckCircleIcon
-                      v-else-if="entry.status === 'completed'"
-                      class="h-4 w-4 text-slate-400"
-                    />
-                    <XCircleIcon
-                      v-else-if="entry.status === 'failed'"
-                      class="h-4 w-4 text-rose-500"
-                    />
-                    <div
-                      v-else
-                      class="h-2.5 w-2.5 rounded-full bg-slate-300"
-                    />
-                  </span>
+                <span class="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                  <ArrowPathIcon
+                    v-if="entry.status === 'running'"
+                    class="h-4 w-4 animate-spin text-cyan-600"
+                  />
+                  <CpuChipIcon
+                    v-else-if="entry.traceType === 'agent'"
+                    class="h-4 w-4"
+                    :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                  />
+                  <WrenchScrewdriverIcon
+                    v-else-if="entry.traceType === 'tool'"
+                    class="h-4 w-4"
+                    :class="entry.status === 'failed' ? 'text-rose-500' : 'text-slate-400'"
+                  />
+                  <CheckCircleIcon
+                    v-else-if="entry.status === 'completed'"
+                    class="h-4 w-4 text-slate-400"
+                  />
+                  <XCircleIcon
+                    v-else-if="entry.status === 'failed'"
+                    class="h-4 w-4 text-rose-500"
+                  />
+                  <div
+                    v-else
+                    class="h-2.5 w-2.5 rounded-full bg-slate-300"
+                  />
+                </span>
 
-                  <div class="min-w-0 flex-1">
-                    <p class="whitespace-pre-wrap text-[13px] leading-6 text-slate-700">
-                      {{ traceNarrativeText(entry) }}
-                    </p>
-                    <p
-                      v-if="traceMetaText(entry)"
-                      class="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-slate-400"
-                    >
-                      {{ traceMetaText(entry) }}
-                    </p>
-                  </div>
+                <div class="min-w-0 flex-1">
+                  <p class="whitespace-pre-wrap text-[13px] leading-6 text-slate-700">
+                    {{ traceNarrativeText(entry) }}
+                  </p>
                 </div>
               </div>
               <div
@@ -182,9 +174,15 @@
                       {{ planTitle(entry) }}
                     </p>
                     <AiSearchExpandableContent :content="planBody(entry)" mode="markdown" theme="slate" />
+                    <p
+                      v-if="shouldShowPlanConfirmationCard(entry)"
+                      class="text-xs leading-6 text-slate-500"
+                    >
+                      可直接发送消息补充或修改计划，确认后开始执行。
+                    </p>
                     <AiSearchPlanConfirmationCard
-                      v-if="isPendingPlanEntry(entry)"
-                      :confirm-disabled="streaming || !hasPendingPlanConfirmation"
+                      v-if="shouldShowPlanConfirmationCard(entry)"
+                      :confirm-disabled="streaming || !canConfirmPlan(entry)"
                       :label="planConfirmationLabel"
                       @confirm="$emit('confirm-plan')"
                     />
@@ -348,7 +346,19 @@ const phaseDurationText = (entry: Record<string, any>): string => {
 }
 
 const isPendingActionEntry = (entry: Record<string, any>): boolean => String(entry.entryType || '').trim() === 'pending-action'
-const isPlanMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'plan_confirmation'
+const isPlanMessage = (entry: Record<string, any>): boolean => {
+  if (String(entry.kind || '').trim() === 'plan_confirmation') return true
+  if (entry.role !== 'assistant') return false
+  const metadata = entryMetadata(entry)
+  const kind = String(entry.kind || '').trim()
+  const variant = String(metadata.message_variant || '').trim()
+  if (kind === 'plan' || variant === 'plan_confirmation' || variant === 'plan') return true
+  if (!props.hasPendingPlanConfirmation) return false
+  const latestAssistantEntry = [...props.entries].reverse().find((item) => String(item?.role || '').trim() === 'assistant')
+  const latestAssistantId = String(latestAssistantEntry?.id || latestAssistantEntry?.message_id || latestAssistantEntry?.messageId || '').trim()
+  const entryId = String(entry?.id || entry?.message_id || entry?.messageId || '').trim()
+  return !!entryId && !!latestAssistantId && entryId === latestAssistantId
+}
 const isQuestionMessage = (entry: Record<string, any>): boolean => String(entry.kind || '').trim() === 'question'
 const planVersionOf = (entry: Record<string, any>): number => {
   const value = Number(entry.plan_version || entry.planVersion || entry.metadata?.plan_version || 0)
@@ -396,6 +406,18 @@ const isPendingPlanEntry = (entry: Record<string, any>): boolean => {
   return !!entryId && entryId === latestPlanMessageId.value
 }
 
+const shouldShowPlanConfirmationCard = (entry: Record<string, any>): boolean => {
+  if (!isLatestPlanMessage(entry)) return false
+  if (isPendingPlanEntry(entry)) return true
+  return String(props.phase || '').trim() === 'awaiting_plan_confirmation'
+}
+
+const canConfirmPlan = (entry: Record<string, any>): boolean => {
+  if (!isPlanMessage(entry)) return false
+  if (props.hasPendingPlanConfirmation) return true
+  return String(props.phase || '').trim() === 'awaiting_plan_confirmation'
+}
+
 const isPendingQuestionEntry = (entry: Record<string, any>): boolean => {
   if (!isQuestionMessage(entry) || !props.pendingQuestion) return false
   const entryQuestionId = String(entry.question_id || entry.questionId || '').trim()
@@ -425,6 +447,7 @@ const messageCardClass = (entry: Record<string, any>): string => {
   if (entry.role === 'user') {
     return 'rounded-2xl bg-cyan-700 px-3.5 py-2.5 text-white shadow-sm shadow-cyan-100'
   }
+  if (isPlanMessage(entry)) return 'rounded-2xl border border-slate-200 bg-white px-4 py-4 text-slate-700 shadow-sm shadow-slate-100'
   if (isQuestionMessage(entry)) return ''
   return 'px-1 py-1 text-slate-700'
 }
@@ -465,9 +488,9 @@ const traceTypeLabel = (entry: AiSearchActivityTrace): string => {
 const traceNarrativeText = (entry: AiSearchActivityTrace): string => {
   const label = String(entry.label || '').trim() || '处理中'
   if (entry.traceType === 'thinking') return label
-  if (entry.status === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
-  if (entry.status === 'completed') return `${traceTypeLabel(entry)}完成：${label}`
-  return `正在${traceTypeLabel(entry) === '处理中' ? '处理' : traceTypeLabel(entry).replace('调用', '')}：${label}`
+  if (entry.status === 'failed') return label
+  if (entry.status === 'completed') return label
+  return label
 }
 
 const traceHistoryText = (entry: AiSearchActivityTrace): string => {
@@ -475,18 +498,6 @@ const traceHistoryText = (entry: AiSearchActivityTrace): string => {
   if (entry.status === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
   if (entry.traceType === 'thinking') return label
   return `${traceTypeLabel(entry)} · ${label}`
-}
-
-const traceMetaText = (entry: AiSearchActivityTrace): string => {
-  const parts = [
-    traceTypeLabel(entry),
-    entry.actorName ? String(entry.actorName).trim() : '',
-    entry.toolName ? String(entry.toolName).trim() : '',
-    traceStatusLabel(entry),
-    traceDurationText(entry),
-    entry.detail ? String(entry.detail).trim() : '',
-  ].filter(Boolean)
-  return parts.join(' · ')
 }
 
 const traceHistoryToneClass = (entry: AiSearchActivityTrace): string => {

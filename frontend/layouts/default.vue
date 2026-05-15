@@ -362,7 +362,13 @@ onMounted(async () => {
     const handled = await authStore.handleCallback()
     if (handled) {
       await refreshAdminAccess(true)
-      await navigateTo({ path: route.path, query: {}, hash: route.hash }, { replace: true })
+      const cleanedQuery = { ...route.query }
+      delete cleanedQuery.code
+      delete cleanedQuery.state
+      delete cleanedQuery.id_token
+      delete cleanedQuery.token
+      delete cleanedQuery.authing_ticket
+      await navigateTo({ path: route.path, query: cleanedQuery, hash: route.hash }, { replace: true })
       return
     }
   }

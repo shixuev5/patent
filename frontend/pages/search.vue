@@ -148,6 +148,7 @@
         </div>
 
         <AiSearchConversationView
+          v-if="!showInvalidSessionState"
           :session-id="currentSession?.session.sessionId"
           :entries="conversationRenderEntries"
           :active-plan-version="activePlanVersion"
@@ -170,6 +171,27 @@
           @complete-current-results="completeCurrentResultsFromDecision"
           @download-result="downloadCurrentResult"
         />
+
+        <div
+          v-if="showInvalidSessionState"
+          class="border-t border-slate-200 px-4 py-6"
+        >
+          <div class="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+            <p class="font-semibold">当前会话不可用</p>
+            <p class="mt-1 leading-6">
+              {{ invalidSessionMessage }}
+            </p>
+            <div class="mt-3 flex justify-end">
+              <button
+                type="button"
+                class="inline-flex items-center justify-center rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-amber-700"
+                @click="createSession"
+              >
+                新建会话
+              </button>
+            </div>
+          </div>
+        </div>
 
         <div v-if="showExecutionPanel" class="border-t border-slate-200">
           <button type="button" class="accordion-toggle" @click="executionPanelOpen = !executionPanelOpen">
@@ -251,8 +273,9 @@
 
         <div class="border-t border-slate-200 px-4 py-4">
           <AiSearchComposerPanel
+            v-if="!showInvalidSessionState"
             v-model="composer"
-            :disabled="inputDisabled || !currentSession"
+            :disabled="inputDisabled || !currentSession || showInvalidSessionState"
             :placeholder="inputPlaceholder"
             :can-submit="canSubmitMessage"
             :mode="composerMode"
@@ -420,6 +443,35 @@ const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '
 const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
 const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
+const requestedSessionId = computed(() => String(route.query.session || '').trim())
+const requestedSessionError = computed(() => {
+  const sessionId = requestedSessionId.value
+  if (!sessionId) return ''
+  const runtime = aiSearchStore.sessionRuntimeById[sessionId]
+  return String(runtime?.error || '').trim()
+})
+const hasRequestedSessionSummary = computed(() => (
+  !!requestedSessionId.value
+  && sessions.value.some(item => String(item.sessionId || '').trim() === requestedSessionId.value)
+))
+const isShowingRequestedSession = computed(() => {
+  const currentId = String(currentSession.value?.session.sessionId || '').trim()
+  if (!requestedSessionId.value) return true
+  return !!currentId && currentId === requestedSessionId.value
+})
+const showInvalidSessionState = computed(() => (
+  !isShowingRequestedSession.value
+  && !!requestedSessionId.value
+  && (
+    /加载会话失败|404|不存在|not found/i.test(requestedSessionError.value)
+    || (!hasRequestedSessionSummary.value && sessions.value.length > 0)
+  )
+))
+const invalidSessionMessage = computed(() => {
+  const detail = requestedSessionError.value
+  if (detail) return `会话 ${requestedSessionId.value} 无法加载，可能已被删除、失效，或不属于当前身份。`
+  return '当前链接里的会话无法加载，可能已被删除、失效，或不属于当前身份。'
+})
 const resumeActionCard = computed(() => {
   if (!resumeAction.value?.available) return null
   return {
@@ -478,6 +530,8 @@ const { conversationRenderEntries } = useAiSearchConversation({
   currentPendingAction,
   resumeActionCard,
   humanDecisionCard,
+  streaming,
+  phase: activePhase,
 })
 
 const {
