@@ -38,6 +38,7 @@ _ASCII_MODEL_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9._:-]*")
 _NUMERIC_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
 _TOKEN_BOUND_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KkMm]?)")
 _NON_DIGIT_WHITESPACE_PATTERN = re.compile(r"\s+")
+_MODEL_TOKEN_STOPWORDS = {"batch", "id", "k", "m", "model", "token"}
 
 _CACHE_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
@@ -134,8 +135,24 @@ def _parse_token_range(value: Any) -> Tuple[int, Optional[int]]:
 
 def _extract_model_name(value: Any) -> str:
     text = _normalize_text(value)
-    match = _ASCII_MODEL_PATTERN.search(text)
-    return match.group(0).strip() if match else ""
+    for match in _ASCII_MODEL_PATTERN.finditer(text):
+        candidate = match.group(0).strip()
+        normalized = candidate.lower()
+        if normalized in _MODEL_TOKEN_STOPWORDS:
+            continue
+        if not any(char.isdigit() for char in candidate) and not any(char in candidate for char in "-._:"):
+            continue
+        return candidate
+    return ""
+
+
+def _looks_like_token_range(value: Any) -> bool:
+    text = _normalize_text(value).replace(" ", "")
+    if not text:
+        return False
+    if "无阶梯" in text:
+        return True
+    return "token" in text.lower() and bool(re.search(r"[<≤>=]", text))
 
 
 def _extract_doc_content_html(page_html: str) -> str:
@@ -199,7 +216,14 @@ def _html_table_to_grid(table) -> List[List[str]]:
 def _resolve_header_indexes(headers: Sequence[str]) -> Dict[str, Optional[int]]:
     normalized = [_normalize_text(item) for item in headers]
 
-    model_idx = next((idx for idx, item in enumerate(normalized) if "模型名称" in item), None)
+    model_idx = next(
+        (
+            idx
+            for idx, item in enumerate(normalized)
+            if "模型名称" in item or "模型 ID" in item or "model id" in item.lower()
+        ),
+        None,
+    )
     token_range_idx = next(
         (
             idx
@@ -247,25 +271,48 @@ def _parse_pricing_entries_from_table(
         return []
 
     entries: List[Dict[str, Any]] = []
+    last_model_name = ""
     for row in grid[1:]:
         if len(row) <= model_idx:
             continue
+        compact_row = list(row)
+        while compact_row and not compact_row[-1]:
+            compact_row.pop()
+
+        token_range_idx = indexes["token_range_idx"]
         model_name = _extract_model_name(row[model_idx])
+        aligned_row = list(row)
+        if not model_name and last_model_name and token_range_idx is not None:
+            token_cell_idx = next(
+                (idx for idx, cell in enumerate(compact_row) if _looks_like_token_range(cell)),
+                None,
+            )
+            if token_cell_idx is not None and token_cell_idx < token_range_idx:
+                aligned_row = ([""] * (token_range_idx - token_cell_idx)) + compact_row
+                if len(aligned_row) < len(grid[0]):
+                    aligned_row.extend([""] * (len(grid[0]) - len(aligned_row)))
+            model_name = last_model_name
         if not model_name:
             continue
 
-        prompt_price = _parse_price_cny(row[prompt_idx])
+        if len(aligned_row) <= prompt_idx:
+            continue
+        prompt_price = _parse_price_cny(aligned_row[prompt_idx])
         completion_idx = indexes["completion_idx"]
-        completion_price = _parse_price_cny(row[completion_idx]) if completion_idx is not None else Decimal("0")
+        completion_price = (
+            _parse_price_cny(aligned_row[completion_idx])
+            if completion_idx is not None and completion_idx < len(aligned_row)
+            else Decimal("0")
+        )
         if prompt_price <= 0 and completion_price <= 0:
             continue
 
-        token_range_idx = indexes["token_range_idx"]
-        if token_range_idx is not None and token_range_idx < len(row):
-            min_tokens, max_tokens = _parse_token_range(row[token_range_idx])
+        if token_range_idx is not None and token_range_idx < len(aligned_row):
+            min_tokens, max_tokens = _parse_token_range(aligned_row[token_range_idx])
         else:
             min_tokens, max_tokens = 1, None
 
+        last_model_name = model_name
         entries.append(
             {
                 "model": model_name,

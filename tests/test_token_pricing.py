@@ -77,6 +77,49 @@ def _fake_pricing_content() -> str:
     """
 
 
+def _fake_model_id_pricing_content() -> str:
+    return """
+    <div lang="zh">
+      <section>
+        <h3>千问 Max</h3>
+        <section>
+          <h2>中国内地</h2>
+          <table>
+            <tbody>
+              <tr>
+                <td><b>模型 ID（Model ID）</b></td>
+                <td><b>模式</b></td>
+                <td><b>单次请求的输入 Token 数</b></td>
+                <td><b>输入单价（每百万 Token）</b></td>
+                <td><b>输出单价（每百万 Token） 思维链+回答</b></td>
+              </tr>
+              <tr>
+                <td>qwen3-max 当前能力等同于 qwen3-max-2026-01-23</td>
+                <td>非思考和思考模式</td>
+                <td>0&lt;Token≤32K</td>
+                <td>2.5 元</td>
+                <td>10 元</td>
+              </tr>
+              <tr>
+                <td>32K&lt;Token≤128K</td>
+                <td>4 元</td>
+                <td>16 元</td>
+              </tr>
+              <tr>
+                <td>qwen-max-latest Batch 调用 半价</td>
+                <td>仅非思考模式</td>
+                <td>无阶梯计价</td>
+                <td>2.4 元</td>
+                <td>9.6 元</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </section>
+    </div>
+    """
+
+
 def _seed_pricing_state(storage: SQLiteTaskStorage, *, expires_at: str | None = None) -> None:
     now_iso = utc_now_z(timespec="seconds")
     storage.replace_llm_pricing_entries(
@@ -158,6 +201,40 @@ def test_refresh_pricing_cache_parses_cn_page_and_estimates_by_tier(monkeypatch,
     )
     assert missing is False
     assert cost == pytest.approx((200_000 / 1_000_000) * 1.2 + (50_000 / 1_000_000) * 6.6)
+
+
+def test_refresh_pricing_cache_parses_model_id_headers_and_continuation_tiers(monkeypatch, tmp_path):
+    storage = SQLiteTaskStorage(tmp_path / "token_pricing_model_id_headers.db")
+    token_pricing.configure_pricing_storage(lambda: storage)
+    token_pricing.reset_pricing_runtime_cache()
+    page_html = _build_help_page(_fake_model_id_pricing_content())
+
+    monkeypatch.setattr(
+        token_pricing.requests,
+        "get",
+        lambda url, timeout: _FakeResponse(page_html),
+    )
+
+    result = token_pricing.refresh_pricing_cache(force=True)
+
+    assert result["success"] is True
+    assert result["refreshed"] is True
+    assert result["entryCount"] == 3
+
+    low_tier_quote = token_pricing.get_price_quote("qwen3-max", 16_000)
+    assert low_tier_quote["missing"] is False
+    assert low_tier_quote["promptPricePerMillionCny"] == pytest.approx(2.5)
+    assert low_tier_quote["completionPricePerMillionCny"] == pytest.approx(10)
+
+    continuation_tier_quote = token_pricing.get_price_quote("qwen3-max", 100_000)
+    assert continuation_tier_quote["missing"] is False
+    assert continuation_tier_quote["promptPricePerMillionCny"] == pytest.approx(4)
+    assert continuation_tier_quote["completionPricePerMillionCny"] == pytest.approx(16)
+
+    untiered_quote = token_pricing.get_price_quote("qwen-max-latest", 1_000_000)
+    assert untiered_quote["missing"] is False
+    assert untiered_quote["promptPricePerMillionCny"] == pytest.approx(2.4)
+    assert untiered_quote["completionPricePerMillionCny"] == pytest.approx(9.6)
 
 
 def test_refresh_pricing_cache_failure_keeps_existing_rows(monkeypatch, tmp_path):
