@@ -95,6 +95,20 @@ def test_stream_text_delta_accepts_responses_text_delta() -> None:
     assert _stream_text_delta(RawEvent()) == "增量文本"
 
 
+def test_search_agent_registers_controlled_subagent_tools(monkeypatch) -> None:
+    monkeypatch.setattr(agent_runtime_module.settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(agent_runtime_module.settings, "LLM_MODEL_LARGE", "large-model")
+    monkeypatch.setattr(agent_runtime_module.settings, "LLM_MODEL_DEFAULT", "default-model")
+
+    agent = agent_runtime_module.build_search_agent()
+    tool_names = {str(getattr(tool, "name", "") or "") for tool in agent.tools}
+
+    assert "run_retrieval_agent" in tool_names
+    assert "run_review_agent" in tool_names
+    assert "read_candidate_summaries" in tool_names
+    assert agent_runtime_module._default_model_name() == "default-model"
+
+
 def test_stream_runner_ignores_internal_agent_updated_event(monkeypatch) -> None:
     class FakeStorage:
         def list_ai_search_messages(self, _task_id):

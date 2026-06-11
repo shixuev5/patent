@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import asyncio
 import json
 import re
 import uuid
@@ -60,11 +61,41 @@ SYSTEM_PROMPT = """
 
 每次正式检索前先确认当前检索目标。如果目标足够明确，直接检索；如果缺少核心技术特征、时间范围或检索对象，先简短追问。检索后应把有价值候选保存，并说明下一步建议。
 
+你仍然负责检索策略和是否继续检索的最终判断。需要批量召回时，优先调用 retrieval-agent 工具，让它执行语义/布尔/学术多路召回并只返回压缩态势；需要候选粗筛或少量精读时，调用 review-agent 工具。只有在你明确需要单点补检、拉详情或人工指定操作时，才直接调用底层检索工具。
+
+不要要求工具返回完整候选池；需要更多候选信息时按 topK 或阶段读取候选摘要。
+
 输出要求：
 - 面向用户只输出简洁自然语言。
 - 不输出 JSON、工具名、trace、内部字段。
 - 涉及文献判断时说明依据：标题、摘要、关键段落或权利要求命中点。
 - 如果停止条件已满足，明确说明停止原因和当前结果是否足够。
+""".strip()
+
+
+RETRIEVAL_AGENT_SUMMARY_PROMPT = """
+你是 retrieval-agent，负责把一轮多路检索结果压缩成主 agent 可用的态势摘要。
+
+输入是已经执行完成的检索批次报告。请只输出简洁中文摘要：
+- 本轮覆盖了哪些检索方向。
+- 新增候选数量、重复/跳过情况。
+- 最值得主 agent 继续关注的 3-5 个候选及理由。
+- 是否建议继续扩展检索，以及建议方向。
+
+不要输出原始 JSON，不要复述完整摘要列表。
+""".strip()
+
+
+REVIEW_AGENT_SUMMARY_PROMPT = """
+你是 review-agent，负责把候选粗筛/精读结果压缩成主 agent 可用的审阅摘要。
+
+输入是候选评分、少量详情片段和更新结果。请只输出简洁中文摘要：
+- 哪些候选值得保留或优先精读。
+- 依据来自标题、摘要、权利要求或说明书的哪些命中点。
+- 哪些候选目前证据不足。
+- 下一步是否需要继续检索或拉更多详情。
+
+不要输出原始 JSON，不要做最终法律结论。
 """.strip()
 
 
@@ -401,6 +432,146 @@ def _document_trace_preview(items: List[Dict[str, Any]], *, limit: int = 5) -> L
     ]
 
 
+def _document_identity(item: Dict[str, Any]) -> str:
+    return _safe_text(item.get("pn") or item.get("doi") or item.get("external_id") or item.get("canonical_id"))
+
+
+def _compact_document_summary(
+    item: Dict[str, Any],
+    *,
+    include_abstract: bool = False,
+    max_abstract_chars: int = 240,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "document_id": item.get("document_id"),
+        "id": _document_identity(item),
+        "source_type": item.get("source_type"),
+        "pn": item.get("pn"),
+        "doi": item.get("doi"),
+        "title": item.get("title"),
+        "publication_date": item.get("publication_date"),
+        "application_date": item.get("application_date"),
+        "primary_ipc": item.get("primary_ipc"),
+        "score": item.get("score"),
+        "stage": item.get("stage"),
+        "coarse_status": item.get("coarse_status"),
+        "close_read_status": item.get("close_read_status"),
+    }
+    reason = (
+        _safe_text(item.get("close_read_reason"))
+        or _safe_text(item.get("coarse_reason"))
+        or _safe_text(item.get("agent_reason"))
+    )
+    if reason:
+        payload["reason"] = reason[:300]
+    if include_abstract:
+        abstract = _safe_text(item.get("abstract"))
+        if abstract:
+            payload["abstract_preview"] = abstract[:max_abstract_chars]
+    return {key: value for key, value in payload.items() if value not in (None, "", [])}
+
+
+def _stored_document_summaries(
+    ctx: AiSearchRuntimeContext,
+    raw_items: List[Dict[str, Any]],
+    *,
+    limit: int = 5,
+    include_abstract: bool = False,
+) -> List[Dict[str, Any]]:
+    order = [
+        _safe_text(item.get("canonical_id"))
+        for item in raw_items
+        if _safe_text(item.get("canonical_id"))
+    ]
+    if not order:
+        return []
+    order_index = {canonical_id: index for index, canonical_id in enumerate(order)}
+    docs = [
+        item
+        for item in ctx.documents()
+        if _safe_text(item.get("canonical_id")) in order_index
+    ]
+    docs.sort(key=lambda item: order_index.get(_safe_text(item.get("canonical_id")), 999999))
+    return [
+        _compact_document_summary(item, include_abstract=include_abstract)
+        for item in docs[:limit]
+    ]
+
+
+def _candidate_summaries(
+    ctx: AiSearchRuntimeContext,
+    *,
+    stage: str = "",
+    top_k: int = 10,
+    include_abstract: bool = False,
+) -> List[Dict[str, Any]]:
+    wanted_stage = _safe_text(stage).lower()
+    docs = ctx.documents()
+    if wanted_stage:
+        docs = [item for item in docs if _safe_text(item.get("stage")).lower() == wanted_stage]
+    else:
+        docs = [item for item in docs if _safe_text(item.get("stage")).lower() != "rejected"]
+    return [
+        _compact_document_summary(item, include_abstract=include_abstract)
+        for item in docs[: _limit(top_k, default=10, upper=50)]
+    ]
+
+
+def _parse_query_list(value: Any, *, limit: int = 6) -> List[str]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            raw_items = parsed if isinstance(parsed, list) else [text]
+        except Exception:
+            raw_items = re.split(r"[\n；;]+", text)
+    queries: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        query = _safe_text(item)
+        if not query or query in seen:
+            continue
+        seen.add(query)
+        queries.append(query)
+        if len(queries) >= limit:
+            break
+    return queries
+
+
+def _build_openai_client() -> AsyncOpenAI:
+    client_kwargs: Dict[str, Any] = {"api_key": settings.LLM_API_KEY}
+    if str(settings.LLM_BASE_URL or "").strip():
+        client_kwargs["base_url"] = settings.LLM_BASE_URL
+    return AsyncOpenAI(**client_kwargs)
+
+
+def _default_model_name() -> str:
+    return str(settings.LLM_MODEL_DEFAULT or settings.LLM_MODEL_LARGE or "").strip()
+
+
+async def _run_default_child_summary(agent_name: str, instructions: str, payload: Dict[str, Any]) -> str:
+    model_name = _default_model_name()
+    if not settings.LLM_API_KEY or not model_name:
+        return ""
+    set_tracing_disabled(True)
+    agent: Agent[Any] = Agent(
+        name=agent_name,
+        instructions=instructions,
+        model=OpenAIChatCompletionsModel(model=model_name, openai_client=_build_openai_client()),
+        model_settings=ModelSettings(temperature=0, parallel_tool_calls=False),
+    )
+    result = await Runner.run(
+        agent,
+        json.dumps(_compact_trace_value(payload, max_string=1800, max_items=12, depth=4), ensure_ascii=False),
+        max_turns=2,
+    )
+    return str(result.final_output or "").strip()
+
+
 def _upsert_candidates(ctx: AiSearchRuntimeContext, raw_items: List[Dict[str, Any]], *, source_label: str, query: str) -> Dict[str, Any]:
     existing = {
         str(item.get("canonical_id") or "").strip(): item
@@ -510,11 +681,14 @@ def _remaining_candidate_capacity(ctx: AiSearchRuntimeContext) -> int:
 
 @function_tool
 def read_workspace_context(ctx: RunContextWrapper[AiSearchRuntimeContext]) -> Dict[str, Any]:
-    """读取当前会话、停止条件、历史消息、候选文献和已选文献。"""
+    """读取当前会话、停止条件、历史消息、候选/已选文献的压缩摘要。"""
     runtime = ctx.context
     trace = runtime.start_trace(tool_name="read_workspace_context", label="读取会话上下文")
     messages = runtime.storage.list_ai_search_messages(runtime.task_id)[-12:]
     meta = runtime.meta()
+    documents = runtime.documents()
+    candidates = [item for item in documents if str(item.get("stage") or "") not in {"selected", "rejected"}]
+    selected = runtime.selected_documents()
     result = {
         "stop_policy": runtime.stop_policy(),
         "stats": _stop_status(runtime)["stats"],
@@ -533,8 +707,16 @@ def read_workspace_context(ctx: RunContextWrapper[AiSearchRuntimeContext]) -> Di
             for item in messages
             if str(item.get("kind") or "") in {"chat", "answer"}
         ],
-        "candidate_documents": runtime.documents()[:30],
-        "selected_documents": runtime.selected_documents(),
+        "candidate_total": len(candidates),
+        "selected_total": len(selected),
+        "candidate_documents": [
+            _compact_document_summary(item, include_abstract=False)
+            for item in candidates[:12]
+        ],
+        "selected_documents": [
+            _compact_document_summary(item, include_abstract=True, max_abstract_chars=180)
+            for item in selected[:12]
+        ],
     }
     runtime.finish_trace(
         trace,
@@ -542,11 +724,47 @@ def read_workspace_context(ctx: RunContextWrapper[AiSearchRuntimeContext]) -> Di
         label="会话上下文已读取",
         output={
             "messages": len(result["recent_messages"]),
-            "candidates": len(result["candidate_documents"]),
-            "selected": len(result["selected_documents"]),
+            "candidates": result["candidate_total"],
+            "selected": result["selected_total"],
             "stop_policy": result["stop_policy"],
             "source": result["source"],
         },
+    )
+    return result
+
+
+@function_tool
+def read_candidate_summaries(
+    ctx: RunContextWrapper[AiSearchRuntimeContext],
+    stage: str = "",
+    top_k: int = 10,
+    include_abstract: bool = False,
+) -> Dict[str, Any]:
+    """按阶段/topK 读取候选压缩摘要；默认不返回完整摘要。"""
+    runtime = ctx.context
+    resolved_top_k = _limit(top_k, default=10, upper=50)
+    trace = runtime.start_trace(
+        tool_name="read_candidate_summaries",
+        label=f"读取候选摘要 {resolved_top_k} 条",
+        input={"stage": stage, "top_k": resolved_top_k, "include_abstract": include_abstract},
+    )
+    documents = _candidate_summaries(
+        runtime,
+        stage=stage,
+        top_k=resolved_top_k,
+        include_abstract=bool(include_abstract),
+    )
+    result = {
+        "stage": _safe_text(stage) or "all",
+        "count": len(documents),
+        "documents": documents,
+        "stats": _stop_status(runtime)["stats"],
+    }
+    runtime.finish_trace(
+        trace,
+        tool_name="read_candidate_summaries",
+        label=f"候选摘要已读取 {len(documents)} 条",
+        output={"count": len(documents), "stage": result["stage"]},
     )
     return result
 
@@ -675,6 +893,7 @@ def search_patents(
         normalized = retrieved[:resolved_limit]
         stored = _upsert_candidates(runtime, normalized, source_label="zhihuiya", query=query_text)
         _record_query(runtime, new_count=int(stored.get("new") or 0))
+        top_documents = _stored_document_summaries(runtime, normalized, limit=5, include_abstract=False)
         runtime.finish_trace(
             trace,
             tool_name="search_patents",
@@ -686,7 +905,7 @@ def search_patents(
                 "new_count": int(stored.get("new") or 0),
                 "skipped_target": int(stored.get("skipped_target") or 0),
                 "candidate_total": int(stored.get("total") or 0),
-                "documents": _document_trace_preview(normalized),
+                "top_documents": top_documents,
                 "stop": _stop_status(runtime),
             },
         )
@@ -695,16 +914,7 @@ def search_patents(
             "mode": mode,
             "retrieved_count": len(retrieved),
             "count": len(normalized),
-            "documents": [
-                {
-                    "pn": item.get("pn"),
-                    "title": item.get("title"),
-                    "abstract": item.get("abstract"),
-                    "publication_date": item.get("publication_date"),
-                    "application_date": item.get("application_date"),
-                }
-                for item in normalized
-            ],
+            "top_documents": top_documents,
             **stored,
             "stop": _stop_status(runtime),
         }
@@ -798,6 +1008,7 @@ def search_academic(
                 errors[source] = str(exc)
         stored = _upsert_candidates(runtime, normalized, source_label="academic", query=query_text)
         _record_query(runtime, query_count=len(selected_sources), new_count=int(stored.get("new") or 0))
+        top_documents = _stored_document_summaries(runtime, normalized, limit=5, include_abstract=False)
         runtime.finish_trace(
             trace,
             tool_name="search_academic",
@@ -810,11 +1021,19 @@ def search_academic(
                 "skipped_target": int(stored.get("skipped_target") or 0),
                 "candidate_total": int(stored.get("total") or 0),
                 "errors": errors,
-                "documents": _document_trace_preview(normalized),
+                "top_documents": top_documents,
                 "stop": _stop_status(runtime),
             },
         )
-        return {"query": query_text, "sources": selected_sources, "count": len(normalized), "errors": errors, **stored, "stop": _stop_status(runtime)}
+        return {
+            "query": query_text,
+            "sources": selected_sources,
+            "count": len(normalized),
+            "errors": errors,
+            "top_documents": top_documents,
+            **stored,
+            "stop": _stop_status(runtime),
+        }
     except Exception as exc:
         runtime.finish_trace(
             trace,
@@ -825,6 +1044,549 @@ def search_academic(
             output={"error": str(exc)},
         )
         raise
+
+
+def _fetch_patent_results_sync(query: str, mode: str, to_date: str, limit: int) -> List[Dict[str, Any]]:
+    client = SearchClientFactory.get_client("zhihuiya")
+    if str(mode or "").strip().lower() == "semantic":
+        raw = client.search_semantic(query, to_date=to_date, limit=limit)
+    else:
+        raw = client.search(query, limit=limit)
+    return [_normalize_patent_item(item) for item in _patent_items_from_response(raw)]
+
+
+def _fetch_academic_results_sync(
+    query: str,
+    sources: List[str],
+    priority_date: str,
+    per_source: int,
+    max_total: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    client = AcademicSearchClient()
+    normalized: List[Dict[str, Any]] = []
+    errors: Dict[str, str] = {}
+    for source in sources:
+        if len(normalized) >= max_total:
+            break
+        source_limit = max(1, min(per_source, max_total - len(normalized)))
+        try:
+            if source == "openalex":
+                items = client.search_openalex(query, priority_date or None, source_limit)
+            elif source == "semanticscholar":
+                items = client.search_semanticscholar(query, priority_date or None, source_limit)
+            elif source == "crossref":
+                items = client.search_crossref(query, priority_date or None, source_limit)
+            else:
+                continue
+            source_items = [_normalize_academic_item(item, source) for item in items if isinstance(item, dict)]
+            normalized.extend(source_items[: max(0, max_total - len(normalized))])
+        except Exception as exc:
+            errors[source] = str(exc)
+    return normalized, errors
+
+
+async def _fetch_retrieval_lane(
+    runtime: AiSearchRuntimeContext,
+    lane: Dict[str, Any],
+    *,
+    parent_trace_id: str,
+) -> Dict[str, Any]:
+    kind = str(lane.get("kind") or "").strip()
+    query = _safe_text(lane.get("query"))
+    label_prefix = "智慧芽" if kind == "patent" else "论文"
+    trace = runtime.start_trace(
+        tool_name="retrieval_lane",
+        label=f"{label_prefix}召回：{query[:80]}",
+        detail=str(lane.get("mode") or lane.get("sources") or ""),
+        trace_type="tool",
+        actor_name="retrieval-agent",
+        input=lane,
+        parent_trace_id=parent_trace_id,
+    )
+    try:
+        if kind == "patent":
+            retrieved = await asyncio.to_thread(
+                _fetch_patent_results_sync,
+                query,
+                str(lane.get("mode") or "boolean"),
+                str(lane.get("to_date") or ""),
+                int(lane.get("limit") or 10),
+            )
+            return {**lane, "trace": trace, "retrieved": retrieved, "errors": {}}
+        sources = _source_list(lane.get("sources")) or ["openalex", "semanticscholar", "crossref"]
+        retrieved, errors = await asyncio.to_thread(
+            _fetch_academic_results_sync,
+            query,
+            sources,
+            str(lane.get("priority_date") or ""),
+            int(lane.get("per_source") or 5),
+            int(lane.get("limit") or 10),
+        )
+        return {**lane, "trace": trace, "retrieved": retrieved, "errors": errors}
+    except Exception as exc:
+        runtime.finish_trace(
+            trace,
+            tool_name="retrieval_lane",
+            label=f"{label_prefix}召回失败",
+            detail=str(exc),
+            status="failed",
+            trace_type="tool",
+            actor_name="retrieval-agent",
+            output={"error": str(exc)},
+            parent_trace_id=parent_trace_id,
+        )
+        return {**lane, "trace": trace, "retrieved": [], "errors": {"lane": str(exc)}, "failed": True}
+
+
+def _fallback_retrieval_summary(lanes: List[Dict[str, Any]]) -> str:
+    if not lanes:
+        return "本轮未执行新的召回。"
+    new_count = sum(int(item.get("new_count") or 0) for item in lanes)
+    retrieved_count = sum(int(item.get("retrieved_count") or 0) for item in lanes)
+    modes = "、".join(
+        sorted({str(item.get("mode") or item.get("kind") or "").strip() for item in lanes if item.get("mode") or item.get("kind")})
+    )
+    return f"本轮通过 {modes or '多路'} 召回共检索 {retrieved_count} 条，新增候选 {new_count} 条。"
+
+
+@function_tool
+async def run_retrieval_agent(
+    ctx: RunContextWrapper[AiSearchRuntimeContext],
+    search_goal: str,
+    semantic_queries: str = "",
+    boolean_queries: str = "",
+    academic_queries: str = "",
+    to_date: str = "",
+    priority_date: str = "",
+    per_query_limit: int = 15,
+    include_academic: bool = False,
+) -> Dict[str, Any]:
+    """运行 retrieval-agent 批量召回。主 agent 决定检索目标和查询，子 agent 只执行并压缩态势。"""
+    runtime = ctx.context
+    goal = _safe_text(search_goal)
+    resolved_limit = _limit(per_query_limit, default=15, upper=25)
+    semantic = _parse_query_list(semantic_queries, limit=3)
+    boolean = _parse_query_list(boolean_queries, limit=3)
+    academic = _parse_query_list(academic_queries, limit=2)
+    if not semantic and not boolean and goal:
+        semantic = [goal]
+        boolean = [goal]
+    if include_academic and not academic and goal:
+        academic = [goal]
+    trace = runtime.start_trace(
+        tool_name="retrieval_agent",
+        label=f"子 Agent 召回：{goal[:80] or '未命名目标'}",
+        detail="semantic/boolean/academic batch retrieval",
+        trace_type="agent",
+        actor_name="retrieval-agent",
+        input={
+            "search_goal": goal,
+            "semantic_queries": semantic,
+            "boolean_queries": boolean,
+            "academic_queries": academic,
+            "to_date": to_date,
+            "priority_date": priority_date,
+            "per_query_limit": resolved_limit,
+            "model": _default_model_name() or "unconfigured",
+        },
+        metadata={"model_tier": "default"},
+    )
+    stop = _stop_status(runtime)
+    if stop["should_stop"]:
+        result = {"blocked": True, "stop": stop, "summary": "停止条件已满足，retrieval-agent 未继续召回。"}
+        runtime.finish_trace(
+            trace,
+            tool_name="retrieval_agent",
+            label="子 Agent 召回已跳过",
+            trace_type="agent",
+            actor_name="retrieval-agent",
+            output=result,
+            metadata={"model_tier": "default"},
+        )
+        return result
+
+    lanes: List[Dict[str, Any]] = []
+    for query in semantic:
+        lanes.append({"kind": "patent", "mode": "semantic", "query": query, "to_date": to_date, "limit": resolved_limit})
+    for query in boolean:
+        lanes.append({"kind": "patent", "mode": "boolean", "query": query, "to_date": to_date, "limit": resolved_limit})
+    if academic:
+        sources = [item for item in _source_list(runtime.stop_policy().get("databases")) if item != "zhihuiya"]
+        sources = sources or ["openalex", "semanticscholar", "crossref"]
+        per_source = max(1, min(8, resolved_limit // max(1, len(sources))))
+        for query in academic:
+            lanes.append(
+                {
+                    "kind": "academic",
+                    "query": query,
+                    "sources": sources,
+                    "priority_date": priority_date,
+                    "per_source": per_source,
+                    "limit": resolved_limit,
+                }
+            )
+    if not lanes:
+        result = {"summary": "缺少可执行检索式，retrieval-agent 未召回。", "lanes": [], "stop": _stop_status(runtime)}
+        runtime.finish_trace(
+            trace,
+            tool_name="retrieval_agent",
+            label="子 Agent 召回无可执行检索式",
+            trace_type="agent",
+            actor_name="retrieval-agent",
+            output=result,
+            metadata={"model_tier": "default"},
+        )
+        return result
+
+    _ensure_policy_databases(runtime, ["zhihuiya"] + [source for lane in lanes for source in _source_list(lane.get("sources"))])
+    lane_results = await asyncio.gather(
+        *[_fetch_retrieval_lane(runtime, lane, parent_trace_id=trace[0]) for lane in lanes]
+    )
+    reports: List[Dict[str, Any]] = []
+    for lane_result in lane_results:
+        lane_trace = lane_result["trace"]
+        query = _safe_text(lane_result.get("query"))
+        kind = str(lane_result.get("kind") or "").strip()
+        if lane_result.get("failed"):
+            reports.append(
+                {
+                    "kind": kind,
+                    "query": query,
+                    "mode": lane_result.get("mode"),
+                    "retrieved_count": 0,
+                    "new_count": 0,
+                    "errors": lane_result.get("errors") or {},
+                }
+            )
+            continue
+        remaining_capacity = _remaining_candidate_capacity(runtime)
+        if remaining_capacity <= 0 or _stop_status(runtime)["should_stop"]:
+            runtime.finish_trace(
+                lane_trace,
+                tool_name="retrieval_lane",
+                label="停止条件已满足，召回结果未继续入库",
+                trace_type="tool",
+                actor_name="retrieval-agent",
+                output={"stop": _stop_status(runtime), "retrieved_count": len(lane_result.get("retrieved") or [])},
+                parent_trace_id=trace[0],
+            )
+            reports.append(
+                {
+                    "kind": kind,
+                    "query": query,
+                    "mode": lane_result.get("mode"),
+                    "retrieved_count": len(lane_result.get("retrieved") or []),
+                    "new_count": 0,
+                    "blocked": True,
+                    "stop": _stop_status(runtime),
+                }
+            )
+            continue
+        normalized = list(lane_result.get("retrieved") or [])[:remaining_capacity]
+        source_label = "zhihuiya" if kind == "patent" else "academic"
+        stored = _upsert_candidates(runtime, normalized, source_label=source_label, query=query)
+        query_count = len(_source_list(lane_result.get("sources"))) if kind == "academic" else 1
+        _record_query(runtime, query_count=query_count, new_count=int(stored.get("new") or 0))
+        top_documents = _stored_document_summaries(runtime, normalized, limit=5, include_abstract=False)
+        lane_report = {
+            "kind": kind,
+            "query": query,
+            "mode": lane_result.get("mode"),
+            "sources": _source_list(lane_result.get("sources")),
+            "retrieved_count": len(lane_result.get("retrieved") or []),
+            "kept_count": len(normalized),
+            "new_count": int(stored.get("new") or 0),
+            "skipped_target": int(stored.get("skipped_target") or 0),
+            "candidate_total": int(stored.get("total") or 0),
+            "errors": lane_result.get("errors") or {},
+            "top_documents": top_documents,
+        }
+        runtime.finish_trace(
+            lane_trace,
+            tool_name="retrieval_lane",
+            label=f"召回完成，新增 {lane_report['new_count']} 个候选",
+            detail=f"召回 {lane_report['retrieved_count']} 条，保留 {lane_report['kept_count']} 条",
+            trace_type="tool",
+            actor_name="retrieval-agent",
+            output=lane_report,
+            parent_trace_id=trace[0],
+        )
+        reports.append(lane_report)
+
+    summary_payload = {"search_goal": goal, "lanes": reports, "stats": _stop_status(runtime)["stats"]}
+    summary = ""
+    summary_error = ""
+    try:
+        summary = await _run_default_child_summary("retrieval-agent", RETRIEVAL_AGENT_SUMMARY_PROMPT, summary_payload)
+    except Exception as exc:
+        summary_error = str(exc)
+    result = {
+        "summary": summary or _fallback_retrieval_summary(reports),
+        "summary_error": summary_error,
+        "lanes": reports,
+        "stats": _stop_status(runtime)["stats"],
+        "stop": _stop_status(runtime),
+    }
+    runtime.finish_trace(
+        trace,
+        tool_name="retrieval_agent",
+        label=f"子 Agent 召回完成，新增 {sum(int(item.get('new_count') or 0) for item in reports)} 个候选",
+        trace_type="agent",
+        actor_name="retrieval-agent",
+        output={
+            "summary": result["summary"],
+            "lane_count": len(reports),
+            "new_count": sum(int(item.get("new_count") or 0) for item in reports),
+            "candidate_total": result["stats"].get("candidates"),
+            "summary_error": summary_error,
+        },
+        metadata={"model_tier": "default", "model": _default_model_name() or "unconfigured"},
+    )
+    return result
+
+
+def _review_terms(goal: str) -> List[str]:
+    terms = [_safe_text(item) for item in re.split(r"[\s,，;；、/|()（）]+", goal) if _safe_text(item)]
+    compact_terms: List[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if len(term) > 18:
+            for start in range(0, min(len(term), 36), 6):
+                chunk = term[start : start + 8]
+                if len(chunk) >= 2 and chunk not in seen:
+                    seen.add(chunk)
+                    compact_terms.append(chunk)
+        elif len(term) >= 2 and term not in seen:
+            seen.add(term)
+            compact_terms.append(term)
+    return compact_terms[:30]
+
+
+def _coarse_review_score(goal: str, item: Dict[str, Any]) -> Tuple[float, List[str]]:
+    terms = _review_terms(goal)
+    text = f"{item.get('title') or ''} {item.get('abstract') or ''} {item.get('primary_ipc') or ''}".lower()
+    hits = [term for term in terms if term.lower() in text]
+    base_score = 0.0
+    try:
+        base_score = float(item.get("score") or 0)
+    except Exception:
+        base_score = 0.0
+    hit_score = (len(hits) / max(1, min(len(terms), 8))) if terms else 0.0
+    score = min(1.0, max(base_score, 0.0) * 0.35 + hit_score * 0.65)
+    return round(score, 4), hits[:8]
+
+
+async def _close_read_patent_for_review(
+    runtime: AiSearchRuntimeContext,
+    item: Dict[str, Any],
+    *,
+    parent_trace_id: str,
+) -> Dict[str, Any]:
+    pn = _safe_text(item.get("pn")).upper()
+    document_id = _safe_text(item.get("document_id"))
+    trace = runtime.start_trace(
+        tool_name="review_close_read",
+        label=f"精读专利详情：{pn}",
+        trace_type="tool",
+        actor_name="review-agent",
+        input={"pn": pn, "document_id": document_id},
+        parent_trace_id=parent_trace_id,
+    )
+    try:
+        detail = await asyncio.to_thread(SearchClientFactory.get_client("zhihuiya").get_patent_detail, pn)
+        detail = detail if isinstance(detail, dict) else {}
+        claims_preview = _safe_text(detail.get("claims_text") or detail.get("claims"))[:800]
+        description_preview = _safe_text(detail.get("description_text") or detail.get("description"))[:800]
+        evidence_summary = _safe_text(detail.get("full_text_combined"))[:2000]
+        reason = "已读取权利要求和说明书片段，用于精读判断。"
+        runtime.storage.update_ai_search_document(
+            runtime.task_id,
+            runtime.plan_version,
+            document_id,
+            close_read_status="completed",
+            close_read_reason=reason,
+            close_read_at=utc_now_z(),
+            detail_source="zhihuiya_detail",
+            evidence_summary=evidence_summary,
+            key_passages_json=[
+                {"source": "claims", "preview": claims_preview[:300]},
+                {"source": "description", "preview": description_preview[:300]},
+            ],
+        )
+        card = {
+            "document_id": document_id,
+            "pn": pn,
+            "title": item.get("title"),
+            "claims_preview": claims_preview,
+            "description_preview": description_preview,
+            "reason": reason,
+        }
+        runtime.finish_trace(
+            trace,
+            tool_name="review_close_read",
+            label=f"精读完成：{pn}",
+            trace_type="tool",
+            actor_name="review-agent",
+            output={
+                "document_id": document_id,
+                "pn": pn,
+                "claims_chars": len(claims_preview),
+                "description_chars": len(description_preview),
+            },
+            parent_trace_id=parent_trace_id,
+        )
+        return card
+    except Exception as exc:
+        runtime.storage.update_ai_search_document(
+            runtime.task_id,
+            runtime.plan_version,
+            document_id,
+            close_read_status="failed",
+            close_read_reason=str(exc),
+            close_read_at=utc_now_z(),
+        )
+        runtime.finish_trace(
+            trace,
+            tool_name="review_close_read",
+            label=f"精读失败：{pn}",
+            detail=str(exc),
+            status="failed",
+            trace_type="tool",
+            actor_name="review-agent",
+            output={"error": str(exc), "document_id": document_id, "pn": pn},
+            parent_trace_id=parent_trace_id,
+        )
+        return {"document_id": document_id, "pn": pn, "error": str(exc)}
+
+
+def _fallback_review_summary(shortlisted: List[Dict[str, Any]], close_read_cards: List[Dict[str, Any]]) -> str:
+    if not shortlisted:
+        return "本轮粗筛没有发现明显优先候选。"
+    names = "、".join(str(item.get("id") or item.get("title") or "") for item in shortlisted[:5])
+    return f"本轮粗筛保留 {len(shortlisted)} 个优先候选，其中 {len(close_read_cards)} 个已做详情精读。优先关注：{names}。"
+
+
+@function_tool
+async def run_review_agent(
+    ctx: RunContextWrapper[AiSearchRuntimeContext],
+    review_goal: str,
+    top_k: int = 12,
+    close_read_top_k: int = 3,
+) -> Dict[str, Any]:
+    """运行 review-agent 对候选做粗筛和少量精读；只返回压缩审阅摘要。"""
+    runtime = ctx.context
+    goal = _safe_text(review_goal)
+    resolved_top_k = _limit(top_k, default=12, upper=30)
+    try:
+        requested_close_top_k = int(close_read_top_k or 0)
+    except Exception:
+        requested_close_top_k = 3
+    resolved_close_top_k = 0 if requested_close_top_k <= 0 else min(_limit(requested_close_top_k, default=3, upper=8), resolved_top_k)
+    trace = runtime.start_trace(
+        tool_name="review_agent",
+        label=f"子 Agent 筛选/精读：{goal[:80] or '候选审阅'}",
+        detail=f"top_k={resolved_top_k}, close_read_top_k={resolved_close_top_k}",
+        trace_type="agent",
+        actor_name="review-agent",
+        input={"review_goal": goal, "top_k": resolved_top_k, "close_read_top_k": resolved_close_top_k, "model": _default_model_name() or "unconfigured"},
+        metadata={"model_tier": "default"},
+    )
+    candidates = [
+        item
+        for item in runtime.documents()
+        if str(item.get("stage") or "") not in {"selected", "rejected"}
+        and not bool(item.get("user_removed"))
+    ][:resolved_top_k]
+    scored: List[Dict[str, Any]] = []
+    for item in candidates:
+        score, hits = _coarse_review_score(goal, item)
+        scored.append({"document": item, "score": score, "hits": hits})
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    shortlist_size = min(max(resolved_close_top_k * 2, 5), len(scored))
+    shortlisted_rows = scored[:shortlist_size]
+    reviewed_at = utc_now_z()
+    for index, row in enumerate(scored):
+        item = row["document"]
+        document_id = _safe_text(item.get("document_id"))
+        if not document_id:
+            continue
+        hits = row["hits"]
+        is_shortlisted = index < shortlist_size
+        reason = (
+            f"粗筛命中：{'、'.join(hits)}。" if hits else "粗筛未发现明确关键词命中，按现有排序保留观察。"
+        )
+        updates: Dict[str, Any] = {
+            "coarse_status": "pass" if is_shortlisted else "reviewed",
+            "coarse_reason": reason,
+            "coarse_screened_at": reviewed_at,
+            "score": max(float(item.get("score") or 0), float(row["score"])),
+        }
+        if is_shortlisted and str(item.get("stage") or "") == "candidate":
+            updates["stage"] = "shortlisted"
+        runtime.storage.update_ai_search_document(runtime.task_id, runtime.plan_version, document_id, **updates)
+
+    refreshed_docs = runtime.documents()
+    shortlisted_ids = {
+        _safe_text(row["document"].get("document_id"))
+        for row in shortlisted_rows
+        if _safe_text(row["document"].get("document_id"))
+    }
+    shortlisted_docs = [item for item in refreshed_docs if _safe_text(item.get("document_id")) in shortlisted_ids]
+    close_read_targets = [
+        item
+        for item in shortlisted_docs
+        if str(item.get("source_type") or "") == "patent" and _safe_text(item.get("pn"))
+    ][:resolved_close_top_k]
+    close_read_cards = await asyncio.gather(
+        *[
+            _close_read_patent_for_review(runtime, item, parent_trace_id=trace[0])
+            for item in close_read_targets
+        ]
+    ) if close_read_targets else []
+    runtime.append_event("documents.updated", documents_payload(runtime))
+
+    recommended = [
+        _compact_document_summary(item, include_abstract=True, max_abstract_chars=180)
+        for item in shortlisted_docs[:shortlist_size]
+    ]
+    summary_payload = {
+        "review_goal": goal,
+        "reviewed": len(scored),
+        "recommended": recommended,
+        "close_read_cards": close_read_cards,
+        "stats": _stop_status(runtime)["stats"],
+    }
+    summary = ""
+    summary_error = ""
+    try:
+        summary = await _run_default_child_summary("review-agent", REVIEW_AGENT_SUMMARY_PROMPT, summary_payload)
+    except Exception as exc:
+        summary_error = str(exc)
+    result = {
+        "summary": summary or _fallback_review_summary(recommended, close_read_cards),
+        "summary_error": summary_error,
+        "reviewed_count": len(scored),
+        "shortlisted_count": len(recommended),
+        "close_read_count": len([item for item in close_read_cards if not item.get("error")]),
+        "recommended_documents": recommended,
+        "stop": _stop_status(runtime),
+    }
+    runtime.finish_trace(
+        trace,
+        tool_name="review_agent",
+        label=f"子 Agent 筛选/精读完成，保留 {len(recommended)} 个候选",
+        trace_type="agent",
+        actor_name="review-agent",
+        output={
+            "summary": result["summary"],
+            "reviewed_count": result["reviewed_count"],
+            "shortlisted_count": result["shortlisted_count"],
+            "close_read_count": result["close_read_count"],
+            "summary_error": summary_error,
+        },
+        metadata={"model_tier": "default", "model": _default_model_name() or "unconfigured"},
+    )
+    return result
 
 
 @function_tool
@@ -866,9 +1628,9 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
     result = {
         "pn": normalized_pn,
         "title": record.get("title"),
-        "abstract": record.get("abstract"),
-        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:2000],
-        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:2000],
+        "abstract_preview": _safe_text(record.get("abstract"))[:500],
+        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:800],
+        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:800],
     }
     if _is_target_patent(runtime, record):
         runtime.update_meta(
@@ -990,8 +1752,11 @@ def build_search_agent() -> Agent[AiSearchRuntimeContext]:
         model_settings=ModelSettings(temperature=0, parallel_tool_calls=False),
         tools=[
             read_workspace_context,
+            read_candidate_summaries,
             set_stop_conditions,
             evaluate_stop_conditions,
+            run_retrieval_agent,
+            run_review_agent,
             search_patents,
             search_academic,
             fetch_patent_detail,

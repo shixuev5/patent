@@ -8,7 +8,13 @@ from typing import Any, AsyncIterator
 from agents import RunContextWrapper
 
 from backend.ai_search import agent_run_service as agent_run_service_module
-from patent_agents.ai_search.src.runtime import AiSearchRuntimeContext, search_patents
+from patent_agents.ai_search.src.runtime import (
+    AiSearchRuntimeContext,
+    read_workspace_context,
+    run_retrieval_agent,
+    run_review_agent,
+    search_patents,
+)
 from backend.ai_search.service import AiSearchService
 from backend.storage import PipelineTaskManager, SQLiteTaskStorage, TaskStatus
 from patent_agents.ai_search.src.ids import stable_ai_search_document_id
@@ -241,7 +247,7 @@ def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_p
     class FakeClient:
         def search(self, _query: str, limit: int = 20):
             assert limit == 2
-            return {"results": [{"pn": f"CN{i}A", "title": f"文献 {i}"} for i in range(10)]}
+            return {"results": [{"pn": f"CN{i}A", "title": f"文献 {i}", "abstract": "摘要" * 200} for i in range(10)]}
 
     monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
 
@@ -254,8 +260,150 @@ def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_p
     parsed = json.loads(result) if isinstance(result, str) else result
 
     assert parsed["count"] == 2
+    assert "documents" not in parsed
+    assert parsed["top_documents"][0]["pn"] == "CN0A"
+    assert "abstract" not in parsed["top_documents"][0]
+    assert "abstract_preview" not in parsed["top_documents"][0]
     assert len(storage.list_ai_search_documents(created.sessionId, 1)) == 2
     assert "zhihuiya" in get_ai_search_meta(storage.get_task(created.sessionId))["stop_policy"]["databases"]
+
+
+def test_workspace_context_returns_compact_candidate_summaries(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+    storage.upsert_ai_search_documents(
+        [
+            _document(
+                runtime.task_id,
+                runtime.run_id,
+                "CN200001A",
+                title="带有长摘要的候选",
+            )
+        ]
+    )
+
+    result = asyncio.run(
+        read_workspace_context.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps({}),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+
+    assert parsed["candidate_total"] == 1
+    assert parsed["candidate_documents"][0]["pn"] == "CN200001A"
+    assert "abstract" not in parsed["candidate_documents"][0]
+    assert "abstract_preview" not in parsed["candidate_documents"][0]
+
+
+def test_retrieval_agent_batches_searches_and_emits_agent_trace(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+    calls: list[tuple[str, str, int]] = []
+
+    class FakeClient:
+        def search_semantic(self, query: str, to_date: str = "", limit: int = 20):
+            calls.append(("semantic", query, limit))
+            return {"results": [{"pn": "CN300001A", "title": "语义候选", "abstract": "语义摘要" * 100}]}
+
+        def search(self, query: str, limit: int = 20):
+            calls.append(("boolean", query, limit))
+            return {"results": [{"pn": "CN300002A", "title": "布尔候选", "abstract": "布尔摘要" * 100}]}
+
+    async def fake_summary(_agent_name, _instructions, _payload):
+        return "本轮召回新增候选。"
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime._run_default_child_summary", fake_summary)
+
+    result = asyncio.run(
+        run_retrieval_agent.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps(
+                {
+                    "search_goal": "固态电池隔膜",
+                    "semantic_queries": "固态电池 隔膜 陶瓷涂层",
+                    "boolean_queries": '"solid electrolyte" AND separator',
+                    "academic_queries": "",
+                    "to_date": "2024-01-01",
+                    "priority_date": "",
+                    "per_query_limit": 5,
+                    "include_academic": False,
+                }
+            ),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+    events = storage.list_ai_search_stream_events(created.sessionId, after_seq=0)
+    agent_events = [
+        event
+        for event in events
+        if event["event_type"] == "trace.completed"
+        and event["payload"].get("traceType") == "agent"
+        and event["payload"].get("actorName") == "retrieval-agent"
+    ]
+
+    assert parsed["summary"] == "本轮召回新增候选。"
+    assert {item[0] for item in calls} == {"semantic", "boolean"}
+    assert parsed["lanes"][0]["top_documents"]
+    assert "abstract" not in parsed["lanes"][0]["top_documents"][0]
+    assert len(storage.list_ai_search_documents(created.sessionId, 1)) == 2
+    assert agent_events
+
+
+def test_review_agent_shortlists_and_close_reads_with_agent_trace(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+    storage.upsert_ai_search_documents(
+        [
+            _document(runtime.task_id, runtime.run_id, "CN400001A", title="陶瓷涂层隔膜"),
+            _document(runtime.task_id, runtime.run_id, "CN400002A", title="普通隔膜"),
+        ]
+    )
+
+    class FakeClient:
+        def get_patent_detail(self, _pn: str):
+            return {
+                "claims_text": "一种陶瓷涂层隔膜的权利要求。",
+                "description_text": "说明书公开了陶瓷颗粒涂层和耐热性能。",
+                "full_text_combined": "完整文本包含陶瓷涂层隔膜和耐热性能。",
+            }
+
+    async def fake_summary(_agent_name, _instructions, _payload):
+        return "建议优先关注陶瓷涂层隔膜。"
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime._run_default_child_summary", fake_summary)
+
+    result = asyncio.run(
+        run_review_agent.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps({"review_goal": "陶瓷涂层隔膜", "top_k": 2, "close_read_top_k": 1}),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+    docs = storage.list_ai_search_documents(created.sessionId, 1)
+    events = storage.list_ai_search_stream_events(created.sessionId, after_seq=0)
+    agent_events = [
+        event
+        for event in events
+        if event["event_type"] == "trace.completed"
+        and event["payload"].get("traceType") == "agent"
+        and event["payload"].get("actorName") == "review-agent"
+    ]
+
+    assert parsed["summary"] == "建议优先关注陶瓷涂层隔膜。"
+    assert parsed["shortlisted_count"] == 2
+    assert parsed["close_read_count"] == 1
+    assert {item["stage"] for item in docs} == {"shortlisted"}
+    assert any(item["close_read_status"] == "completed" for item in docs)
+    assert agent_events
 
 
 def test_search_patents_filters_target_patent(monkeypatch, tmp_path) -> None:
