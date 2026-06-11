@@ -1,5 +1,5 @@
-from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
-from agents.ai_reply.src.retrieval_utils import make_query_spec
+from patent_agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
+from patent_agents.ai_reply.src.retrieval_utils import make_query_spec
 
 
 def test_topup_search_verification_builds_prefix_messages_from_evidence_cards() -> None:

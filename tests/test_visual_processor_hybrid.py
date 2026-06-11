@@ -20,7 +20,7 @@ def _import_vision_module():
         fake_module.PaddleOCR = DummyPaddleOCR
         sys.modules["paddleocr"] = fake_module
 
-    return importlib.import_module("agents.common.patent_engines.vision")
+    return importlib.import_module("patent_agents.common.patent_engines.vision")
 
 
 def _build_processor(monkeypatch, tmp_path: Path, engine: str = "local"):

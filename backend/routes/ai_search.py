@@ -11,14 +11,12 @@ from backend.auth import _get_current_user
 from backend.models import CurrentUser
 
 from backend.ai_search.models import (
-    AiSearchAnswerRequest,
     AiSearchCreateFromAnalysisRequest,
     AiSearchCreateFromReplyRequest,
-    AiSearchDocumentReviewRequest,
-    AiSearchExecutionQueueMessageRequest,
-    AiSearchFeatureComparisonRequest,
+    AiSearchDocumentSelectionRequest,
     AiSearchMessageRequest,
     AiSearchSessionUpdateRequest,
+    AiSearchStopPolicyUpdateRequest,
 )
 from backend.ai_search.service import AiSearchService
 
@@ -101,6 +99,26 @@ async def update_ai_search_session(
     )
 
 
+@router.patch("/api/ai-search/sessions/{session_id}/stop-policy")
+async def update_ai_search_stop_policy(
+    session_id: str,
+    request: AiSearchStopPolicyUpdateRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    policy = {
+        "max_rounds": request.maxRounds,
+        "max_queries": request.maxQueries,
+        "max_candidates": request.maxCandidates,
+        "max_selected_documents": request.maxSelectedDocuments,
+        "max_no_new_result_rounds": request.maxNoNewResultRounds,
+        "deadline_seconds": request.deadlineSeconds,
+        "target_coverage": request.targetCoverage,
+        "stop_when": request.stopWhen,
+        "databases": request.databases,
+    }
+    return service.update_stop_policy(session_id, current_user.user_id, policy)
+
+
 @router.delete("/api/ai-search/sessions/{session_id}")
 async def delete_ai_search_session(
     session_id: str,
@@ -122,36 +140,6 @@ async def stream_ai_search_messages(
     )
 
 
-@router.post("/api/ai-search/sessions/{session_id}/execution-message-queue")
-async def append_ai_search_execution_message_queue(
-    session_id: str,
-    request: AiSearchExecutionQueueMessageRequest,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return service.append_execution_queue_message(session_id, current_user.user_id, request.content)
-
-
-@router.delete("/api/ai-search/sessions/{session_id}/execution-message-queue/{queue_message_id}")
-async def delete_ai_search_execution_message_queue(
-    session_id: str,
-    queue_message_id: str,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return service.delete_execution_queue_message(session_id, current_user.user_id, queue_message_id)
-
-
-@router.post("/api/ai-search/sessions/{session_id}/resume/stream")
-async def stream_ai_search_resume(
-    session_id: str,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return StreamingResponse(
-        service.stream_resume(session_id, current_user.user_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
 @router.post("/api/ai-search/sessions/{session_id}/analysis-seed/stream")
 async def stream_ai_search_analysis_seed(
     session_id: str,
@@ -164,81 +152,36 @@ async def stream_ai_search_analysis_seed(
     )
 
 
-@router.post("/api/ai-search/sessions/{session_id}/answers/stream")
-async def stream_ai_search_answers(
-    session_id: str,
-    request: AiSearchAnswerRequest,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return StreamingResponse(
-        service.stream_answer(session_id, current_user.user_id, request.questionId, request.answer),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-@router.post("/api/ai-search/sessions/{session_id}/plan/confirm/stream")
-async def stream_ai_search_plan_confirmation(
+@router.post("/api/ai-search/sessions/{session_id}/cancel")
+async def cancel_ai_search_current_run(
     session_id: str,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
-    return StreamingResponse(
-        service.stream_plan_confirmation(session_id, current_user.user_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
+    return service.cancel_current_run(session_id, current_user.user_id)
 
 
-@router.post("/api/ai-search/sessions/{session_id}/document-review/stream")
-async def stream_ai_search_document_review(
+@router.post("/api/ai-search/sessions/{session_id}/report/export")
+async def export_ai_search_report(
     session_id: str,
-    request: AiSearchDocumentReviewRequest,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.export_report(session_id, current_user.user_id)
+
+
+@router.post("/api/ai-search/sessions/{session_id}/documents/selection/stream")
+async def stream_ai_search_document_selection(
+    session_id: str,
+    request: AiSearchDocumentSelectionRequest,
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return StreamingResponse(
-        service.stream_document_review(
+        service.stream_document_selection(
             session_id,
             current_user.user_id,
             request.planVersion,
             request.reviewDocumentIds,
             request.removeDocumentIds,
         ),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-@router.post("/api/ai-search/sessions/{session_id}/feature-comparison/stream")
-async def stream_ai_search_feature_comparison(
-    session_id: str,
-    request: AiSearchFeatureComparisonRequest,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return StreamingResponse(
-        service.stream_feature_comparison(session_id, current_user.user_id, request.planVersion),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-@router.post("/api/ai-search/sessions/{session_id}/decision/continue")
-async def stream_ai_search_decision_continue(
-    session_id: str,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return StreamingResponse(
-        service.stream_decision_continue(session_id, current_user.user_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
-
-
-@router.post("/api/ai-search/sessions/{session_id}/decision/complete")
-async def stream_ai_search_decision_complete(
-    session_id: str,
-    current_user: CurrentUser = Depends(_get_current_user),
-):
-    return StreamingResponse(
-        service.stream_decision_complete(session_id, current_user.user_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

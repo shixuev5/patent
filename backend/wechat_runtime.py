@@ -14,11 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from loguru import logger
 
-from agents.common.utils.llm import get_llm_service
-from backend.ai_search.models import (
-    ACTIVE_PLAN_REQUIRED_CODE,
-    PLAN_CONFIRMATION_REQUIRED_CODE,
-)
+from patent_agents.common.utils.llm import get_llm_service
 from backend.ai_search.service import AiSearchService
 from backend.models import (
     InternalWeChatInboundAttachment,
@@ -57,7 +53,6 @@ CANCEL_SEARCH_TOKENS = ("取消当前检索", "取消这个检索")
 SEARCH_RESUME_TOKENS = ("继续检索", "继续刚才", "继续上次", "恢复检索", "接着检索")
 SEARCH_CONTROL_TOKENS = {"确认计划", "继续检索", "按当前结果完成"}
 CHITCHAT_TOKENS = {"你好", "您好", "谢谢", "多谢", "收到", "好的", "好", "ok", "OK", "嗯嗯"}
-SEARCH_PENDING_CONTEXT_INVALID_CODE = "SEARCH_PENDING_CONTEXT_INVALID"
 SEARCH_DOCUMENT_SELECTION_INVALID_CODE = "SEARCH_DOCUMENT_SELECTION_INVALID"
 WECHAT_FLOW_TYPE_UNSUPPORTED_CODE = "WECHAT_FLOW_TYPE_UNSUPPORTED"
 WECHAT_BINDING_NOT_FOUND_CODE = "WECHAT_BINDING_NOT_FOUND"
@@ -847,41 +842,16 @@ class WeChatRuntimeService:
             return ConversationResponse(messages=[self._text("微信检索当前只支持文本需求，请先发送文本。")])
         try:
             snapshot = self.ai_search_service.get_snapshot(session_id, binding.owner_id)
-            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
-            action_type = str((pending_action or {}).get("actionType") or "").strip()
             normalized_text = str(text or "").strip()
             if normalized_text in SEARCH_CONTROL_TOKENS:
                 if normalized_text == "确认计划":
-                    if action_type != "plan_confirmation":
-                        raise HTTPException(
-                            status_code=409,
-                            detail={
-                                "code": PLAN_CONFIRMATION_REQUIRED_CODE,
-                                "message": "现在还没有可确认的计划。",
-                                "suggestion": "你可以先补充要求，等我给出计划后再回复“确认计划”。",
-                            },
-                        )
-                    await self.confirm_ai_search_plan(session_id, binding.owner_id)
+                    await self.send_freeform_ai_search_message(session_id, binding.owner_id, "按当前方向继续检索。")
                 elif normalized_text == "继续检索":
-                    await self.continue_ai_search(session_id, binding.owner_id)
+                    await self.send_freeform_ai_search_message(session_id, binding.owner_id, "请在当前结果基础上继续扩展检索。")
                 else:
-                    await self.complete_ai_search(session_id, binding.owner_id)
+                    await self.send_freeform_ai_search_message(session_id, binding.owner_id, "请基于当前结果生成阶段性总结，并说明是否已经满足停止条件。")
             elif normalized_text.startswith("选择 ") or normalized_text.startswith("送审 "):
                 await self.select_ai_search_candidates(session_id, binding.owner_id, normalized_text)
-            elif action_type == "question":
-                question_id = str((pending_action or {}).get("questionId") or (pending_action or {}).get("question_id") or "").strip()
-                if not question_id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": SEARCH_PENDING_CONTEXT_INVALID_CODE,
-                            "message": "刚才那条追问信息有点不完整。",
-                            "suggestion": "你可以把补充说明再发一次试试。",
-                        },
-                    )
-                await self.answer_ai_search_question(session_id, binding.owner_id, question_id, normalized_text)
-            elif action_type == "plan_confirmation" and normalized_text and not self._is_affirmative(normalized_text):
-                await self.send_freeform_ai_search_message(session_id, binding.owner_id, normalized_text)
             else:
                 await self.send_freeform_ai_search_message(session_id, binding.owner_id, normalized_text)
         except HTTPException as exc:
@@ -918,18 +888,6 @@ class WeChatRuntimeService:
             return
         await self._drain(self.ai_search_service.stream_message(session_id, owner_id, content))
 
-    async def answer_ai_search_question(self, session_id: str, owner_id: str, question_id: str, answer: str) -> None:
-        await self._drain(self.ai_search_service.stream_answer(session_id, owner_id, question_id, answer))
-
-    async def confirm_ai_search_plan(self, session_id: str, owner_id: str) -> None:
-        await self._drain(self.ai_search_service.stream_plan_confirmation(session_id, owner_id))
-
-    async def continue_ai_search(self, session_id: str, owner_id: str) -> None:
-        await self._drain(self.ai_search_service.stream_decision_continue(session_id, owner_id))
-
-    async def complete_ai_search(self, session_id: str, owner_id: str) -> None:
-        await self._drain(self.ai_search_service.stream_decision_complete(session_id, owner_id))
-
     async def select_ai_search_candidates(self, session_id: str, owner_id: str, text: str) -> None:
         snapshot = self.ai_search_service.get_snapshot(session_id, owner_id)
         candidates = snapshot.retrieval.get("documents", {}).get("candidates", []) if isinstance(snapshot.retrieval, dict) else []
@@ -950,18 +908,15 @@ class WeChatRuntimeService:
                     "suggestion": "请按编号回复，比如“选择 1”或“选择 1 3”。",
                 },
             )
-        plan_version = int(snapshot.run.get("planVersion") or snapshot.plan.get("currentPlan", {}).get("planVersion") or 0)
-        if plan_version <= 0:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": ACTIVE_PLAN_REQUIRED_CODE,
-                    "message": "现在还没有可继续执行的计划。",
-                    "suggestion": "你可以先补充要求，或者等我先给出计划。",
-                },
+        plan_version = int(snapshot.run.get("planVersion") or snapshot.session.activePlanVersion or 1)
+        await self._drain(self.ai_search_service.stream_document_selection(session_id, owner_id, plan_version, selected_ids, []))
+        await self._drain(
+            self.ai_search_service.stream_message(
+                session_id,
+                owner_id,
+                "请基于刚才选中的文献做简要对比，并说明还需要继续检索哪些方向。",
             )
-        self.ai_search_service.patch_selected_documents(session_id, owner_id, plan_version, selected_ids, [])
-        await self._drain(self.ai_search_service.stream_feature_comparison(session_id, owner_id, plan_version))
+        )
 
     def list_recent_ai_search_sessions(self, owner_id: str) -> List[Dict[str, str]]:
         sessions = self.ai_search_service.list_sessions(owner_id).items
@@ -980,36 +935,7 @@ class WeChatRuntimeService:
         return items
 
     def list_recent_pending_ai_search_sessions(self, owner_id: str) -> List[Dict[str, str]]:
-        items: List[Dict[str, str]] = []
-        for session in self.list_recent_ai_search_sessions(owner_id):
-            pending = self.storage.get_current_ai_search_pending_action(session["session_id"])
-            action_type = ""
-            action_id = ""
-            if isinstance(pending, dict):
-                action_type = str(pending.get("action_type") or "").strip()
-                action_id = str(pending.get("action_id") or "").strip()
-            else:
-                try:
-                    snapshot = self.ai_search_service.get_snapshot(session["session_id"], owner_id)
-                except Exception:
-                    snapshot = None
-                snapshot_pending = snapshot.conversation.get("pendingAction") if snapshot and isinstance(snapshot.conversation, dict) else None
-                if isinstance(snapshot_pending, dict):
-                    action_type = str(snapshot_pending.get("actionType") or snapshot_pending.get("action_type") or "").strip()
-                    action_id = str(snapshot_pending.get("actionId") or snapshot_pending.get("action_id") or "").strip()
-            if not action_type:
-                continue
-            if action_type not in {"question", "plan_confirmation", "human_decision"}:
-                continue
-            items.append(
-                {
-                    "session_id": session["session_id"],
-                    "title": session["title"],
-                    "action_type": action_type,
-                    "action_id": action_id,
-                }
-            )
-        return items
+        return []
 
     async def _maybe_resume_pending_ai_search(
         self,
@@ -1650,24 +1576,14 @@ class WeChatRuntimeService:
         if latest_assistant:
             messages.append(self._text(latest_assistant))
 
-        pending_action = conversation.get("pendingAction") if isinstance(conversation.get("pendingAction"), dict) else None
-        action_type = str((pending_action or {}).get("actionType") or "").strip()
-        if action_type == "question":
-            prompt = str((pending_action or {}).get("prompt") or latest_assistant or "").strip()
-            hint = "请直接回复补充信息。"
-            messages.append(self._text(f"{prompt}\n{hint}" if prompt and prompt != latest_assistant else hint))
-        elif action_type == "plan_confirmation":
-            messages.append(self._text("如确认当前检索计划，请回复“确认计划”；如果要补充修改，直接回复你的意见即可。"))
-        elif action_type == "human_decision":
-            documents = snapshot.retrieval.get("documents", {}) if isinstance(snapshot.retrieval, dict) else {}
-            candidates = documents.get("candidates") if isinstance(documents.get("candidates"), list) else []
-            if candidates:
-                lines = ["候选文献如下，请回复“选择 1 3”这类编号指令："]
-                for index, item in enumerate(candidates, start=1):
-                    title = str(item.get("title") or item.get("pn") or item.get("documentId") or item.get("document_id") or f"文献 {index}").strip()
-                    lines.append(f"{index}. {title}")
-                messages.append(self._text("\n".join(lines)))
-            messages.append(self._text("如需继续扩展检索，请回复“继续检索”；如按当前结果结束，请回复“按当前结果完成”。"))
+        documents = snapshot.retrieval.get("documents", {}) if isinstance(snapshot.retrieval, dict) else {}
+        candidates = documents.get("candidates") if isinstance(documents.get("candidates"), list) else []
+        if candidates:
+            lines = ["候选文献如下，可回复“选择 1 3”标记重点文献："]
+            for index, item in enumerate(candidates[:8], start=1):
+                title = str(item.get("title") or item.get("pn") or item.get("documentId") or item.get("document_id") or f"文献 {index}").strip()
+                lines.append(f"{index}. {title}")
+            messages.append(self._text("\n".join(lines)))
 
         attachments = snapshot.artifacts.attachments if snapshot.artifacts else []
         primary_attachment = next((item for item in attachments if item.isPrimary), attachments[0] if attachments else None)

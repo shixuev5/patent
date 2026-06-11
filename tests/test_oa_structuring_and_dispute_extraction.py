@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
-from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
+from patent_agents.ai_reply.src.nodes.dispute_extraction import DisputeExtractionNode
+from patent_agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 
 
 def test_office_action_extractor_treats_jph_publication_as_patent() -> None:

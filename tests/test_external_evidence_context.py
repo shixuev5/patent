@@ -1,7 +1,7 @@
 import os
 
-from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
-from agents.ai_reply.src.retrieval_utils import make_query_spec
+from patent_agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from patent_agents.ai_reply.src.retrieval_utils import make_query_spec
 from backend import task_usage_tracking
 
 

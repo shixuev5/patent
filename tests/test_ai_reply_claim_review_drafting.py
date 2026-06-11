@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingNode
-from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
+from patent_agents.ai_reply.src.nodes.claim_review_drafting import ClaimReviewDraftingNode
+from patent_agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 
 
 def test_claim_review_drafting_aggregates_independent_card_and_residual_group(monkeypatch) -> None:

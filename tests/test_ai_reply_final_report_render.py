@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
+from patent_agents.ai_reply.src.nodes.final_report_render import FinalReportRenderNode
 
 
 def test_final_report_render_enables_mathjax(monkeypatch, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.final_report_render.write_markdown",
+        "patent_agents.ai_reply.src.nodes.final_report_render.write_markdown",
         lambda md_text, output_path: Path(output_path).write_text(md_text, encoding="utf-8"),
     )
 
@@ -15,7 +15,7 @@ def test_final_report_render_enables_mathjax(monkeypatch, tmp_path: Path) -> Non
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.final_report_render.render_markdown_to_pdf",
+        "patent_agents.ai_reply.src.nodes.final_report_render.render_markdown_to_pdf",
         _fake_render_markdown_to_pdf,
     )
 
@@ -63,7 +63,7 @@ def test_final_report_render_skips_mathjax_when_markdown_has_no_formula(monkeypa
     calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.final_report_render.write_markdown",
+        "patent_agents.ai_reply.src.nodes.final_report_render.write_markdown",
         lambda md_text, output_path: Path(output_path).write_text(md_text, encoding="utf-8"),
     )
 
@@ -71,7 +71,7 @@ def test_final_report_render_skips_mathjax_when_markdown_has_no_formula(monkeypa
         calls.append(kwargs)
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.final_report_render.render_markdown_to_pdf",
+        "patent_agents.ai_reply.src.nodes.final_report_render.render_markdown_to_pdf",
         _fake_render_markdown_to_pdf,
     )
 

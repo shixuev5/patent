@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agents.ai_reply.src.nodes.document_processing import DocumentProcessingNode
+from patent_agents.ai_reply.src.nodes.document_processing import DocumentProcessingNode
 
 
 def test_parse_document_accepts_doc(monkeypatch, tmp_path) -> None:
@@ -12,7 +12,7 @@ def test_parse_document_accepts_doc(monkeypatch, tmp_path) -> None:
     target_md = output_dir / "raw.md"
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.document_processing.WordParser.parse",
+        "patent_agents.ai_reply.src.nodes.document_processing.WordParser.parse",
         lambda file_path, target_dir: target_md,
     )
 
@@ -28,7 +28,7 @@ def test_parse_document_accepts_docx(monkeypatch, tmp_path) -> None:
     target_md = output_dir / "raw.md"
 
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.document_processing.WordParser.parse",
+        "patent_agents.ai_reply.src.nodes.document_processing.WordParser.parse",
         lambda file_path, target_dir: target_md,
     )
 
@@ -59,7 +59,7 @@ def test_document_processing_uses_zhihuiya_resolver_for_non_matching_comparison_
 
     fake_client = _FakeClient()
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.document_processing.SearchClientFactory.get_client",
+        "patent_agents.ai_reply.src.nodes.document_processing.SearchClientFactory.get_client",
         lambda provider="zhihuiya": fake_client,
     )
 

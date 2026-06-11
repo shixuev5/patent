@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agents.common.rendering.report_render import render_markdown_to_pdf
+from patent_agents.common.rendering.report_render import render_markdown_to_pdf
 
 
 class _FakePage:
@@ -66,7 +66,7 @@ def test_render_markdown_to_pdf_bounds_mathjax_wait(monkeypatch, tmp_path: Path)
     browser = _FakeBrowser(page)
 
     monkeypatch.setattr(
-        "agents.common.rendering.report_render.sync_playwright",
+        "patent_agents.common.rendering.report_render.sync_playwright",
         lambda: _FakePlaywrightContext(_FakePlaywright(browser)),
     )
 

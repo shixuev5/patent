@@ -1,4 +1,4 @@
-from agents.common.patent_structuring.models import PatentDocument
+from patent_agents.common.patent_structuring.models import PatentDocument
 
 
 def test_patent_document_normalizes_null_string_fields_to_empty_strings() -> None:

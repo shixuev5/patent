@@ -1,4 +1,4 @@
-from agents.ai_reply.src.utils import (
+from patent_agents.ai_reply.src.utils import (
     is_patent_application_number,
     is_patent_document,
     normalize_quote_translation,

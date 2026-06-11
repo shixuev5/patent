@@ -1,4 +1,4 @@
-from agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
+from patent_agents.ai_reply.src.nodes.rejection_drafting import RejectionDraftingNode
 
 
 def test_rejection_drafting_skips_when_no_draftable_verdict() -> None:

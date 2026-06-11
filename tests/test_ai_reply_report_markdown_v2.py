@@ -4,9 +4,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agents.ai_reply.src.report_markdown import build_final_report_markdown
-from agents.ai_reply.src.report_styles import OAR_REPORT_CSS
-from agents.common.rendering.report_render import markdown_to_html_document
+from patent_agents.ai_reply.src.report_markdown import build_final_report_markdown
+from patent_agents.ai_reply.src.report_styles import OAR_REPORT_CSS
+from patent_agents.common.rendering.report_render import markdown_to_html_document
 
 
 _NOISE_FIXTURE = json.loads(

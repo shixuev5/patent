@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
+from patent_agents.common.office_action_structuring.rule_based_extractor import OfficeActionExtractor
 
 
 def test_extract_latest_notice_section_accepts_markdown_heading() -> None:

@@ -231,7 +231,7 @@ const searchActionTitle = computed(() => {
   const sourceLabel = props.task.taskType === 'ai_reply' ? 'AI 答复报告' : 'AI 分析结果'
   return linkedSearchSession.value
     ? '打开已创建的 AI 检索任务'
-    : `基于当前${sourceLabel}生成 AI 检索计划`
+    : `基于当前${sourceLabel}创建 AI 检索会话`
 })
 
 type ActionItem = {
@@ -375,14 +375,14 @@ const openSearchDraft = async () => {
         : await aiSearchStore.createSessionFromAnalysis(sourceTaskId)
     )
     if (!sessionId) {
-      throw new Error('AI 检索计划创建成功，但未返回会话ID。')
+      throw new Error('AI 检索会话创建成功，但未返回会话ID。')
     }
     await router.push({
       path: '/search',
       query: { session: sessionId },
     })
   } catch (error) {
-    taskStore.showGlobalNotice('error', error instanceof Error ? error.message : '生成 AI 检索计划失败，请稍后重试。')
+    taskStore.showGlobalNotice('error', error instanceof Error ? error.message : '创建 AI 检索会话失败，请稍后重试。')
   } finally {
     creatingSearchDraft.value = false
   }

@@ -3,14 +3,12 @@
 from .checkpoints import AiSearchCheckpointsRepositoryMixin
 from .documents import AiSearchDocumentsRepositoryMixin
 from .messages import AiSearchMessagesPlansRepositoryMixin
-from .pending_actions import AiSearchPendingActionsRepositoryMixin
 from .runs import AiSearchRunsRepositoryMixin
 
 
 class AiSearchRepositoryMixin(
     AiSearchMessagesPlansRepositoryMixin,
     AiSearchRunsRepositoryMixin,
-    AiSearchPendingActionsRepositoryMixin,
     AiSearchDocumentsRepositoryMixin,
     AiSearchCheckpointsRepositoryMixin,
 ):

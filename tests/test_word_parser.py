@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.common.parsers import word_parser
+from patent_agents.common.parsers import word_parser
 
 
 def test_local_word_parser_converts_docx_with_pypandoc(monkeypatch, tmp_path) -> None:

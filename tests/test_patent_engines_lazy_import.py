@@ -3,21 +3,21 @@ import sys
 
 
 def test_package_init_does_not_import_vision_for_knowledge_only():
-    sys.modules.pop("agents.common.patent_engines", None)
-    sys.modules.pop("agents.common.patent_engines.vision", None)
+    sys.modules.pop("patent_agents.common.patent_engines", None)
+    sys.modules.pop("patent_agents.common.patent_engines.vision", None)
 
-    package = importlib.import_module("agents.common.patent_engines")
+    package = importlib.import_module("patent_agents.common.patent_engines")
 
-    assert "agents.common.patent_engines.vision" not in sys.modules
+    assert "patent_agents.common.patent_engines.vision" not in sys.modules
 
     knowledge_extractor = package.KnowledgeExtractor
 
     assert knowledge_extractor.__name__ == "KnowledgeExtractor"
-    assert "agents.common.patent_engines.vision" not in sys.modules
+    assert "patent_agents.common.patent_engines.vision" not in sys.modules
 
 
 def test_langchain_compat_exposes_legacy_modules():
-    compat = importlib.import_module("agents.common.utils.langchain_compat")
+    compat = importlib.import_module("patent_agents.common.utils.langchain_compat")
     compat.install_langchain_compat()
 
     from langchain.docstore.document import Document

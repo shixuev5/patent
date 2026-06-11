@@ -601,7 +601,7 @@ def _query_patent_info_for_publication_number(patent_number: str) -> Optional[Di
         return None
 
     try:
-        from agents.common.search_clients.factory import SearchClientFactory
+        from patent_agents.common.search_clients.factory import SearchClientFactory
 
         client = SearchClientFactory.get_client("zhihuiya")
         if not hasattr(client, "_query_patent_info_by_count"):
@@ -739,7 +739,7 @@ def _resolve_ai_reply_publication_number_by_application_number(
     if not appno:
         return None
     try:
-        from agents.common.search_clients.factory import SearchClientFactory
+        from patent_agents.common.search_clients.factory import SearchClientFactory
 
         client = SearchClientFactory.get_client("zhihuiya")
         if not hasattr(client, "get_publication_number_by_application_number"):
@@ -949,8 +949,8 @@ async def run_patent_analysis_task(
 
         def run_workflow() -> Dict[str, Any]:
             workflow_start = perf_counter()
-            from agents.patent_analysis.main import create_workflow, build_runtime_config
-            from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
+            from patent_agents.patent_analysis.main import create_workflow, build_runtime_config
+            from patent_agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 
             output_dir = settings.OUTPUT_DIR / task_id
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1324,8 +1324,8 @@ async def run_ai_review_task(
 
         def run_workflow() -> Dict[str, Any]:
             workflow_start = perf_counter()
-            from agents.ai_review.main import build_runtime_config, create_workflow
-            from agents.ai_review.src.state import WorkflowConfig, WorkflowState
+            from patent_agents.ai_review.main import build_runtime_config, create_workflow
+            from patent_agents.ai_review.src.state import WorkflowConfig, WorkflowState
 
             output_dir = settings.OUTPUT_DIR / task_id
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -1631,9 +1631,9 @@ async def run_ai_reply_task(
         loop = asyncio.get_event_loop()
 
         def run_workflow() -> Dict[str, Any]:
-            from agents.ai_reply.main import create_workflow
-            from agents.ai_reply.main import build_runtime_config
-            from agents.ai_reply.src.state import WorkflowConfig, WorkflowState, InputFile
+            from patent_agents.ai_reply.main import create_workflow
+            from patent_agents.ai_reply.main import build_runtime_config
+            from patent_agents.ai_reply.src.state import WorkflowConfig, WorkflowState, InputFile
 
             output_dir = settings.OUTPUT_DIR / task_id
             output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
-from agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
-from agents.common.patent_structuring.hybrid_extractor import HybridExtractor
-from agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
+from patent_agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
+from patent_agents.common.patent_structuring.hybrid_extractor import HybridExtractor
+from patent_agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
 
 
 def test_extract_brief_description_only_marker_entries() -> None:

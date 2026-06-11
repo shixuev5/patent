@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 
-from agents.common.utils.concurrency import submit_with_current_context
+from patent_agents.common.utils.concurrency import submit_with_current_context
 from backend import task_usage_tracking
 
 

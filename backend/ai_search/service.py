@@ -7,18 +7,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from agents.ai_search.src.state import (
-    PHASE_AWAITING_PLAN_CONFIRMATION,
-    PHASE_COLLECTING_REQUIREMENTS,
-    PHASE_COMPLETED,
-    PHASE_DRAFTING_PLAN,
-    get_ai_search_meta,
-    merge_ai_search_meta,
-    phase_progress,
-    phase_step,
-    phase_to_task_status,
-)
-from backend.notifications import build_task_notification_dispatcher, build_task_wechat_notification_service
+from patent_agents.ai_search.src.state import get_ai_search_meta
+from backend.notifications import build_task_notification_dispatcher
 from backend.system_logs import emit_system_log
 from backend.storage import TaskType, get_pipeline_manager
 from backend.task_usage_tracking import (
@@ -29,7 +19,6 @@ from backend.task_usage_tracking import (
 from backend.usage import _enforce_daily_quota
 from .models import (
     AiSearchCreateSessionResponse,
-    AiSearchExecutionQueueResponse,
     AiSearchSessionListResponse,
     AiSearchSessionSummary,
     AiSearchSnapshotResponse,
@@ -37,28 +26,6 @@ from .models import (
 
 
 task_manager = get_pipeline_manager()
-
-MAIN_AGENT_CHECKPOINT_NS = "ai_search_main"
-MAIN_AGENT_PROGRESS_POLL_SECONDS = 15.0
-DEFAULT_MESSAGE_PHASES = {
-    PHASE_COLLECTING_REQUIREMENTS,
-    PHASE_DRAFTING_PLAN,
-    PHASE_AWAITING_PLAN_CONFIRMATION,
-    PHASE_COMPLETED,
-}
-
-
-def build_main_agent(storage: Any, task_id: str) -> Any:
-    from agents.ai_search.src.main_agent.agent import build_main_agent as _build_main_agent
-
-    return _build_main_agent(storage, task_id)
-
-
-def build_ai_search_terminal_artifacts(**kwargs: Any) -> Dict[str, Any]:
-    from .reporting import build_ai_search_terminal_artifacts as _build_ai_search_terminal_artifacts
-
-    return _build_ai_search_terminal_artifacts(**kwargs)
-
 
 class AiSearchService:
     def __init__(self):
@@ -70,9 +37,6 @@ class AiSearchService:
         from .snapshot_service import AiSearchSnapshotService
 
         self.task_manager = task_manager
-        self.MAIN_AGENT_CHECKPOINT_NS = MAIN_AGENT_CHECKPOINT_NS
-        self.MAIN_AGENT_PROGRESS_POLL_SECONDS = MAIN_AGENT_PROGRESS_POLL_SECONDS
-        self.DEFAULT_MESSAGE_PHASES = DEFAULT_MESSAGE_PHASES
         self.sessions = AiSearchSessionService(self)
         self.snapshots = AiSearchSnapshotService(self)
         self.artifacts = AiSearchArtifactsService(self)
@@ -84,21 +48,11 @@ class AiSearchService:
     def storage(self):
         return self.task_manager.storage
 
-    def _uses_default_run_main_agent(self) -> bool:
-        runner = getattr(self, "_run_main_agent", None)
-        return getattr(runner, "__func__", None) is AiSearchService._run_main_agent
-
     def _emit_system_log(self, **kwargs: Any) -> None:
         emit_system_log(**kwargs)
 
     def _enforce_daily_quota(self, owner_id: str, *, task_type: Optional[str] = None) -> None:
         _enforce_daily_quota(owner_id, task_type=task_type)
-
-    def _build_main_agent(self, storage: Any, task_id: str) -> Any:
-        return build_main_agent(storage, task_id)
-
-    def _build_terminal_artifacts(self, **kwargs: Any) -> Dict[str, Any]:
-        return build_ai_search_terminal_artifacts(**kwargs)
 
     def notify_task_terminal_status(
         self,
@@ -117,23 +71,6 @@ class AiSearchService:
             task_type=TaskType.AI_SEARCH.value,
             error_message=error_message,
         )
-
-    def notify_pending_action_required(
-        self,
-        task_id: str,
-        pending_action: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        service = build_task_wechat_notification_service(
-            storage=self.storage,
-            system_log_emitter=self._emit_system_log,
-        )
-        return service.notify_ai_search_pending_action(
-            task_id,
-            pending_action=pending_action,
-        )
-
-    def _main_agent_progress_poll_seconds(self) -> float:
-        return MAIN_AGENT_PROGRESS_POLL_SECONDS
 
     async def _stream_with_task_usage(
         self,
@@ -170,38 +107,6 @@ class AiSearchService:
 
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
         return self.snapshots.get_snapshot(session_id, owner_id)
-
-    def append_execution_queue_message(self, session_id: str, owner_id: str, content: str) -> AiSearchExecutionQueueResponse:
-        return self.agent_runs.append_execution_queue_message(session_id, owner_id, content)
-
-    def delete_execution_queue_message(self, session_id: str, owner_id: str, queue_message_id: str) -> AiSearchExecutionQueueResponse:
-        return self.agent_runs.delete_execution_queue_message(session_id, owner_id, queue_message_id)
-
-    def _update_phase(self, task_id: str, phase: str, **meta_updates: Any) -> None:
-        task = self.storage.get_task(task_id)
-        metadata = merge_ai_search_meta(task, current_phase=phase, **meta_updates)
-        self.storage.update_task(
-            task_id,
-            metadata=metadata,
-            status=phase_to_task_status(phase),
-            progress=phase_progress(phase),
-            current_step=phase_step(phase),
-        )
-        active_plan_version = int(meta_updates.get("active_plan_version") or metadata.get("ai_search", {}).get("active_plan_version") or 0) if isinstance(metadata, dict) else int(meta_updates.get("active_plan_version") or 0)
-        if active_plan_version > 0:
-            run = self.storage.get_ai_search_run(task_id, plan_version=active_plan_version)
-            if run:
-                run_updates: Dict[str, Any] = {
-                    "phase": phase,
-                    "status": phase_to_task_status(phase),
-                }
-                if "selected_document_count" in meta_updates:
-                    run_updates["selected_document_count"] = int(meta_updates.get("selected_document_count") or 0)
-                if "current_task" in meta_updates:
-                    run_updates["active_retrieval_todo_id"] = meta_updates.get("current_task")
-                if "active_batch_id" in meta_updates:
-                    run_updates["active_batch_id"] = meta_updates.get("active_batch_id")
-                self.storage.update_ai_search_run(task_id, str(run.get("run_id") or ""), **run_updates)
 
     def _append_message(
         self,
@@ -267,15 +172,24 @@ class AiSearchService:
     ) -> AiSearchSessionSummary:
         return self.sessions.update_session(session_id, owner_id, title=title, pinned=pinned)
 
+    def update_stop_policy(self, session_id: str, owner_id: str, policy: Dict[str, Any]) -> AiSearchSnapshotResponse:
+        return self.sessions.update_stop_policy(session_id, owner_id, policy)
+
     def delete_session(self, session_id: str, owner_id: str) -> Dict[str, bool]:
         return self.sessions.delete_session(session_id, owner_id)
+
+    def cancel_current_run(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
+        self.agent_runs.cancel_current_run(session_id, owner_id)
+        return self.snapshots.get_snapshot(session_id, owner_id)
 
     def download_attachment(self, session_id: str, owner_id: str, attachment_id: str):
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         return self.artifacts.download_attachment(task, attachment_id)
 
-    def _run_main_agent(self, task_id: str, thread_id: str, payload: Any, *, for_resume: bool = False) -> Dict[str, Any]:
-        return self.agent_runs._run_main_agent(task_id, thread_id, payload, for_resume=for_resume)
+    def export_report(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        self.artifacts.export_session_report(task)
+        return self.snapshots.get_snapshot(session_id, owner_id)
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(
@@ -289,30 +203,6 @@ class AiSearchService:
         async for event in self.agent_runs.subscribe_stream(session_id, owner_id, after_seq=after_seq):
             yield event
 
-    async def stream_resume(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_resume(session_id, owner_id),
-        ):
-            yield event
-
-    async def stream_answer(self, session_id: str, owner_id: str, question_id: str, answer: str) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_answer(session_id, owner_id, question_id, answer),
-        ):
-            yield event
-
-    async def stream_plan_confirmation(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_plan_confirmation(session_id, owner_id),
-        ):
-            yield event
-
     async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(
             session_id,
@@ -321,23 +211,7 @@ class AiSearchService:
         ):
             yield event
 
-    async def stream_decision_continue(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_decision_continue(session_id, owner_id),
-        ):
-            yield event
-
-    async def stream_decision_complete(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_decision_complete(session_id, owner_id),
-        ):
-            yield event
-
-    async def stream_document_review(
+    async def stream_document_selection(
         self,
         session_id: str,
         owner_id: str,
@@ -348,20 +222,12 @@ class AiSearchService:
         async for event in self._stream_with_task_usage(
             session_id,
             owner_id,
-            lambda: self.agent_runs.stream_document_review(
+            lambda: self.agent_runs.stream_document_selection(
                 session_id,
                 owner_id,
                 plan_version,
                 review_document_ids,
                 remove_document_ids,
             ),
-        ):
-            yield event
-
-    async def stream_feature_comparison(self, session_id: str, owner_id: str, plan_version: int) -> AsyncIterator[str]:
-        async for event in self._stream_with_task_usage(
-            session_id,
-            owner_id,
-            lambda: self.agent_runs.stream_feature_comparison(session_id, owner_id, plan_version),
         ):
             yield event

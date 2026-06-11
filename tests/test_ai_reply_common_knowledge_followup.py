@@ -1,5 +1,5 @@
-from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
-from agents.ai_reply.src.retrieval_utils import make_query_spec
+from patent_agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from patent_agents.ai_reply.src.retrieval_utils import make_query_spec
 
 
 def test_common_knowledge_verification_runs_followup_search_on_low_confidence(monkeypatch) -> None:

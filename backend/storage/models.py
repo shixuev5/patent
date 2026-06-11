@@ -78,7 +78,6 @@ class WeChatBinding:
     wechat_peer_name: Optional[str] = None
     push_task_completed: bool = True
     push_task_failed: bool = True
-    push_ai_search_pending_action: bool = True
     bound_at: Optional[datetime] = None
     disconnected_at: Optional[datetime] = None
     last_inbound_at: Optional[datetime] = None

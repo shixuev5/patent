@@ -1,7 +1,7 @@
 from pathlib import Path
 import time
 
-from agents.patent_analysis.src.engines.generator import ContentGenerator
+from patent_agents.patent_analysis.src.engines.generator import ContentGenerator
 
 
 class _NoSplitText:
@@ -17,7 +17,7 @@ def test_generate_figures_analysis_no_paragraph_dependency(tmp_path: Path, monke
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
     )
 
     annotated_dir = tmp_path / "annotated_images"
@@ -134,10 +134,10 @@ def test_figure_parallel_workers_uses_unified_setting(tmp_path: Path, monkeypatc
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
     )
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.settings",
+        "patent_agents.patent_analysis.src.engines.generator.settings",
         type("S", (), {"VLM_MAX_WORKERS": 4})(),
     )
 
@@ -168,7 +168,7 @@ def test_generate_figures_analysis_keeps_input_order_when_parallel(tmp_path: Pat
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service", lambda: StubLLMService()
     )
 
     annotated_dir = tmp_path / "annotated_images"

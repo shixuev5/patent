@@ -12,11 +12,11 @@ from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 
 
-stub_retrieval_pkg = sys.modules.get("agents.common.retrieval")
+stub_retrieval_pkg = sys.modules.get("patent_agents.common.retrieval")
 if stub_retrieval_pkg is None:
-    stub_retrieval_pkg = types.ModuleType("agents.common.retrieval")
+    stub_retrieval_pkg = types.ModuleType("patent_agents.common.retrieval")
     stub_retrieval_pkg.__path__ = []
-    sys.modules["agents.common.retrieval"] = stub_retrieval_pkg
+    sys.modules["patent_agents.common.retrieval"] = stub_retrieval_pkg
 if not hasattr(stub_retrieval_pkg, "LocalEvidenceRetriever"):
     class _StubLocalEvidenceRetriever:
         def __init__(self, *_args, **_kwargs):
@@ -102,10 +102,10 @@ def _mount_task_manager(monkeypatch, tmp_path):
 
 def _mount_fake_workflow(monkeypatch, state_builder):
     fake_workflow = _FakeWorkflow(state_builder)
-    stub_ai_reply_main = types.ModuleType("agents.ai_reply.main")
+    stub_ai_reply_main = types.ModuleType("patent_agents.ai_reply.main")
     stub_ai_reply_main.create_workflow = lambda config=None: fake_workflow
     stub_ai_reply_main.build_runtime_config = lambda task_id, checkpoint_ns="ai_reply": {}
-    sys.modules["agents.ai_reply.main"] = stub_ai_reply_main
+    sys.modules["patent_agents.ai_reply.main"] = stub_ai_reply_main
 
 
 def test_ai_reply_uploads_pdf_and_json_to_r2_and_updates_pn(monkeypatch, tmp_path):

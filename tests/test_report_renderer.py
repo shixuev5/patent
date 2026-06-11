@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agents.patent_analysis.src.engines.renderer import ReportRenderer
+from patent_agents.patent_analysis.src.engines.renderer import ReportRenderer
 
 
 def test_render_search_section_shows_applicants_and_inventors() -> None:

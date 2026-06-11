@@ -1,4 +1,4 @@
-from agents.ai_reply.src.nodes.search_followup_generation import SearchFollowupGenerationNode
+from patent_agents.ai_reply.src.nodes.search_followup_generation import SearchFollowupGenerationNode
 
 
 def _prepared_materials() -> dict:

@@ -1,20 +1,8 @@
-export const AI_SEARCH_EXECUTION_PHASES = [
-  'execute_search',
-  'coarse_screen',
-  'close_read',
-  'feature_comparison',
-]
+export const AI_SEARCH_EXECUTION_PHASES = ['running']
 
 export const AI_SEARCH_PHASE_LABELS: Record<string, string> = {
-  collecting_requirements: '整理需求',
-  awaiting_user_answer: '等待回答',
-  drafting_plan: '起草计划',
-  awaiting_plan_confirmation: '待确认',
-  execute_search: '执行检索',
-  coarse_screen: '粗筛候选文献',
-  close_read: '精读并提取证据',
-  feature_comparison: '特征对比分析',
-  awaiting_human_decision: '等待人工决策',
+  idle: '等待指令',
+  running: '检索中',
   completed: '已完成',
   failed: '失败',
   cancelled: '已终止',

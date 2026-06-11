@@ -6,10 +6,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 
-from agents.ai_search.src.state import (
-    ACTIVE_EXECUTION_PHASES,
-    PHASE_COLLECTING_REQUIREMENTS,
+from patent_agents.ai_search.src.state import (
+    PHASE_IDLE,
+    PHASE_RUNNING,
     default_ai_search_meta,
+    get_ai_search_meta,
     merge_ai_search_meta,
     phase_progress,
     phase_step,
@@ -24,7 +25,9 @@ from .models import (
     AiSearchCreateSessionResponse,
     AiSearchSessionListResponse,
     AiSearchSessionSummary,
+    AiSearchSnapshotResponse,
 )
+from patent_agents.ai_search.src.runtime import normalize_stop_policy
 
 
 class AiSearchSessionService:
@@ -72,15 +75,15 @@ class AiSearchSessionService:
             task.id,
             title=f"AI 检索会话 - {task.id}",
             metadata=merge_ai_search_meta(task, **default_ai_search_meta(thread_id)),
-            status=phase_to_task_status(PHASE_COLLECTING_REQUIREMENTS),
-            progress=phase_progress(PHASE_COLLECTING_REQUIREMENTS),
-            current_step=phase_step(PHASE_COLLECTING_REQUIREMENTS),
+            status=phase_to_task_status(PHASE_IDLE),
+            progress=phase_progress(PHASE_IDLE),
+            current_step=phase_step(PHASE_IDLE),
         )
         self.facade._append_message(
             task.id,
             "assistant",
             "chat",
-            "请描述检索目标、核心技术方案、关注特征，并尽量提供申请人、申请日或优先权日等约束条件。",
+            "你可以直接描述检索目标，或先告诉我停止条件。例如：围绕某个权利要求特征检索，最多 5 轮，找到 2 篇覆盖核心区别特征的文献就停止。",
         )
         return AiSearchCreateSessionResponse(sessionId=task.id, taskId=task.id, threadId=thread_id)
 
@@ -125,10 +128,23 @@ class AiSearchSessionService:
         updated = self._get_owned_session_task(session_id, owner_id)
         return self.facade.snapshots._session_summary(updated)
 
+    def update_stop_policy(self, session_id: str, owner_id: str, policy: Dict[str, Any]) -> AiSearchSnapshotResponse:
+        task = self._get_owned_session_task(session_id, owner_id)
+        meta = get_ai_search_meta(task)
+        next_policy = normalize_stop_policy(
+            policy if isinstance(policy, dict) else {},
+            current_policy=meta.get("stop_policy") if isinstance(meta.get("stop_policy"), dict) else {},
+        )
+        self.storage.update_task(
+            session_id,
+            metadata=merge_ai_search_meta(task, stop_policy=next_policy),
+        )
+        return self.facade.snapshots.get_snapshot(session_id, owner_id)
+
     def delete_session(self, session_id: str, owner_id: str) -> Dict[str, bool]:
         task = self._get_owned_session_task(session_id, owner_id)
-        phase = self.facade.agent_runs._current_phase_value(task.id, PHASE_COLLECTING_REQUIREMENTS)
-        if phase in ACTIVE_EXECUTION_PHASES:
+        phase = self.facade.agent_runs._current_phase_value(task.id, PHASE_IDLE)
+        if phase == PHASE_RUNNING:
             raise HTTPException(
                 status_code=409,
                 detail={

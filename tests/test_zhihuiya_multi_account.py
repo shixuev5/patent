@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from agents.common.search_clients.factory import SearchClientFactory
-from agents.common.search_clients.zhihuiya import ZhihuiyaClient
+from patent_agents.common.search_clients.factory import SearchClientFactory
+from patent_agents.common.search_clients.zhihuiya import ZhihuiyaClient
 from config import load_zhihuiya_accounts
 
 
@@ -104,7 +104,7 @@ def test_mark_account_cooldown_logs_reason_and_remaining(monkeypatch):
     _reset_account_cooldowns()
     warnings = []
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
 
     ZhihuiyaClient._mark_account_cooldown("user-a@example.com", "登录失败: password incorrect")
 
@@ -126,8 +126,8 @@ def test_pick_login_candidates_logs_cooldown_pool_when_all_accounts_cooling(monk
     client = ZhihuiyaClient()
     warnings = []
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.logger.warning", warnings.append)
 
     ZhihuiyaClient._mark_account_cooldown("user-a@example.com", "登录失败: password incorrect")
     ZhihuiyaClient._mark_account_cooldown("user-b@example.com", "鉴权失败")
@@ -155,7 +155,7 @@ def test_login_switches_to_next_account_after_failure(monkeypatch):
     client = ZhihuiyaClient()
     attempts = []
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
     monkeypatch.setattr(client, "_fetch_login_public_key", lambda: "public-key")
 
     def _fake_login_with_account(account, public_key_text):
@@ -191,7 +191,7 @@ def test_login_skips_accounts_in_cooldown(monkeypatch):
     client = ZhihuiyaClient()
     attempts = []
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
     monkeypatch.setattr(client, "_fetch_login_public_key", lambda: "public-key")
 
     def _fake_login_with_account(account, public_key_text):
@@ -218,7 +218,7 @@ def test_login_raises_aggregated_error_when_all_accounts_fail(monkeypatch):
     _reset_account_cooldowns()
     client = ZhihuiyaClient()
 
-    monkeypatch.setattr("agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
+    monkeypatch.setattr("patent_agents.common.search_clients.zhihuiya.random.shuffle", lambda items: None)
     monkeypatch.setattr(client, "_fetch_login_public_key", lambda: "public-key")
     monkeypatch.setattr(
         client,

@@ -104,7 +104,6 @@ class AccountWeChatBindingResponse(BaseModel):
     wechatDisplayName: Optional[str] = None
     pushTaskCompleted: bool = True
     pushTaskFailed: bool = True
-    pushAiSearchPendingAction: bool = True
     boundAt: Optional[str] = None
     disconnectedAt: Optional[str] = None
     lastInboundAt: Optional[str] = None
@@ -135,7 +134,6 @@ class AccountWeChatIntegrationResponse(BaseModel):
 class AccountWeChatIntegrationUpdateRequest(BaseModel):
     pushTaskCompleted: bool
     pushTaskFailed: bool
-    pushAiSearchPendingAction: bool
 
 
 class InternalWeChatLoginSessionStateUpdateRequest(BaseModel):

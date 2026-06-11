@@ -64,7 +64,7 @@ def _inject_utc8_time(record: Dict[str, Any]) -> None:
 def _agent_component_from_name(name: str) -> str:
     """
     Build a short and stable component tag from module path.
-    e.g. agents.ai_reply.src.nodes.document_processing
+    e.g. patent_agents.ai_reply.src.nodes.document_processing
       -> ai_reply.document_processing
     """
     parts = (name or "").split(".")
@@ -83,11 +83,11 @@ def _agent_component_from_name(name: str) -> str:
 
 def _normalize_agent_log_message(record: Dict[str, Any]) -> None:
     """
-    Keep all logs emitted from agents.* modules in a single style:
+    Keep all logs emitted from patent_agents.* modules in a single style:
     [component] message
     """
     name = str(record.get("name", "")).strip()
-    if not name.startswith("agents."):
+    if not name.startswith("patent_agents."):
         return
 
     message = str(record.get("message", "")).strip()

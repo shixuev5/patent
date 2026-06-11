@@ -216,14 +216,12 @@
         :login-session="wechatIntegration?.loginSession || null"
         :push-task-completed="pushTaskCompletedInput"
         :push-task-failed="pushTaskFailedInput"
-        :push-ai-search-pending-action="pushAiSearchPendingActionInput"
         :saving-settings="savingWechatSettings"
         :starting-login-session="startingWechatLoginSession"
         :disconnecting="disconnectingWechat"
         :error-message="wechatIntegrationErrorMessage"
         @update:push-task-completed="pushTaskCompletedInput = $event"
         @update:push-task-failed="pushTaskFailedInput = $event"
-        @update:push-ai-search-pending-action="pushAiSearchPendingActionInput = $event"
         @save-settings="saveWechatSettings"
         @start-login-session="startWechatLoginSession"
         @disconnect="disconnectWechat"
@@ -294,7 +292,6 @@ const workNotificationEmailInput = ref('')
 const personalNotificationEmailInput = ref('')
 const pushTaskCompletedInput = ref(true)
 const pushTaskFailedInput = ref(true)
-const pushAiSearchPendingActionInput = ref(true)
 
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -659,7 +656,6 @@ const syncWechatIntegrationForm = (nextIntegration: AccountWeChatIntegration | n
   wechatIntegration.value = nextIntegration
   pushTaskCompletedInput.value = !!nextIntegration?.binding?.pushTaskCompleted
   pushTaskFailedInput.value = !!nextIntegration?.binding?.pushTaskFailed
-  pushAiSearchPendingActionInput.value = !!nextIntegration?.binding?.pushAiSearchPendingAction
 }
 
 const stopWechatLoginPolling = () => {
@@ -895,7 +891,6 @@ const saveWechatSettings = async () => {
   const payload: AccountWeChatIntegrationUpdateRequest = {
     pushTaskCompleted: pushTaskCompletedInput.value,
     pushTaskFailed: pushTaskFailedInput.value,
-    pushAiSearchPendingAction: pushAiSearchPendingActionInput.value,
   }
   savingWechatSettings.value = true
   try {

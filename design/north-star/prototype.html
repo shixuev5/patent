@@ -1,0 +1,2012 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>审查员工作台 · 未来形态 · North Star</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = { darkMode: 'class' };
+</script>
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #fafafa;
+    --surface-2: #f4f4f5;
+    --surface-3: #e4e4e7;
+    --border: #e4e4e7;
+    --border-soft: #f1f1f3;
+    --text: #18181b;
+    --text-2: #52525b;
+    --text-3: #a1a1aa;
+    --accent: #6366f1;
+    --accent-soft: #eef2ff;
+    --success: #059669;
+    --success-soft: #ecfdf5;
+    --warning: #b45309;
+    --warning-soft: #fffbeb;
+    --danger: #dc2626;
+    --danger-soft: #fef2f2;
+    --info: #2563eb;
+    --info-soft: #eff6ff;
+    --shadow: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+    --shadow-lg: 0 4px 12px -2px rgb(0 0 0 / 0.06);
+  }
+  .dark {
+    --bg: #09090b;
+    --surface: #111114;
+    --surface-2: #18181b;
+    --surface-3: #27272a;
+    --border: #27272a;
+    --border-soft: #1f1f23;
+    --text: #fafafa;
+    --text-2: #a1a1aa;
+    --text-3: #71717a;
+    --accent: #818cf8;
+    --accent-soft: rgba(99, 102, 241, 0.12);
+    --success: #34d399;
+    --success-soft: rgba(16, 185, 129, 0.1);
+    --warning: #fbbf24;
+    --warning-soft: rgba(245, 158, 11, 0.1);
+    --danger: #f87171;
+    --danger-soft: rgba(239, 68, 68, 0.1);
+    --info: #60a5fa;
+    --info-soft: rgba(37, 99, 235, 0.1);
+    --shadow: 0 0 0 1px rgb(255 255 255 / 0.02);
+    --shadow-lg: 0 4px 12px -2px rgb(0 0 0 / 0.4);
+  }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { font-feature-settings: "ss01", "cv11"; }
+
+  .surface { background: var(--surface); }
+  .surface-2 { background: var(--surface-2); }
+  .surface-3 { background: var(--surface-3); }
+  .border-app { border-color: var(--border); }
+  .border-soft { border-color: var(--border-soft); }
+  .divide-soft > * + * { border-top: 1px solid var(--border-soft); }
+  .text-1 { color: var(--text); }
+  .text-2 { color: var(--text-2); }
+  .text-3 { color: var(--text-3); }
+  .text-accent { color: var(--accent); }
+  .text-success { color: var(--success); }
+  .text-warning { color: var(--warning); }
+  .text-danger { color: var(--danger); }
+  .text-info { color: var(--info); }
+  .bg-accent-soft { background: var(--accent-soft); }
+  .bg-success-soft { background: var(--success-soft); }
+  .bg-warning-soft { background: var(--warning-soft); }
+  .bg-danger-soft { background: var(--danger-soft); }
+  .bg-info-soft { background: var(--info-soft); }
+
+  .mono {
+    font-family: "SF Mono", "JetBrains Mono", ui-monospace, monospace;
+    font-feature-settings: "ss01", "cv01", "cv02";
+  }
+
+  /* nav */
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: var(--text-2);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+  .nav-item.active svg { color: var(--accent); }
+
+  /* chip */
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 18px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .chip-neutral { background: var(--surface-2); color: var(--text-2); }
+  .chip-accent { background: var(--accent-soft); color: var(--accent); }
+  .chip-success { background: var(--success-soft); color: var(--success); }
+  .chip-warning { background: var(--warning-soft); color: var(--warning); }
+  .chip-danger { background: var(--danger-soft); color: var(--danger); }
+  .chip-info { background: var(--info-soft); color: var(--info); }
+
+  /* button */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all .12s;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border); }
+  .btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+  .btn-success { background: var(--success-soft); color: var(--success); border-color: transparent; }
+  .btn-success:hover { background: var(--success-soft); filter: brightness(0.96); }
+  .btn-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+  .btn-icon { padding: 6px; border-radius: 6px; color: var(--text-2); cursor: pointer; transition: background .12s; }
+  .btn-icon:hover { background: var(--surface-2); color: var(--text); }
+
+  .kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-2);
+    font-family: "SF Mono", "JetBrains Mono", monospace;
+    line-height: 16px;
+  }
+
+  .conf-bar { height: 3px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+  .conf-bar > span { display: block; height: 100%; border-radius: 999px; }
+
+  /* priority strip */
+  .strip { width: 2px; align-self: stretch; border-radius: 999px; }
+
+  /* row */
+  .row {
+    padding: 14px 20px;
+    cursor: pointer;
+    transition: background .1s;
+  }
+  .row:hover { background: var(--surface-2); }
+
+  /* citation */
+  .citation {
+    color: var(--info);
+    border-bottom: 1px dashed currentColor;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .citation:hover { background: var(--info-soft); }
+
+  /* reasoning step */
+  .step {
+    position: relative;
+    padding-left: 22px;
+    padding-bottom: 14px;
+  }
+  .step:last-child { padding-bottom: 0; }
+  .step::before {
+    content: "";
+    position: absolute;
+    left: 6px; top: 5px;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .step:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: 9px; top: 15px; bottom: 0;
+    width: 1px;
+    background: var(--border);
+  }
+
+  .pulse { animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .toggle { width: 28px; height: 16px; background: var(--surface-3); border-radius: 999px; position: relative; cursor: pointer; flex: none; }
+  .toggle.on { background: var(--accent); }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: white; border-radius: 50%; transition: transform .15s; }
+  .toggle.on::after { transform: translateX(12px); }
+
+  /* claim chart highlight */
+  .hl-match { background: var(--success-soft); color: var(--success); border-radius: 3px; padding: 0 4px; }
+  .hl-diff { background: var(--danger-soft); color: var(--danger); border-radius: 3px; padding: 0 4px; }
+  .hl-partial { background: var(--warning-soft); color: var(--warning); border-radius: 3px; padding: 0 4px; }
+
+  /* views */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+  /* card */
+  .card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+  }
+  .dark .card { background: var(--surface); }
+
+  /* modal */
+  .modal-mask {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.4);
+    backdrop-filter: blur(2px);
+    z-index: 50;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 10vh;
+  }
+  .dark .modal-mask { background: rgba(0,0,0,0.65); }
+  .modal-mask.show { display: flex; }
+  .modal-panel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 20px 50px -10px rgb(0 0 0 / 0.25);
+    width: 100%;
+  }
+  .modal-cmdk { max-width: 640px; }
+  .modal-wide { max-width: 980px; max-height: 80vh; display: flex; flex-direction: column; }
+
+  /* cmdk */
+  .cmdk-input {
+    width: 100%;
+    padding: 14px 18px;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-size: 15px;
+  }
+  .cmdk-input::placeholder { color: var(--text-3); }
+  .cmdk-section-title {
+    padding: 8px 14px 4px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+    font-weight: 600;
+  }
+  .cmdk-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .cmdk-row:hover, .cmdk-row.focused { background: var(--surface-2); }
+
+  /* timeline (deadline view) */
+  .timeline {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+  .timeline-col {
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border-soft);
+    min-height: 130px;
+  }
+  .timeline-col.today { background: var(--accent-soft); border-color: var(--accent); }
+  .timeline-pill {
+    display: block;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    line-height: 1.3;
+  }
+
+  /* sparkline placeholder */
+  .spark {
+    height: 32px;
+    background: linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+  .spark::after {
+    content: "";
+    position: absolute; left: 0; right: 0; bottom: 50%;
+    height: 1px; background: var(--accent);
+  }
+
+  /* trend bars */
+  .bar { width: 100%; background: var(--surface-3); border-radius: 3px; overflow: hidden; }
+  .bar > span { display: block; height: 6px; background: var(--accent); }
+</style>
+</head>
+
+<body class="min-h-screen">
+
+<!-- ============ TOP BAR ============ -->
+<header class="flex items-center px-5 h-14 border-b border-app sticky top-0 z-30" style="background: var(--bg);">
+  <div class="flex items-center gap-2.5">
+    <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background: var(--accent);">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2L4 7v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V7l-8-5z"/>
+      </svg>
+    </div>
+    <div>
+      <div class="text-[15px] font-semibold tracking-tight leading-none">Examiner Workbench</div>
+      <div class="text-[10px] text-3 mt-0.5 mono">north-star · v0.2</div>
+    </div>
+  </div>
+
+  <div class="flex-1 flex justify-center">
+    <div id="cmdk-trigger" class="flex items-center gap-2 px-3 h-9 rounded-lg border border-app surface w-[440px] text-sm text-2 cursor-pointer hover:border-app">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <span>跨案件提问、跳转或执行命令</span>
+      <span class="ml-auto kbd">⌘K</span>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3">
+    <div class="hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-md border border-app">
+      <span class="w-1.5 h-1.5 rounded-full pulse" style="background: var(--success);"></span>
+      <span class="text-xs mono text-2">12 案件在跑</span>
+    </div>
+
+    <button id="theme-toggle" class="btn-icon" title="切换深/浅色">
+      <svg id="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg id="icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+
+    <div class="w-px h-5" style="background: var(--border);"></div>
+
+    <div class="flex items-center gap-2.5">
+      <div class="w-7 h-7 rounded-full" style="background: linear-gradient(135deg, #818cf8, #f472b6);"></div>
+      <div class="hidden md:block">
+        <div class="text-[13px] leading-none">王审查员</div>
+        <div class="text-[10px] text-3 mt-0.5">电学一处</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="flex" style="height: calc(100vh - 56px)">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="w-56 border-r border-app flex flex-col" style="background: var(--bg);">
+    <nav class="p-3 flex-1">
+      <div class="text-[10px] uppercase tracking-wider text-3 px-2.5 mt-1 mb-1.5 font-semibold">工作流</div>
+
+      <div class="nav-item active" data-view="queue">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Decision Queue</span>
+        <span class="ml-auto chip chip-danger">5</span>
+      </div>
+      <div class="nav-item" data-view="card">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        <span>Reasoning Card</span>
+      </div>
+      <div class="nav-item" data-view="canvas">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        <span>Artifact Canvas</span>
+      </div>
+      <div class="nav-item" data-view="policy">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        <span>Policy Console</span>
+      </div>
+
+      <div class="text-[10px] uppercase tracking-wider text-3 px-2.5 mt-6 mb-1.5 font-semibold">视图</div>
+      <div class="nav-item" data-view="deadline">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>时限看板</span>
+      </div>
+      <div class="nav-item" data-view="ambient">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        <span>Ambient Insight</span>
+      </div>
+      <div class="nav-item" data-view="history">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <span>对话历史</span>
+      </div>
+    </nav>
+
+    <div class="p-3 border-t border-app">
+      <div class="text-[10px] uppercase tracking-wider text-3 mb-2 font-semibold">本周</div>
+      <div class="space-y-1.5 text-xs">
+        <div class="flex justify-between"><span class="text-2">已裁决</span><span class="mono">38</span></div>
+        <div class="flex justify-between"><span class="text-2">AI 一致性</span><span class="mono text-success">94%</span></div>
+        <div class="flex justify-between"><span class="text-2">平均时长</span><span class="mono">2.1 h</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="flex-1 overflow-auto">
+
+    <!-- =========================== -->
+    <!-- VIEW 1 · DECISION QUEUE     -->
+    <!-- =========================== -->
+    <section class="view active" id="view-queue">
+      <div class="max-w-6xl mx-auto px-8 pt-10 pb-6">
+        <div class="flex items-baseline gap-3">
+          <h1 class="text-[22px] font-semibold tracking-tight">今天需要你裁决</h1>
+          <span class="text-sm text-2">2026 年 5 月 15 日</span>
+        </div>
+        <p class="text-sm text-2 mt-2">
+          Agent 已处理 47 个案件 · <span class="text-1 font-medium">5 个</span>需要你裁决 · 其余 42 个由 AI 自主完成（等你抽样复核）
+        </p>
+
+        <!-- summary tiles -->
+        <div class="grid grid-cols-4 gap-3 mt-6">
+          <div class="card p-4">
+            <div class="text-xs text-2">高紧急</div>
+            <div class="flex items-baseline gap-2 mt-1.5">
+              <span class="text-[26px] font-semibold leading-none">2</span>
+              <span class="text-xs text-3">3 日内时限</span>
+            </div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-2">AI 分歧</div>
+            <div class="flex items-baseline gap-2 mt-1.5">
+              <span class="text-[26px] font-semibold leading-none">2</span>
+              <span class="text-xs text-3">多 agent 不一致</span>
+            </div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-2">强制人审</div>
+            <div class="flex items-baseline gap-2 mt-1.5">
+              <span class="text-[26px] font-semibold leading-none">1</span>
+              <span class="text-xs text-3">核心专利</span>
+            </div>
+          </div>
+          <div class="card p-4">
+            <div class="text-xs text-2">本周节省</div>
+            <div class="flex items-baseline gap-2 mt-1.5">
+              <span class="text-[26px] font-semibold leading-none mono text-success">71%</span>
+              <span class="text-xs text-3">vs 传统</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- queue list -->
+      <div class="max-w-6xl mx-auto px-8 pb-10">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs text-3 mr-1">排序</span>
+            <button class="chip chip-accent">紧急度</button>
+            <button class="chip chip-neutral">置信度</button>
+            <button class="chip chip-neutral">影响力</button>
+            <button class="chip chip-neutral">领域</button>
+          </div>
+          <span class="text-xs text-3">
+            <span class="kbd">J</span> <span class="kbd">K</span> 切换 · <span class="kbd">↵</span> 进入
+          </span>
+        </div>
+
+        <div class="card divide-soft overflow-hidden">
+
+          <!-- ROW 1 -->
+          <div class="row flex items-stretch gap-3" onclick="goView('card')">
+            <div class="strip" style="background: var(--danger);"></div>
+            <div class="flex-1 min-w-0 py-0.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="mono text-[11px] text-3">CN202410123456.X</span>
+                <span class="chip chip-danger">2 日 · 法定时限</span>
+                <span class="chip chip-warning">AI 分歧</span>
+                <span class="chip chip-neutral">电学</span>
+              </div>
+              <div class="text-sm font-medium mt-1.5 text-1">
+                基于多模态大语言模型的文档结构化抽取方法
+              </div>
+              <div class="text-[13px] text-2 mt-1 leading-relaxed">
+                <span class="text-1">裁决点：</span>权利要求 1 创造性。Agent A 主张 D1+D2 显而易见（0.71），Agent B 主张需补充检索（0.62）。
+              </div>
+              <div class="flex items-center gap-5 mt-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-3">置信度</span>
+                  <div class="conf-bar w-20"><span style="width: 67%; background: var(--warning);"></span></div>
+                  <span class="mono text-[11px] text-warning">0.67</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[11px] text-3">历史一致</span>
+                  <span class="mono text-[11px] text-success">+12%</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-col items-end justify-between flex-none">
+              <span class="text-[11px] text-3 mono">~6 min</span>
+              <button class="btn btn-primary text-xs py-1 px-3">进入裁决</button>
+            </div>
+          </div>
+
+          <!-- ROW 2 -->
+          <div class="row flex items-stretch gap-3">
+            <div class="strip" style="background: var(--danger);"></div>
+            <div class="flex-1 min-w-0 py-0.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="mono text-[11px] text-3">CN202410098765.4</span>
+                <span class="chip chip-danger">强制人审 · 核心专利</span>
+                <span class="chip chip-neutral">医药</span>
+              </div>
+              <div class="text-sm font-medium mt-1.5 text-1">
+                一种 PD-1 抑制剂联合用药组合物
+              </div>
+              <div class="text-[13px] text-2 mt-1 leading-relaxed">
+                <span class="text-1">裁决点：</span>AI 主张全部权利要求授权（0.93），但案件被标记为高影响（同族 8 件，引证 230+），政策要求人裁决最终授权。
+              </div>
+              <div class="flex items-center gap-5 mt-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-3">置信度</span>
+                  <div class="conf-bar w-20"><span style="width: 93%; background: var(--success);"></span></div>
+                  <span class="mono text-[11px] text-success">0.93</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[11px] text-3">历史一致</span>
+                  <span class="mono text-[11px] text-success">+98%</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-col items-end justify-between flex-none">
+              <span class="text-[11px] text-3 mono">~3 min</span>
+              <button class="btn btn-primary text-xs py-1 px-3">进入裁决</button>
+            </div>
+          </div>
+
+          <!-- ROW 3 -->
+          <div class="row flex items-stretch gap-3">
+            <div class="strip" style="background: var(--warning);"></div>
+            <div class="flex-1 min-w-0 py-0.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="mono text-[11px] text-3">CN202410087654.2</span>
+                <span class="chip chip-warning">AI 分歧</span>
+                <span class="chip chip-neutral">机械</span>
+              </div>
+              <div class="text-sm font-medium mt-1.5 text-1">
+                一种轻量化车身侧围加强结构
+              </div>
+              <div class="text-[13px] text-2 mt-1 leading-relaxed">
+                <span class="text-1">裁决点：</span>说明书是否充分公开（A26.3）。Agent 给出补正建议但其中一项与你过去 6 个月判例倾向偏离 23%。
+              </div>
+              <div class="flex items-center gap-5 mt-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-3">置信度</span>
+                  <div class="conf-bar w-20"><span style="width: 74%; background: var(--warning);"></span></div>
+                  <span class="mono text-[11px] text-warning">0.74</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[11px] text-3">历史一致</span>
+                  <span class="mono text-[11px] text-warning">−23%</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-col items-end justify-between flex-none">
+              <span class="text-[11px] text-3 mono">~4 min</span>
+              <button class="btn btn-ghost text-xs py-1 px-3">查看</button>
+            </div>
+          </div>
+
+          <!-- ROW 4 -->
+          <div class="row flex items-stretch gap-3">
+            <div class="strip" style="background: var(--warning);"></div>
+            <div class="flex-1 min-w-0 py-0.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="mono text-[11px] text-3">CN202410076543.1</span>
+                <span class="chip chip-warning">检索充分性低</span>
+                <span class="chip chip-neutral">通信</span>
+              </div>
+              <div class="text-sm font-medium mt-1.5 text-1">
+                一种基于联邦学习的边缘节点模型聚合方法
+              </div>
+              <div class="text-[13px] text-2 mt-1 leading-relaxed">
+                <span class="text-1">裁决点：</span>Agent 跑 5 轮检索后认为找不到强对比文件，建议授权但置信度不足。
+              </div>
+              <div class="flex items-center gap-5 mt-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-3">置信度</span>
+                  <div class="conf-bar w-20"><span style="width: 58%; background: var(--warning);"></span></div>
+                  <span class="mono text-[11px] text-warning">0.58</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-col items-end justify-between flex-none">
+              <span class="text-[11px] text-3 mono">~5 min</span>
+              <button class="btn btn-ghost text-xs py-1 px-3">查看</button>
+            </div>
+          </div>
+
+          <!-- ROW 5 -->
+          <div class="row flex items-stretch gap-3">
+            <div class="strip" style="background: var(--success);"></div>
+            <div class="flex-1 min-w-0 py-0.5">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="mono text-[11px] text-3">CN202410065432.0</span>
+                <span class="chip chip-success">高置信 · 答复合规</span>
+                <span class="chip chip-neutral">软件</span>
+              </div>
+              <div class="text-sm font-medium mt-1.5 text-1">
+                一种基于 RAG 的企业知识问答系统
+              </div>
+              <div class="text-[13px] text-2 mt-1 leading-relaxed">
+                <span class="text-1">裁决点：</span>申请人答复 OA 后，AI 认为补正符合 A33 且克服原有缺陷，建议授权。例行复核。
+              </div>
+              <div class="flex items-center gap-5 mt-2.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-3">置信度</span>
+                  <div class="conf-bar w-20"><span style="width: 91%; background: var(--success);"></span></div>
+                  <span class="mono text-[11px] text-success">0.91</span>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-col items-end justify-between flex-none">
+              <span class="text-[11px] text-3 mono">~1 min</span>
+              <button class="btn btn-success text-xs py-1 px-3">⌘↵ 一键确认</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- auto-handled -->
+        <div class="card mt-4 px-4 py-3.5 flex items-center justify-between" style="background: var(--surface);">
+          <div class="flex items-center gap-2.5">
+            <div class="w-7 h-7 rounded-full flex items-center justify-center bg-success-soft">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+            <div>
+              <div class="text-sm font-medium">AI 自主完成 · 42 件</div>
+              <div class="text-xs text-2 mt-0.5">已发 OA / 已下决定 · 等你抽样复核或全量审计</div>
+            </div>
+          </div>
+          <div class="flex items-center gap-3 text-xs text-2">
+            <span>抽样率 <span class="mono text-1">10%</span></span>
+            <div class="toggle on"></div>
+            <button class="btn btn-ghost text-xs" onclick="openModal('audit')">查看明细</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 2 · REASONING CARD     -->
+    <!-- =========================== -->
+    <section class="view" id="view-card">
+      <div class="px-8 pt-6 pb-4 border-b border-app">
+        <div class="max-w-6xl mx-auto">
+          <div class="flex items-center gap-2 text-xs text-3 mb-2">
+            <span class="cursor-pointer hover:text-1" onclick="goView('queue')">Decision Queue</span>
+            <span>/</span>
+            <span class="mono">CN202410123456.X</span>
+            <span class="chip chip-danger ml-2">2 日 · 法定时限</span>
+          </div>
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <h1 class="text-[20px] font-semibold tracking-tight">基于多模态大语言模型的文档结构化抽取方法</h1>
+              <div class="flex items-center gap-4 mt-2 text-xs text-2 flex-wrap">
+                <span>申请人：智擎科技（北京）有限公司</span>
+                <span>·</span>
+                <span>申请日 2024-01-15</span>
+                <span>·</span>
+                <span>IPC G06F 16/35; G06N 3/04</span>
+                <span>·</span>
+                <span>同族 3 件 · 引证 0</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 flex-none">
+              <button class="btn btn-ghost text-xs">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                上一个
+              </button>
+              <button class="btn btn-ghost text-xs">
+                下一个
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="max-w-6xl mx-auto grid grid-cols-12 gap-6 px-8 py-6">
+
+        <!-- left: main reasoning -->
+        <div class="col-span-8 space-y-4">
+
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wider text-3 font-semibold">裁决点 1 / 1</span>
+            <span class="chip chip-warning">创造性 · A22.3</span>
+          </div>
+
+          <h2 class="text-[17px] font-semibold tracking-tight">权利要求 1 是否相对于 D1+D2 具备创造性？</h2>
+
+          <!-- conclusion -->
+          <div class="card p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="chip chip-accent">AI 综合结论</span>
+              <span class="text-xs text-2">由 Orchestrator 整合 3 个专家 agent 得出</span>
+              <span class="ml-auto mono text-xs text-warning">conf 0.67</span>
+            </div>
+
+            <p class="text-sm leading-relaxed mb-5">
+              权利要求 1 相对于
+              <span class="citation">D1（CN114842262A）</span>
+              结合
+              <span class="citation">D2（US 2023/0145678 A1）</span>
+              <strong>不具备创造性</strong>。建议发出第一次 OA，引用 A22.3 进行评述。
+            </p>
+
+            <!-- reasoning steps -->
+            <div class="mb-4">
+              <div class="step">
+                <div class="text-[11px] text-3 mb-1 font-semibold uppercase tracking-wide">Step 1 · 最接近现有技术</div>
+                <div class="text-sm leading-relaxed">D1 公开了"基于 BERT 的文档结构化抽取系统"，与本申请技术领域、解决问题相同。区别在于 D1 使用单模态文本 BERT，本申请使用<span class="citation">多模态大模型 [说明书 0023]</span>。</div>
+              </div>
+              <div class="step">
+                <div class="text-[11px] text-3 mb-1 font-semibold uppercase tracking-wide">Step 2 · 区别技术特征</div>
+                <div class="text-sm leading-relaxed">本申请新增（a）多模态输入处理；（b）跨模态注意力机制；（c）针对图表元素的特定 token 表示。</div>
+              </div>
+              <div class="step">
+                <div class="text-[11px] text-3 mb-1 font-semibold uppercase tracking-wide">Step 3 · 区别特征是否被现有技术教导</div>
+                <div class="text-sm leading-relaxed">D2 公开了多模态视觉-语言模型在文档理解任务上的应用，<span class="citation">D2 [0034-0041]</span> 明确教导将图表 token 与文本 token 在统一 transformer 中处理——覆盖了区别特征 (a)(b)(c) 的核心。</div>
+              </div>
+              <div class="step">
+                <div class="text-[11px] text-3 mb-1 font-semibold uppercase tracking-wide">Step 4 · 结合启示与显而易见性</div>
+                <div class="text-sm leading-relaxed">本领域技术人员有动机将 D2 的多模态架构应用于 D1 的抽取任务以提升对带图表文档的处理效果。<span class="text-warning">此结合启示的强度是本次分歧的来源。</span></div>
+              </div>
+            </div>
+
+            <!-- agent disagreement -->
+            <div class="rounded-lg p-3.5 border border-app" style="background: var(--surface);">
+              <div class="flex items-center gap-2 mb-2.5">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--warning)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span class="text-xs font-medium">Agent 间分歧（多 agent 投票）</span>
+              </div>
+              <div class="flex gap-2 mb-2.5 flex-wrap">
+                <div class="chip chip-danger">Agent-A · 显而易见 0.71</div>
+                <div class="chip chip-danger">Agent-C · 显而易见 0.65</div>
+                <div class="chip chip-success">Agent-B · 需更多检索 0.62</div>
+              </div>
+              <div class="text-[13px] text-2 leading-relaxed">
+                Agent-B 主张：D2 [0067] "跨模态注意力在 OCR 噪声场景下性能下降"可能构成<strong class="text-1">反向教导</strong>。本申请的具体应用场景（合同/财报）即为高噪声场景，建议补充检索专门处理高噪声文档抽取的现有技术。
+              </div>
+            </div>
+          </div>
+
+          <!-- historical consistency -->
+          <div class="card p-4">
+            <div class="flex items-center gap-2 mb-2">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 9 12 13 8 21 16"/></svg>
+              <span class="text-xs font-medium">与你的历史判决一致性</span>
+              <span class="ml-auto mono text-xs text-success">+12%</span>
+            </div>
+            <div class="text-[13px] text-2 leading-relaxed">
+              过去 12 个月你审过 14 件相似案件（多模态 + 文档智能）。<span class="text-1 mono">12 件</span>判定结合启示成立，<span class="text-1 mono">2 件</span>认为反向教导成立。本案最相似的是
+              <span class="citation">CN202310123XXX.X</span> （相似度 0.84），你当时倾向于<strong class="text-1">结合启示成立，发 OA</strong>。
+            </div>
+          </div>
+
+          <!-- evidence -->
+          <div class="grid grid-cols-3 gap-3">
+            <div class="card p-3 cursor-pointer hover:border-app" style="border-color: var(--border-soft);">
+              <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-1">证据 · D1</div>
+              <div class="text-xs mono">CN114842262A</div>
+              <div class="text-[11px] text-2 mt-1">权 1, 7 · 说明 [0034-0058]</div>
+            </div>
+            <div class="card p-3 cursor-pointer" style="border-color: var(--border-soft);">
+              <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-1">证据 · D2</div>
+              <div class="text-xs mono">US 2023/0145678 A1</div>
+              <div class="text-[11px] text-2 mt-1">说明 [0034-0041], [0067]</div>
+            </div>
+            <div class="card p-3 cursor-pointer" style="border-color: var(--border-soft);">
+              <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-1">证据 · 本申请</div>
+              <div class="text-xs mono">说明书 [0023-0041]</div>
+              <div class="text-[11px] text-2 mt-1">权 1, 5, 7</div>
+            </div>
+          </div>
+
+          <!-- actions -->
+          <div class="card p-4 sticky bottom-2" style="background: var(--bg);">
+            <div class="text-[11px] uppercase tracking-wider text-3 font-semibold mb-2.5">裁决动作</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <button class="btn btn-success"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> 采纳 Agent-A · 发 OA <span class="kbd ml-1">⌘ 1</span></button>
+              <button class="btn btn-ghost">采纳 Agent-B · 补检索 <span class="kbd ml-1">⌘ 2</span></button>
+              <button class="btn btn-ghost" onclick="goView('canvas')">深查模式 <span class="kbd ml-1">⌘ ↵</span></button>
+              <button class="btn btn-danger ml-auto">驳回 · 让 Agent 重跑</button>
+            </div>
+            <div class="text-[11px] text-3 mt-3 leading-relaxed">
+              你的裁决将被记录为本案审查档案 · 同时进入 Policy Console 作为案例样本 · 若采纳 Agent-A，将自动起草 OA 文书并送达申请人。
+            </div>
+          </div>
+        </div>
+
+        <!-- right: side panel -->
+        <aside class="col-span-4 space-y-4">
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">案件状态</div>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between"><span class="text-2">阶段</span><span class="text-1">实质审查 · 第 1 次</span></div>
+              <div class="flex justify-between"><span class="text-2">法定时限</span><span class="text-danger mono">2026-05-17</span></div>
+              <div class="flex justify-between"><span class="text-2">同族</span><span class="text-1">3 件（US/EP/JP）</span></div>
+              <div class="flex justify-between"><span class="text-2">引证情况</span><span class="text-1">本申请被引 0 次</span></div>
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">Agent 工作日志</div>
+            <div class="space-y-2.5 text-xs">
+              <div class="flex items-start gap-2">
+                <span class="w-1 h-1 rounded-full mt-1.5 flex-none" style="background: var(--success);"></span>
+                <div class="text-2"><span class="mono text-3">08:12</span> · 完成 5 轮检索（4523 → 32 → 3 篇 X/Y 类）</div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="w-1 h-1 rounded-full mt-1.5 flex-none" style="background: var(--success);"></span>
+                <div class="text-2"><span class="mono text-3">08:34</span> · Claim chart 自动生成</div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="w-1 h-1 rounded-full mt-1.5 flex-none" style="background: var(--success);"></span>
+                <div class="text-2"><span class="mono text-3">08:51</span> · 三个专家 agent 完成判断</div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="w-1 h-1 rounded-full mt-1.5 flex-none" style="background: var(--warning);"></span>
+                <div class="text-2"><span class="mono text-3">08:53</span> · Agent-B 与 A/C 分歧 · 升级至人审</div>
+              </div>
+              <div class="flex items-start gap-2">
+                <span class="w-1 h-1 rounded-full mt-1.5 flex-none" style="background: var(--info);"></span>
+                <div class="text-2"><span class="mono text-3">08:55</span> · OA 草稿待命 · 等你裁决</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">相似历史案件</div>
+            <div class="space-y-2">
+              <div class="rounded-md p-2.5 text-xs border border-soft">
+                <div class="flex justify-between items-center">
+                  <span class="mono text-info">CN202310123XXX.X</span>
+                  <span class="mono text-2">sim 0.84</span>
+                </div>
+                <div class="text-2 mt-1">发 OA · 结合启示成立</div>
+              </div>
+              <div class="rounded-md p-2.5 text-xs border border-soft">
+                <div class="flex justify-between items-center">
+                  <span class="mono text-info">CN202311456XXX.X</span>
+                  <span class="mono text-2">sim 0.79</span>
+                </div>
+                <div class="text-2 mt-1">直接授权（区别显著）</div>
+              </div>
+              <div class="rounded-md p-2.5 text-xs border border-soft">
+                <div class="flex justify-between items-center">
+                  <span class="mono text-info">CN202309876XXX.X</span>
+                  <span class="mono text-2">sim 0.77</span>
+                </div>
+                <div class="text-2 mt-1">发 OA · 后授权</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">追问 Agent</div>
+            <div class="rounded-md px-3 py-2 text-xs text-2 mb-2" style="background: var(--surface-2);">
+              把 D2 [0067] 反向教导的论点再展开 200 字…
+            </div>
+            <div class="flex gap-1.5 flex-wrap">
+              <span class="chip chip-neutral cursor-pointer">展开反向教导</span>
+              <span class="chip chip-neutral cursor-pointer">再做一轮检索</span>
+              <span class="chip chip-neutral cursor-pointer">列出 D2 全部缺陷</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 3 · ARTIFACT CANVAS    -->
+    <!-- =========================== -->
+    <section class="view" id="view-canvas">
+      <div class="px-6 pt-4 pb-3 border-b border-app flex items-center justify-between">
+        <div class="flex items-center gap-2 text-xs text-3">
+          <span class="cursor-pointer hover:text-1" onclick="goView('card')">Reasoning Card</span>
+          <span>/</span>
+          <span>Artifact Canvas · 深查</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="chip chip-neutral">claim ↔ D1 ↔ D2</span>
+          <button class="btn btn-ghost text-xs">分屏</button>
+          <button class="btn btn-primary text-xs">完成并返回</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-12 gap-0" style="height: calc(100vh - 100px)">
+        <!-- LEFT: OA draft -->
+        <div class="col-span-4 border-r border-app overflow-auto p-5" style="background: var(--surface);">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-[10px] uppercase tracking-wider text-3 font-semibold">Artifact</span>
+            <span class="chip chip-accent">OA 草稿 · v3</span>
+            <span class="ml-auto text-[11px] text-3 mono">Agent-A</span>
+          </div>
+          <h3 class="text-[15px] font-semibold mb-4">第一次审查意见通知书</h3>
+
+          <div class="text-[13px] leading-relaxed space-y-3 text-2">
+            <p class="text-1 font-medium">关于权利要求 1：</p>
+            <p class="card p-3">
+              对比文件 1（<span class="citation">CN114842262A</span>，下称 D1）公开了一种基于神经网络的文档结构化抽取方法（参见 D1 权利要求 1、说明书<span class="citation">[0034]-[0058]</span>）……
+            </p>
+            <p>
+              该权利要求与 D1 的区别技术特征在于：
+              <span class="hl-diff">（a）采用多模态大语言模型；（b）通过跨模态注意力机制处理图表元素</span>。
+            </p>
+            <p class="card p-3">
+              对比文件 2（<span class="citation">US 2023/0145678 A1</span>，下称 D2）公开了……（参见 D2 说明书<span class="citation">[0034]-[0041]</span>）。该技术启示表明……
+            </p>
+            <p>
+              综上，权利要求 1 相对于 D1 和 D2 的结合<strong class="text-1">不具备《专利法》第 22 条第 3 款规定的创造性</strong>。
+            </p>
+            <p class="text-3 italic text-xs">草稿仅生成关键段落 · 完整文书 4 页，已自动套用法定格式</p>
+          </div>
+
+          <div class="flex gap-2 mt-5 sticky bottom-0 pt-3" style="background: var(--surface);">
+            <button class="btn btn-primary text-xs">查看完整 OA</button>
+            <button class="btn btn-ghost text-xs">让 Agent 重写</button>
+          </div>
+        </div>
+
+        <!-- CENTER: claim chart -->
+        <div class="col-span-5 overflow-auto p-6 border-r border-app">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="text-[10px] uppercase tracking-wider text-3 font-semibold">Claim Chart</span>
+            <span class="chip chip-info">claim 1 · 多模态文档抽取</span>
+          </div>
+
+          <table class="w-full text-[13px]">
+            <thead>
+              <tr class="text-3 border-b border-app text-xs">
+                <th class="text-left pb-2.5 w-1/3 font-medium">本申请 claim 1 特征</th>
+                <th class="text-left pb-2.5 w-1/3 font-medium">D1 对应公开</th>
+                <th class="text-left pb-2.5 w-1/3 font-medium">D2 对应公开</th>
+              </tr>
+            </thead>
+            <tbody class="divide-soft">
+              <tr>
+                <td class="py-3 pr-3 align-top">1.a 接收包含文本和图表的多模态文档</td>
+                <td class="py-3 pr-3 align-top text-2">
+                  <span class="hl-match">D1 [0034] 接收 PDF 文档</span>
+                  <div class="text-3 text-xs mt-1">部分公开（仅文本）</div>
+                </td>
+                <td class="py-3 pr-3 align-top text-2">
+                  <span class="hl-match">D2 [0034] 处理图文混合</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="py-3 pr-3 align-top">1.b 使用统一 transformer 编码图像与文本 token</td>
+                <td class="py-3 pr-3 align-top text-3 italic text-xs">未公开</td>
+                <td class="py-3 pr-3 align-top text-2">
+                  <span class="hl-match">D2 [0038] 跨模态 transformer</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="py-3 pr-3 align-top">1.c 通过跨模态注意力定位结构化字段</td>
+                <td class="py-3 pr-3 align-top text-3 italic text-xs">未公开</td>
+                <td class="py-3 pr-3 align-top text-2">
+                  <span class="hl-partial">D2 [0041] 用于 VQA</span>
+                  <div class="text-3 text-xs mt-1">未直接用于字段抽取</div>
+                </td>
+              </tr>
+              <tr>
+                <td class="py-3 pr-3 align-top">1.d 输出 JSON 格式结构化结果</td>
+                <td class="py-3 pr-3 align-top text-2">
+                  <span class="hl-match">D1 [0058] 输出 JSON</span>
+                </td>
+                <td class="py-3 pr-3 align-top text-3 italic text-xs">未公开</td>
+              </tr>
+              <tr>
+                <td class="py-3 pr-3 align-top text-warning">⚠ 1.c 反向教导风险</td>
+                <td class="py-3 pr-3 align-top text-2" colspan="2">
+                  <span class="hl-diff">D2 [0067] 跨模态注意力在 OCR 噪声场景下性能下降</span>
+                  <div class="text-3 text-xs mt-1">Agent-B 据此主张反向教导</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="mt-6 flex items-center gap-3 text-[11px]">
+            <span class="hl-match">完全公开</span>
+            <span class="hl-partial">部分公开</span>
+            <span class="hl-diff">差异 / 反向教导</span>
+          </div>
+        </div>
+
+        <!-- RIGHT: chat -->
+        <aside class="col-span-3 flex flex-col" style="background: var(--surface);">
+          <div class="px-4 py-3 border-b border-app flex items-center gap-2">
+            <div class="w-1.5 h-1.5 rounded-full pulse" style="background: var(--success);"></div>
+            <span class="text-xs">Agent-A · 工作中</span>
+            <span class="ml-auto text-[10px] text-3 mono">claude-opus-5</span>
+          </div>
+
+          <div class="flex-1 overflow-auto px-4 py-3 space-y-3 text-[13px]">
+            <div class="text-3 text-center text-[10px]">— 14:22 —</div>
+
+            <div class="card p-3">
+              <div class="text-3 text-[10px] mb-1 uppercase tracking-wider font-semibold">你</div>
+              <div>把 D2 [0067] 反向教导的论点再展开，给出原文段落以及为什么 Agent-A 不接受这个论点。</div>
+            </div>
+
+            <div class="card p-3" style="background: var(--accent-soft); border-color: var(--accent);">
+              <div class="text-[10px] mb-1 uppercase tracking-wider font-semibold text-accent">Agent-A</div>
+              <div class="leading-relaxed">
+                D2 [0067] 原文："Cross-modal attention may underperform in scenarios with significant OCR noise..."
+                <br/><br/>
+                Agent-B 据此主张：本申请目标场景（合同/财报）等同于 D2 警示的 OCR 噪声场景。
+                <br/><br/>
+                <strong>我不接受的理由：</strong>
+                <br/>
+                1. 本申请说明书 <span class="citation">[0041]</span> 明确限定"对图像采用预处理去噪"，已规避 D2 [0067] 警示场景。
+                <br/>
+                2. D2 [0067] 是对局部技术缺陷的讨论，不是对整个跨模态架构的否定。
+                <br/>
+                3. 本领域技术人员在 D1+D2 启示下，对 OCR 噪声有常规解决手段。
+              </div>
+              <div class="flex gap-1 mt-2.5 pt-2.5 border-t border-app">
+                <span class="text-[10px] text-3">证据已自动加入 OA 草稿</span>
+                <span class="ml-auto chip chip-neutral text-[10px] cursor-pointer">采纳</span>
+              </div>
+            </div>
+
+            <div class="card p-3">
+              <div class="text-3 text-[10px] mb-1 uppercase tracking-wider font-semibold">你</div>
+              <div>把 1.c 那一行 claim chart 改成"完全公开"，我同意论证。</div>
+            </div>
+
+            <div class="card p-3" style="background: var(--accent-soft); border-color: var(--accent);">
+              <div class="text-[10px] mb-1 uppercase tracking-wider font-semibold text-accent">Agent-A</div>
+              <div>已更新 claim chart 1.c 为完全公开（左侧 canvas 同步） · OA 草稿对应段落同步更新。</div>
+            </div>
+          </div>
+
+          <div class="px-4 py-3 border-t border-app">
+            <div class="rounded-md px-3 py-2 flex items-center gap-2 text-xs text-2 border border-app" style="background: var(--bg);">
+              <span>追问 Agent…</span>
+              <span class="ml-auto kbd">⌘ ↵</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 4 · POLICY CONSOLE     -->
+    <!-- =========================== -->
+    <section class="view" id="view-policy">
+      <div class="px-8 pt-8 pb-4 border-b border-app">
+        <div class="max-w-6xl mx-auto">
+          <div class="flex items-baseline gap-3">
+            <h1 class="text-[22px] font-semibold tracking-tight">Policy Console</h1>
+            <span class="text-sm text-2">把审查标准结构化，让 Agent 一致地为你工作</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="max-w-6xl mx-auto grid grid-cols-12 gap-6 px-8 py-6">
+        <!-- left: policies -->
+        <div class="col-span-7 space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold">我的审查政策 · 12 条</h3>
+            <button class="btn btn-primary text-xs">+ 新增政策</button>
+          </div>
+
+          <div class="card divide-soft overflow-hidden">
+            <!-- policy 1 -->
+            <div class="p-4 row flex items-start gap-4">
+              <div class="flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="chip chip-accent">创造性</span>
+                  <span class="chip chip-neutral">AI / 软件</span>
+                  <span class="ml-auto text-[11px] text-3">v3 · 7 日前</span>
+                </div>
+                <div class="text-sm font-medium mt-2">多模态大模型类发明的结合启示判断</div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  当区别特征涉及跨模态/多模态架构，若对比文件 [明确教导] 或 [提供具体实现路径]，应认定结合启示成立。[反向教导] 必须满足：（1）警示性陈述明确否定整体方案；（2）警示场景与本申请实施例直接重叠。
+                </div>
+                <div class="flex items-center gap-4 mt-3 text-[11px] text-3">
+                  <span>应用 <span class="mono text-1">47</span></span>
+                  <span>一致 <span class="mono text-success">94%</span></span>
+                  <span>关联案例 <span class="mono text-1">14</span></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2.5 flex-none">
+                <div class="toggle on"></div>
+                <button class="btn btn-ghost text-xs">编辑</button>
+              </div>
+            </div>
+
+            <!-- policy 2 -->
+            <div class="p-4 row flex items-start gap-4">
+              <div class="flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="chip chip-info">检索</span>
+                  <span class="chip chip-neutral">通用</span>
+                  <span class="ml-auto text-[11px] text-3">v1 · 21 日前</span>
+                </div>
+                <div class="text-sm font-medium mt-2">检索充分性下限</div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  单案件至少完成 3 轮检索 · 覆盖中/英/日数据库 · 候选文献池 ≥ 800 篇 · 排除文献必须给出排除理由。低于下限时强制升级人审。
+                </div>
+                <div class="flex items-center gap-4 mt-3 text-[11px] text-3">
+                  <span>触发升级 <span class="mono text-warning">9</span></span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2.5 flex-none">
+                <div class="toggle on"></div>
+                <button class="btn btn-ghost text-xs">编辑</button>
+              </div>
+            </div>
+
+            <!-- policy 3 -->
+            <div class="p-4 row flex items-start gap-4">
+              <div class="flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="chip chip-warning">说明书</span>
+                  <span class="chip chip-neutral">A26.3</span>
+                  <span class="ml-auto text-[11px] text-3">v2 · 14 日前</span>
+                </div>
+                <div class="text-sm font-medium mt-2">充分公开判断口径</div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  对包含训练过程、超参数的 AI 类发明，若说明书未公开 [训练数据规模]、[损失函数]、[评估指标] 中的至少两项，判定为公开不充分。
+                </div>
+              </div>
+              <div class="flex items-center gap-2.5 flex-none">
+                <div class="toggle on"></div>
+                <button class="btn btn-ghost text-xs">编辑</button>
+              </div>
+            </div>
+
+            <!-- policy suggestion -->
+            <div class="p-4 row flex items-start gap-4" style="background: var(--accent-soft);">
+              <div class="flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="chip chip-accent">⚡ Agent 建议</span>
+                  <span class="chip chip-neutral">来自你最近 30 日判决</span>
+                </div>
+                <div class="text-sm font-medium mt-2">从你的判决中提取：算法+硬件 组合发明的新颖性判断</div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  Agent 注意到你最近 6 个相似案件全部采用了相同的新颖性判断口径。固化为政策可提升 Agent 在此类案件的置信度并减少分歧。
+                </div>
+              </div>
+              <div class="flex items-center gap-1.5 flex-none">
+                <button class="btn btn-ghost text-xs">忽略</button>
+                <button class="btn btn-primary text-xs">采纳</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- right: consistency -->
+        <aside class="col-span-5 space-y-4">
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">本月一致性</div>
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <div class="text-2xl font-semibold mono text-success">94%</div>
+                <div class="text-[11px] text-2 mt-1">AI 跟随政策</div>
+              </div>
+              <div>
+                <div class="text-2xl font-semibold mono text-success">+8%</div>
+                <div class="text-[11px] text-2 mt-1">vs 处室平均</div>
+              </div>
+              <div>
+                <div class="text-2xl font-semibold mono text-1">3</div>
+                <div class="text-[11px] text-2 mt-1">异常判决</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">异常判决（与你的政策偏离）</div>
+            <div class="space-y-2">
+              <div class="rounded-md p-3 border border-soft">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="mono text-info">CN202410012345</span>
+                  <span class="chip chip-warning">偏离 −18%</span>
+                </div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  你采纳了 Agent-B 的反向教导论点，但该论点不符合政策 #1 第（2）项要求。
+                </div>
+                <div class="flex gap-2 mt-2.5">
+                  <button class="btn btn-ghost text-xs py-0.5">查看案件</button>
+                  <button class="btn btn-ghost text-xs py-0.5">边界情况 · 更新政策</button>
+                </div>
+              </div>
+              <div class="rounded-md p-3 border border-soft">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="mono text-info">CN202410098765</span>
+                  <span class="chip chip-warning">偏离 −22%</span>
+                </div>
+                <div class="text-[13px] text-2 mt-1.5 leading-relaxed">
+                  Agent 判断"高置信授权"但你最终发了 OA · Agent 想问原因以改进。
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card p-4">
+            <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-3">Backtest · 政策变更影响</div>
+            <div class="text-[13px] text-2 leading-relaxed">
+              若启用上方建议政策（算法+硬件 新颖性口径），将影响过去 90 日 <span class="mono text-1">14 件</span> 案件：<span class="mono text-success">11 件</span>判决一致，<span class="mono text-warning">3 件</span>判决会变。
+            </div>
+            <button class="btn btn-ghost text-xs mt-3">查看 3 件变更</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 5 · 时限看板            -->
+    <!-- =========================== -->
+    <section class="view" id="view-deadline">
+      <div class="max-w-6xl mx-auto px-8 pt-10 pb-6">
+        <div class="flex items-baseline gap-3">
+          <h1 class="text-[22px] font-semibold tracking-tight">时限看板</h1>
+          <span class="text-sm text-2">未来 7 日所有案件的法定时限与内部 KPI 节点</span>
+        </div>
+
+        <!-- 7-day timeline -->
+        <div class="mt-6">
+          <div class="text-[10px] uppercase tracking-wider text-3 font-semibold mb-2">未来 7 日</div>
+          <div class="timeline">
+            <div class="timeline-col today">
+              <div class="text-[10px] text-3 mb-1 mono">05-15 今</div>
+              <span class="timeline-pill chip-danger">CN…3456 法定 OA</span>
+              <span class="timeline-pill chip-warning">CN…7654 答复期</span>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-16</div>
+              <span class="timeline-pill chip-danger">CN…8765 授权决定</span>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-17</div>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-18</div>
+              <span class="timeline-pill chip-warning">CN…2345 内部 KPI</span>
+              <span class="timeline-pill chip-warning">CN…5432 答复期</span>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-19</div>
+              <span class="timeline-pill chip-info">CN…9876 复审听证</span>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-20</div>
+              <span class="timeline-pill chip-warning">CN…1234 内部 KPI</span>
+            </div>
+            <div class="timeline-col">
+              <div class="text-[10px] text-3 mb-1 mono">05-21</div>
+              <span class="timeline-pill chip-info">CN…6789 答复期</span>
+              <span class="timeline-pill chip-info">CN…4321 答复期</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- grouped lists -->
+        <div class="grid grid-cols-3 gap-4 mt-8">
+          <div>
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-1.5 h-1.5 rounded-full" style="background: var(--danger);"></span>
+              <h3 class="text-sm font-semibold">法定时限</h3>
+              <span class="chip chip-danger ml-auto">3</span>
+            </div>
+            <div class="card divide-soft overflow-hidden">
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…3456</span>
+                  <span class="mono text-[11px] text-danger">剩 2 日</span>
+                </div>
+                <div class="text-[13px] mt-1">多模态文档抽取方法</div>
+                <div class="text-[11px] text-2 mt-1">第一次 OA · AI 已就绪</div>
+              </div>
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…8765</span>
+                  <span class="mono text-[11px] text-danger">剩 1 日</span>
+                </div>
+                <div class="text-[13px] mt-1">PD-1 抑制剂联合用药</div>
+                <div class="text-[11px] text-2 mt-1">授权决定 · 强制人审</div>
+              </div>
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…7654</span>
+                  <span class="mono text-[11px] text-warning">剩 4 日</span>
+                </div>
+                <div class="text-[13px] mt-1">车身侧围加强结构</div>
+                <div class="text-[11px] text-2 mt-1">第二次 OA · AI 待裁决</div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-1.5 h-1.5 rounded-full" style="background: var(--warning);"></span>
+              <h3 class="text-sm font-semibold">答复期内</h3>
+              <span class="chip chip-warning ml-auto">8</span>
+            </div>
+            <div class="card divide-soft overflow-hidden">
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…5432</span>
+                  <span class="mono text-[11px] text-2">07-12 到期</span>
+                </div>
+                <div class="text-[13px] mt-1">企业知识问答系统</div>
+                <div class="text-[11px] text-success mt-1">✓ 申请人已答复 · AI 已分析</div>
+              </div>
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…6789</span>
+                  <span class="mono text-[11px] text-2">07-21 到期</span>
+                </div>
+                <div class="text-[13px] mt-1">视觉语言导航算法</div>
+                <div class="text-[11px] text-2 mt-1">等待申请人答复</div>
+              </div>
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…4321</span>
+                  <span class="mono text-[11px] text-2">07-21 到期</span>
+                </div>
+                <div class="text-[13px] mt-1">分布式存储数据一致性</div>
+                <div class="text-[11px] text-2 mt-1">等待申请人答复</div>
+              </div>
+              <div class="p-3 text-center text-[11px] text-3 cursor-pointer">展开其余 5 件 →</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center gap-2 mb-3">
+              <span class="w-1.5 h-1.5 rounded-full" style="background: var(--info);"></span>
+              <h3 class="text-sm font-semibold">内部 KPI 节点</h3>
+              <span class="chip chip-info ml-auto">15</span>
+            </div>
+            <div class="card divide-soft overflow-hidden">
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…2345</span>
+                  <span class="mono text-[11px] text-2">本周</span>
+                </div>
+                <div class="text-[13px] mt-1">检索充分性复核</div>
+                <div class="text-[11px] text-2 mt-1">月度抽检流程</div>
+              </div>
+              <div class="p-3 row">
+                <div class="flex justify-between items-baseline">
+                  <span class="mono text-[11px] text-3">CN…1234</span>
+                  <span class="mono text-[11px] text-2">本周</span>
+                </div>
+                <div class="text-[13px] mt-1">同族案件协同</div>
+                <div class="text-[11px] text-2 mt-1">与 USPTO 同族</div>
+              </div>
+              <div class="p-3 text-center text-[11px] text-3 cursor-pointer">展开其余 13 件 →</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- workload heat -->
+        <div class="card p-5 mt-8">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold">工作量预测（未来 4 周）</h3>
+            <span class="text-xs text-2">AI 基于历史模式 + 当前队列预测</span>
+          </div>
+          <div class="grid grid-cols-4 gap-3">
+            <div>
+              <div class="text-xs text-2 mb-1">本周</div>
+              <div class="text-[22px] font-semibold leading-none mono">52</div>
+              <div class="text-[11px] text-2 mt-1">案件 · 估算 18 h</div>
+              <div class="bar mt-2"><span style="width: 90%; background: var(--danger);"></span></div>
+            </div>
+            <div>
+              <div class="text-xs text-2 mb-1">下周</div>
+              <div class="text-[22px] font-semibold leading-none mono">47</div>
+              <div class="text-[11px] text-2 mt-1">案件 · 估算 16 h</div>
+              <div class="bar mt-2"><span style="width: 82%; background: var(--warning);"></span></div>
+            </div>
+            <div>
+              <div class="text-xs text-2 mb-1">第 3 周</div>
+              <div class="text-[22px] font-semibold leading-none mono">38</div>
+              <div class="text-[11px] text-2 mt-1">案件 · 估算 13 h</div>
+              <div class="bar mt-2"><span style="width: 64%;"></span></div>
+            </div>
+            <div>
+              <div class="text-xs text-2 mb-1">第 4 周</div>
+              <div class="text-[22px] font-semibold leading-none mono">31</div>
+              <div class="text-[11px] text-2 mt-1">案件 · 估算 11 h</div>
+              <div class="bar mt-2"><span style="width: 52%;"></span></div>
+            </div>
+          </div>
+          <div class="text-[11px] text-2 mt-4 leading-relaxed">
+            <span class="text-warning">⚠</span> 本周工作量偏高。AI 建议：将 3 件低置信度案件改为 14 日后处理，可降低本周负荷至 78%。
+            <button class="btn btn-ghost text-xs ml-2 py-0.5">应用建议</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 6 · AMBIENT INSIGHT     -->
+    <!-- =========================== -->
+    <section class="view" id="view-ambient">
+      <div class="max-w-6xl mx-auto px-8 pt-10 pb-10">
+        <div class="flex items-baseline gap-3">
+          <h1 class="text-[22px] font-semibold tracking-tight">Ambient Insight</h1>
+          <span class="text-sm text-2">AI 主动发现的、你在日常工作中看不到的事</span>
+        </div>
+        <p class="text-sm text-2 mt-2">
+          这里不需要你提问 · Agent 持续扫描你管辖领域 + 你的判决模式，把值得注意的事推给你
+        </p>
+
+        <!-- top insight -->
+        <div class="card p-5 mt-6" style="border-color: var(--accent);">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="chip chip-accent">⚡ 本周关键洞察</span>
+            <span class="text-xs text-3 ml-auto mono">置信度 0.88</span>
+          </div>
+          <h3 class="text-base font-semibold mb-2">你正在审的"多模态文档抽取"领域，出现了一篇新公开的关键对比文献</h3>
+          <p class="text-[13px] text-2 leading-relaxed">
+            US 2026/0034521 A1（2026-03-12 公开）公开了与本月 5 件在审案件高度相关的多模态抽取技术。AI 已自动重跑了相关案件的检索，<span class="text-1 mono">2 件</span>的创造性判断需重新评估。
+          </p>
+          <div class="flex gap-2 mt-3">
+            <button class="btn btn-primary text-xs">查看 2 件需重评的案件</button>
+            <button class="btn btn-ghost text-xs">查看新文献</button>
+          </div>
+        </div>
+
+        <!-- insight grid -->
+        <div class="grid grid-cols-2 gap-4 mt-4">
+          <!-- trend -->
+          <div class="card p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="chip chip-info">趋势</span>
+              <span class="text-xs text-2">你的领域 · 本季度</span>
+            </div>
+            <h3 class="text-sm font-semibold mb-3">"AI + 硬件加速" 类申请激增 +127%</h3>
+            <div class="spark"></div>
+            <p class="text-[12px] text-2 leading-relaxed mt-3">
+              过去 3 个月你已审 18 件，远超历史均值。AI 已从你的判决中提炼出"算法+硬件 组合发明的新颖性判断"政策建议，可在 Policy Console 采纳以提升一致性。
+            </p>
+            <button class="btn btn-ghost text-xs mt-3">进入 Policy Console</button>
+          </div>
+
+          <!-- self pattern -->
+          <div class="card p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="chip chip-warning">自审视</span>
+              <span class="text-xs text-2">你的判决模式</span>
+            </div>
+            <h3 class="text-sm font-semibold mb-3">你对"反向教导"的认定明显严于同处平均</h3>
+            <div class="space-y-2 mt-3 text-xs">
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">你</span>
+                  <span class="mono">14% 案件认定反向教导成立</span>
+                </div>
+                <div class="bar"><span style="width: 14%; background: var(--accent);"></span></div>
+              </div>
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">处室平均</span>
+                  <span class="mono">29%</span>
+                </div>
+                <div class="bar"><span style="width: 29%; background: var(--text-3);"></span></div>
+              </div>
+            </div>
+            <p class="text-[12px] text-2 leading-relaxed mt-3">
+              这不一定是问题 — 可能反映你对结合启示判断的严谨。但建议关注 3 件你过去 6 个月按反向教导授权的案件，AI 检测到其中 1 件被复审委推翻。
+            </p>
+          </div>
+
+          <!-- cluster -->
+          <div class="card p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="chip chip-success">证据聚类</span>
+              <span class="text-xs text-2">高频对比文件</span>
+            </div>
+            <h3 class="text-sm font-semibold mb-3">本季度你引用最多的 5 篇对比文献</h3>
+            <div class="space-y-2 mt-3 text-xs">
+              <div class="flex items-center gap-2">
+                <span class="mono text-info">CN114842262A</span>
+                <span class="text-2 text-[11px] truncate">文档智能 / BERT</span>
+                <span class="ml-auto mono">9 次</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="mono text-info">US 2023/0145678</span>
+                <span class="text-2 text-[11px] truncate">多模态架构</span>
+                <span class="ml-auto mono">7 次</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="mono text-info">EP 4 156 789 A1</span>
+                <span class="text-2 text-[11px] truncate">分布式训练</span>
+                <span class="ml-auto mono">5 次</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="mono text-info">CN116123456A</span>
+                <span class="text-2 text-[11px] truncate">RAG 架构</span>
+                <span class="ml-auto mono">4 次</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="mono text-info">US 11,234,567 B2</span>
+                <span class="text-2 text-[11px] truncate">联邦学习</span>
+                <span class="ml-auto mono">4 次</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- agent learning -->
+          <div class="card p-5">
+            <div class="flex items-center gap-2 mb-3">
+              <span class="chip chip-accent">AI 自审视</span>
+              <span class="text-xs text-2">Agent 表现</span>
+            </div>
+            <h3 class="text-sm font-semibold mb-3">本月 Agent 在哪些环节最常出错</h3>
+            <div class="space-y-3 mt-3 text-xs">
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">说明书充分公开判断</span>
+                  <span class="mono text-warning">18% 被你修正</span>
+                </div>
+                <div class="bar"><span style="width: 18%; background: var(--warning);"></span></div>
+              </div>
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">单一性判断</span>
+                  <span class="mono text-warning">12%</span>
+                </div>
+                <div class="bar"><span style="width: 12%; background: var(--warning);"></span></div>
+              </div>
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">创造性判断</span>
+                  <span class="mono text-success">6%</span>
+                </div>
+                <div class="bar"><span style="width: 6%; background: var(--success);"></span></div>
+              </div>
+              <div>
+                <div class="flex justify-between mb-1">
+                  <span class="text-2">检索充分性</span>
+                  <span class="mono text-success">4%</span>
+                </div>
+                <div class="bar"><span style="width: 4%; background: var(--success);"></span></div>
+              </div>
+            </div>
+            <p class="text-[12px] text-2 leading-relaxed mt-3">
+              AI 建议针对说明书充分公开判断细化政策（你的 v2 政策可能需要扩展到包含训练设备规格的判断）。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================== -->
+    <!-- VIEW 7 · 对话历史            -->
+    <!-- =========================== -->
+    <section class="view" id="view-history">
+      <div class="px-8 pt-8 pb-4 border-b border-app">
+        <div class="max-w-6xl mx-auto flex items-baseline gap-3">
+          <h1 class="text-[22px] font-semibold tracking-tight">对话历史</h1>
+          <span class="text-sm text-2">所有与 Agent 的跨案件追问，可提炼为政策或归档</span>
+        </div>
+      </div>
+
+      <div class="max-w-6xl mx-auto grid grid-cols-12 gap-0" style="height: calc(100vh - 144px - 80px);">
+        <!-- list -->
+        <div class="col-span-4 border-r border-app overflow-auto">
+          <div class="p-4 border-b border-app">
+            <div class="flex items-center gap-2 px-3 h-9 rounded-md border border-app surface text-xs text-2">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <span>搜索对话…</span>
+            </div>
+            <div class="flex items-center gap-1 mt-3 flex-wrap">
+              <span class="chip chip-accent">全部</span>
+              <span class="chip chip-neutral">本周</span>
+              <span class="chip chip-neutral">未归档</span>
+              <span class="chip chip-neutral">已提炼政策</span>
+            </div>
+          </div>
+
+          <div class="divide-soft">
+            <div class="p-4 row" style="background: var(--surface-2);">
+              <div class="flex items-center justify-between">
+                <span class="mono text-[11px] text-3">CN…3456</span>
+                <span class="text-[11px] text-3 mono">14:22</span>
+              </div>
+              <div class="text-[13px] font-medium mt-1">D2 反向教导论点展开</div>
+              <div class="text-[11px] text-2 mt-1 truncate">把 1.c 那一行 claim chart 改成"完全公开"…</div>
+              <div class="flex gap-1 mt-2">
+                <span class="chip chip-accent">创造性</span>
+                <span class="chip chip-neutral">已采纳</span>
+              </div>
+            </div>
+
+            <div class="p-4 row">
+              <div class="flex items-center justify-between">
+                <span class="mono text-[11px] text-3">CN…7654</span>
+                <span class="text-[11px] text-3 mono">昨日</span>
+              </div>
+              <div class="text-[13px] font-medium mt-1">补正合规性边界讨论</div>
+              <div class="text-[11px] text-2 mt-1 truncate">这个补正是否超出原始记载范围？</div>
+              <div class="flex gap-1 mt-2">
+                <span class="chip chip-warning">A33</span>
+              </div>
+            </div>
+
+            <div class="p-4 row">
+              <div class="flex items-center justify-between">
+                <span class="mono text-[11px] text-3">跨案件</span>
+                <span class="text-[11px] text-3 mono">昨日</span>
+              </div>
+              <div class="text-[13px] font-medium mt-1">"算法+硬件"组合的新颖性判断</div>
+              <div class="text-[11px] text-2 mt-1 truncate">最近 6 件相似案件你都用了相同口径…</div>
+              <div class="flex gap-1 mt-2">
+                <span class="chip chip-accent">新颖性</span>
+                <span class="chip chip-success">已提炼为政策</span>
+              </div>
+            </div>
+
+            <div class="p-4 row">
+              <div class="flex items-center justify-between">
+                <span class="mono text-[11px] text-3">CN…0987</span>
+                <span class="text-[11px] text-3 mono">3 日前</span>
+              </div>
+              <div class="text-[13px] font-medium mt-1">实施例覆盖度判断</div>
+              <div class="text-[11px] text-2 mt-1 truncate">说明书 [0023] 是否能合理外推到…</div>
+              <div class="flex gap-1 mt-2">
+                <span class="chip chip-warning">A26.3</span>
+              </div>
+            </div>
+
+            <div class="p-4 row">
+              <div class="flex items-center justify-between">
+                <span class="mono text-[11px] text-3">跨案件</span>
+                <span class="text-[11px] text-3 mono">1 周前</span>
+              </div>
+              <div class="text-[13px] font-medium mt-1">复审委推翻案件分析</div>
+              <div class="text-[11px] text-2 mt-1 truncate">为什么过去 6 个月有 3 件被推翻？</div>
+              <div class="flex gap-1 mt-2">
+                <span class="chip chip-info">自审视</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- detail -->
+        <div class="col-span-8 overflow-auto p-6" style="background: var(--surface);">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-base font-semibold">D2 反向教导论点展开</h3>
+              <div class="flex items-center gap-2 text-xs text-2 mt-1">
+                <span class="mono">CN202410123456.X</span>
+                <span>·</span>
+                <span>2026-05-15 14:22</span>
+                <span>·</span>
+                <span>3 轮对话</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="btn btn-ghost text-xs">提炼为政策</button>
+              <button class="btn btn-ghost text-xs">归档</button>
+              <button class="btn btn-ghost text-xs">回到案件</button>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <div class="card p-3">
+              <div class="text-3 text-[10px] mb-1 uppercase tracking-wider font-semibold">你</div>
+              <div class="text-[13px]">把 D2 [0067] 反向教导的论点再展开，给出原文段落以及为什么 Agent-A 不接受这个论点。</div>
+            </div>
+
+            <div class="card p-3" style="background: var(--accent-soft); border-color: var(--accent);">
+              <div class="text-[10px] mb-1 uppercase tracking-wider font-semibold text-accent">Agent-A</div>
+              <div class="text-[13px] leading-relaxed">
+                D2 [0067] 原文："Cross-modal attention may underperform in scenarios with significant OCR noise..."<br/><br/>
+                我不接受 Agent-B 的反向教导主张，理由：<br/>
+                1. 本申请说明书 [0041] 明确"对图像采用预处理去噪"，已规避 D2 [0067] 警示场景<br/>
+                2. D2 [0067] 是对局部技术缺陷的讨论，不是对整个架构的否定<br/>
+                3. 本领域技术人员在 D1+D2 启示下，对 OCR 噪声有常规解决手段
+              </div>
+            </div>
+
+            <div class="card p-3">
+              <div class="text-3 text-[10px] mb-1 uppercase tracking-wider font-semibold">你</div>
+              <div class="text-[13px]">把 1.c 那一行 claim chart 改成"完全公开"，我同意论证。</div>
+            </div>
+
+            <div class="card p-3" style="background: var(--accent-soft); border-color: var(--accent);">
+              <div class="text-[10px] mb-1 uppercase tracking-wider font-semibold text-accent">Agent-A</div>
+              <div class="text-[13px]">已更新 claim chart 1.c 为完全公开 · OA 草稿对应段落同步更新。</div>
+            </div>
+          </div>
+
+          <!-- distillation suggestion -->
+          <div class="card p-4 mt-6" style="border-color: var(--accent);">
+            <div class="flex items-center gap-2 mb-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span class="text-xs font-medium">从本次对话提炼政策候选</span>
+            </div>
+            <div class="text-[13px] text-2 leading-relaxed">
+              这次裁决的逻辑（反向教导认定要求"警示场景与本申请直接重叠"且"否定整体方案"）与你过去 3 个月类似裁决一致。是否提炼为政策？
+            </div>
+            <div class="flex gap-2 mt-3">
+              <button class="btn btn-primary text-xs">查看政策草案</button>
+              <button class="btn btn-ghost text-xs">忽略</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ ⌘K COMMAND PALETTE ============ -->
+<div id="modal-cmdk" class="modal-mask">
+  <div class="modal-panel modal-cmdk">
+    <div class="border-b border-app">
+      <input class="cmdk-input mono" placeholder="跨案件提问、跳转到案件、执行命令…" autofocus />
+    </div>
+    <div class="max-h-[60vh] overflow-auto py-2">
+      <div class="cmdk-section-title">跨案件提问</div>
+      <div class="cmdk-row focused">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        <span>问 Agent · 我手头哪些案件可能受 US 2026/0034521 A1 影响？</span>
+        <span class="ml-auto kbd">↵</span>
+      </div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span>跨案件检索…</span>
+      </div>
+
+      <div class="cmdk-section-title">跳转</div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Decision Queue</span>
+        <span class="ml-auto text-[11px] text-3 mono">G Q</span>
+      </div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <span>Policy Console</span>
+        <span class="ml-auto text-[11px] text-3 mono">G P</span>
+      </div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>时限看板</span>
+        <span class="ml-auto text-[11px] text-3 mono">G D</span>
+      </div>
+
+      <div class="cmdk-section-title">最近案件</div>
+      <div class="cmdk-row">
+        <span class="mono text-[11px] text-3 w-32">CN…3456</span>
+        <span class="text-2">多模态文档抽取方法</span>
+      </div>
+      <div class="cmdk-row">
+        <span class="mono text-[11px] text-3 w-32">CN…8765</span>
+        <span class="text-2">PD-1 抑制剂联合用药</span>
+      </div>
+      <div class="cmdk-row">
+        <span class="mono text-[11px] text-3 w-32">CN…7654</span>
+        <span class="text-2">车身侧围加强结构</span>
+      </div>
+
+      <div class="cmdk-section-title">命令</div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>新增政策</span>
+      </div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/></svg>
+        <span>调整抽样审计率</span>
+      </div>
+      <div class="cmdk-row">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>偏好设置</span>
+      </div>
+    </div>
+    <div class="border-t border-app px-3 py-2 flex items-center gap-3 text-[11px] text-3">
+      <span><span class="kbd">↑</span> <span class="kbd">↓</span> 选择</span>
+      <span><span class="kbd">↵</span> 确认</span>
+      <span class="ml-auto"><span class="kbd">esc</span> 关闭</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ AUDIT MODAL ============ -->
+<div id="modal-audit" class="modal-mask">
+  <div class="modal-panel modal-wide">
+    <div class="border-b border-app p-5 flex items-center justify-between">
+      <div>
+        <h3 class="text-base font-semibold">AI 自主完成案件 · 审计明细</h3>
+        <p class="text-xs text-2 mt-1">42 件本日 AI 自主完成 · 已抽样复核 4 件（抽样率 10%）</p>
+      </div>
+      <button class="btn-icon" onclick="closeModal('audit')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="px-5 py-3 border-b border-app flex items-center gap-3 flex-wrap">
+      <span class="text-xs text-3">过滤</span>
+      <span class="chip chip-accent">全部 42</span>
+      <span class="chip chip-neutral">已发 OA 18</span>
+      <span class="chip chip-neutral">直接授权 16</span>
+      <span class="chip chip-neutral">答复处理 8</span>
+      <div class="ml-auto flex items-center gap-3 text-xs">
+        <span class="text-2">抽样率</span>
+        <div class="flex items-center gap-1">
+          <span class="chip chip-neutral cursor-pointer">5%</span>
+          <span class="chip chip-accent cursor-pointer">10%</span>
+          <span class="chip chip-neutral cursor-pointer">25%</span>
+          <span class="chip chip-neutral cursor-pointer">100%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex-1 overflow-auto">
+      <table class="w-full text-xs">
+        <thead class="sticky top-0" style="background: var(--surface);">
+          <tr class="text-3 border-b border-app">
+            <th class="text-left px-5 py-2.5 font-medium">案件</th>
+            <th class="text-left px-3 py-2.5 font-medium">动作</th>
+            <th class="text-left px-3 py-2.5 font-medium">置信度</th>
+            <th class="text-left px-3 py-2.5 font-medium">耗时</th>
+            <th class="text-left px-3 py-2.5 font-medium">完成时间</th>
+            <th class="text-left px-3 py-2.5 font-medium">复核</th>
+          </tr>
+        </thead>
+        <tbody class="divide-soft">
+          <tr class="row">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202410054321</div>
+              <div class="text-[12px] text-2 mt-0.5">基于扩散模型的图像生成</div>
+            </td>
+            <td class="px-3 py-3 text-2">直接授权</td>
+            <td class="px-3 py-3"><span class="mono text-success">0.96</span></td>
+            <td class="px-3 py-3 mono text-2">12.4 m</td>
+            <td class="px-3 py-3 mono text-2">08:32</td>
+            <td class="px-3 py-3"><span class="chip chip-success">已抽样 · 通过</span></td>
+          </tr>
+          <tr class="row">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202410043210</div>
+              <div class="text-[12px] text-2 mt-0.5">车载语音助手意图分类</div>
+            </td>
+            <td class="px-3 py-3 text-2">发 OA</td>
+            <td class="px-3 py-3"><span class="mono text-success">0.89</span></td>
+            <td class="px-3 py-3 mono text-2">23.1 m</td>
+            <td class="px-3 py-3 mono text-2">09:14</td>
+            <td class="px-3 py-3 text-3">—</td>
+          </tr>
+          <tr class="row">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202410032109</div>
+              <div class="text-[12px] text-2 mt-0.5">分布式数据库索引优化</div>
+            </td>
+            <td class="px-3 py-3 text-2">处理答复 · 授权</td>
+            <td class="px-3 py-3"><span class="mono text-success">0.94</span></td>
+            <td class="px-3 py-3 mono text-2">9.8 m</td>
+            <td class="px-3 py-3 mono text-2">10:02</td>
+            <td class="px-3 py-3"><span class="chip chip-success">已抽样 · 通过</span></td>
+          </tr>
+          <tr class="row">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202410021098</div>
+              <div class="text-[12px] text-2 mt-0.5">边缘设备低功耗调度</div>
+            </td>
+            <td class="px-3 py-3 text-2">发 OA</td>
+            <td class="px-3 py-3"><span class="mono text-success">0.91</span></td>
+            <td class="px-3 py-3 mono text-2">18.6 m</td>
+            <td class="px-3 py-3 mono text-2">10:45</td>
+            <td class="px-3 py-3 text-3">—</td>
+          </tr>
+          <tr class="row" style="background: var(--warning-soft);">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202410010987</div>
+              <div class="text-[12px] text-2 mt-0.5">视频编码自适应码率</div>
+            </td>
+            <td class="px-3 py-3 text-2">发 OA</td>
+            <td class="px-3 py-3"><span class="mono text-warning">0.82</span></td>
+            <td class="px-3 py-3 mono text-2">31.2 m</td>
+            <td class="px-3 py-3 mono text-2">11:23</td>
+            <td class="px-3 py-3"><span class="chip chip-warning">抽样 · 待你复核</span></td>
+          </tr>
+          <tr class="row">
+            <td class="px-5 py-3">
+              <div class="mono text-[11px] text-info">CN202409987654</div>
+              <div class="text-[12px] text-2 mt-0.5">区块链共识算法</div>
+            </td>
+            <td class="px-3 py-3 text-2">直接授权</td>
+            <td class="px-3 py-3"><span class="mono text-success">0.93</span></td>
+            <td class="px-3 py-3 mono text-2">11.2 m</td>
+            <td class="px-3 py-3 mono text-2">13:05</td>
+            <td class="px-3 py-3 text-3">—</td>
+          </tr>
+          <tr class="row">
+            <td class="px-5 py-3 text-3 text-center" colspan="6">展开其余 36 件 ↓</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="border-t border-app px-5 py-3 flex items-center justify-between text-xs">
+      <div class="text-2">
+        <span class="text-success">●</span> 抽样通过 4 件 · <span class="text-warning">●</span> 待你复核 1 件 · <span class="text-danger">●</span> 已驳回重审 0 件
+      </div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost">导出审计报告</button>
+        <button class="btn btn-primary" onclick="closeModal('audit')">完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // theme
+  const html = document.documentElement;
+  const themeBtn = document.getElementById('theme-toggle');
+  const iconMoon = document.getElementById('icon-moon');
+  const iconSun = document.getElementById('icon-sun');
+
+  function applyTheme(t) {
+    if (t === 'dark') {
+      html.classList.add('dark');
+      iconMoon.classList.add('hidden');
+      iconSun.classList.remove('hidden');
+    } else {
+      html.classList.remove('dark');
+      iconSun.classList.add('hidden');
+      iconMoon.classList.remove('hidden');
+    }
+  }
+  const saved = localStorage.getItem('theme') || 'light';
+  applyTheme(saved);
+  themeBtn.addEventListener('click', () => {
+    const next = html.classList.contains('dark') ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+  });
+
+  // view routing
+  function goView(name) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-' + name).classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.nav-item[data-view="' + name + '"]').forEach(n => n.classList.add('active'));
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('.nav-item[data-view]').forEach(n => {
+    n.addEventListener('click', () => goView(n.dataset.view));
+  });
+
+  // modal
+  function openModal(name) {
+    document.getElementById('modal-' + name).classList.add('show');
+  }
+  function closeModal(name) {
+    document.getElementById('modal-' + name).classList.remove('show');
+  }
+  document.querySelectorAll('.modal-mask').forEach(m => {
+    m.addEventListener('click', e => {
+      if (e.target === m) m.classList.remove('show');
+    });
+  });
+
+  // ⌘K
+  document.getElementById('cmdk-trigger').addEventListener('click', () => openModal('cmdk'));
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      openModal('cmdk');
+    }
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.modal-mask.show').forEach(m => m.classList.remove('show'));
+    }
+  });
+</script>
+
+</body>
+</html>

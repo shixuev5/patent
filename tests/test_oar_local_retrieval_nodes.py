@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
-from agents.ai_reply.src.retrieval_utils import make_query_spec
-from agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
-from agents.ai_reply.src.state import WorkflowConfig
-from agents.common.retrieval import LocalEvidenceRetriever
+from patent_agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from patent_agents.ai_reply.src.retrieval_utils import make_query_spec
+from patent_agents.ai_reply.src.nodes.data_preparation import DataPreparationNode
+from patent_agents.ai_reply.src.state import WorkflowConfig
+from patent_agents.common.retrieval import LocalEvidenceRetriever
 from config import settings
 
 

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from threading import Event
 
-from agents.patent_analysis.src.engines.generator import ContentGenerator
+from patent_agents.patent_analysis.src.engines.generator import ContentGenerator
 from backend import task_usage_tracking
 
 
@@ -11,7 +11,7 @@ def test_background_and_features_run_in_parallel(tmp_path: Path, monkeypatch) ->
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 
@@ -100,7 +100,7 @@ def test_generator_parallel_workers_keep_task_usage_context(tmp_path: Path, monk
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 
@@ -198,7 +198,7 @@ def test_verify_evidence_runs_means_then_effects_with_expected_params(
 
     llm_stub = StubLLMService()
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: llm_stub,
     )
 
@@ -252,7 +252,7 @@ def test_verify_evidence_uses_split_cache_keys(tmp_path: Path, monkeypatch) -> N
 
     llm_stub = StubLLMService()
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: llm_stub,
     )
 
@@ -295,7 +295,7 @@ def test_generate_core_report_no_longer_writes_verification_cache_key(
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 
@@ -356,7 +356,7 @@ def test_format_claims_to_text_includes_parent_relationship(tmp_path: Path, monk
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 
@@ -424,7 +424,7 @@ def test_extract_features_keeps_llm_order_and_prompt_requires_claim_id(
 
     llm_stub = StubLLMService()
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: llm_stub,
     )
 
@@ -469,7 +469,7 @@ def test_build_feature_menu_str_uses_claim_scoped_numbering(
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.generator.get_llm_service",
+        "patent_agents.patent_analysis.src.engines.generator.get_llm_service",
         lambda: StubLLMService(),
     )
 

@@ -32,7 +32,7 @@ def _mount_task_manager(monkeypatch, tmp_path):
 
 
 def _mount_fake_workflow(monkeypatch, state_builder):
-    import agents.patent_analysis.main as patent_analysis_main
+    import patent_agents.patent_analysis.main as patent_analysis_main
 
     fake_workflow = _FakeWorkflow(state_builder)
     monkeypatch.setattr(patent_analysis_main, "create_workflow", lambda config=None: fake_workflow)

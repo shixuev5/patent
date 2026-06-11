@@ -187,15 +187,18 @@
       </div>
     </div>
 
-    <main class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-3 sm:p-6">
+    <main
+      class="mx-auto flex min-h-0 w-full flex-1 flex-col p-3 sm:p-6"
+      :class="route.path.startsWith('/search') ? 'max-w-[92rem]' : 'max-w-6xl'"
+    >
       <slot />
     </main>
 
     <footer class="border-t border-slate-200/80 bg-white/70">
-      <div class="mx-auto grid w-full max-w-6xl grid-cols-[1fr_auto] items-center gap-3 px-4 py-3 text-xs text-slate-500 sm:px-6 md:grid-cols-[1fr_auto_1fr]">
+      <div class="mx-auto flex w-full max-w-6xl flex-col items-center gap-1 px-4 py-3 text-center text-xs text-slate-500 sm:px-6 md:grid md:grid-cols-[1fr_auto_1fr] md:gap-3">
         <div class="hidden md:block" />
-        <p class="text-left whitespace-nowrap md:justify-self-center md:text-center">Copyright © {{ currentYear }} aipatents.cn. All rights reserved.</p>
-        <div class="justify-self-end flex shrink-0 items-center gap-3 whitespace-nowrap">
+        <p class="max-w-full break-words md:justify-self-center md:whitespace-nowrap md:text-center">Copyright © {{ currentYear }} aipatents.cn. All rights reserved.</p>
+        <div class="flex shrink-0 items-center gap-3 whitespace-nowrap md:justify-self-end">
           <p class="inline-flex items-center gap-1.5">
             <span class="inline-block h-1.5 w-1.5 rounded-full" :class="isServiceHealthy ? 'bg-emerald-500' : 'bg-rose-500'" />
             服务{{ serviceStatusText }}

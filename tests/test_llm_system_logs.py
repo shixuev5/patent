@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import agents.common.utils.llm as llm_module
-from agents.common.utils.llm import LLMService
+import patent_agents.common.utils.llm as llm_module
+from patent_agents.common.utils.llm import LLMService
 from backend import system_logs
 from backend import task_usage_tracking
 

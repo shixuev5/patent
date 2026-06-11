@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from agents.ai_reply.src.nodes.patent_retrieval import PatentRetrievalNode
+from patent_agents.ai_reply.src.nodes.patent_retrieval import PatentRetrievalNode
 
 
 class _FakeSearchClient:
@@ -54,7 +54,7 @@ def test_retrieve_single_patent_reuses_r2_patent_json_for_original_patent(monkey
         }
     )
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.patent_retrieval._build_r2_storage",
+        "patent_agents.ai_reply.src.nodes.patent_retrieval._build_r2_storage",
         lambda: fake_r2,
     )
 
@@ -101,7 +101,7 @@ def test_retrieve_single_patent_falls_back_to_download_parse_when_r2_patent_json
 ) -> None:
     fake_r2 = _FakeR2Storage()
     monkeypatch.setattr(
-        "agents.ai_reply.src.nodes.patent_retrieval._build_r2_storage",
+        "patent_agents.ai_reply.src.nodes.patent_retrieval._build_r2_storage",
         lambda: fake_r2,
     )
 

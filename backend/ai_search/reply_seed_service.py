@@ -7,8 +7,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 
-from agents.ai_search.src.state import (
-    PHASE_DRAFTING_PLAN,
+from patent_agents.ai_search.src.state import (
+    PHASE_IDLE,
     default_ai_search_meta,
     get_ai_search_meta,
     merge_ai_search_meta,
@@ -19,10 +19,9 @@ from agents.ai_search.src.state import (
 from backend.storage import TaskType
 from backend.utils import _build_r2_storage
 
-from .analysis_seed import load_json_bytes, load_json_file
+from patent_agents.ai_search.src.analysis_seed import load_json_bytes, load_json_file
 from .models import AiSearchCreateSessionResponse
-from .reply_seed import (
-    build_execution_spec_from_reply,
+from patent_agents.ai_search.src.reply_seed import (
     build_reply_seed_user_message,
     seed_prompt_from_reply,
     seed_search_elements_from_reply,
@@ -63,7 +62,7 @@ class AiSearchReplySeedService:
             report_payload = load_json_bytes(r2_storage.get_bytes(str(output_files.get("ai_reply_r2_key") or "").strip()))
 
         if not isinstance(report_payload, dict):
-            raise HTTPException(status_code=409, detail="AI 答复结果不存在，暂时无法生成检索计划。")
+            raise HTTPException(status_code=409, detail="AI 答复结果不存在，暂时无法创建检索会话。")
         return report_payload
 
     def _get_completed_reply_task(self, owner_id: str, reply_task_id: str) -> Any:
@@ -75,7 +74,7 @@ class AiSearchReplySeedService:
         ):
             raise HTTPException(status_code=404, detail="AI 答复任务不存在。")
         if str(getattr(reply_task.status, "value", reply_task.status) or "") != "completed":
-            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 答复任务生成检索计划。")
+            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 答复任务创建检索会话。")
         return reply_task
 
     def _find_existing_reply_seed_session(self, owner_id: str, reply_task_id: str) -> Optional[Any]:
@@ -122,7 +121,7 @@ class AiSearchReplySeedService:
                 task_id=existing_task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="复用已存在的 AI 检索计划",
+                message="复用已存在的 AI 检索会话",
                 payload={"reply_task_id": str(reply_task.id), "reply_pn": str(reply_task.pn or "").strip() or None},
             )
             return self._seed_response(existing_task, reused=True, source_task_id=str(reply_task.id))
@@ -135,14 +134,13 @@ class AiSearchReplySeedService:
             task_id=str(reply_task.id),
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="请求从 AI 答复创建 AI 检索计划",
+            message="请求从 AI 答复创建 AI 检索会话",
             payload={"reply_task_id": str(reply_task.id), "reply_pn": str(reply_task.pn or "").strip() or None},
         )
 
         seeded_search_elements = seed_search_elements_from_reply(reply_payload)
         if str(seeded_search_elements.get("status") or "").strip() == "needs_answer":
-            raise HTTPException(status_code=409, detail="当前 AI 答复报告中的补检要素不足，暂时无法生成检索计划。")
-        seeded_execution_spec = build_execution_spec_from_reply(reply_payload, seeded_search_elements)
+            raise HTTPException(status_code=409, detail="当前 AI 答复报告中的补检要素不足，暂时无法创建检索会话。")
         source_pn = str(getattr(reply_task, "pn", "") or "").strip()
         source_title = str(getattr(reply_task, "title", "") or "").strip()
         seed_prompt = seed_prompt_from_reply(reply_payload, seeded_search_elements)
@@ -150,11 +148,11 @@ class AiSearchReplySeedService:
         task = self.facade.task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
-            title=f"AI 检索计划 - {source_pn or source_title or reply_task.id}",
+            title=f"AI 检索会话 - {source_pn or source_title or reply_task.id}",
         )
         thread_id = f"ai-search-{task.id}"
         seed_meta = default_ai_search_meta(thread_id)
-        seed_meta["current_phase"] = PHASE_DRAFTING_PLAN
+        seed_meta["current_phase"] = PHASE_IDLE
         self.storage.update_task(
             task.id,
             metadata=merge_ai_search_meta(
@@ -168,9 +166,9 @@ class AiSearchReplySeedService:
                 analysis_seed_prompt=seed_prompt,
                 analysis_seed_status="pending",
             ),
-            status=phase_to_task_status(PHASE_DRAFTING_PLAN),
-            progress=phase_progress(PHASE_DRAFTING_PLAN),
-            current_step=phase_step(PHASE_DRAFTING_PLAN),
+            status=phase_to_task_status(PHASE_IDLE),
+            progress=phase_progress(PHASE_IDLE),
+            current_step=phase_step(PHASE_IDLE),
         )
         self.storage.create_ai_search_message(
             {
@@ -180,10 +178,7 @@ class AiSearchReplySeedService:
                 "kind": "search_elements_update",
                 "content": str(seeded_search_elements.get("objective") or "").strip() or None,
                 "stream_status": "completed",
-                "metadata": {
-                    **seeded_search_elements,
-                    "execution_spec_seed": seeded_execution_spec,
-                },
+                "metadata": seeded_search_elements,
             }
         )
         self.facade._append_message(

@@ -1,0 +1,50 @@
+"""
+专利结构化处理模块
+提供基于 LLM、基于规则和混合模式的专利文档结构化提取功能
+"""
+
+import re
+from typing import Any, List, Dict
+
+
+def extract_structured_data(md_content: str, method: str = "hybrid") -> dict:
+    """
+    专利文档结构化提取入口函数
+
+    Args:
+        md_content: 专利文档的 Markdown 内容
+        method: 提取方法，可选 "llm"、"rule" 或 "hybrid"（默认）
+
+    Returns:
+        结构化的专利数据字典
+    """
+    if method == "llm":
+        from patent_agents.common.patent_structuring.llm_based_extractor import LLMBasedExtractor
+        return LLMBasedExtractor().extract(md_content)
+    elif method == "rule":
+        from patent_agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
+        return RuleBasedExtractor.extract(md_content)
+    elif method == "hybrid":
+        from patent_agents.common.patent_structuring.hybrid_extractor import HybridExtractor
+        return HybridExtractor().extract(md_content)
+    else:
+        raise ValueError(f"Unknown extraction method: {method}")
+
+
+def extract_structured_claims(md_content: str) -> List[Dict[str, Any]]:
+    """
+    独立获取结构化权利要求，兼容中美欧日韩常见版式。
+    """
+    content = str(md_content or "").replace("\r\n", "\n")
+    from patent_agents.common.patent_structuring.rule_based_extractor import RuleBasedExtractor
+    if re.search(r"【請求項\d+】", content) or re.search(r"(?m)^#\s*청구항\s*\d+\s*$", content):
+        claims_section = content
+    elif re.search(r"(?ims)^#\s*Amended claims[^\n]*\n", content):
+        match = re.search(r"(?ims)^#\s*Amended claims[^\n]*\n([\s\S]*?)\Z", content)
+        claims_section = match.group(1) if match else ""
+    else:
+        start_match = re.search(r"(?m)^1\s*[\.．]\s*", content)
+        if not start_match:
+            return []
+        claims_section = content[start_match.start():]
+    return RuleBasedExtractor.extract_structured_claims(claims_section)

@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from agents.ai_search.src.context import AiSearchAgentContext
-from agents.ai_search.src.state import PHASE_COMPLETED, get_ai_search_meta
+from patent_agents.ai_search.src.reporting import (
+    latest_report_text,
+    render_markdown_report,
+    write_selected_documents_csv,
+)
+from patent_agents.ai_search.src.state import PHASE_COMPLETED, get_ai_search_meta
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
+
+from config import settings
 
 from .models import AiSearchArtifactAttachment
 
 ATTACHMENT_SPECS: dict[str, dict[str, str | bool]] = {
     "result_bundle": {
-        "output_key": "bundle_zip",
+        "output_key": "ai_search_bundle",
         "kind": "result_bundle",
         "media_type": "application/zip",
         "suffix": ".zip",
@@ -23,22 +31,31 @@ ATTACHMENT_SPECS: dict[str, dict[str, str | bool]] = {
         "default_filename": "ai_search_result_bundle.zip",
         "primary": True,
     },
-    "feature_comparison_csv": {
-        "output_key": "feature_comparison_csv",
-        "kind": "feature_comparison_csv",
-        "media_type": "text/csv",
-        "suffix": ".csv",
-        "prefix": "AI 检索特征对比",
-        "default_filename": "feature_comparison.csv",
+    "report_markdown": {
+        "output_key": "ai_search_report_markdown",
+        "kind": "report_markdown",
+        "media_type": "text/markdown",
+        "suffix": ".md",
+        "prefix": "AI 检索报告",
+        "default_filename": "ai_search_report.md",
         "primary": False,
     },
-    "report_pdf": {
-        "output_key": "pdf",
-        "kind": "report_pdf",
-        "media_type": "application/pdf",
-        "suffix": ".pdf",
-        "prefix": "AI 检索报告",
-        "default_filename": "ai_search_report.pdf",
+    "selected_documents_csv": {
+        "output_key": "ai_search_selected_documents_csv",
+        "kind": "selected_documents_csv",
+        "media_type": "text/csv",
+        "suffix": ".csv",
+        "prefix": "AI 检索已选文献",
+        "default_filename": "selected_documents.csv",
+        "primary": False,
+    },
+    "report_json": {
+        "output_key": "ai_search_report_json",
+        "kind": "report_json",
+        "media_type": "application/json",
+        "suffix": ".json",
+        "prefix": "AI 检索数据",
+        "default_filename": "ai_search_report.json",
         "primary": False,
     },
 }
@@ -77,6 +94,10 @@ class AiSearchArtifactsService:
         return path
 
     def _task_has_terminal_artifacts(self, task: Any) -> bool:
+        metadata = task.metadata if isinstance(task.metadata, dict) else {}
+        output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
+        if any(str(output_files.get(str(spec.get("output_key") or "")) or "").strip() for spec in ATTACHMENT_SPECS.values()):
+            return True
         status = str(getattr(task.status, "value", task.status) or "").strip().lower()
         if status == "completed":
             return True
@@ -148,91 +169,58 @@ class AiSearchArtifactsService:
             media_type=attachment.mediaType,
         )
 
-    def _current_feature_comparison(
-        self,
-        task: Any,
-        plan_version: int,
-        *,
-        fallback_latest: bool = False,
-    ) -> Optional[Dict[str, Any]]:
-        if plan_version <= 0:
-            return None
-        run = self.facade.snapshots._active_run(task)
-        run_id = str(run.get("run_id") or "").strip() if isinstance(run, dict) else ""
-        active_batch_id = str(run.get("active_batch_id") or "").strip() if isinstance(run, dict) else ""
-        active_batch = self.storage.get_ai_search_batch(active_batch_id) if active_batch_id else None
-        if str((active_batch or {}).get("batch_type") or "").strip() == "feature_comparison":
-            table = self.storage.get_ai_search_feature_comparison(
-                task.id,
-                run_id or plan_version,
-            )
-            if table:
-                return table
-        if fallback_latest:
-            return self.storage.get_ai_search_feature_comparison(task.id, run_id or plan_version)
-        return None
+    def export_session_report(self, task: Any) -> list[AiSearchArtifactAttachment]:
+        meta = get_ai_search_meta(task)
+        plan_version = int(meta.get("active_plan_version") or 1)
+        documents = self.storage.list_ai_search_documents(task.id, plan_version)
+        candidates = [item for item in documents if str(item.get("stage") or "") not in {"selected", "rejected"}]
+        selected = [item for item in documents if str(item.get("stage") or "") == "selected"]
+        messages = self.storage.list_ai_search_messages(task.id)
+        report_text = latest_report_text(messages)
+        raw_output_dir = str(getattr(task, "output_dir", "") or "").strip()
+        output_dir = Path(raw_output_dir) if raw_output_dir else settings.OUTPUT_DIR / task.id
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _finalize_terminal_artifacts(
-        self,
-        task_id: str,
-        plan_version: int,
-        *,
-        termination_reason: str = "",
-    ) -> Dict[str, Any]:
-        task = self.storage.get_task(task_id)
-        current_plan = self.facade.snapshots._plan_payload(self.storage.get_ai_search_plan(task_id, plan_version))
-        documents = self.storage.list_ai_search_documents(task_id, plan_version)
-        feature_comparison = self._current_feature_comparison(task, plan_version, fallback_latest=True)
-        context = AiSearchAgentContext(self.storage, task_id)
-        gap_context = context.latest_gap_context()
-        feature_compare_markdown_getter = getattr(context, "latest_agent_markdown_content", None)
-        feature_compare_markdown = ""
-        if callable(feature_compare_markdown_getter):
-            try:
-                feature_compare_markdown = str(
-                    feature_compare_markdown_getter("feature-comparer", plan_version=plan_version) or ""
-                ).strip()
-            except Exception:
-                feature_compare_markdown = ""
-        artifacts = self.facade._build_terminal_artifacts(
-            task=task,
-            current_plan=current_plan,
-            documents=documents,
-            feature_comparison=feature_comparison,
-            close_read_result=gap_context.get("close_read_result") if isinstance(gap_context.get("close_read_result"), dict) else None,
-            feature_compare_result=gap_context.get("feature_compare_result") if isinstance(gap_context.get("feature_compare_result"), dict) else None,
-            feature_compare_markdown=feature_compare_markdown,
-            source_patent_data=context.load_source_patent_data(),
-            termination_reason=termination_reason,
-        )
-        for item in artifacts.get("classified_documents") or []:
-            document_id = str(item.get("document_id") or "").strip()
-            if not document_id:
-                continue
-            self.storage.update_ai_search_document(
-                task_id,
-                plan_version,
-                document_id,
-                document_type=str(item.get("document_type") or "").strip().upper() or None,
-                report_row_order=int(item.get("report_row_order") or 0) or None,
-            )
-
-        refreshed_task = self.storage.get_task(task_id)
-        metadata = refreshed_task.metadata if isinstance(refreshed_task.metadata, dict) else {}
-        output_files = metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {}
-        next_output_files = {
-            **output_files,
-            "pdf": artifacts.get("pdf"),
-            "bundle_zip": artifacts.get("bundle_zip"),
-        }
-        feature_comparison_csv = str(artifacts.get("feature_comparison_csv") or "").strip()
-        if feature_comparison_csv:
-            next_output_files["feature_comparison_csv"] = feature_comparison_csv
-        self.storage.update_task(
-            task_id,
-            metadata={
-                **metadata,
-                "output_files": next_output_files,
+        report_payload = {
+            "sessionId": task.id,
+            "title": str(getattr(task, "title", "") or "").strip(),
+            "planVersion": plan_version,
+            "stopPolicy": meta.get("stop_policy") if isinstance(meta.get("stop_policy"), dict) else {},
+            "stats": {
+                "searchRounds": int(meta.get("search_rounds") or 0),
+                "queryCount": int(meta.get("query_count") or 0),
+                "candidateCount": len(candidates),
+                "selectedCount": len(selected),
             },
+            "report": report_text,
+            "selectedDocuments": selected,
+            "candidateDocuments": candidates,
+        }
+
+        markdown_path = output_dir / "ai_search_report.md"
+        json_path = output_dir / "ai_search_report.json"
+        csv_path = output_dir / "selected_documents.csv"
+        zip_path = output_dir / "ai_search_result_bundle.zip"
+
+        markdown_path.write_text(render_markdown_report(report_payload), encoding="utf-8")
+        json_path.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        write_selected_documents_csv(csv_path, selected)
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(markdown_path, markdown_path.name)
+            archive.write(json_path, json_path.name)
+            archive.write(csv_path, csv_path.name)
+
+        metadata = dict(getattr(task, "metadata", {}) if isinstance(getattr(task, "metadata", {}), dict) else {})
+        output_files = dict(metadata.get("output_files") if isinstance(metadata.get("output_files"), dict) else {})
+        output_files.update(
+            {
+                "ai_search_report_markdown": str(markdown_path),
+                "ai_search_report_json": str(json_path),
+                "ai_search_selected_documents_csv": str(csv_path),
+                "ai_search_bundle": str(zip_path),
+            }
         )
-        return artifacts
+        metadata["output_files"] = output_files
+        self.storage.update_task(task.id, metadata=metadata)
+        updated = self.storage.get_task(task.id) or task
+        return self._snapshot_attachments(updated)

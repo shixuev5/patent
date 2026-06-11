@@ -1,4 +1,4 @@
-from agents.ai_reply.src.state import StructuredClaim
+from patent_agents.ai_reply.src.state import StructuredClaim
 
 
 def test_structured_claim_accepts_parent_claim_ids() -> None:

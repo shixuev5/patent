@@ -1,6 +1,6 @@
 <template>
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-    <section class="mx-auto grid min-h-0 w-full max-w-6xl flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
+    <section class="mx-auto grid min-h-0 w-full max-w-[92rem] flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
       <aside
         class="order-2 hidden h-full min-h-0 flex-col lg:order-1 lg:flex"
         :class="sidebarClass"
@@ -135,6 +135,21 @@
             </div>
             <div class="flex shrink-0 items-center gap-2 self-center">
               <button
+                v-if="currentSession && !showInvalidSessionState"
+                type="button"
+                class="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition"
+                :class="contextPanelOpen ? 'border-cyan-200 bg-cyan-50 text-cyan-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'"
+                aria-label="打开审查上下文"
+                title="审查上下文"
+                @click="toggleContextPanel"
+              >
+                <AdjustmentsHorizontalIcon class="h-4 w-4" />
+                <span class="hidden sm:inline">审查上下文</span>
+                <span class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                  {{ selectedDocuments.length }}/{{ candidateDocuments.length }}
+                </span>
+              </button>
+              <button
                 type="button"
                 class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-white shadow-sm shadow-cyan-200 transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300 lg:hidden"
                 aria-label="新建会话"
@@ -151,24 +166,9 @@
           v-if="!showInvalidSessionState"
           :session-id="currentSession?.session.sessionId"
           :entries="conversationRenderEntries"
-          :active-plan-version="activePlanVersion"
-          :has-pending-plan-confirmation="hasPendingPlanConfirmation"
-          :plan-confirmation-label="planConfirmationLabel"
-          :pending-question="pendingQuestion"
-          :human-decision-action="humanDecisionAction"
-          :selected-review-documents="selectedReviewDocuments"
-          :review-candidate-documents="reviewCandidateDocuments"
           :streaming="streaming"
-          :resume-last-error="resumeLastError"
-          :resume-attempt-count="resumeAttemptCount"
           :phase="activePhase"
           :attachments="currentSession?.artifacts?.attachments || []"
-          @confirm-plan="confirmPlan"
-          @resume-execution="resumeExecution"
-          @request-document-review="requestDocumentReview"
-          @remove-selected-document="removeSelectedDocument"
-          @continue-search="continueSearchFromDecision"
-          @complete-current-results="completeCurrentResultsFromDecision"
           @download-result="downloadCurrentResult"
         />
 
@@ -191,84 +191,6 @@
               </button>
             </div>
           </div>
-        </div>
-
-        <div v-if="showExecutionPanel" class="border-t border-slate-200">
-          <button type="button" class="accordion-toggle" @click="executionPanelOpen = !executionPanelOpen">
-            <span class="accordion-title">
-              执行进度
-              <span class="text-[11px] font-normal text-slate-400">{{ completedExecutionTodoCount }}/{{ executionTodos.length }}</span>
-            </span>
-            <ChevronDownIcon class="accordion-icon" :class="{ 'rotate-180': executionPanelOpen }" />
-          </button>
-          <div v-if="executionPanelOpen" class="accordion-body space-y-2.5">
-            <div v-if="!executionTodos.length" class="rounded-2xl border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">
-              {{ executionEmptyStateText }}
-            </div>
-            <div v-else class="space-y-1.5">
-              <p v-if="currentExecutionHint" class="px-0.5 text-[12px] leading-6 text-slate-500">
-                当前进行中：{{ currentExecutionHint }}
-              </p>
-              <ol class="space-y-0">
-                <li
-                  v-for="todo in executionTodos"
-                  :key="todo.todo_id || todo.title"
-                  class="px-0.5 py-0.5"
-                >
-                  <div class="grid grid-cols-[1.25rem,minmax(0,1fr)] items-center gap-2">
-                    <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center">
-                      <span
-                        v-if="todo.status === 'completed' || todo.status === 'failed'"
-                        class="inline-flex h-4.5 w-4.5 items-center justify-center rounded-full border text-[10px]"
-                        :class="todoCheckClass(todo.status)"
-                      >
-                        <CheckIcon v-if="todo.status === 'completed'" class="h-3.5 w-3.5" />
-                        <XMarkIcon v-else class="h-3.5 w-3.5" />
-                      </span>
-                      <span
-                        v-else-if="todo.status === 'paused'"
-                        class="inline-flex h-2.5 w-2.5 rounded-full bg-amber-400"
-                      />
-                      <span
-                        v-else-if="todo.status === 'in_progress'"
-                        class="inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500"
-                      />
-                      <span
-                        v-else
-                        class="inline-flex h-2.5 w-2.5 rounded-full bg-slate-300"
-                      />
-                    </span>
-                    <p class="min-w-0 flex-1 truncate text-[13px] leading-6 text-slate-800" :class="{ 'line-through text-slate-400': todo.status === 'completed' }">
-                      {{ todo.title || '未命名任务' }}
-                    </p>
-                  </div>
-                </li>
-              </ol>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="queuedExecutionMessages.length" class="border-t border-slate-200 px-3 py-2.5">
-          <ol class="space-y-2">
-            <li
-              v-for="(item, index) in queuedExecutionMessages"
-              :key="item.queueMessageId"
-              class="flex items-start gap-2 text-[13px] leading-5 text-slate-700"
-            >
-              <span class="shrink-0 text-slate-400">{{ index + 1 }}.</span>
-              <p class="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                {{ item.content }}
-              </p>
-              <button
-                type="button"
-                class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-100 hover:text-rose-600"
-                aria-label="删除待执行用户消息"
-                @click="deleteQueuedExecutionMessage(item.queueMessageId)"
-              >
-                <XMarkIcon class="h-3.5 w-3.5" />
-              </button>
-            </li>
-          </ol>
         </div>
 
         <div class="border-t border-slate-200 px-4 py-4">
@@ -332,25 +254,58 @@
         </div>
       </aside>
     </transition>
+
+    <transition name="drawer-fade">
+      <div
+        v-if="showContextPanelDrawer"
+        class="fixed inset-x-0 bottom-0 top-[56px] z-40 bg-slate-950/14"
+        @click="closeContextPanel"
+      />
+    </transition>
+
+    <transition name="context-drawer">
+      <aside
+        v-if="showContextPanelDrawer"
+        class="fixed bottom-0 left-0 right-0 z-50 flex max-h-[84vh] min-h-0 flex-col overflow-hidden rounded-t-xl bg-white shadow-2xl shadow-slate-300/40 lg:bottom-0 lg:left-auto lg:right-0 lg:top-[56px] lg:h-auto lg:max-h-none lg:w-[25rem] lg:max-w-[calc(100vw-4rem)] lg:rounded-l-xl lg:rounded-tr-none"
+      >
+        <AiSearchContextPanel
+          class="h-full w-full border-0"
+          :stop-policy-draft="stopPolicyDraft"
+          :database-options="databaseOptions"
+          :candidate-documents="candidateDocuments"
+          :selected-documents="selectedDocuments"
+          :streaming="streaming"
+          :has-session="!!currentSession"
+          :phase="activePhase"
+          closable
+          @apply-stop-policy="applyStopPolicy"
+          @select-document="requestDocumentReview"
+          @remove-document="removeSelectedDocument"
+          @quick-prompt="sendQuickPrompt"
+          @cancel-run="cancelCurrentRun"
+          @export-report="exportReport"
+          @close="closeContextPanel"
+        />
+      </aside>
+    </transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { Bars3Icon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { AdjustmentsHorizontalIcon, Bars3Icon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, PencilSquareIcon, PlusIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { storeToRefs } from 'pinia'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AiSearchComposerPanel from '~/components/ai-search/AiSearchComposerPanel.vue'
 import AiSearchConversationView from '~/components/ai-search/AiSearchConversationView.vue'
+import AiSearchContextPanel from '~/components/ai-search/AiSearchContextPanel.vue'
 import AiSearchSessionGroups from '~/components/ai-search/AiSearchSessionGroups.vue'
 import { useAiSearchComposer } from '~/composables/ai-search/useAiSearchComposer'
 import { useAiSearchConversation } from '~/composables/ai-search/useAiSearchConversation'
-import { useAdminUsageStore } from '~/stores/adminUsage'
 import { useAiSearchStore } from '~/stores/aiSearch'
 import { useAuthStore } from '~/stores/auth'
 import { useTaskStore } from '~/stores/task'
 import type { AiSearchArtifactAttachment, AiSearchSessionSummary } from '~/types/aiSearch'
-import { isAiSearchExecutionPhase } from '~/utils/aiSearch'
 
 type SessionGroup = {
   key: string
@@ -362,7 +317,6 @@ const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ai-search-sidebar-collapsed'
 
 const config = useRuntimeConfig()
 const authStore = useAuthStore()
-const adminUsageStore = useAdminUsageStore()
 const aiSearchStore = useAiSearchStore()
 const taskStore = useTaskStore()
 const { showMessage } = useGlobalMessage()
@@ -383,65 +337,38 @@ const headerTitleInputRef = ref<HTMLInputElement | null>(null)
 const headerEditing = ref(false)
 const sidebarCollapsed = ref(false)
 const mobileDrawerOpen = ref(false)
-const executionPanelOpen = ref(true)
+const contextPanelOpen = ref(false)
+const stopPolicyDraft = ref({
+  maxRounds: 5,
+  maxQueries: 30,
+  maxCandidates: 200,
+  maxSelectedDocuments: 8,
+  maxNoNewResultRounds: 2,
+  deadlineSeconds: 600,
+  targetCoverage: '',
+  stopWhen: '',
+  databases: ['zhihuiya', 'openalex', 'semanticscholar', 'crossref'] as string[],
+})
 
-const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'collecting_requirements'))
+const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'idle'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
-const currentPendingAction = computed<Record<string, any> | null>(() => {
-  const value = currentSession.value?.conversation?.pendingAction
-  return value && typeof value === 'object' ? value as Record<string, any> : null
-})
-const pendingQuestion = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'question' ? currentPendingAction.value : null)
-const pendingConfirmation = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'plan_confirmation' ? currentPendingAction.value : null)
-const humanDecisionAction = computed<Record<string, any> | null>(() => currentPendingAction.value?.actionType === 'human_decision' ? currentPendingAction.value : null)
-const resumeAction = computed<Record<string, any> | null>(() => {
-  const activeTodo = currentSession.value?.retrieval?.activeTodo
-  if (!activeTodo || String(activeTodo.status || '') !== 'failed') return null
-  return {
-    available: true,
-    currentTask: String(activeTodo.todo_id || '').trim() || null,
-    taskTitle: String(activeTodo.title || '').trim() || null,
-    resumeFrom: String(activeTodo.resume_from || '').trim() || null,
-    attemptCount: Number(activeTodo.attempt_count || 0),
-    lastError: String(activeTodo.last_error || '').trim() || null,
-  }
-})
-const executionTodos = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.todos || [])
-const queuedExecutionMessages = computed<Array<Record<string, any>>>(() => currentSession.value?.executionMessageQueue?.items || [])
 const candidateDocuments = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.documents?.candidates || [])
 const selectedDocuments = computed<Array<Record<string, any>>>(() => currentSession.value?.retrieval?.documents?.selected || [])
-const reviewCandidateDocuments = computed<Array<Record<string, any>>>(() => candidateDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_review'))
-const selectedReviewDocuments = computed<Array<Record<string, any>>>(() => selectedDocuments.value.filter(item => String(item?.manualAction || '').trim() === 'can_remove'))
-const completedExecutionTodoCount = computed(() => executionTodos.value.filter((todo) => todo.status === 'completed').length)
-const hasActiveExecutionWork = computed(() => (
-  executionTodos.value.some((todo) => todo.status === 'in_progress')
-))
-const activeExecutionTodoTitle = computed(() => {
-  const inProgress = executionTodos.value.find((todo) => todo.status === 'in_progress')
-  const failed = executionTodos.value.find((todo) => todo.status === 'failed')
-  const paused = executionTodos.value.find((todo) => todo.status === 'paused')
-  return String(inProgress?.title || failed?.title || paused?.title || '').trim()
-})
-const currentExecutionHint = computed(() => {
-  const segments = [
-    activeExecutionTodoTitle.value,
-  ].filter(Boolean)
-  return segments.join(' · ')
-})
+const currentStopPolicy = computed<Record<string, any>>(() => currentSession.value?.conversation?.stopPolicy || {})
+const databaseOptions = [
+  { value: 'zhihuiya', label: '智慧芽' },
+  { value: 'openalex', label: 'OpenAlex' },
+  { value: 'semanticscholar', label: 'Semantic Scholar' },
+  { value: 'crossref', label: 'Crossref' },
+]
 
 const activePlanVersion = computed(() => {
-  const candidate = currentSession.value?.plan?.currentPlan?.planVersion
-    || currentSession.value?.run?.planVersion
+  const candidate = currentSession.value?.run?.planVersion
     || currentSession.value?.session.activePlanVersion
   const value = Number(candidate || 0)
   return Number.isFinite(value) && value > 0 ? value : 0
 })
 
-const hasPendingPlanConfirmation = computed(() => !!pendingConfirmation.value)
-const planConfirmationLabel = computed(() => String(pendingConfirmation.value?.confirmation_label || pendingConfirmation.value?.confirmationLabel || '实施此计划').trim())
-const resumeTaskTitle = computed(() => String(resumeAction.value?.taskTitle || '').trim())
-const resumeLastError = computed(() => String(resumeAction.value?.lastError || '').trim())
-const resumeAttemptCount = computed(() => Number(resumeAction.value?.attemptCount || 0))
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
 const requestedSessionId = computed(() => String(route.query.session || '').trim())
 const requestedSessionError = computed(() => {
@@ -472,35 +399,6 @@ const invalidSessionMessage = computed(() => {
   if (detail) return `会话 ${requestedSessionId.value} 无法加载，可能已被删除、失效，或不属于当前身份。`
   return '当前链接里的会话无法加载，可能已被删除、失效，或不属于当前身份。'
 })
-const resumeActionCard = computed(() => {
-  if (!resumeAction.value?.available) return null
-  return {
-    actionType: 'resume',
-    title: `${resumeTaskTitle.value || '当前执行步骤'}失败，需要显式恢复`,
-    body: '系统不会把恢复当成普通聊天消息。点击下方按钮后，会从当前失败步骤继续执行。',
-    severity: 'amber',
-  }
-})
-const humanDecisionCard = computed(() => {
-  if (!humanDecisionAction.value?.available) return null
-  return {
-    actionType: 'human_decision',
-    title: '自动检索已暂停，等待人工决策',
-    body: '请在当前结果基础上决定继续检索，或按当前结果完成。',
-    severity: 'slate',
-  }
-})
-const showExecutionPanel = computed(() => (
-  executionTodos.value.length > 0
-  || ['execute_search', 'coarse_screen', 'close_read', 'feature_comparison', 'awaiting_human_decision', 'completed', 'failed'].includes(activePhase.value || '')
-))
-
-const executionEmptyStateText = computed(() => {
-  if (activePhase.value === 'completed') return '本轮执行已完成，本次没有可展示的任务拆解记录。'
-  if (activePhase.value === 'failed') return '本轮执行已结束，但没有保留下可展示的任务拆解记录。'
-  return '计划确认后会在这里显示执行任务拆解和实时状态。'
-})
-
 const layoutClass = computed(() => (sidebarCollapsed.value
   ? 'lg:grid-cols-[auto,minmax(0,1fr)]'
   : 'lg:grid-cols-[15rem,minmax(0,1fr)] xl:grid-cols-[15.5rem,minmax(0,1fr)]'
@@ -512,6 +410,9 @@ const sidebarClass = computed(() => (
 ))
 const showCollapsedSidebarRail = computed(() => sidebarCollapsed.value)
 const showMobileSessionDrawer = computed(() => mobileDrawerOpen.value)
+const showContextPanelDrawer = computed(() => (
+  contextPanelOpen.value && !!currentSession.value && !showInvalidSessionState.value
+))
 const hasAuthingEnabled = computed(() => String(config.public.authingAppId || '').trim().length > 0)
 const currentSessionMutating = computed(() => {
   const sessionId = String(currentSession.value?.session.sessionId || '').trim()
@@ -527,9 +428,6 @@ const { conversationRenderEntries } = useAiSearchConversation({
   messages,
   activityTraces,
   phaseMarkers,
-  currentPendingAction,
-  resumeActionCard,
-  humanDecisionCard,
   streaming,
   phase: activePhase,
 })
@@ -543,26 +441,18 @@ const {
   submitMessage,
 } = useAiSearchComposer({
   currentSession,
-  pendingQuestion,
-  pendingConfirmation,
-  resumeAction,
-  humanDecisionAction,
   activePhase,
   storeInputDisabled: computed(() => aiSearchStore.inputDisabled),
   sendMessage: (content: string) => aiSearchStore.sendMessage(content),
-  answerQuestion: (questionId: string, content: string) => aiSearchStore.answerQuestion(questionId, content),
 })
 
 const composerHint = computed(() => {
-  if (composerMode.value === 'blocked') return '当前需要先处理上方操作卡，暂不接受普通消息。'
-  if (['execute_search', 'coarse_screen', 'close_read', 'feature_comparison'].includes(activePhase.value || '')) {
-    return '执行中补充的消息会在下一个执行节点统一生效。'
-  }
+  if (activePhase.value === 'running') return '当前会话正在检索中，本轮结束后可继续补充。'
   return ''
 })
 
 const composerHintTone = computed<'default' | 'warning'>(() => (
-  composerMode.value === 'answer' ? 'warning' : 'default'
+  'default'
 ))
 
 const withTokenQuery = (url: string, token: string): string => {
@@ -664,14 +554,6 @@ const resolveSessionGroup = (value?: string | null): { key: string, label: strin
   return { key: `month-${monthLabel}`, label: monthLabel }
 }
 
-const todoCheckClass = (status?: string): string => {
-  if (status === 'completed') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-700'
-  if (status === 'paused') return 'border-amber-200 bg-amber-50 text-amber-700'
-  if (status === 'in_progress') return 'border-cyan-200 bg-cyan-50 text-cyan-700'
-  return 'border-slate-200 bg-slate-50 text-slate-400'
-}
-
 const isDesktopViewport = (): boolean => {
   if (!import.meta.client) return false
   return window.matchMedia('(min-width: 1024px)').matches
@@ -682,7 +564,19 @@ const toggleSidebar = () => {
     sidebarCollapsed.value = !sidebarCollapsed.value
     return
   }
-  mobileDrawerOpen.value = !mobileDrawerOpen.value
+  const nextOpen = !mobileDrawerOpen.value
+  mobileDrawerOpen.value = nextOpen
+  if (nextOpen) contextPanelOpen.value = false
+}
+
+const toggleContextPanel = () => {
+  if (!currentSession.value || showInvalidSessionState.value) return
+  contextPanelOpen.value = !contextPanelOpen.value
+  if (contextPanelOpen.value) mobileDrawerOpen.value = false
+}
+
+const closeContextPanel = () => {
+  contextPanelOpen.value = false
 }
 
 const createSession = async () => {
@@ -732,7 +626,7 @@ const renameSession = async (sessionId: string, title: string) => {
   const nextTitle = String(title || '').trim()
   if (!nextTitle) return
   try {
-    await aiSearchStore.updateSession(sessionId, { title: nextTitle })
+    await aiSearchStore.updateSessionMeta(sessionId, { title: nextTitle })
   } catch (_error) {
     // Store-level error watcher already surfaces the message.
   }
@@ -740,7 +634,7 @@ const renameSession = async (sessionId: string, title: string) => {
 
 const toggleSessionPin = async (sessionId: string, pinned: boolean) => {
   try {
-    await aiSearchStore.updateSession(sessionId, { pinned })
+    await aiSearchStore.updateSessionMeta(sessionId, { pinned })
   } catch (_error) {
     // Store-level error watcher already surfaces the message.
   }
@@ -760,38 +654,82 @@ const deleteSession = async (sessionId: string) => {
   }
 }
 
-const deleteQueuedExecutionMessage = async (queueMessageId: string) => {
-  await aiSearchStore.deleteQueuedExecutionMessage(queueMessageId)
+const clampInt = (value: unknown, fallback: number, min: number, max: number): number => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(Math.round(parsed), max))
 }
 
-const confirmPlan = async () => {
-  if (!pendingConfirmation.value) return
-  await aiSearchStore.confirmPlan()
+const syncStopPolicyDraft = () => {
+  const policy = currentStopPolicy.value
+  stopPolicyDraft.value = {
+    maxRounds: clampInt(policy.max_rounds, 5, 1, 30),
+    maxQueries: clampInt(policy.max_queries, 30, 1, 200),
+    maxCandidates: clampInt(policy.max_candidates, 200, 1, 1000),
+    maxSelectedDocuments: clampInt(policy.max_selected_documents, 8, 1, 50),
+    maxNoNewResultRounds: clampInt(policy.max_no_new_result_rounds, 2, 1, 20),
+    deadlineSeconds: clampInt(policy.deadline_seconds, 600, 30, 7200),
+    targetCoverage: String(policy.target_coverage || '').trim(),
+    stopWhen: String(policy.stop_when || '').trim(),
+    databases: Array.isArray(policy.databases) && policy.databases.length
+      ? policy.databases.map((item: unknown) => String(item || '').trim()).filter(Boolean)
+      : ['zhihuiya', 'openalex', 'semanticscholar', 'crossref'],
+  }
 }
 
-const resumeExecution = async () => {
-  if (!resumeAction.value?.available) return
-  await aiSearchStore.resumeExecution()
+const applyStopPolicy = async () => {
+  await aiSearchStore.updateStopPolicy({
+    maxRounds: stopPolicyDraft.value.maxRounds,
+    maxQueries: stopPolicyDraft.value.maxQueries,
+    maxCandidates: stopPolicyDraft.value.maxCandidates,
+    maxSelectedDocuments: stopPolicyDraft.value.maxSelectedDocuments,
+    maxNoNewResultRounds: stopPolicyDraft.value.maxNoNewResultRounds,
+    deadlineSeconds: stopPolicyDraft.value.deadlineSeconds,
+    targetCoverage: stopPolicyDraft.value.targetCoverage,
+    stopWhen: stopPolicyDraft.value.stopWhen,
+    databases: stopPolicyDraft.value.databases,
+  })
+  showMessage('success', '停止条件已更新。')
 }
 
-const continueSearchFromDecision = async () => {
-  if (!humanDecisionAction.value?.available) return
-  await aiSearchStore.continueFromDecision()
+const quickPromptText = (key: string): string => {
+  const prompts: Record<string, string> = {
+    'direct-search': '请基于当前会话信息直接开始检索；如果检索目标不完整，只追问最关键缺口。',
+    'continue-search': '请在当前候选结果基础上继续扩展检索，并说明新增检索方向。',
+    'summarize-selected': '请基于当前已选文献总结关键命中点、证据差距和下一步建议。',
+    'tighten-stop': '请根据当前候选质量和停止条件，建议如何收紧检索范围；如果合适，请更新停止条件。',
+  }
+  return prompts[key] || ''
 }
 
-const completeCurrentResultsFromDecision = async () => {
-  if (!humanDecisionAction.value?.available) return
-  await aiSearchStore.completeCurrentResultsFromDecision()
+const sendQuickPrompt = async (key: string) => {
+  const text = quickPromptText(key)
+  if (!text || inputDisabled.value || !currentSession.value) return
+  await aiSearchStore.sendMessage(text)
 }
+
+const cancelCurrentRun = async () => {
+  if (!currentSession.value || activePhase.value !== 'running') return
+  await aiSearchStore.cancelRun()
+}
+
+const exportReport = async () => {
+  if (!currentSession.value || streaming.value) return
+  await aiSearchStore.exportReport()
+  showMessage('success', '检索报告已导出。')
+}
+
 
 const requestDocumentReview = async (documentId: string) => {
-  if (!humanDecisionAction.value?.available || !activePlanVersion.value || !documentId) return
-  await aiSearchStore.submitDocumentReview(activePlanVersion.value, [documentId], [])
+  const version = activePlanVersion.value || 1
+  if (!documentId) return
+  await aiSearchStore.submitDocumentSelection(version, [documentId], [])
 }
 
 const removeSelectedDocument = async (documentId: string) => {
-  if (!humanDecisionAction.value?.available || !activePlanVersion.value || !documentId) return
-  await aiSearchStore.submitDocumentReview(activePlanVersion.value, [], [documentId])
+  const version = activePlanVersion.value || 1
+  if (!documentId) return
+  await aiSearchStore.submitDocumentSelection(version, [], [documentId])
 }
 
 watch(
@@ -799,6 +737,7 @@ watch(
   (sessionId) => {
     composer.value = ''
     headerEditing.value = false
+    contextPanelOpen.value = false
     syncHeaderRenameDraft()
     const currentQuerySession = String(route.query.session || '').trim()
     if (sessionId && sessionId !== currentQuerySession) {
@@ -820,25 +759,9 @@ watch(
 )
 
 watch(
-  () => activePhase.value,
-  (phase) => {
-    if (isAiSearchExecutionPhase(phase)) {
-      executionPanelOpen.value = true
-    }
-  },
-)
-
-watch(
-  [hasActiveExecutionWork, () => executionTodos.value.length],
-  ([activeWork, todoCount]) => {
-    if (activeWork) {
-      executionPanelOpen.value = true
-      return
-    }
-    if (todoCount > 0) {
-      executionPanelOpen.value = false
-    }
-  },
+  currentStopPolicy,
+  syncStopPolicyDraft,
+  { immediate: true, deep: true },
 )
 
 watch(
@@ -875,32 +798,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.accordion-toggle {
-  @apply flex w-full items-center justify-between gap-3 px-4 py-2 text-left transition hover:bg-slate-50;
-}
-
-.accordion-title {
-  @apply flex items-center gap-2 text-[13px] font-semibold text-slate-900;
-}
-
-.accordion-icon {
-  @apply h-4 w-4 flex-shrink-0 text-slate-400 transition-transform;
-}
-
-.accordion-body {
-  @apply border-t border-slate-200 px-4 py-3;
-}
-
-@media (max-width: 1023px) {
-  .accordion-toggle {
-    @apply px-3 py-2;
-  }
-
-  .accordion-body {
-    @apply px-3 py-3;
-  }
-}
-
 .drawer-fade-enter-active,
 .drawer-fade-leave-active,
 .drawer-slide-enter-active,
@@ -917,5 +814,23 @@ onMounted(async () => {
 .drawer-slide-leave-to {
   opacity: 0;
   transform: translateX(-100%);
+}
+
+.context-drawer-enter-active,
+.context-drawer-leave-active {
+  transition: all 0.22s ease;
+}
+
+.context-drawer-enter-from,
+.context-drawer-leave-to {
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+@media (min-width: 1024px) {
+  .context-drawer-enter-from,
+  .context-drawer-leave-to {
+    transform: translateX(100%);
+  }
 }
 </style>

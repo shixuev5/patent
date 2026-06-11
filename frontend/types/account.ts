@@ -37,7 +37,6 @@ export interface AccountWeChatBinding {
   wechatDisplayName?: string | null
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
-  pushAiSearchPendingAction: boolean
   boundAt?: string | null
   disconnectedAt?: string | null
   lastInboundAt?: string | null
@@ -68,7 +67,6 @@ export interface AccountWeChatIntegration {
 export interface AccountWeChatIntegrationUpdateRequest {
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
-  pushAiSearchPendingAction: boolean
 }
 
 export interface WeeklyActivityPoint {

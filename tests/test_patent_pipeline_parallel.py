@@ -5,21 +5,21 @@ from typing import Any, Dict
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from agents.patent_analysis.main import build_runtime_config, create_workflow
-from agents.patent_analysis.src.nodes.download_node import DownloadNode
-from agents.patent_analysis.src.nodes.extract_node import ExtractNode
-from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
-from agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
-from agents.patent_analysis.src.nodes.parse_node import ParseNode
-from agents.patent_analysis.src.nodes.render_node import RenderNode
-from agents.patent_analysis.src.nodes.search_join_node import SearchJoinNode
-from agents.patent_analysis.src.nodes.search_matrix_node import SearchMatrixNode
-from agents.patent_analysis.src.nodes.search_semantic_node import SearchSemanticNode
-from agents.patent_analysis.src.nodes.transform_node import TransformNode
-from agents.patent_analysis.src.nodes.vision_annotate_node import VisionAnnotateNode
-from agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
-from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
-from agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths
+from patent_agents.patent_analysis.main import build_runtime_config, create_workflow
+from patent_agents.patent_analysis.src.nodes.download_node import DownloadNode
+from patent_agents.patent_analysis.src.nodes.extract_node import ExtractNode
+from patent_agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
+from patent_agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
+from patent_agents.patent_analysis.src.nodes.parse_node import ParseNode
+from patent_agents.patent_analysis.src.nodes.render_node import RenderNode
+from patent_agents.patent_analysis.src.nodes.search_join_node import SearchJoinNode
+from patent_agents.patent_analysis.src.nodes.search_matrix_node import SearchMatrixNode
+from patent_agents.patent_analysis.src.nodes.search_semantic_node import SearchSemanticNode
+from patent_agents.patent_analysis.src.nodes.transform_node import TransformNode
+from patent_agents.patent_analysis.src.nodes.vision_annotate_node import VisionAnnotateNode
+from patent_agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
+from patent_agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
+from patent_agents.patent_analysis.src.workflow_utils import ensure_pipeline_paths
 
 
 def _build_state(tmp_path: Path) -> WorkflowState:
@@ -181,7 +181,7 @@ def test_transform_node_refreshes_output_name_from_publication_number(tmp_path: 
     raw_md.write_text("# mock markdown", encoding="utf-8")
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.transform_node.extract_structured_data",
+        "patent_agents.patent_analysis.src.nodes.transform_node.extract_structured_data",
         lambda content, method="hybrid": {
             "bibliographic_data": {"publication_number": "CN123456A"},
             "claims": [],
@@ -272,7 +272,7 @@ def test_generate_core_node_uses_cache_dir_and_not_legacy_intermediate(tmp_path:
             return {"ai_title": "ok"}
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.generate_core_node.ContentGenerator",
+        "patent_agents.patent_analysis.src.nodes.generate_core_node.ContentGenerator",
         _FakeGenerator,
     )
 
@@ -313,11 +313,11 @@ def test_search_nodes_use_cache_dir_and_join_output(tmp_path: Path, monkeypatch)
             return {"queries": [{"block_id": "B1", "effect_cluster_ids": ["E1"], "content": "q"}]}
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
+        "patent_agents.patent_analysis.src.nodes.search_matrix_node.SearchStrategyGenerator",
         _FakeMatrixGenerator,
     )
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.search_semantic_node.SearchStrategyGenerator",
+        "patent_agents.patent_analysis.src.nodes.search_semantic_node.SearchStrategyGenerator",
         _FakeSemanticGenerator,
     )
     matrix_node = SearchMatrixNode(WorkflowConfig(cache_dir=str(cache_dir)))

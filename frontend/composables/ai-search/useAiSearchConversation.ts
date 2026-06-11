@@ -2,13 +2,6 @@ import { computed } from 'vue'
 import type { AiSearchActivityTrace } from '~/types/aiSearch'
 import { aiSearchPhaseLabel } from '~/utils/aiSearch'
 
-export type ConversationActionCard = {
-  actionType: 'resume' | 'human_decision'
-  title: string
-  body: string
-  severity: 'amber' | 'slate'
-}
-
 type ConversationEntryLike = Record<string, any>
 
 const toMillis = (value?: string | null): number => {
@@ -34,8 +27,9 @@ const isCompletedTraceEntry = (entry: ConversationEntryLike): boolean => (
   isTraceEntry(entry) && String(entry?.status || '').trim() === 'completed'
 )
 
-const isLowSignalCompletedTrace = (entry: ConversationEntryLike): boolean => (
-  isCompletedTraceEntry(entry) && String(entry?.traceType || '').trim() === 'thinking'
+const isSummarizableCompletedTrace = (entry: ConversationEntryLike): boolean => (
+  isCompletedTraceEntry(entry)
+  && !['thinking', 'agent'].includes(String(entry?.traceType || '').trim())
 )
 
 const buildTraceSummaryLabel = (items: ConversationEntryLike[]): string => {
@@ -47,6 +41,32 @@ const buildTraceSummaryLabel = (items: ConversationEntryLike[]): string => {
   if (!preview) return `已完成 ${items.length} 个步骤`
   if (remaining > 0) return `已完成 ${items.length} 个步骤：${preview} 等`
   return `已完成 ${items.length} 个步骤：${preview}`
+}
+
+const traceEntryId = (entry: ConversationEntryLike): string => (
+  String(entry?.traceId || entry?.id || '').trim()
+)
+
+const nestChildTraceEntries = (entries: ConversationEntryLike[]): ConversationEntryLike[] => {
+  const byId = new Map<string, ConversationEntryLike>()
+  entries.forEach((entry) => {
+    if (isTraceEntry(entry)) {
+      const id = traceEntryId(entry)
+      if (id) byId.set(id, entry)
+    }
+  })
+  const nestedIds = new Set<string>()
+  entries.forEach((entry) => {
+    if (!isTraceEntry(entry)) return
+    const parentTraceId = String(entry?.parentTraceId || '').trim()
+    const id = traceEntryId(entry)
+    if (!parentTraceId || !id) return
+    const parent = byId.get(parentTraceId)
+    if (!parent || parent === entry) return
+    parent.children = [...(Array.isArray(parent.children) ? parent.children : []), entry]
+    nestedIds.add(id)
+  })
+  return entries.filter(entry => !nestedIds.has(traceEntryId(entry)))
 }
 
 const mergeConversationEntries = (entries: ConversationEntryLike[]): ConversationEntryLike[] => {
@@ -79,8 +99,7 @@ const mergeConversationEntries = (entries: ConversationEntryLike[]): Conversatio
   }
 
   entries.forEach((entry) => {
-    if (isLowSignalCompletedTrace(entry)) return
-    if (isCompletedTraceEntry(entry)) {
+    if (isSummarizableCompletedTrace(entry)) {
       completedTraceBuffer.push(entry)
       return
     }
@@ -96,8 +115,6 @@ const buildWaitingTraceLabel = (phase: string): string => {
   const normalized = String(phase || '').trim()
   const phaseLabel = aiSearchPhaseLabel(normalized)
   if (!normalized) return '正在继续处理，请稍候。'
-  if (normalized === 'drafting_plan') return '正在起草检索计划，请稍候。'
-  if (normalized === 'awaiting_plan_confirmation') return '正在整理检索计划展示内容，请稍候。'
   return `正在${phaseLabel}，请稍候。`
 }
 
@@ -105,18 +122,12 @@ export const useAiSearchConversation = ({
   messages,
   activityTraces,
   phaseMarkers,
-  currentPendingAction,
-  resumeActionCard,
-  humanDecisionCard,
   streaming,
   phase,
 }: {
   messages: { value: Array<Record<string, any>> }
   activityTraces: { value: AiSearchActivityTrace[] }
   phaseMarkers: { value: Array<Record<string, any>> }
-  currentPendingAction: { value: Record<string, any> | null }
-  resumeActionCard: { value: ConversationActionCard | null }
-  humanDecisionCard: { value: ConversationActionCard | null }
   streaming: { value: boolean }
   phase: { value: string }
 }) => {
@@ -156,17 +167,13 @@ export const useAiSearchConversation = ({
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
     })
-    const mergedEntries = mergeConversationEntries(sortedEntries)
-    const hasAssistantMessage = mergedEntries.some((entry) => (
-      String(entry.entryType || '').trim() === 'message'
-      && String(entry.role || '').trim() === 'assistant'
-    ))
+    const nestedEntries = nestChildTraceEntries(sortedEntries)
+    const mergedEntries = mergeConversationEntries(nestedEntries)
     const hasRunningTrace = mergedEntries.some((entry) => (
       String(entry.entryType || '').trim() === 'trace'
       && String(entry.status || '').trim() === 'running'
     ))
-    const shouldShowSyntheticWaitingTrace = (!hasAssistantMessage && ['drafting_plan', 'awaiting_plan_confirmation'].includes(String(phase.value || '').trim()))
-      || (streaming.value && !hasRunningTrace)
+    const shouldShowSyntheticWaitingTrace = streaming.value && !hasRunningTrace
     if (shouldShowSyntheticWaitingTrace && !hasRunningTrace) {
       const maxSortKey = mergedEntries.reduce((max, entry) => Math.max(max, Number(entry.sortKey || 0)), 0)
       mergedEntries.push({
@@ -185,34 +192,8 @@ export const useAiSearchConversation = ({
     return mergedEntries
   })
 
-  const pendingActionEntries = computed<Array<Record<string, any>>>(() => {
-    const entries: Array<Record<string, any>> = []
-    const baseSortKey = conversationEntries.value.reduce((max, entry) => Math.max(max, Number(entry.sortKey || 0)), 0) + 1
-    if (resumeActionCard.value) {
-      entries.push({
-        id: 'pending-action-resume',
-        entryType: 'pending-action',
-        sortKey: Math.max(baseSortKey, toMillis(currentPendingAction.value?.createdAt)),
-        order: 3000,
-        actionType: 'resume',
-        card: resumeActionCard.value,
-      })
-    }
-    if (humanDecisionCard.value) {
-      entries.push({
-        id: 'pending-action-human-decision',
-        entryType: 'pending-action',
-        sortKey: Math.max(baseSortKey + entries.length, toMillis(currentPendingAction.value?.createdAt)),
-        order: 3001,
-        actionType: 'human_decision',
-        card: humanDecisionCard.value,
-      })
-    }
-    return entries
-  })
-
   const conversationRenderEntries = computed<Array<Record<string, any>>>(() => (
-    [...conversationEntries.value, ...pendingActionEntries.value].sort((left, right) => {
+    [...conversationEntries.value].sort((left, right) => {
       if (left.sortKey !== right.sortKey) return left.sortKey - right.sortKey
       return left.order - right.order
     })

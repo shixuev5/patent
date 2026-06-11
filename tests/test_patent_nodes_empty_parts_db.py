@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from agents.ai_review.src.nodes.check_node import CheckNode
-from agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
-from agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
-from agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
-from agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
+from patent_agents.ai_review.src.nodes.check_node import CheckNode
+from patent_agents.patent_analysis.src.nodes.generate_core_node import GenerateCoreNode
+from patent_agents.patent_analysis.src.nodes.generate_figures_node import GenerateFiguresNode
+from patent_agents.patent_analysis.src.nodes.vision_extract_node import VisionExtractNode
+from patent_agents.patent_analysis.src.state import WorkflowConfig, WorkflowState
 
 
 def _build_state(tmp_path: Path, **kwargs) -> WorkflowState:
@@ -32,7 +32,7 @@ def test_vision_extract_node_accepts_empty_parts_db(tmp_path: Path, monkeypatch)
             return {}, {}
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.vision_extract_node.VisualProcessor",
+        "patent_agents.patent_analysis.src.nodes.vision_extract_node.VisualProcessor",
         _FakeVisualProcessor,
     )
 
@@ -59,7 +59,7 @@ def test_check_node_accepts_empty_parts_db(tmp_path: Path, monkeypatch) -> None:
             return {"consistency": "ok"}
 
     monkeypatch.setattr(
-        "agents.ai_review.src.nodes.check_node.FormalExaminer",
+        "patent_agents.ai_review.src.nodes.check_node.FormalExaminer",
         _FakeFormalExaminer,
     )
 
@@ -84,7 +84,7 @@ def test_generate_core_node_accepts_empty_parts_db(tmp_path: Path, monkeypatch) 
             return {"ai_title": "ok"}
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.generate_core_node.ContentGenerator",
+        "patent_agents.patent_analysis.src.nodes.generate_core_node.ContentGenerator",
         _FakeGenerator,
     )
 
@@ -114,7 +114,7 @@ def test_generate_figures_node_accepts_empty_parts_db(tmp_path: Path, monkeypatc
             return [{"figure": "fig1"}]
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.nodes.generate_figures_node.ContentGenerator",
+        "patent_agents.patent_analysis.src.nodes.generate_figures_node.ContentGenerator",
         _FakeGenerator,
     )
 

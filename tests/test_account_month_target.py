@@ -512,7 +512,6 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
             payload=AccountWeChatIntegrationUpdateRequest(
                 pushTaskCompleted=False,
                 pushTaskFailed=True,
-                pushAiSearchPendingAction=False,
             ),
             current_user=user,
         )
@@ -520,7 +519,6 @@ def test_account_wechat_integration_bind_settings_and_disconnect(monkeypatch, tm
     assert updated.binding is not None
     assert updated.binding.pushTaskCompleted is False
     assert updated.binding.pushTaskFailed is True
-    assert updated.binding.pushAiSearchPendingAction is False
 
     disconnected = asyncio.run(account.post_account_wechat_disconnect(current_user=user))
     assert disconnected.bindingStatus == 'unbound'
@@ -1691,71 +1689,6 @@ def test_wechat_runtime_requires_active_binding_with_structured_detail(tmp_path)
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail['code'] == 'WECHAT_BINDING_NOT_FOUND'
     assert '网页里完成绑定' in exc_info.value.detail['suggestion']
-
-
-def test_task_wechat_pending_action_notification_queues_delivery_job(tmp_path):
-    storage = SQLiteTaskStorage(tmp_path / 'wechat_pending_action_delivery.db')
-    user = CurrentUser(user_id='authing:wx-pending-action')
-    storage.upsert_authing_user(
-        User(
-            owner_id=user.user_id,
-            authing_sub='wx-pending-action',
-            name='待确认提醒用户',
-        )
-    )
-    storage.upsert_wechat_binding(
-        WeChatBinding(
-            binding_id='binding-pending-action',
-            owner_id=user.user_id,
-            status='active',
-            bot_account_id='bot-1',
-            wechat_peer_id='wx-peer-pending',
-            wechat_peer_name='待确认微信',
-            bound_at=utc_now(),
-            push_ai_search_pending_action=True,
-        )
-    )
-    storage.create_task(
-        Task(
-            id='search-task-1',
-            owner_id=user.user_id,
-            task_type=TaskType.AI_SEARCH.value,
-            title='固态电池隔膜检索',
-            status=TaskStatus.PENDING,
-            progress=40,
-            output_dir=str(tmp_path / 'output' / 'search-task-1'),
-            created_at=utc_now(),
-            updated_at=utc_now(),
-            metadata={},
-        )
-    )
-
-    service = TaskWeChatNotificationService(storage=storage)
-    queued = service.notify_ai_search_pending_action(
-        'search-task-1',
-        pending_action={
-            'actionId': 'pa-001',
-            'actionType': 'question',
-            'prompt': '请补充核心技术特征',
-        },
-    )
-    duplicate = service.notify_ai_search_pending_action(
-        'search-task-1',
-        pending_action={
-            'actionId': 'pa-001',
-            'actionType': 'question',
-            'prompt': '请补充核心技术特征',
-        },
-    )
-
-    assert queued['status'] == 'queued'
-    assert duplicate['status'] == 'duplicate'
-
-    jobs = storage.claim_wechat_delivery_jobs(5)
-    assert len(jobs) == 1
-    assert jobs[0].event_type == 'ai_search.pending_action'
-    assert jobs[0].payload['pendingActionType'] == 'question'
-    assert jobs[0].payload['prompt'] == '请补充核心技术特征'
 
 
 def test_claim_wechat_delivery_jobs_skips_stale_rows_when_compare_and_claim_loses_race(monkeypatch, tmp_path):

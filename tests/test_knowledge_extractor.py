@@ -1,4 +1,4 @@
-from agents.common.patent_engines.knowledge import KnowledgeExtractor
+from patent_agents.common.patent_engines.knowledge import KnowledgeExtractor
 
 
 class _StubLLM:

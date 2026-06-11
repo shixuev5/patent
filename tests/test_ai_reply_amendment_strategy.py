@@ -1,4 +1,4 @@
-from agents.ai_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
+from patent_agents.ai_reply.src.nodes.amendment_strategy import AmendmentStrategyNode
 
 
 def test_build_strategy_preserves_summary_and_search_text_roles() -> None:

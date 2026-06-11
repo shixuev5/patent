@@ -16,8 +16,7 @@ class WeChatRepositoryMixin:
     WECHAT_BINDING_COLUMNS = (
         "binding_id, owner_id, status, bot_account_id, wechat_user_id, wechat_display_name, "
         "delivery_peer_id, delivery_peer_name, push_task_completed, push_task_failed, "
-        "push_ai_search_pending_action, bound_at, disconnected_at, last_inbound_at, "
-        "last_outbound_at, created_at, updated_at"
+        "bound_at, disconnected_at, last_inbound_at, last_outbound_at, created_at, updated_at"
     )
     WECHAT_DELIVERY_JOB_COLUMNS = (
         "delivery_job_id, owner_id, binding_id, task_id, event_type, status, delivery_stage, "
@@ -116,22 +115,21 @@ class WeChatRepositoryMixin:
             INSERT INTO wechat_bindings (
                 binding_id, owner_id, status, bot_account_id, wechat_user_id, wechat_display_name,
                 delivery_peer_id, delivery_peer_name,
-                push_task_completed, push_task_failed, push_ai_search_pending_action,
+                push_task_completed, push_task_failed,
                 bound_at, disconnected_at, last_inbound_at, last_outbound_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(binding_id) DO UPDATE SET
                 owner_id = excluded.owner_id, status = excluded.status, bot_account_id = excluded.bot_account_id,
                 wechat_user_id = excluded.wechat_user_id, wechat_display_name = excluded.wechat_display_name,
                 delivery_peer_id = excluded.delivery_peer_id, delivery_peer_name = excluded.delivery_peer_name,
                 push_task_completed = excluded.push_task_completed, push_task_failed = excluded.push_task_failed,
-                push_ai_search_pending_action = excluded.push_ai_search_pending_action, bound_at = excluded.bound_at,
-                disconnected_at = excluded.disconnected_at, last_inbound_at = excluded.last_inbound_at,
+                bound_at = excluded.bound_at, disconnected_at = excluded.disconnected_at, last_inbound_at = excluded.last_inbound_at,
                 last_outbound_at = excluded.last_outbound_at, updated_at = excluded.updated_at
             """,
             [
                 binding.binding_id, binding.owner_id, binding.status, binding.bot_account_id, binding.wechat_user_id, binding.wechat_display_name,
                 binding.delivery_peer_id, binding.delivery_peer_name,
-                1 if binding.push_task_completed else 0, 1 if binding.push_task_failed else 0, 1 if binding.push_ai_search_pending_action else 0,
+                1 if binding.push_task_completed else 0, 1 if binding.push_task_failed else 0,
                 to_utc_z(binding.bound_at, naive_strategy="utc") if binding.bound_at else None,
                 to_utc_z(binding.disconnected_at, naive_strategy="utc") if binding.disconnected_at else None,
                 to_utc_z(binding.last_inbound_at, naive_strategy="utc") if binding.last_inbound_at else None,

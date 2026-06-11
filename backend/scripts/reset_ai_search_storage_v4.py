@@ -26,6 +26,7 @@ AI_SEARCH_TABLES = (
     "ai_search_batch_documents",
     "ai_search_batches",
     "ai_search_document_decisions",
+    "ai_search_execution_message_queue",
     "ai_search_execution_summaries",
     "ai_search_retrieval_todos",
     "ai_search_runs",

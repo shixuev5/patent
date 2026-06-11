@@ -2,7 +2,7 @@ from pathlib import Path
 
 import sqlite3
 
-from agents.common.retrieval import LocalEvidenceRetriever
+from patent_agents.common.retrieval import LocalEvidenceRetriever
 from config import settings
 
 

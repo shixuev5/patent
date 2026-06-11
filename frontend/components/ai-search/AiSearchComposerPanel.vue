@@ -26,7 +26,7 @@
       </button>
     </div>
     <p
-      v-if="hint && mode !== 'answer'"
+      v-if="hint"
       class="mt-2 text-xs"
       :class="hintTone === 'warning' ? 'text-amber-700' : 'text-slate-500'"
     >
@@ -43,7 +43,7 @@ const props = withDefaults(defineProps<{
   disabled: boolean
   placeholder: string
   canSubmit: boolean
-  mode?: 'chat' | 'answer' | 'blocked'
+  mode?: 'chat' | 'blocked'
   hint?: string
   hintTone?: 'default' | 'warning'
 }>(), {

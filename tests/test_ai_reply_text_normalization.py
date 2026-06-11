@@ -1,4 +1,4 @@
-from agents.ai_reply.src.text_normalization import normalize_for_compare, sanitize_for_display
+from patent_agents.ai_reply.src.text_normalization import normalize_for_compare, sanitize_for_display
 
 
 def test_sanitize_for_display_normalizes_textcircled_marker_to_unicode() -> None:

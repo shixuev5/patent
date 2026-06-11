@@ -8,12 +8,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 
-from agents.ai_search.src.orchestration.action_runtime import current_pending_action
-from agents.ai_search.src.runtime import extract_latest_ai_message
-from agents.ai_search.src.state import (
-    PHASE_AWAITING_PLAN_CONFIRMATION,
-    PHASE_AWAITING_USER_ANSWER,
-    PHASE_DRAFTING_PLAN,
+from patent_agents.ai_search.src.state import (
+    PHASE_IDLE,
     PHASE_FAILED,
     default_ai_search_meta,
     get_ai_search_meta,
@@ -25,9 +21,8 @@ from agents.ai_search.src.state import (
 from backend.storage import TaskType
 from backend.utils import _build_r2_storage
 
-from .analysis_seed import (
+from patent_agents.ai_search.src.analysis_seed import (
     build_analysis_seed_user_message,
-    build_execution_spec_from_analysis,
     load_json_bytes,
     load_json_file,
     seed_prompt_from_analysis,
@@ -61,7 +56,7 @@ class AiSearchAnalysisSeedService:
                 patent_payload = load_json_bytes(r2_storage.get_bytes(str(output_files.get("patent_r2_key") or "").strip()))
 
         if not isinstance(analysis_payload, dict):
-            raise HTTPException(status_code=409, detail="AI 分析结果不存在，暂时无法生成检索计划。")
+            raise HTTPException(status_code=409, detail="AI 分析结果不存在，暂时无法创建检索会话。")
         return analysis_payload, patent_payload if isinstance(patent_payload, dict) else None
 
     def _analysis_seed_response(
@@ -89,7 +84,7 @@ class AiSearchAnalysisSeedService:
         ):
             raise HTTPException(status_code=404, detail="AI 分析任务不存在。")
         if str(getattr(analysis_task.status, "value", analysis_task.status) or "") != "completed":
-            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 分析任务生成检索计划。")
+            raise HTTPException(status_code=409, detail="仅支持从已完成的 AI 分析任务创建检索会话。")
         return analysis_task
 
     def _find_existing_seed_session(self, owner_id: str, source_task_id: str, *, source_type: str) -> Optional[Any]:
@@ -128,7 +123,7 @@ class AiSearchAnalysisSeedService:
                 task_id=existing_task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=True,
-                message="复用已存在的 AI 检索计划",
+                message="复用已存在的 AI 检索会话",
                 payload={"analysis_task_id": str(analysis_task.id), "analysis_pn": str(analysis_task.pn or "").strip() or None},
             )
             return self._analysis_seed_response(existing_task, reused=True, source_task_id=str(analysis_task.id))
@@ -141,13 +136,12 @@ class AiSearchAnalysisSeedService:
             task_id=str(analysis_task.id),
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message="请求从 AI 分析创建 AI 检索计划",
+            message="请求从 AI 分析创建 AI 检索会话",
             payload={"analysis_task_id": str(analysis_task.id), "analysis_pn": str(analysis_task.pn or "").strip() or None},
         )
 
         analysis_payload, patent_payload = self._load_analysis_artifacts(analysis_task)
         seeded_search_elements = seed_search_elements_from_analysis(analysis_payload, patent_payload)
-        seeded_execution_spec = build_execution_spec_from_analysis(analysis_payload, patent_payload, seeded_search_elements)
         source_pn = str(
             analysis_payload.get("metadata", {}).get("resolved_pn")
             if isinstance(analysis_payload.get("metadata"), dict) else ""
@@ -166,11 +160,11 @@ class AiSearchAnalysisSeedService:
         task = self.facade.task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
-            title=f"AI 检索计划 - {source_pn or source_title or analysis_task.id}",
+            title=f"AI 检索会话 - {source_pn or source_title or analysis_task.id}",
         )
         thread_id = f"ai-search-{task.id}"
         seed_meta = default_ai_search_meta(thread_id)
-        seed_meta["current_phase"] = PHASE_DRAFTING_PLAN
+        seed_meta["current_phase"] = PHASE_IDLE
         self.storage.update_task(
             task.id,
             metadata=merge_ai_search_meta(
@@ -184,9 +178,9 @@ class AiSearchAnalysisSeedService:
                 analysis_seed_prompt=seed_prompt,
                 analysis_seed_status="pending",
             ),
-            status=phase_to_task_status(PHASE_DRAFTING_PLAN),
-            progress=phase_progress(PHASE_DRAFTING_PLAN),
-            current_step=phase_step(PHASE_DRAFTING_PLAN),
+            status=phase_to_task_status(PHASE_IDLE),
+            progress=phase_progress(PHASE_IDLE),
+            current_step=phase_step(PHASE_IDLE),
         )
         self.storage.create_ai_search_message(
             {
@@ -196,10 +190,7 @@ class AiSearchAnalysisSeedService:
                 "kind": "search_elements_update",
                 "content": str(seeded_search_elements.get("objective") or "").strip() or None,
                 "stream_status": "completed",
-                "metadata": {
-                    **seeded_search_elements,
-                    "execution_spec_seed": seeded_execution_spec,
-                },
+                "metadata": seeded_search_elements,
             }
         )
         self.facade._append_message(
@@ -217,7 +208,6 @@ class AiSearchAnalysisSeedService:
     def _complete_source_seed(self, owner_id: str, session_id: str) -> AiSearchSnapshotResponse:
         task = self.facade.sessions._get_owned_session_task(session_id, owner_id)
         meta = get_ai_search_meta(task)
-        thread_id = str(meta.get("thread_id") or f"ai-search-{task.id}")
         seed_prompt = str(meta.get("analysis_seed_prompt") or "").strip()
         source_type = str(meta.get("source_type") or "").strip() or "analysis"
         source_label = "AI 答复" if source_type == "reply" else "AI 分析"
@@ -227,15 +217,13 @@ class AiSearchAnalysisSeedService:
         source_pn = str(meta.get("source_pn") or "").strip() or None
 
         try:
-            result = self.facade._run_main_agent(
+            self.storage.update_task(
                 task.id,
-                thread_id,
-                {"messages": [{"role": "user", "content": seed_prompt}]},
+                metadata=merge_ai_search_meta(self.storage.get_task(task.id), analysis_seed_status="completed", current_phase=PHASE_IDLE),
+                status=phase_to_task_status(PHASE_IDLE),
+                progress=phase_progress(PHASE_IDLE),
+                current_step=phase_step(PHASE_IDLE),
             )
-            assistant_text = extract_latest_ai_message(result["values"])
-            active_plan_version = int(get_ai_search_meta(self.storage.get_task(task.id)).get("active_plan_version") or 0)
-            if assistant_text and not bool(result.get("awaiting_user_action")):
-                self.facade._append_message(task.id, "assistant", "chat", assistant_text, plan_version=active_plan_version or None)
         except Exception as exc:
             self.storage.update_task(
                 task.id,
@@ -247,7 +235,7 @@ class AiSearchAnalysisSeedService:
                 status=phase_to_task_status(PHASE_FAILED),
                 progress=phase_progress(PHASE_FAILED),
                 current_step=phase_step(PHASE_FAILED),
-                error_message=f"生成 AI 检索计划失败：{exc}",
+                error_message=f"初始化 AI 检索会话失败：{exc}",
             )
             self.facade._emit_system_log(
                 category="task_execution",
@@ -256,13 +244,13 @@ class AiSearchAnalysisSeedService:
                 task_id=task.id,
                 task_type=TaskType.AI_SEARCH.value,
                 success=False,
-                message=f"从 {source_label} 创建 AI 检索计划失败",
+                message=f"从 {source_label} 创建 AI 检索会话失败",
                 payload={"analysis_task_id": source_task_id or None, "error": str(exc)},
             )
             self.facade.notify_task_terminal_status(
                 task.id,
                 PHASE_FAILED,
-                error_message=f"生成 AI 检索计划失败：{exc}",
+                error_message=f"初始化 AI 检索会话失败：{exc}",
             )
             raise
 
@@ -279,76 +267,28 @@ class AiSearchAnalysisSeedService:
             task_id=task.id,
             task_type=TaskType.AI_SEARCH.value,
             success=True,
-            message=f"已从 {source_label} 创建 AI 检索计划",
+            message=f"已从 {source_label} 创建 AI 检索会话",
             payload={
                 "analysis_task_id": source_task_id or None,
                 "analysis_pn": source_pn or None,
-                "phase": self.facade.snapshots._snapshot_phase(snapshot),
+                "phase": snapshot.session.phase,
             },
         )
-        if self.facade.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_PLAN_CONFIRMATION:
-            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
-            self.facade._emit_system_log(
-                category="task_execution",
-                event_name="ai_search_seed_plan_ready",
-                owner_id=owner_id,
-                task_id=task.id,
-                task_type=TaskType.AI_SEARCH.value,
-                success=True,
-                message="AI 检索计划已进入计划确认阶段",
-                payload={"analysis_task_id": source_task_id or None, "plan_version": pending_action.get("plan_version") if isinstance(pending_action, dict) else None},
-            )
-        if self.facade.snapshots._snapshot_phase(snapshot) == PHASE_AWAITING_USER_ANSWER:
-            pending_action = snapshot.conversation.get("pendingAction") if isinstance(snapshot.conversation, dict) else None
-            self.facade._emit_system_log(
-                category="task_execution",
-                event_name="ai_search_seed_question_required",
-                owner_id=owner_id,
-                task_id=task.id,
-                task_type=TaskType.AI_SEARCH.value,
-                success=True,
-                message="AI 检索计划仍需用户补充信息",
-                payload={"analysis_task_id": source_task_id or None, "question": pending_action.get("prompt") if isinstance(pending_action, dict) else None},
-            )
         return snapshot
 
     def _reconcile_analysis_seed_phase(self, task_id: str) -> str:
         task = self.storage.get_task(task_id)
         if not task:
-            return PHASE_DRAFTING_PLAN
+            return PHASE_IDLE
         meta = get_ai_search_meta(task)
-        current_phase = str(meta.get("current_phase") or PHASE_DRAFTING_PLAN).strip() or PHASE_DRAFTING_PLAN
-        if current_phase != PHASE_DRAFTING_PLAN:
-            return current_phase
-
-        next_phase = ""
-        pending_action = current_pending_action(self.storage, task_id=task_id)
-        pending_type = str(pending_action.get("action_type") or "").strip() if isinstance(pending_action, dict) else ""
-        if pending_type == "question":
-            next_phase = PHASE_AWAITING_USER_ANSWER
-        elif pending_type == "plan_confirmation":
-            next_phase = PHASE_AWAITING_PLAN_CONFIRMATION
-        else:
-            active_plan_version = int(meta.get("active_plan_version") or 0)
-            latest_plan = self.storage.get_ai_search_plan(task_id, active_plan_version) if active_plan_version > 0 else self.storage.get_ai_search_plan(task_id)
-            if isinstance(latest_plan, dict) and str(latest_plan.get("status") or "").strip() == "awaiting_confirmation":
-                next_phase = PHASE_AWAITING_PLAN_CONFIRMATION
-            else:
-                for message in reversed(self.storage.list_ai_search_messages(task_id)):
-                    kind = str(message.get("kind") or "").strip()
-                    if kind == "question":
-                        next_phase = PHASE_AWAITING_USER_ANSWER
-                        break
-                    if kind == "plan_confirmation":
-                        next_phase = PHASE_AWAITING_PLAN_CONFIRMATION
-                        break
-
-        if next_phase:
+        current_phase = str(meta.get("current_phase") or PHASE_IDLE).strip() or PHASE_IDLE
+        if current_phase not in {PHASE_IDLE, PHASE_RUNNING}:
+            current_phase = PHASE_IDLE
             self.storage.update_task(
                 task_id,
-                metadata=merge_ai_search_meta(task, current_phase=next_phase),
-                status=phase_to_task_status(next_phase),
-                progress=phase_progress(next_phase),
-                current_step=phase_step(next_phase),
+                metadata=merge_ai_search_meta(task, current_phase=current_phase),
+                status=phase_to_task_status(current_phase),
+                progress=phase_progress(current_phase),
+                current_step=phase_step(current_phase),
             )
-        return next_phase or current_phase
+        return current_phase

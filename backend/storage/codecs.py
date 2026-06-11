@@ -140,7 +140,6 @@ class StorageCodecsMixin:
             delivery_peer_name=row.get("delivery_peer_name"),
             push_task_completed=bool(row.get("push_task_completed", 1)),
             push_task_failed=bool(row.get("push_task_failed", 1)),
-            push_ai_search_pending_action=bool(row.get("push_ai_search_pending_action", 1)),
             bound_at=parse_storage_ts(row["bound_at"], naive_strategy="utc") if row.get("bound_at") else None,
             disconnected_at=parse_storage_ts(row["disconnected_at"], naive_strategy="utc") if row.get("disconnected_at") else None,
             last_inbound_at=parse_storage_ts(row["last_inbound_at"], naive_strategy="utc") if row.get("last_inbound_at") else None,

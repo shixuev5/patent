@@ -1,9 +1,9 @@
 import threading
 import time
 
-from agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
-from agents.ai_reply.src.nodes.evidence_verification import EvidenceVerificationNode
-from agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
+from patent_agents.ai_reply.src.nodes.common_knowledge_verification import CommonKnowledgeVerificationNode
+from patent_agents.ai_reply.src.nodes.evidence_verification import EvidenceVerificationNode
+from patent_agents.ai_reply.src.nodes.topup_search_verification import TopupSearchVerificationNode
 from config import settings
 
 

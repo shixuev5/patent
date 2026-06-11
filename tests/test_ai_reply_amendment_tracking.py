@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import pytest
 
-from agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
+from patent_agents.ai_reply.src.nodes.amendment_tracking import AmendmentTrackingNode
 
 
 _NOISE_FIXTURE = json.loads(

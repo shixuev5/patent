@@ -195,7 +195,6 @@ def _build_wechat_binding_response(binding: WeChatBinding) -> AccountWeChatBindi
         wechatDisplayName=_sanitize_profile_text(binding.wechat_display_name),
         pushTaskCompleted=bool(binding.push_task_completed),
         pushTaskFailed=bool(binding.push_task_failed),
-        pushAiSearchPendingAction=bool(binding.push_ai_search_pending_action),
         boundAt=binding.bound_at.isoformat() if binding.bound_at else None,
         disconnectedAt=binding.disconnected_at.isoformat() if binding.disconnected_at else None,
         lastInboundAt=binding.last_inbound_at.isoformat() if binding.last_inbound_at else None,
@@ -704,7 +703,6 @@ async def put_account_wechat_integration_settings(
         binding.binding_id,
         push_task_completed=1 if payload.pushTaskCompleted else 0,
         push_task_failed=1 if payload.pushTaskFailed else 0,
-        push_ai_search_pending_action=1 if payload.pushAiSearchPendingAction else 0,
         updated_at=utc_now(),
     )
     return _build_wechat_integration_response(user.owner_id)
@@ -773,7 +771,6 @@ async def post_internal_wechat_login_session_state(
                 delivery_peer_name=previous_binding.delivery_peer_name if previous_binding else None,
                 push_task_completed=previous_binding.push_task_completed if previous_binding else True,
                 push_task_failed=previous_binding.push_task_failed if previous_binding else True,
-                push_ai_search_pending_action=previous_binding.push_ai_search_pending_action if previous_binding else True,
                 bound_at=now_dt,
                 created_at=previous_binding.created_at if previous_binding else now_dt,
                 updated_at=now_dt,

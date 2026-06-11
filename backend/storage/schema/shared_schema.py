@@ -142,7 +142,6 @@ REQUIRED_COLUMNS = {
         ("delivery_peer_name", "delivery_peer_name TEXT"),
         ("push_task_completed", "push_task_completed INTEGER NOT NULL DEFAULT 1"),
         ("push_task_failed", "push_task_failed INTEGER NOT NULL DEFAULT 1"),
-        ("push_ai_search_pending_action", "push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1"),
         ("bound_at", "bound_at TEXT"),
         ("disconnected_at", "disconnected_at TEXT"),
         ("last_inbound_at", "last_inbound_at TEXT"),
@@ -239,13 +238,6 @@ REQUIRED_COLUMNS = {
         ("close_read_at", "close_read_at TEXT"),
         ("detail_fingerprint", "detail_fingerprint TEXT"),
         ("detail_source", "detail_source TEXT"),
-    ],
-    "ai_search_pending_actions": [
-        ("plan_version", "plan_version INTEGER"),
-        ("source", "source TEXT"),
-        ("resolution_json", "resolution_json TEXT"),
-        ("updated_at", "updated_at TEXT NOT NULL DEFAULT ''"),
-        ("superseded_by", "superseded_by TEXT"),
     ],
 }
 
@@ -403,7 +395,6 @@ CREATE TABLE IF NOT EXISTS wechat_bindings (
     delivery_peer_name TEXT,
     push_task_completed INTEGER NOT NULL DEFAULT 1,
     push_task_failed INTEGER NOT NULL DEFAULT 1,
-    push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1,
     bound_at TEXT,
     disconnected_at TEXT,
     last_inbound_at TEXT,

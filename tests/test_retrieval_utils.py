@@ -1,4 +1,4 @@
-from agents.ai_reply.src.retrieval_utils import (
+from patent_agents.ai_reply.src.retrieval_utils import (
     ENGINE_HINTS,
     extract_must_keep_phrases,
     make_query_spec,

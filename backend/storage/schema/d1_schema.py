@@ -185,7 +185,6 @@ CREATE TABLE IF NOT EXISTS wechat_bindings (
     delivery_peer_name TEXT,
     push_task_completed INTEGER NOT NULL DEFAULT 1,
     push_task_failed INTEGER NOT NULL DEFAULT 1,
-    push_ai_search_pending_action INTEGER NOT NULL DEFAULT 1,
     bound_at TEXT,
     disconnected_at TEXT,
     last_inbound_at TEXT,

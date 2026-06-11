@@ -1,4 +1,4 @@
-from agents.patent_analysis.src.engines.search import SearchStrategyGenerator
+from patent_agents.patent_analysis.src.engines.search import SearchStrategyGenerator
 
 
 def test_build_search_matrix_uses_context(monkeypatch) -> None:
@@ -6,7 +6,7 @@ def test_build_search_matrix_uses_context(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
 
     generator = SearchStrategyGenerator(
@@ -40,7 +40,7 @@ def test_build_semantic_strategy_delegates(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
 
     generator = SearchStrategyGenerator(
@@ -66,7 +66,7 @@ def test_build_effect_clusters_assigns_b_subblocks_and_hub_feature(monkeypatch) 
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -96,7 +96,7 @@ def test_build_effect_clusters_fallbacks_to_highest_score_when_no_score_5(monkey
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -120,7 +120,7 @@ def test_build_semantic_strategy_outputs_queries_by_effect_cluster(monkeypatch) 
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -155,7 +155,7 @@ def test_normalize_search_matrix_includes_v2_fields(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -217,7 +217,7 @@ def test_normalize_search_matrix_forces_block_a_and_e_to_filter_high(monkeypatch
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -260,7 +260,7 @@ def test_build_matrix_context_groups_block_c_by_dependency(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -313,7 +313,7 @@ def test_build_semantic_cluster_text_includes_dependent_features(monkeypatch) ->
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -350,7 +350,7 @@ def test_normalize_search_matrix_clears_a_cluster_and_keeps_c_cluster(monkeypatc
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -389,7 +389,7 @@ def test_build_matrix_context_matches_dependent_on_with_loose_text(monkeypatch) 
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -421,7 +421,7 @@ def test_build_semantic_cluster_text_matches_dependent_on_with_loose_text(monkey
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -460,7 +460,7 @@ def test_generate_semantic_query_prompt_uses_single_braces_json_example(monkeypa
 
     llm = StubLLMService()
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: llm
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: llm
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -486,7 +486,7 @@ def test_normalize_search_matrix_backfills_block_c_effect_cluster_ids(monkeypatc
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},
@@ -528,7 +528,7 @@ def test_fallback_clean_text_removes_only_decimal_feature_citations(monkeypatch)
         pass
 
     monkeypatch.setattr(
-        "agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
+        "patent_agents.patent_analysis.src.engines.search.get_llm_service", lambda: StubLLMService()
     )
     generator = SearchStrategyGenerator(
         patent_data={"bibliographic_data": {"ipc_classifications": []}},

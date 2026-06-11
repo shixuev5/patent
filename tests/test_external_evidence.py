@@ -7,14 +7,14 @@ import threading
 import time
 import requests
 
-import agents.ai_reply.src.external_evidence as external_evidence_module
-from agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
-from agents.ai_reply.src.retrieval_utils import make_query_spec
-from agents.common.retrieval.academic_query_utils import normalize_academic_query
-from agents.common.retrieval.academic_search import AcademicSearchClient
-from agents.common.search_clients.factory import SearchClientFactory
-from agents.common.search_clients.zhihuiya import ZhihuiyaClient
-from agents.common.retrieval.external_rerank_service import (
+import patent_agents.ai_reply.src.external_evidence as external_evidence_module
+from patent_agents.ai_reply.src.external_evidence import ExternalEvidenceAggregator
+from patent_agents.ai_reply.src.retrieval_utils import make_query_spec
+from patent_agents.common.retrieval.academic_query_utils import normalize_academic_query
+from patent_agents.common.retrieval.academic_search import AcademicSearchClient, latin1_header_value, load_api_keys
+from patent_agents.common.search_clients.factory import SearchClientFactory
+from patent_agents.common.search_clients.zhihuiya import ZhihuiyaClient
+from patent_agents.common.retrieval.external_rerank_service import (
     ExternalEvidenceRerankError,
     ExternalEvidenceRerankService,
 )
@@ -72,6 +72,18 @@ def test_openalex_api_key_supports_multi_value_config(monkeypatch):
     assert aggregator.openalex_api_keys == ["key-a", "key-b", "key-c"]
 
 
+def test_academic_api_keys_ignore_inline_comments(monkeypatch):
+    _clear_external_env(monkeypatch)
+    monkeypatch.setenv("OPENALEX_API_KEYS", "key-a, key-b # comment\n# 注释")
+
+    assert load_api_keys("OPENALEX_API_KEYS") == ["key-a", "key-b"]
+
+
+def test_latin1_header_value_drops_comments_and_invalid_text():
+    assert latin1_header_value("patent@example.com # 注释") == "patent@example.com"
+    assert latin1_header_value("含中文") == ""
+
+
 def test_openalex_legacy_single_key_env_is_ignored(monkeypatch):
     _clear_external_env(monkeypatch)
     monkeypatch.setenv("OPENALEX_API_KEY", "legacy-key")
@@ -125,7 +137,7 @@ def test_openalex_search_keeps_anonymous_mode_when_key_missing(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     results = aggregator._search_openalex(
         [make_query_spec("battery material", "boolean", "anchor")],
@@ -170,8 +182,8 @@ def test_openalex_search_rotates_key_on_limit_error(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
-    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
 
     results = aggregator._search_openalex(
         [make_query_spec("solid electrolyte", "boolean", "anchor")],
@@ -275,7 +287,7 @@ def test_semanticscholar_search_uses_expected_fields(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     results = aggregator._search_semanticscholar(
         [make_query_spec("graph neural network routing", "boolean", "anchor")],
@@ -312,7 +324,7 @@ def test_semanticscholar_requests_are_serialized(monkeypatch):
             state["active"] -= 1
         return _FakeResponse({"data": []})
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     def _run_query(query_text):
         barrier.wait(timeout=1.0)
@@ -349,8 +361,8 @@ def test_semanticscholar_anonymous_rate_limit_enters_cooldown_and_skips_followup
         )
         return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
-    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
 
     first = aggregator._search_semanticscholar(
         [make_query_spec("query-a", "boolean", "anchor")],
@@ -389,7 +401,7 @@ def test_semanticscholar_search_uses_cache_for_identical_request(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     first = aggregator._search_semanticscholar(
         [make_query_spec("cached query", "boolean", "anchor")],
@@ -424,9 +436,9 @@ def test_semanticscholar_respects_retry_after_before_retrying(monkeypatch):
             )
         return _FakeResponse({"data": []})
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
     monkeypatch.setattr(
-        "agents.common.retrieval.academic_search.time.sleep",
+        "patent_agents.common.retrieval.academic_search.time.sleep",
         lambda seconds: sleep_calls.append(seconds),
     )
 
@@ -465,7 +477,7 @@ def test_openalex_cache_key_ignores_api_key_rotation(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     first = aggregator._search_openalex(
         [make_query_spec("cache me", "boolean", "anchor")],
@@ -510,7 +522,7 @@ def test_crossref_search_normalizes_jats_abstract(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
 
     results = aggregator._search_crossref(
         [make_query_spec("battery separator design", "boolean", "anchor")],
@@ -557,8 +569,8 @@ def test_crossref_search_retries_retryable_errors(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.get", _fake_get)
-    monkeypatch.setattr("agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.get", _fake_get)
+    monkeypatch.setattr("patent_agents.common.retrieval.academic_search.time.sleep", lambda *_args, **_kwargs: None)
 
     results = aggregator._search_crossref(
         [make_query_spec("recovered query", "boolean", "anchor")],
@@ -598,7 +610,7 @@ def test_tavily_search_uses_advanced_params(monkeypatch):
             }
         )
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.post", _fake_post)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.post", _fake_post)
 
     results = aggregator._search_tavily(
         [make_query_spec("锁定结构 教材 手册 标准 PDF 高校", "web", "reference")],
@@ -625,7 +637,7 @@ def test_tavily_rate_limit_enters_cooldown_and_skips_followup(monkeypatch):
         calls.append(payload.get("api_key"))
         return _FakeResponse({"error": "rate limit exceeded"}, status_code=429, text="rate limit exceeded")
 
-    monkeypatch.setattr("agents.ai_reply.src.external_evidence.requests.post", _fake_post)
+    monkeypatch.setattr("patent_agents.ai_reply.src.external_evidence.requests.post", _fake_post)
 
     first = aggregator._search_tavily(
         [make_query_spec("query-a", "web", "reference")],
@@ -648,8 +660,8 @@ def test_external_evidence_module_import_does_not_touch_zhihuiya_factory(monkeyp
 
     def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name in {
-            "agents.common.search_clients.factory",
-            "agents.common.search_clients.zhihuiya",
+            "patent_agents.common.search_clients.factory",
+            "patent_agents.common.search_clients.zhihuiya",
         }:
             raise AssertionError(f"unexpected import: {name}")
         return original_import(name, globals, locals, fromlist, level)
@@ -690,7 +702,7 @@ def test_external_rerank_service_uses_retrieval_gateway(monkeypatch):
         captured["timeout"] = timeout
         return _FakeResponse()
 
-    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
+    monkeypatch.setattr("patent_agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
 
     rows = service.rerank("query-a", ["doc-a", "doc-b"])
 
@@ -740,8 +752,8 @@ def test_external_rerank_service_retries_transient_failure(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
-    monkeypatch.setattr("agents.common.retrieval.external_rerank_service.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("patent_agents.common.retrieval.external_rerank_service.requests.post", _fake_post)
+    monkeypatch.setattr("patent_agents.common.retrieval.external_rerank_service.time.sleep", lambda *_args, **_kwargs: None)
 
     rows = service.rerank("query-a", ["doc-a", "doc-b"])
 

@@ -1,5 +1,18 @@
 export type AiSearchActivityState = 'running' | 'paused' | 'none'
 
+export interface AiSearchStopPolicy {
+  max_rounds?: number
+  max_queries?: number
+  max_candidates?: number
+  max_selected_documents?: number
+  max_no_new_result_rounds?: number
+  deadline_seconds?: number
+  target_coverage?: string
+  stop_when?: string
+  databases?: string[]
+  [key: string]: any
+}
+
 export interface AiSearchSessionSummary {
   sessionId: string
   taskId: string
@@ -41,49 +54,11 @@ export interface AiSearchRun {
   selectedDocumentCount: number
 }
 
-export interface AiSearchPendingAction {
-  actionId?: string | null
-  runId?: string | null
-  actionType: string
-  status?: string | null
-  createdAt?: string | null
-  updatedAt?: string | null
-  [key: string]: any
-}
-
-export interface AiSearchQueuedExecutionMessage {
-  queueMessageId: string
-  runId: string
-  content: string
-  ordinal: number
-  createdAt: string
-}
-
 export interface AiSearchRetrievalState {
-  todos: Array<Record<string, any>>
-  activeTodo: Record<string, any> | null
   documents: {
     candidates: Array<Record<string, any>>
     selected: Array<Record<string, any>>
   }
-}
-
-export interface AiSearchBatchSummary {
-  batchId?: string | null
-  runId?: string | null
-  batchType?: string | null
-  status?: string | null
-  workspaceDir?: string | null
-  inputHash?: string | null
-  loadedAt?: string | null
-  committedAt?: string | null
-  [key: string]: any
-}
-
-export interface AiSearchAnalysisState {
-  activeBatch: AiSearchBatchSummary | null
-  latestCloseReadResult: Record<string, any> | null
-  latestFeatureCompareResult: Record<string, any> | null
 }
 
 export interface AiSearchSnapshot {
@@ -91,19 +66,12 @@ export interface AiSearchSnapshot {
   run: AiSearchRun
   conversation: {
     messages: Array<Record<string, any>>
-    pendingAction: AiSearchPendingAction | null
+    stopPolicy?: AiSearchStopPolicy
   }
   stream?: {
     lastEventSeq?: number
   }
-  executionMessageQueue: {
-    items: AiSearchQueuedExecutionMessage[]
-  }
-  plan: {
-    currentPlan: Record<string, any> | null
-  }
   retrieval: AiSearchRetrievalState
-  analysis: AiSearchAnalysisState
   artifacts: AiSearchArtifactsPayload
   analysisSeed?: Record<string, any> | null
 }
@@ -119,10 +87,6 @@ export interface AiSearchCreateSessionResponse {
   threadId: string
   reused?: boolean
   sourceTaskId?: string | null
-}
-
-export interface AiSearchExecutionQueueResponse {
-  items: AiSearchQueuedExecutionMessage[]
 }
 
 export interface AiSearchStreamEvent {
@@ -142,10 +106,16 @@ export interface AiSearchActivityTrace {
   traceType: 'thinking' | 'tool' | 'agent' | string
   status: 'running' | 'completed' | 'failed' | string
   label: string
+  parentTraceId?: string | null
   actorName?: string | null
   toolName?: string | null
   specialistType?: string | null
   detail?: string | null
+  input?: any
+  output?: any
+  arguments?: any
+  result?: any
+  metadata?: Record<string, any> | null
   startedAt?: string | null
   endedAt?: string | null
 }

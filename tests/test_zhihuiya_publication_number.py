@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.common.search_clients.zhihuiya import ZhihuiyaClient
+from patent_agents.common.search_clients.zhihuiya import ZhihuiyaClient
 
 
 class _FakeResponse:

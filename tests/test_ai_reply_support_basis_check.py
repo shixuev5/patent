@@ -1,4 +1,4 @@
-from agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
+from patent_agents.ai_reply.src.nodes.support_basis_check import SupportBasisCheckNode
 
 
 def test_build_specification_context_includes_multiple_description_sections() -> None:

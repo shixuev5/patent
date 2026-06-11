@@ -64,18 +64,6 @@
             >
           </label>
 
-          <label class="wechat-toggle-row">
-            <span>
-              <span class="wechat-toggle-title">检索待确认提醒</span>
-              <span class="wechat-toggle-help">检索需要补问或确认时主动提醒。</span>
-            </span>
-            <input
-              :checked="pushAiSearchPendingAction"
-              type="checkbox"
-              class="wechat-checkbox"
-              @change="onToggle('pushAiSearchPendingAction', $event)"
-            >
-          </label>
         </div>
 
         <div class="wechat-actions">
@@ -182,7 +170,6 @@ const props = defineProps<{
   loginSession: AccountWeChatLoginSession | null
   pushTaskCompleted: boolean
   pushTaskFailed: boolean
-  pushAiSearchPendingAction: boolean
   savingSettings: boolean
   startingLoginSession: boolean
   disconnecting: boolean
@@ -192,7 +179,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:pushTaskCompleted': [value: boolean]
   'update:pushTaskFailed': [value: boolean]
-  'update:pushAiSearchPendingAction': [value: boolean]
   saveSettings: []
   startLoginSession: []
   disconnect: []
@@ -294,11 +280,10 @@ const formatTime = (value?: string | null) => {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed' | 'pushAiSearchPendingAction', event: Event) => {
+const onToggle = (field: 'pushTaskCompleted' | 'pushTaskFailed', event: Event) => {
   const checked = (event.target as HTMLInputElement).checked
   if (field === 'pushTaskCompleted') emit('update:pushTaskCompleted', checked)
-  else if (field === 'pushTaskFailed') emit('update:pushTaskFailed', checked)
-  else emit('update:pushAiSearchPendingAction', checked)
+  else emit('update:pushTaskFailed', checked)
 }
 </script>
 
