@@ -555,22 +555,22 @@ class AiSearchAgentRunService:
 
     async def subscribe_stream(self, session_id: str, owner_id: str, *, after_seq: int = 0) -> AsyncIterator[str]:
         self._owned_task(session_id, owner_id)
-        async for event in self._yield_events_after(session_id, after_seq):
-            yield event
-        # Keep the connection briefly open for clients that attach immediately after a run starts.
-        for _ in range(3):
-            await asyncio.sleep(0.5)
-            latest_seq = max(
-                [after_seq]
-                + [
-                    int(item.get("seq") or 0)
-                    for item in self.storage.list_ai_search_stream_events(session_id, after_seq=after_seq, limit=500)
-                ]
-            )
-            if latest_seq > after_seq:
-                async for event in self._yield_events_after(session_id, after_seq):
-                    yield event
+        latest_seq = max(int(after_seq or 0), 0)
+        idle_ticks = 0
+        while True:
+            events = self.storage.list_ai_search_stream_events(session_id, after_seq=latest_seq, limit=500)
+            if events:
+                idle_ticks = 0
+                for event in events:
+                    latest_seq = max(latest_seq, int(event.get("seq") or 0))
+                    yield self._format_event(event)
+                continue
+            if self._current_phase_value(session_id) != PHASE_RUNNING:
                 break
+            idle_ticks += 1
+            if idle_ticks % 10 == 0:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(0.5)
 
     async def stream_analysis_seed(self, session_id: str, owner_id: str) -> AsyncIterator[str]:
         task = self._owned_task(session_id, owner_id)

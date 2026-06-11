@@ -105,6 +105,11 @@ def test_stream_message_persists_agent_reply_and_documents(monkeypatch, tmp_path
     assert snapshot.run["phase"] == PHASE_IDLE
     assert snapshot.retrieval["documents"]["candidates"][0]["pn"] == "CN100001A"
     assert any(item["role"] == "assistant" and "已找到" in item["content"] for item in snapshot.conversation["messages"])
+    activity_traces = snapshot.stream["activityTraces"]
+    assert activity_traces[0]["toolName"] == "search_patents"
+    assert activity_traces[0]["arguments"]["query"] == "固态电池隔膜"
+    assert activity_traces[0]["output"]["new_count"] == 1
+    assert activity_traces[0]["status"] == "completed"
 
 
 def test_cancel_current_run_stops_stream_from_writing_completion(monkeypatch, tmp_path) -> None:
@@ -180,6 +185,50 @@ def test_running_message_is_saved_and_interrupts_current_run(tmp_path) -> None:
     meta = get_ai_search_meta(storage.get_task(created.sessionId))
     assert meta["cancel_requested"] is True
     assert meta["cancel_requested_run_id"] == run_id
+
+
+def test_subscribe_stream_waits_for_new_events_while_session_is_running(tmp_path) -> None:
+    service, _storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    service.agent_runs._mark_running(created.sessionId)
+
+    async def collect_until_trace() -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        async for chunk in service.subscribe_stream(created.sessionId, "guest_ai_search", after_seq=0):
+            text = str(chunk or "").strip()
+            if not text.startswith("data: "):
+                continue
+            event = json.loads(text.removeprefix("data: "))
+            events.append(event)
+            if event["type"] == "trace.completed":
+                break
+        return events
+
+    async def run_scenario() -> list[dict[str, Any]]:
+        pending = asyncio.create_task(collect_until_trace())
+        await asyncio.sleep(0.15)
+        service.agent_runs._append_event(
+            created.sessionId,
+            "trace.completed",
+            {
+                "traceId": "trace-refresh-progress",
+                "traceType": "tool",
+                "status": "completed",
+                "label": "刷新后继续收到工具进展",
+                "toolName": "search_patents",
+                "phase": PHASE_RUNNING,
+            },
+            run_id=run_id,
+            entity_id="trace-refresh-progress",
+        )
+        service.agent_runs._mark_idle(created.sessionId, run_id)
+        return await asyncio.wait_for(pending, timeout=2)
+
+    events = asyncio.run(run_scenario())
+
+    assert any(event["type"] == "trace.completed" for event in events)
 
 
 def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_path) -> None:

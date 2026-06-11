@@ -622,13 +622,9 @@ def seed_prompt_from_analysis(
     patent_payload: Optional[Dict[str, Any]],
     seeded_search_elements: Dict[str, Any],
 ) -> str:
-    payload = {
-        "goal": "基于 AI 分析结果直接开展自由检索。如果信息足够，请先设置合理停止条件，再检索并保存候选；如果仍缺关键信息，只追问缺失项。",
-        "seeded_search_elements": seeded_search_elements,
-        "user_context_markdown": build_analysis_seed_user_message(analysis_payload, patent_payload, seeded_search_elements),
-    }
     return (
         "请根据以下上下文直接开展 AI 检索。"
-        "要求：用自由对话式检索方式推进；先判断目标是否足够清晰，足够则直接检索并保存候选，不再生成待确认计划。\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        "要求：用自由对话式检索方式推进；先判断目标是否足够清晰，足够则直接检索并保存候选，不再生成待确认计划。"
+        "以下 JSON 是唯一的种子上下文，请不要再寻找或复述其他 seed 文本。\n\n"
+        f"{json.dumps(seeded_search_elements, ensure_ascii=False, indent=2)}"
     )

@@ -15,60 +15,6 @@
             <span class="h-px flex-1 bg-slate-200/80" />
           </article>
 
-          <article v-else-if="entry.entryType === 'trace-summary'" class="flex justify-start">
-            <details class="group/trace w-full">
-              <summary class="agent-summary flex cursor-pointer items-center gap-2 rounded-lg px-1 py-1 text-[12px] leading-5 text-slate-400 transition hover:bg-slate-50 hover:text-slate-600">
-                <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                  <CheckCircleIcon class="h-4 w-4 text-slate-300" />
-                </span>
-                <p class="min-w-0 flex-1 truncate">
-                  {{ entry.label }}
-                </p>
-                <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px]">
-                  {{ traceDurationText(entry) }}
-                </span>
-                <ChevronRightIcon class="h-3.5 w-3.5 shrink-0 transition group-open/trace:rotate-90" />
-              </summary>
-              <div class="ml-3 mt-1 space-y-1 border-l border-slate-100 pl-4">
-                <div
-                  v-for="item in traceSummaryItems(entry)"
-                  :key="item.traceId || item.id"
-                  class="flex items-start gap-2 py-1 text-[12px] leading-5 text-slate-500"
-                >
-                  <span class="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                    <component :is="traceIcon(item)" class="h-4 w-4" :class="traceIconClass(item)" />
-                  </span>
-                  <div class="min-w-0 flex-1">
-                    <p class="break-words">{{ traceHistoryText(item) }}</p>
-                    <p v-if="item.detail" class="mt-0.5 break-words text-[11px] text-slate-400">
-                      {{ item.detail }}
-                    </p>
-                    <div v-if="traceDetailBlocks(item).length" class="mt-2 grid gap-1.5">
-                      <div
-                        v-for="block in traceDetailBlocks(item)"
-                        :key="block.label"
-                        class="rounded-lg border border-slate-200 bg-white px-2.5 py-2"
-                      >
-                        <p class="text-[11px] font-semibold text-slate-500">{{ block.label }}</p>
-                        <pre class="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600">{{ block.value }}</pre>
-                      </div>
-                    </div>
-                    <div v-if="traceChildren(item).length" class="mt-2 space-y-1 border-l border-slate-100 pl-3">
-                      <div
-                        v-for="child in traceChildren(item)"
-                        :key="child.traceId || child.id"
-                        class="text-[11px] leading-5 text-slate-500"
-                      >
-                        <span class="font-medium">{{ traceTypeLabel(child) }}</span>
-                        <span> · {{ traceInlineText(child) }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </details>
-          </article>
-
           <article v-else-if="entry.entryType === 'trace' && isAgentTrace(entry)" class="flex justify-start">
             <details
               class="group/agent-card w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2"
@@ -135,11 +81,11 @@
                 </span>
                 <div class="min-w-0 flex-1">
                   <div class="flex min-w-0 items-center gap-2">
-                    <span class="shrink-0 text-[12px] font-semibold text-slate-700">
-                      {{ traceTypeLabel(entry) }}
+                    <span class="shrink-0 text-[12px] font-semibold text-slate-700" :class="tracePrimaryLabelClass(entry)">
+                      {{ tracePrimaryLabel(entry) }}
                     </span>
-                    <span v-if="traceActorText(entry)" class="min-w-0 truncate text-[11px] text-slate-400">
-                      {{ traceActorText(entry) }}
+                    <span v-if="traceSecondaryText(entry)" class="min-w-0 truncate text-[11px] text-slate-400" :class="traceSecondaryTextClass(entry)">
+                      {{ traceSecondaryText(entry) }}
                     </span>
                     <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
                       {{ traceDurationText(entry) }}
@@ -421,17 +367,31 @@ const traceDurationText = (entry: ConversationEntry): string => {
 
 const normalizedTraceType = (entry: ConversationEntry): string => String(entry?.traceType || '').trim()
 
+const isToolTrace = (entry: ConversationEntry): boolean => normalizedTraceType(entry) === 'tool'
+
 const traceTypeLabel = (entry: ConversationEntry): string => {
   const traceType = normalizedTraceType(entry)
   if (traceType === 'thinking') return '思考'
   if (traceType === 'tool') return '工具'
   if (traceType === 'agent') return '子 Agent'
   if (traceType === 'progress') return '进度'
-  if (traceType === 'summary') return '执行过程'
   return '处理'
 }
 
+const traceToolName = (entry: ConversationEntry): string => (
+  String(entry.toolName || '').trim() || '工具调用'
+)
+
+const tracePrimaryLabel = (entry: ConversationEntry): string => (
+  isToolTrace(entry) ? traceToolName(entry) : traceTypeLabel(entry)
+)
+
+const tracePrimaryLabelClass = (entry: ConversationEntry): string => (
+  isToolTrace(entry) ? 'font-mono' : ''
+)
+
 const traceActorText = (entry: ConversationEntry): string => {
+  if (isToolTrace(entry)) return ''
   const values = [
     entry.actorName,
     entry.specialistType,
@@ -439,6 +399,24 @@ const traceActorText = (entry: ConversationEntry): string => {
   ].map(value => String(value || '').trim()).filter(Boolean)
   return values[0] || ''
 }
+
+const compactInlineText = (value: any, maxLength: number = 160): string => {
+  const text = stringifyTraceValue(value).replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+const traceArgumentInlineText = (entry: ConversationEntry): string => (
+  isToolTrace(entry) ? compactInlineText(entry.arguments ?? entry.input) : ''
+)
+
+const traceSecondaryText = (entry: ConversationEntry): string => (
+  traceArgumentInlineText(entry) || traceActorText(entry)
+)
+
+const traceSecondaryTextClass = (entry: ConversationEntry): string => (
+  isToolTrace(entry) ? 'font-mono' : ''
+)
 
 const traceInlineText = (entry: ConversationEntry): string => (
   String(entry.label || '').trim() || '处理中'
@@ -463,9 +441,7 @@ const stringifyTraceValue = (value: any): string => {
 
 const traceDetailBlocks = (entry: ConversationEntry): Array<{ label: string, value: string }> => {
   const candidates = [
-    ['调用参数', entry.arguments ?? entry.input],
     ['执行结果', entry.result ?? entry.output],
-    ['元数据', entry.metadata],
   ] as Array<[string, any]>
   return candidates
     .map(([label, value]) => ({ label, value: stringifyTraceValue(value).trim() }))
@@ -506,19 +482,19 @@ const traceSummaryClass = (entry: ConversationEntry): string => {
 
 const traceHistoryText = (entry: ConversationEntry): string => {
   const label = traceInlineText(entry)
-  if (String(entry.status || '').trim() === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
-  if (String(entry.status || '').trim() === 'running') return label
-  return `${traceTypeLabel(entry)} · ${label}`
+  const toolArguments = traceArgumentInlineText(entry)
+  const prefix = isToolTrace(entry)
+    ? `${traceToolName(entry)}${toolArguments ? ` ${toolArguments}` : ''}`
+    : traceTypeLabel(entry)
+  if (String(entry.status || '').trim() === 'failed') return `${prefix}失败：${label}`
+  if (String(entry.status || '').trim() === 'running') return isToolTrace(entry) ? `${prefix} · ${label}` : label
+  return `${prefix} · ${label}`
 }
 
 const traceHistoryToneClass = (entry: ConversationEntry): string => {
   if (String(entry.status || '').trim() === 'failed') return 'text-rose-500 hover:bg-rose-50'
   return 'text-slate-400 hover:bg-slate-50'
 }
-
-const traceSummaryItems = (entry: ConversationEntry): ConversationEntry[] => (
-  Array.isArray(entry.items) ? entry.items : []
-)
 
 const traceChildren = (entry: ConversationEntry): ConversationEntry[] => (
   Array.isArray(entry.children) ? entry.children : []
@@ -531,11 +507,10 @@ const canCopyEntry = (entry: ConversationEntry): boolean => !!entryCopyText(entr
 const downloadAttachmentsForEntry = (entry: ConversationEntry): AgentConversationAttachment[] => {
   const attachments = Array.isArray(props.attachments) ? [...props.attachments] : []
   if (!attachments.length) return []
-  if (entry.entryType === 'trace' || entry.entryType === 'trace-summary' || entry.entryType === 'phase') return []
+  if (entry.entryType === 'trace' || entry.entryType === 'phase') return []
   const anchorEntry = [...props.entries].reverse().find((item) => (
     item?.role === 'assistant'
     && item.entryType !== 'trace'
-    && item.entryType !== 'trace-summary'
     && item.entryType !== 'phase'
   ))
   if (!anchorEntry || anchorEntry.id !== entry.id) return []

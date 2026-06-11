@@ -70,6 +70,7 @@ export interface AiSearchSnapshot {
   }
   stream?: {
     lastEventSeq?: number
+    activityTraces?: AiSearchActivityTrace[]
   }
   retrieval: AiSearchRetrievalState
   artifacts: AiSearchArtifactsPayload

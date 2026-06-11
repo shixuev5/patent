@@ -22,7 +22,6 @@ from backend.storage import TaskType
 from backend.utils import _build_r2_storage
 
 from patent_agents.ai_search.src.analysis_seed import (
-    build_analysis_seed_user_message,
     load_json_bytes,
     load_json_file,
     seed_prompt_from_analysis,
@@ -152,11 +151,6 @@ class AiSearchAnalysisSeedService:
             patent_payload,
             seeded_search_elements,
         )
-        seed_user_message = build_analysis_seed_user_message(
-            analysis_payload,
-            patent_payload,
-            seeded_search_elements,
-        )
         task = self.facade.task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
@@ -192,16 +186,6 @@ class AiSearchAnalysisSeedService:
                 "stream_status": "completed",
                 "metadata": seeded_search_elements,
             }
-        )
-        self.facade._append_message(
-            task.id,
-            "user",
-            "chat",
-            seed_user_message,
-            metadata={
-                "message_variant": "analysis_seed_context",
-                "render_mode": "markdown",
-            },
         )
         return self._analysis_seed_response(task, source_task_id=str(analysis_task.id))
 

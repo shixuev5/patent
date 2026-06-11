@@ -62,6 +62,12 @@ const normalizeMessages = (messages: Array<Record<string, any>> | undefined) => 
   Array.isArray(messages) ? messages : []
 )
 
+const normalizeActivityTraces = (traces: AiSearchActivityTrace[] | undefined) => (
+  Array.isArray(traces)
+    ? traces.filter(trace => trace && String(trace.traceId || '').trim())
+    : []
+)
+
 const toMillis = (value?: string | null): number => {
   const ts = Date.parse(String(value || ''))
   return Number.isFinite(ts) ? ts : 0
@@ -114,6 +120,7 @@ const createPlaceholderSnapshot = (summary: Record<string, any>): AiSearchSnapsh
   },
   stream: {
     lastEventSeq: 0,
+    activityTraces: [],
   },
   retrieval: {
     documents: {
@@ -348,6 +355,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     _applySnapshot(snapshot: AiSearchSnapshot, options: { activate?: boolean } = {}) {
       const sessionId = String(snapshot.session?.sessionId || '').trim()
       if (!sessionId) return
+      const activityTraces = normalizeActivityTraces(snapshot.stream?.activityTraces)
       this.sessionSnapshotsById = {
         ...this.sessionSnapshotsById,
         [sessionId]: {
@@ -359,6 +367,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
           },
           stream: {
             lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0),
+            activityTraces,
           },
           artifacts: {
             attachments: Array.isArray(snapshot.artifacts?.attachments) ? snapshot.artifacts.attachments : [],
@@ -367,7 +376,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
       this._ensureRuntime(sessionId)
       this._restorePhaseMarkers(sessionId)
-      this._setRuntime(sessionId, { lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0) })
+      this._setRuntime(sessionId, {
+        activityTraces,
+        lastEventSeq: Number(snapshot.stream?.lastEventSeq || 0),
+      })
       this._upsertSessionSummary(snapshot.session as unknown as Record<string, any>)
       if (options.activate !== false) {
         this._setCurrentSessionId(sessionId)
@@ -555,7 +567,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
 
       if (event.type === 'run.started') {
         this._setRuntimeError(sessionId, '')
-        runtime.activityTraces = []
         this._startActiveRun(sessionId, phase, false, event.timestamp)
         this._ensurePhaseMarker(sessionId, phase, event.timestamp)
         return
@@ -960,6 +971,14 @@ export const useAiSearchStore = defineStore('aiSearch', {
           autoStartSeed: false,
           subscribeIfRunning: false,
         })
+        const latestSnapshot = this._getSnapshot(targetSessionId)
+        const stillRunning = String(latestSnapshot?.session?.activityState || '').trim() === 'running'
+        const stillCurrent = targetSessionId === this.currentSessionId
+        if (process.client && stillRunning && stillCurrent && !this._ensureRuntime(targetSessionId).streaming) {
+          globalThis.setTimeout(() => {
+            void this.subscribeToRunningSession(targetSessionId)
+          }, 800)
+        }
       }
     },
 

@@ -1,6 +1,6 @@
 <template>
   <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-    <section class="mx-auto grid min-h-0 w-full max-w-[92rem] flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
+    <section class="mx-auto grid min-h-0 w-full max-w-6xl flex-1 items-start gap-3 sm:gap-4 lg:items-stretch" :class="layoutClass">
       <aside
         class="order-2 hidden h-full min-h-0 flex-col lg:order-1 lg:flex"
         :class="sidebarClass"

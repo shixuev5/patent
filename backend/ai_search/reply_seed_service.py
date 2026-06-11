@@ -22,7 +22,6 @@ from backend.utils import _build_r2_storage
 from patent_agents.ai_search.src.analysis_seed import load_json_bytes, load_json_file
 from .models import AiSearchCreateSessionResponse
 from patent_agents.ai_search.src.reply_seed import (
-    build_reply_seed_user_message,
     seed_prompt_from_reply,
     seed_search_elements_from_reply,
 )
@@ -144,7 +143,6 @@ class AiSearchReplySeedService:
         source_pn = str(getattr(reply_task, "pn", "") or "").strip()
         source_title = str(getattr(reply_task, "title", "") or "").strip()
         seed_prompt = seed_prompt_from_reply(reply_payload, seeded_search_elements)
-        seed_user_message = build_reply_seed_user_message(reply_payload, seeded_search_elements)
         task = self.facade.task_manager.create_task(
             owner_id=owner_id,
             task_type=TaskType.AI_SEARCH.value,
@@ -180,15 +178,5 @@ class AiSearchReplySeedService:
                 "stream_status": "completed",
                 "metadata": seeded_search_elements,
             }
-        )
-        self.facade._append_message(
-            task.id,
-            "user",
-            "chat",
-            seed_user_message,
-            metadata={
-                "message_variant": "reply_seed_context",
-                "render_mode": "markdown",
-            },
         )
         return self._seed_response(task, source_task_id=str(reply_task.id))

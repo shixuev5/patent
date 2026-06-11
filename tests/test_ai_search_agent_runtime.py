@@ -5,6 +5,7 @@ import asyncio
 
 from patent_agents.ai_search.src import runtime as agent_runtime_module
 from patent_agents.ai_search.src.runtime import _patent_items_from_response, _stream_text_delta, normalize_stop_policy
+from patent_agents.ai_search.src.analysis_seed import seed_prompt_from_analysis, seed_search_elements_from_analysis
 from patent_agents.ai_search.src.reply_seed import seed_prompt_from_reply, seed_search_elements_from_reply
 from patent_agents.ai_search.src.search_elements import normalize_search_elements_payload
 
@@ -174,3 +175,40 @@ def test_reply_seed_prompt_uses_open_search_language() -> None:
     assert elements["applicants"] == ["申请人A"]
     assert "自由检索" in prompt
     assert "不再生成待确认计划" in prompt
+    assert "user_context_markdown" not in prompt
+    assert "source_context" not in prompt
+    assert "seeded_search_elements" not in prompt
+    assert '"objective": "围绕新增特征继续补检"' in prompt
+
+
+def test_analysis_seed_prompt_uses_only_structured_seed_payload() -> None:
+    analysis_payload = {
+        "metadata": {"task_id": "analysis-1", "resolved_pn": "CN123456A"},
+        "report_core": {"ai_title": "测试专利"},
+        "search_strategy": {
+            "search_matrix": [
+                {
+                    "element_name": "二维图像转换",
+                    "keywords_zh": ["二维图像"],
+                    "keywords_en": ["2D image"],
+                    "block_id": "A",
+                }
+            ]
+        },
+    }
+    patent_payload = {
+        "bibliographic_data": {
+            "publication_number": "CN123456A",
+            "invention_title": "测试专利",
+            "application_date": "2024-01-01",
+        }
+    }
+
+    elements = seed_search_elements_from_analysis(analysis_payload, patent_payload)
+    prompt = seed_prompt_from_analysis(analysis_payload, patent_payload, elements)
+
+    assert elements["objective"].startswith("围绕专利 CN123456A")
+    assert "user_context_markdown" not in prompt
+    assert "source_context" not in prompt
+    assert "seeded_search_elements" not in prompt
+    assert '"element_name": "二维图像转换"' in prompt

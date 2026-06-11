@@ -50,7 +50,52 @@ class AiSearchSnapshotService:
 
     def _stream_state(self, task_id: str) -> Dict[str, Any]:
         latest = self.storage.get_latest_ai_search_stream_event(task_id)
-        return {"lastEventSeq": int(latest.get("seq") or 0) if isinstance(latest, dict) else 0}
+        return {
+            "lastEventSeq": int(latest.get("seq") or 0) if isinstance(latest, dict) else 0,
+            "activityTraces": self._activity_traces(task_id),
+        }
+
+    def _activity_traces(self, task_id: str) -> List[Dict[str, Any]]:
+        traces: Dict[str, Dict[str, Any]] = {}
+        trace_order: Dict[str, int] = {}
+        trace_event_types = {"trace.started", "trace.updated", "trace.completed"}
+
+        for index, event in enumerate(self.storage.list_ai_search_stream_events(task_id, after_seq=0)):
+            event_type = str(event.get("event_type") or "").strip()
+            if event_type not in trace_event_types:
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            trace_id = str(payload.get("traceId") or event.get("entity_id") or "").strip()
+            if not trace_id:
+                continue
+            existing = traces.get(trace_id, {})
+            next_trace: Dict[str, Any] = {
+                **existing,
+                **payload,
+                "traceId": trace_id,
+                "status": str(
+                    payload.get("status")
+                    or ("running" if event_type == "trace.started" else "completed")
+                ).strip(),
+            }
+            if not next_trace.get("startedAt"):
+                next_trace["startedAt"] = existing.get("startedAt") or event.get("created_at")
+            if event_type == "trace.completed" and not next_trace.get("endedAt"):
+                next_trace["endedAt"] = event.get("created_at")
+            traces[trace_id] = {
+                key: value
+                for key, value in next_trace.items()
+                if value is not None and value != ""
+            }
+            trace_order.setdefault(trace_id, index)
+
+        return sorted(
+            traces.values(),
+            key=lambda item: (
+                str(item.get("startedAt") or item.get("endedAt") or ""),
+                trace_order.get(str(item.get("traceId") or ""), 0),
+            ),
+        )
 
     def _active_run(self, task: Any) -> Optional[Dict[str, Any]]:
         meta = get_ai_search_meta(task)

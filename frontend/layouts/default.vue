@@ -187,10 +187,7 @@
       </div>
     </div>
 
-    <main
-      class="mx-auto flex min-h-0 w-full flex-1 flex-col p-3 sm:p-6"
-      :class="route.path.startsWith('/search') ? 'max-w-[92rem]' : 'max-w-6xl'"
-    >
+    <main class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-3 sm:p-6">
       <slot />
     </main>
 
