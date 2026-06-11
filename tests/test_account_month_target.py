@@ -940,6 +940,62 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
         assert events.index('backend:ready') < events.index('poller:start')
 
 
+def test_im_gateway_delivery_listener_skips_claim_when_no_event(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    claims: list[int] = []
+    await_calls = 0
+
+    class FakeBackend:
+        async def await_delivery_event(self, *, cursor: int = 0, timeout_seconds: float = 30.0):
+            nonlocal await_calls
+            await_calls += 1
+            if await_calls == 1:
+                return {'cursor': cursor, 'hasEvent': False}
+            raise asyncio.CancelledError()
+
+        async def claim_delivery_jobs(self, limit: int = 5):
+            claims.append(limit)
+            return {'items': [], 'total': 0}
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway._listen_delivery_events())
+
+    assert await_calls == 2
+    assert claims == []
+
+
+def test_im_gateway_delivery_listener_claims_when_event_arrives(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    claims: list[int] = []
+    await_calls = 0
+
+    class FakeBackend:
+        async def await_delivery_event(self, *, cursor: int = 0, timeout_seconds: float = 30.0):
+            nonlocal await_calls
+            await_calls += 1
+            if await_calls == 1:
+                return {'cursor': cursor + 1, 'hasEvent': True}
+            raise asyncio.CancelledError()
+
+        async def claim_delivery_jobs(self, limit: int = 5):
+            claims.append(limit)
+            return {'items': [], 'total': 0}
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway._listen_delivery_events())
+
+    assert await_calls == 2
+    assert claims == [5]
+
+
 def test_im_gateway_reconciles_owner_scoped_sessions_and_bindings(monkeypatch):
     im_gateway_main = _load_im_gateway_main()
     applied: list[tuple[str, str | None, str | None]] = []

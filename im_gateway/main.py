@@ -832,7 +832,7 @@ class WeChatGateway:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    print(f"[im-gateway] reconcile failed: {exc}")
+                    print(f"[im-gateway] reconcile failed: {AccountRuntime._describe_exception(exc)}")
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
         finally:
             event_listener.cancel()
@@ -913,12 +913,16 @@ class WeChatGateway:
         while True:
             try:
                 payload = await self.backend.await_delivery_event(cursor=cursor, timeout_seconds=DELIVERY_EVENT_WAIT_SECONDS)
+                previous_cursor = cursor
                 cursor = int(payload.get("cursor") or cursor)
+                has_event = bool(payload.get("hasEvent")) or cursor > previous_cursor
+                if not has_event:
+                    continue
                 await self._claim_and_deliver_jobs(limit=5)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"[im-gateway] delivery event wait failed: {exc}")
+                print(f"[im-gateway] delivery event wait failed: {AccountRuntime._describe_exception(exc)}")
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def _poll_delivery_jobs_fallback(self) -> None:
@@ -928,7 +932,7 @@ class WeChatGateway:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"[im-gateway] fallback poll failed: {exc}")
+                print(f"[im-gateway] fallback poll failed: {AccountRuntime._describe_exception(exc)}")
             await asyncio.sleep(DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS)
 
     async def _claim_and_deliver_jobs(self, *, limit: int) -> None:
