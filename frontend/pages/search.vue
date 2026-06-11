@@ -447,7 +447,7 @@ const {
 })
 
 const composerHint = computed(() => {
-  if (activePhase.value === 'running') return '当前会话正在检索中，本轮结束后可继续补充。'
+  if (activePhase.value === 'running') return '可直接发送新指令调整方向；当前轮会尽快停止并保留已保存候选。'
   return ''
 })
 
@@ -704,7 +704,7 @@ const quickPromptText = (key: string): string => {
 
 const sendQuickPrompt = async (key: string) => {
   const text = quickPromptText(key)
-  if (!text || inputDisabled.value || !currentSession.value) return
+  if (!text || !currentSession.value) return
   await aiSearchStore.sendMessage(text)
 }
 

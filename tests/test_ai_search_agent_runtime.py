@@ -94,7 +94,7 @@ def test_stream_text_delta_accepts_responses_text_delta() -> None:
     assert _stream_text_delta(RawEvent()) == "增量文本"
 
 
-def test_stream_runner_handles_agent_updated_event(monkeypatch) -> None:
+def test_stream_runner_ignores_internal_agent_updated_event(monkeypatch) -> None:
     class FakeStorage:
         def list_ai_search_messages(self, _task_id):
             return []
@@ -150,7 +150,7 @@ def test_stream_runner_handles_agent_updated_event(monkeypatch) -> None:
 
     assert result == "流式答复"
     assert deltas == ["流式"]
-    assert any(item[1].get("tool_name") == "agent_updated" for item in context.traces)
+    assert not any(item[1].get("tool_name") == "agent_updated" for item in context.traces)
 
 
 def test_reply_seed_prompt_uses_open_search_language() -> None:

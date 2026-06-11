@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -140,7 +141,7 @@ class AiSearchRuntimeContext:
         label: str,
         detail: str = "",
         trace_type: str = "tool",
-        actor_name: str = "search-agent",
+        actor_name: str = "ai-search-agent",
         input: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
         parent_trace_id: str = "",
@@ -177,7 +178,7 @@ class AiSearchRuntimeContext:
         detail: str = "",
         status: str = "completed",
         trace_type: str = "tool",
-        actor_name: str = "search-agent",
+        actor_name: str = "ai-search-agent",
         output: Any = None,
         result: Any = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -215,6 +216,65 @@ class AiSearchRuntimeContext:
 
 def _safe_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _normalize_patent_number(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text.startswith("PATENT:"):
+        text = text.split(":", 1)[1]
+    return re.sub(r"[^A-Z0-9]", "", text)
+
+
+def _extract_patent_numbers(value: Any) -> List[str]:
+    text = str(value or "").upper()
+    if not text:
+        return []
+    matches = re.findall(r"\b[A-Z]{2}\s*\d{5,}[A-Z]\d?\b", text)
+    return [_normalize_patent_number(item) for item in matches if _normalize_patent_number(item)]
+
+
+def _target_patent_numbers(ctx: AiSearchRuntimeContext) -> set[str]:
+    meta = ctx.meta()
+    candidates: List[Any] = [
+        meta.get("source_pn"),
+        meta.get("source_title"),
+        meta.get("target_pn"),
+        getattr(ctx.task(), "pn", None),
+    ]
+    numbers: set[str] = set()
+    for value in candidates:
+        normalized = _normalize_patent_number(value)
+        if normalized:
+            numbers.add(normalized)
+        numbers.update(_extract_patent_numbers(value))
+    return numbers
+
+
+def _is_target_patent(ctx: AiSearchRuntimeContext, item: Dict[str, Any]) -> bool:
+    targets = _target_patent_numbers(ctx)
+    if not targets:
+        return False
+    identifiers = [
+        item.get("pn"),
+        item.get("external_id"),
+        item.get("canonical_id"),
+    ]
+    return any(_normalize_patent_number(value) in targets for value in identifiers if _normalize_patent_number(value))
+
+
+def _ensure_policy_databases(ctx: AiSearchRuntimeContext, sources: List[str]) -> None:
+    normalized_sources = [item for item in _source_list(sources) if item]
+    if not normalized_sources:
+        return
+    current = ctx.stop_policy()
+    databases = _source_list(current.get("databases"))
+    changed = False
+    for source in normalized_sources:
+        if source not in databases:
+            databases.append(source)
+            changed = True
+    if changed:
+        ctx.update_meta(stop_policy=normalize_stop_policy({"databases": databases}, current_policy=current))
 
 
 def _limit(value: int, *, default: int, upper: int) -> int:
@@ -349,8 +409,12 @@ def _upsert_candidates(ctx: AiSearchRuntimeContext, raw_items: List[Dict[str, An
     }
     records: List[Dict[str, Any]] = []
     new_count = 0
+    skipped_target = 0
     now = utc_now_z()
     for item in raw_items:
+        if str(item.get("source_type") or "").strip().lower() == "patent" and _is_target_patent(ctx, item):
+            skipped_target += 1
+            continue
         canonical_id = _safe_text(item.get("canonical_id"))
         if not canonical_id:
             continue
@@ -383,7 +447,7 @@ def _upsert_candidates(ctx: AiSearchRuntimeContext, raw_items: List[Dict[str, An
     ctx.update_meta(selected_document_count=selected_count)
     payload = documents_payload(ctx)
     ctx.append_event("documents.updated", payload)
-    return {"stored": changed, "new": new_count, "total": len(ctx.documents())}
+    return {"stored": changed, "new": new_count, "total": len(ctx.documents()), "skipped_target": skipped_target}
 
 
 def documents_payload(ctx: AiSearchRuntimeContext) -> Dict[str, Any]:
@@ -594,6 +658,7 @@ def search_patents(
         )
         return {"blocked": True, "stop": _stop_status(runtime)}
     resolved_limit = min(_limit(limit, default=20, upper=50), remaining_capacity)
+    _ensure_policy_databases(runtime, ["zhihuiya"])
     trace = runtime.start_trace(
         tool_name="search_patents",
         label=f"检索智慧芽：{query_text[:80]}",
@@ -619,6 +684,7 @@ def search_patents(
                 "retrieved_count": len(retrieved),
                 "kept_count": len(normalized),
                 "new_count": int(stored.get("new") or 0),
+                "skipped_target": int(stored.get("skipped_target") or 0),
                 "candidate_total": int(stored.get("total") or 0),
                 "documents": _document_trace_preview(normalized),
                 "stop": _stop_status(runtime),
@@ -682,6 +748,7 @@ def search_academic(
     if not query_text:
         return {"error": "query 不能为空。"}
     selected_sources = _source_list(databases) or ["openalex", "semanticscholar", "crossref"]
+    _ensure_policy_databases(runtime, selected_sources)
     remaining_capacity = _remaining_candidate_capacity(runtime)
     if remaining_capacity <= 0:
         trace = runtime.start_trace(
@@ -740,6 +807,7 @@ def search_academic(
                 "sources": selected_sources,
                 "retrieved_count": len(normalized),
                 "new_count": int(stored.get("new") or 0),
+                "skipped_target": int(stored.get("skipped_target") or 0),
                 "candidate_total": int(stored.get("total") or 0),
                 "errors": errors,
                 "documents": _document_trace_preview(normalized),
@@ -772,6 +840,7 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
         input={"pn": normalized_pn},
     )
     try:
+        _ensure_policy_databases(runtime, ["zhihuiya"])
         detail = SearchClientFactory.get_client("zhihuiya").get_patent_detail(normalized_pn)
     except Exception as exc:
         runtime.finish_trace(
@@ -794,6 +863,26 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
             "abstract": detail.get("abstract") or basic_info.get("abstract"),
         }
     )
+    result = {
+        "pn": normalized_pn,
+        "title": record.get("title"),
+        "abstract": record.get("abstract"),
+        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:2000],
+        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:2000],
+    }
+    if _is_target_patent(runtime, record):
+        runtime.update_meta(
+            source_pn=normalized_pn,
+            source_title=record.get("title") or runtime.meta().get("source_title") or normalized_pn,
+            target_detail_preview=result,
+        )
+        runtime.finish_trace(
+            trace,
+            tool_name="fetch_patent_detail",
+            label=f"目标专利详情已读取：{normalized_pn}",
+            output={**result, "stored_as_candidate": False},
+        )
+        return {**result, "stored_as_candidate": False}
     document_id = stable_ai_search_document_id(runtime.task_id, runtime.plan_version, canonical_id)
     runtime.storage.upsert_ai_search_documents(
         [
@@ -811,13 +900,6 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
         ]
     )
     runtime.append_event("documents.updated", documents_payload(runtime))
-    result = {
-        "pn": normalized_pn,
-        "title": record.get("title"),
-        "abstract": record.get("abstract"),
-        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:2000],
-        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:2000],
-    }
     runtime.finish_trace(
         trace,
         tool_name="fetch_patent_detail",
@@ -902,7 +984,7 @@ def build_search_agent() -> Agent[AiSearchRuntimeContext]:
     client = AsyncOpenAI(**client_kwargs)
     model_name = settings.LLM_MODEL_LARGE or settings.LLM_MODEL_DEFAULT
     return Agent(
-        name="patent-search-agent",
+        name="ai-search-agent",
         instructions=SYSTEM_PROMPT,
         model=OpenAIChatCompletionsModel(model=model_name, openai_client=client),
         model_settings=ModelSettings(temperature=0, parallel_tool_calls=False),
@@ -997,11 +1079,6 @@ def _agent_name(value: Any) -> str:
 def _run_item_agent_label(event: Any) -> str:
     name = _agent_event_name(event)
     item = getattr(event, "item", None)
-    if name == "handoff_requested":
-        return "准备切换子 Agent"
-    if name == "handoff_occured":
-        target = _agent_name(getattr(item, "target_agent", None) or getattr(item, "agent", None))
-        return f"已切换子 Agent：{target}" if target else "已切换子 Agent"
     if name == "reasoning_item_created":
         return "已形成可解释分析摘要"
     if name == "tool_called":
@@ -1032,7 +1109,7 @@ async def run_search_agent_stream(
                 label="理解任务并规划下一步",
                 detail="展示的是面向用户的执行摘要，不包含原始隐藏推理。",
                 trace_type="thinking",
-                actor_name="main-agent",
+                actor_name="ai-search-agent",
                 metadata={"visibility": "public_summary"},
             )
             thinking_open = True
@@ -1047,7 +1124,7 @@ async def run_search_agent_stream(
                     label=label,
                     detail="已完成公开执行摘要；原始隐藏推理不会展示。",
                     trace_type="thinking",
-                    actor_name="main-agent",
+                    actor_name="ai-search-agent",
                     output=output or {"visibility": "public_summary"},
                     metadata={"visibility": "public_summary"},
                 )
@@ -1064,45 +1141,11 @@ async def run_search_agent_stream(
                     finish_thinking("用户已取消本轮执行")
                     result.cancel()
                     return ""
-                if str(getattr(event, "type", "") or "") == "agent_updated_stream_event":
-                    agent_name = _agent_name(getattr(event, "new_agent", None))
-                    trace = context.start_trace(
-                        tool_name="agent_updated",
-                        label=f"切换到 Agent：{agent_name}" if agent_name else "切换 Agent",
-                        trace_type="agent",
-                        actor_name="main-agent",
-                        metadata={"agent": agent_name} if agent_name else None,
-                    )
-                    context.finish_trace(
-                        trace,
-                        tool_name="agent_updated",
-                        label=f"已切换到 Agent：{agent_name}" if agent_name else "已切换 Agent",
-                        trace_type="agent",
-                        actor_name=agent_name or "main-agent",
-                        output={"agent": agent_name} if agent_name else None,
-                    )
                 if str(getattr(event, "type", "") or "") == "run_item_stream_event":
                     label = _run_item_agent_label(event)
                     if label:
-                        if _agent_event_name(event) in {"tool_called", "handoff_requested", "handoff_occured"}:
+                        if _agent_event_name(event) == "tool_called":
                             finish_thinking("已确定下一步执行动作", {"next_step": label})
-                        if _agent_event_name(event) in {"handoff_requested", "handoff_occured", "reasoning_item_created"}:
-                            trace = context.start_trace(
-                                tool_name=_agent_event_name(event),
-                                label=label,
-                                trace_type="agent" if _agent_event_name(event) != "reasoning_item_created" else "thinking",
-                                actor_name="main-agent",
-                                metadata={"event": _agent_event_name(event), "visibility": "public_summary"},
-                            )
-                            context.finish_trace(
-                                trace,
-                                tool_name=_agent_event_name(event),
-                                label=label,
-                                trace_type="agent" if _agent_event_name(event) != "reasoning_item_created" else "thinking",
-                                actor_name="main-agent",
-                                output={"event": _agent_event_name(event), "visibility": "public_summary"},
-                                metadata={"event": _agent_event_name(event), "visibility": "public_summary"},
-                            )
                 delta = _stream_text_delta(event)
                 if delta and on_delta:
                     finish_thinking("已开始组织答复", {"next_step": "stream_answer"})

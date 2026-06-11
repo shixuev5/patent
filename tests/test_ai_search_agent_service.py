@@ -12,7 +12,7 @@ from patent_agents.ai_search.src.runtime import AiSearchRuntimeContext, search_p
 from backend.ai_search.service import AiSearchService
 from backend.storage import PipelineTaskManager, SQLiteTaskStorage, TaskStatus
 from patent_agents.ai_search.src.ids import stable_ai_search_document_id
-from patent_agents.ai_search.src.state import PHASE_IDLE, get_ai_search_meta
+from patent_agents.ai_search.src.state import PHASE_IDLE, PHASE_RUNNING, get_ai_search_meta, merge_ai_search_meta
 
 
 async def _collect_stream(stream: AsyncIterator[str]) -> list[dict[str, Any]]:
@@ -102,6 +102,7 @@ def test_stream_message_persists_agent_reply_and_documents(monkeypatch, tmp_path
     snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
     assert snapshot.session.phase == PHASE_IDLE
     assert snapshot.run["status"] == TaskStatus.PROCESSING.value
+    assert snapshot.run["phase"] == PHASE_IDLE
     assert snapshot.retrieval["documents"]["candidates"][0]["pn"] == "CN100001A"
     assert any(item["role"] == "assistant" and "已找到" in item["content"] for item in snapshot.conversation["messages"])
 
@@ -161,6 +162,26 @@ def test_document_selection_updates_selected_and_candidate_sets(tmp_path) -> Non
     assert snapshot.run["selectedDocumentCount"] == 1
 
 
+def test_running_message_is_saved_and_interrupts_current_run(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    service.agent_runs._mark_running(created.sessionId)
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "改查时间常数补偿")))
+    event_types = [event["type"] for event in events]
+
+    assert event_types[:2] == ["message.created", "run.interrupt_requested"]
+    messages = storage.list_ai_search_messages(created.sessionId)
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == "改查时间常数补偿"
+    assert messages[-1]["metadata"]["message_variant"] == "mid_run_instruction"
+    meta = get_ai_search_meta(storage.get_task(created.sessionId))
+    assert meta["cancel_requested"] is True
+    assert meta["cancel_requested_run_id"] == run_id
+
+
 def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_path) -> None:
     service, storage = _build_service(tmp_path)
     created, _task = _create_session(service)
@@ -185,6 +206,58 @@ def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_p
 
     assert parsed["count"] == 2
     assert len(storage.list_ai_search_documents(created.sessionId, 1)) == 2
+    assert "zhihuiya" in get_ai_search_meta(storage.get_task(created.sessionId))["stop_policy"]["databases"]
+
+
+def test_search_patents_filters_target_patent(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, task = _create_session(service)
+    storage.update_task(
+        created.sessionId,
+        metadata=merge_ai_search_meta(task, source_pn="CN117545995A", source_title="CN117545995A"),
+    )
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+
+    class FakeClient:
+        def search(self, _query: str, limit: int = 20):
+            return {
+                "results": [
+                    {"pn": "CN117545995A", "title": "目标专利"},
+                    {"pn": "US1234567B2", "title": "可用对比文件"},
+                ]
+            }
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+
+    result = asyncio.run(
+        search_patents.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps({"query": "真空检漏 时间常数", "limit": 20, "mode": "boolean", "to_date": ""}),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+    docs = storage.list_ai_search_documents(created.sessionId, 1)
+
+    assert parsed["skipped_target"] == 1
+    assert [item["pn"] for item in docs] == ["US1234567B2"]
+
+
+def test_snapshot_uses_idle_task_phase_when_run_was_left_running(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    storage.update_task(
+        created.sessionId,
+        metadata=merge_ai_search_meta(task, current_phase=PHASE_IDLE),
+        status=TaskStatus.PROCESSING.value,
+    )
+    storage.update_ai_search_run(created.sessionId, str(run["run_id"]), phase=PHASE_RUNNING)
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.session.phase == PHASE_IDLE
+    assert snapshot.run["phase"] == PHASE_IDLE
 
 
 def test_export_report_writes_markdown_json_csv_and_bundle(tmp_path) -> None:

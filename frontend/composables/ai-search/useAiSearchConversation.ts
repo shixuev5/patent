@@ -29,7 +29,7 @@ const isCompletedTraceEntry = (entry: ConversationEntryLike): boolean => (
 
 const isSummarizableCompletedTrace = (entry: ConversationEntryLike): boolean => (
   isCompletedTraceEntry(entry)
-  && !['thinking', 'agent'].includes(String(entry?.traceType || '').trim())
+  && String(entry?.traceType || '').trim() !== 'agent'
 )
 
 const buildTraceSummaryLabel = (items: ConversationEntryLike[]): string => {
@@ -38,9 +38,10 @@ const buildTraceSummaryLabel = (items: ConversationEntryLike[]): string => {
     .filter(Boolean)
   const preview = labels.slice(0, 2).join('、')
   const remaining = labels.length - Math.min(labels.length, 2)
-  if (!preview) return `已完成 ${items.length} 个步骤`
-  if (remaining > 0) return `已完成 ${items.length} 个步骤：${preview} 等`
-  return `已完成 ${items.length} 个步骤：${preview}`
+  if (!preview) return items.length > 1 ? `执行过程 · ${items.length} 项` : '执行过程'
+  if (items.length === 1) return `执行过程 · ${preview}`
+  if (remaining > 0) return `执行过程 · ${items.length} 项：${preview} 等`
+  return `执行过程 · ${items.length} 项：${preview}`
 }
 
 const traceEntryId = (entry: ConversationEntryLike): string => (
@@ -75,11 +76,6 @@ const mergeConversationEntries = (entries: ConversationEntryLike[]): Conversatio
 
   const flushCompletedTraceBuffer = () => {
     if (!completedTraceBuffer.length) return
-    if (completedTraceBuffer.length === 1) {
-      merged.push(completedTraceBuffer[0])
-      completedTraceBuffer = []
-      return
-    }
     const first = completedTraceBuffer[0]
     const last = completedTraceBuffer[completedTraceBuffer.length - 1]
     merged.push({
@@ -179,10 +175,10 @@ export const useAiSearchConversation = ({
       mergedEntries.push({
         id: `trace-waiting-${String(phase.value || '').trim() || 'default'}`,
         entryType: 'trace',
-        traceType: 'agent',
+        traceType: 'progress',
         status: 'running',
         label: buildWaitingTraceLabel(phase.value),
-        actorName: 'main-agent',
+        actorName: 'ai-search-agent',
         startedAt: new Date().toISOString(),
         sortKey: maxSortKey + 1,
         order: 2999,

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import contextlib
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
-
-from fastapi import HTTPException
 
 from backend.storage import TaskStatus
 from backend.time_utils import utc_now_z
@@ -22,11 +22,11 @@ from patent_agents.ai_search.src.state import (
 
 from patent_agents.ai_search.src.runtime import (
     AiSearchRuntimeContext,
+    DEFAULT_STOP_POLICY,
     documents_payload,
     run_search_agent_stream,
     set_task_phase,
 )
-from .models import SEARCH_IN_PROGRESS_CODE
 
 
 class AiSearchAgentRunService:
@@ -179,6 +179,7 @@ class AiSearchAgentRunService:
                 phase=PHASE_IDLE,
                 status=TaskStatus.PROCESSING.value,
                 selected_document_count=selected_count,
+                completed_at=utc_now_z(),
             )
 
     def _owned_task(self, session_id: str, owner_id: str) -> Any:
@@ -198,22 +199,77 @@ class AiSearchAgentRunService:
             metadata=merge_ai_search_meta(task, cancel_requested=False, cancel_requested_run_id=""),
         )
 
+    def _request_interrupt_current_run(self, task_id: str, run_id: str, *, reason: str = "") -> Dict[str, Any]:
+        task = self.storage.get_task(task_id)
+        if not run_id:
+            return {"cancelled": False, "reason": "not_running"}
+        self.storage.update_task(
+            task_id,
+            metadata=merge_ai_search_meta(
+                task,
+                cancel_requested=True,
+                cancel_requested_run_id=run_id,
+                cancel_reason=reason or "user_message",
+            ),
+        )
+        event = self._append_event(
+            task_id,
+            "run.interrupt_requested",
+            {
+                "phase": PHASE_RUNNING,
+                "message": "已收到新指令，当前检索轮次将尽快停止。",
+                "reason": reason or "user_message",
+            },
+            run_id=run_id,
+        )
+        return {"cancelled": True, "event": event}
+
+    def _run_deadline_seconds(self, runtime: AiSearchRuntimeContext) -> int:
+        try:
+            value = int((runtime.stop_policy() or {}).get("deadline_seconds") or DEFAULT_STOP_POLICY["deadline_seconds"])
+        except Exception:
+            value = int(DEFAULT_STOP_POLICY["deadline_seconds"])
+        return max(30, value)
+
     async def _yield_events_after(self, session_id: str, after_seq: int) -> AsyncIterator[str]:
         for event in self.storage.list_ai_search_stream_events(session_id, after_seq=after_seq, limit=500):
             yield self._format_event(event)
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self._owned_task(session_id, owner_id)
-        if self._current_phase_value(task.id) == PHASE_RUNNING:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": SEARCH_IN_PROGRESS_CODE,
-                    "message": "当前会话正在执行检索，请稍后再发送。",
-                },
-            )
         text = str(content or "").strip()
         if not text:
+            return
+        if self._current_phase_value(task.id) == PHASE_RUNNING:
+            user_message = self._append_message(
+                task.id,
+                "user",
+                text,
+                metadata={"message_variant": "mid_run_instruction"},
+            )
+            run = self.storage.get_ai_search_run(
+                task.id,
+                plan_version=int(get_ai_search_meta(task).get("active_plan_version") or 1),
+            )
+            run_id = str((run or {}).get("run_id") or get_ai_search_meta(task).get("current_run_id") or "").strip()
+            start_seq = 0
+            if user_message:
+                msg_event = self._append_event(
+                    task.id,
+                    "message.created",
+                    user_message,
+                    run_id=run_id,
+                    entity_id=str(user_message.get("message_id") or ""),
+                )
+                start_seq = int(msg_event.get("seq") or 0)
+                yield self._format_event(msg_event)
+            interrupted = self._request_interrupt_current_run(task.id, run_id, reason="user_message")
+            event = interrupted.get("event")
+            if isinstance(event, dict):
+                yield self._format_event(event)
+                start_seq = max(start_seq, int(event.get("seq") or 0))
+            async for chunk in self._yield_events_after(task.id, start_seq):
+                yield chunk
             return
         user_message = self._append_message(task.id, "user", text)
         run = self._ensure_run(task.id)
@@ -332,6 +388,9 @@ class AiSearchAgentRunService:
                     should_cancel=lambda: self._run_cancel_requested(task.id, run_id),
                 )
             )
+            deadline_seconds = self._run_deadline_seconds(runtime)
+            started_monotonic = time.monotonic()
+            timed_out = False
             while not agent_task.done():
                 for chunk in flush_runtime_events():
                     yield chunk
@@ -341,9 +400,18 @@ class AiSearchAgentRunService:
                         yield chunk
                     for chunk in append_delta_event(delta_text):
                         yield chunk
+                if time.monotonic() - started_monotonic >= deadline_seconds:
+                    timed_out = True
+                    agent_task.cancel()
+                    break
                 await asyncio.sleep(0.1)
 
-            assistant_text = await agent_task
+            if timed_out:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await agent_task
+                assistant_text = ""
+            else:
+                assistant_text = await agent_task
             for chunk in flush_runtime_events():
                 yield chunk
             delta_text = drain_delta_text()
@@ -353,7 +421,57 @@ class AiSearchAgentRunService:
                 for chunk in append_delta_event(delta_text):
                     yield chunk
             if self._run_cancel_requested(task.id, run_id):
+                run_state = self.storage.get_ai_search_run(task.id, run_id) or {}
                 self._clear_run_cancel_request(task.id)
+                if str(run_state.get("status") or "").strip() == TaskStatus.CANCELLED.value:
+                    return
+                self._mark_idle(task.id, run_id)
+                cancelled = self._append_event(
+                    task.id,
+                    "run.cancelled",
+                    {
+                        "phase": PHASE_IDLE,
+                        "completionReason": "interrupted",
+                        "awaitingUserAction": False,
+                        "message": "已根据新指令停止当前检索轮次。",
+                    },
+                    run_id=run_id,
+                )
+                yield self._format_event(cancelled)
+                return
+            if timed_out:
+                self._clear_run_cancel_request(task.id)
+                if assistant_message_id:
+                    assistant_message = self._update_message_content(
+                        assistant_message_id,
+                        "".join(assistant_parts),
+                        stream_status="completed",
+                    )
+                    if assistant_message:
+                        event = self._append_event(
+                            task.id,
+                            "message.completed",
+                            assistant_message,
+                            run_id=run_id,
+                            entity_id=assistant_message_id,
+                        )
+                        latest_seq = max(latest_seq, int(event.get("seq") or 0))
+                        yield self._format_event(event)
+                docs_event = self._append_event(task.id, "documents.updated", documents_payload(runtime), run_id=run_id)
+                yield self._format_event(docs_event)
+                self._mark_idle(task.id, run_id)
+                completed = self._append_event(
+                    task.id,
+                    "run.completed",
+                    {
+                        "phase": PHASE_IDLE,
+                        "completionReason": "deadline_seconds",
+                        "awaitingUserAction": False,
+                        "message": "本轮达到时间上限，已停止检索。",
+                    },
+                    run_id=run_id,
+                )
+                yield self._format_event(completed)
                 return
             if assistant_text:
                 if assistant_message_id:

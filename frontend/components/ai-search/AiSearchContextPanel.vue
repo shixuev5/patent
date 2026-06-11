@@ -97,7 +97,7 @@
               :key="action.key"
               type="button"
               class="quick-action"
-              :disabled="streaming"
+              :disabled="!hasSession"
               @click="$emit('quick-prompt', action.key)"
             >
               <component :is="action.icon" class="h-3.5 w-3.5" />

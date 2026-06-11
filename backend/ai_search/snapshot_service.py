@@ -103,9 +103,13 @@ class AiSearchSnapshotService:
         meta = get_ai_search_meta(task)
         active_run = self._active_run(task)
         active_plan_version = int(meta.get("active_plan_version") or (active_run.get("plan_version") if active_run else 1) or 1)
+        session_phase = str(meta.get("current_phase") or PHASE_IDLE).strip() or PHASE_IDLE
+        run_phase = str(active_run.get("phase") or session_phase) if active_run else session_phase
+        if session_phase != PHASE_RUNNING and run_phase == PHASE_RUNNING:
+            run_phase = session_phase
         run_payload = {
             "runId": str(active_run.get("run_id") or "").strip() if active_run else None,
-            "phase": str(active_run.get("phase") or meta.get("current_phase") or PHASE_IDLE) if active_run else str(meta.get("current_phase") or PHASE_IDLE),
+            "phase": run_phase,
             "status": str(active_run.get("status") or task.status.value) if active_run else task.status.value,
             "planVersion": active_plan_version,
             "activeRetrievalTodoId": None,

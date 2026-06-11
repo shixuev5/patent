@@ -23,6 +23,7 @@ interface AiSearchSessionRuntime {
   activityTraces: AiSearchActivityTrace[]
   phaseMarkers: AiSearchPhaseMarker[]
   lastEventSeq: number
+  streamCount: number
   streaming: boolean
   error: string
 }
@@ -75,6 +76,7 @@ const createEmptyRuntime = (): AiSearchSessionRuntime => ({
   activityTraces: [],
   phaseMarkers: [],
   lastEventSeq: 0,
+  streamCount: 0,
   streaming: false,
   error: '',
 })
@@ -169,8 +171,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     inputDisabled(): boolean {
-      const phase = activePhase(this.currentSession)
-      return this.streaming || phase === 'running'
+      return !this.currentSession
     },
   },
 
@@ -528,7 +529,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
     },
 
     _setStreaming(sessionId: string, streaming: boolean) {
-      this._setRuntime(sessionId, { streaming })
+      const runtime = this._ensureRuntime(sessionId)
+      const nextCount = streaming
+        ? Number(runtime.streamCount || 0) + 1
+        : Math.max(0, Number(runtime.streamCount || 0) - 1)
+      this._setRuntime(sessionId, { streamCount: nextCount, streaming: nextCount > 0 })
     },
 
     _handleStreamEvent(event: AiSearchStreamEvent) {
@@ -634,6 +639,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         if (phase) this._ensurePhaseMarker(sessionId, phase, event.timestamp)
         this._closeLatestPhaseMarker(sessionId, event.timestamp)
         runtime.activeRun = null
+        runtime.streamCount = 0
         runtime.streaming = false
         return
       }
@@ -642,6 +648,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         if (phase) this._ensurePhaseMarker(sessionId, phase, event.timestamp)
         this._closeLatestPhaseMarker(sessionId, event.timestamp)
         runtime.activeRun = null
+        runtime.streamCount = 0
         runtime.streaming = false
         return
       }
@@ -650,6 +657,7 @@ export const useAiSearchStore = defineStore('aiSearch', {
         if (phase) this._ensurePhaseMarker(sessionId, phase, event.timestamp)
         this._closeLatestPhaseMarker(sessionId, event.timestamp)
         runtime.error = String(payload?.message || '当前流式轮次执行失败。')
+        runtime.streamCount = 0
         runtime.streaming = false
         this._resetTransientRunState(sessionId)
       }
@@ -973,10 +981,6 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const snapshot = this._getSnapshot(sessionId)
       const text = String(content || '').trim()
       if (!text || !sessionId || !snapshot) return
-      if (activePhase(snapshot) === 'running') {
-        this._setRuntimeError(sessionId, '当前会话正在检索中，请等待本轮结束后再发送。')
-        return
-      }
       this._setRuntimeError(sessionId, '')
       this._setStreaming(sessionId, true)
       try {

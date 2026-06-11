@@ -69,6 +69,48 @@
             </details>
           </article>
 
+          <article v-else-if="entry.entryType === 'trace' && isAgentTrace(entry)" class="flex justify-start">
+            <details
+              class="group/agent-card w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2"
+              :open="traceDefaultOpen(entry)"
+            >
+              <summary class="agent-summary flex cursor-pointer items-start gap-2">
+                <span class="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white text-cyan-700 ring-1 ring-slate-200">
+                  <CpuChipIcon class="h-3.5 w-3.5" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span class="shrink-0 text-[12px] font-semibold text-slate-700">子 Agent</span>
+                    <span v-if="traceActorText(entry)" class="min-w-0 truncate text-[11px] text-slate-400">
+                      {{ traceActorText(entry) }}
+                    </span>
+                    <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
+                      {{ traceDurationText(entry) }}
+                    </span>
+                  </div>
+                  <p class="mt-0.5 break-words text-[13px] leading-5 text-slate-600">
+                    {{ traceInlineText(entry) }}
+                  </p>
+                </div>
+                <ChevronRightIcon class="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/agent-card:rotate-90" />
+              </summary>
+
+              <div class="mt-2 space-y-2 border-t border-slate-200 pt-2">
+                <p v-if="traceDetailText(entry)" class="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-500">
+                  {{ traceDetailText(entry) }}
+                </p>
+                <div
+                  v-for="block in traceDetailBlocks(entry)"
+                  :key="block.label"
+                  class="rounded-lg border border-slate-200 bg-white px-3 py-2"
+                >
+                  <p class="text-[11px] font-semibold text-slate-500">{{ block.label }}</p>
+                  <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600">{{ block.value }}</pre>
+                </div>
+              </div>
+            </details>
+          </article>
+
           <article v-else-if="entry.entryType === 'trace'" class="flex justify-start">
             <details
               v-if="traceCanExpand(entry)"
@@ -152,7 +194,11 @@
               :class="traceHistoryToneClass(entry)"
             >
               <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                <component :is="traceIcon(entry)" class="h-4 w-4" :class="traceIconClass(entry)" />
+                <ArrowPathIcon
+                  v-if="entry.status === 'running'"
+                  class="h-4 w-4 animate-spin text-cyan-600"
+                />
+                <component v-else :is="traceIcon(entry)" class="h-4 w-4" :class="traceIconClass(entry)" />
               </span>
               <p class="min-w-0 flex-1 truncate">
                 {{ traceHistoryText(entry) }}
@@ -378,8 +424,9 @@ const normalizedTraceType = (entry: ConversationEntry): string => String(entry?.
 const traceTypeLabel = (entry: ConversationEntry): string => {
   const traceType = normalizedTraceType(entry)
   if (traceType === 'thinking') return '思考'
-  if (traceType === 'tool') return '工具调用'
-  if (traceType === 'agent') return 'Agent'
+  if (traceType === 'tool') return '工具'
+  if (traceType === 'agent') return '子 Agent'
+  if (traceType === 'progress') return '进度'
   if (traceType === 'summary') return '执行过程'
   return '处理'
 }
@@ -427,17 +474,20 @@ const traceDetailBlocks = (entry: ConversationEntry): Array<{ label: string, val
 
 const traceCanExpand = (entry: ConversationEntry): boolean => {
   const traceType = normalizedTraceType(entry)
-  if (traceType === 'thinking' || traceType === 'agent') return true
-  return !!traceDetailText(entry) || traceDetailBlocks(entry).length > 0 || traceChildren(entry).length > 0 || String(entry.status || '').trim() === 'running'
+  if (traceType === 'agent') return true
+  if (String(entry.status || '').trim() === 'running') return false
+  return !!traceDetailText(entry) || traceDetailBlocks(entry).length > 0 || traceChildren(entry).length > 0
 }
 
 const traceDefaultOpen = (entry: ConversationEntry): boolean => String(entry.status || '').trim() === 'running'
+
+const isAgentTrace = (entry: ConversationEntry): boolean => normalizedTraceType(entry) === 'agent'
 
 const traceIcon = (entry: ConversationEntry) => {
   if (String(entry.status || '').trim() === 'failed') return XCircleIcon
   const traceType = normalizedTraceType(entry)
   if (traceType === 'agent' || traceType === 'thinking') return CpuChipIcon
-  if (traceType === 'tool') return WrenchScrewdriverIcon
+  if (traceType === 'tool' || traceType === 'progress') return WrenchScrewdriverIcon
   return CheckCircleIcon
 }
 
@@ -457,6 +507,7 @@ const traceSummaryClass = (entry: ConversationEntry): string => {
 const traceHistoryText = (entry: ConversationEntry): string => {
   const label = traceInlineText(entry)
   if (String(entry.status || '').trim() === 'failed') return `${traceTypeLabel(entry)}失败：${label}`
+  if (String(entry.status || '').trim() === 'running') return label
   return `${traceTypeLabel(entry)} · ${label}`
 }
 
