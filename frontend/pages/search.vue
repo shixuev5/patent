@@ -194,53 +194,6 @@
         </div>
 
         <div class="border-t border-slate-200 px-4 py-4">
-          <div
-            v-if="!showInvalidSessionState && supplementFeedback"
-            class="mb-3 rounded-lg border px-3 py-2 text-[12px] leading-5"
-            :class="supplementFeedback.failedItems.length ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-cyan-100 bg-cyan-50 text-cyan-900'"
-          >
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0 flex-1">
-                <p class="font-semibold">补充文献导入结果</p>
-                <p class="mt-0.5 text-current/80">{{ supplementFeedbackText }}</p>
-              </div>
-              <button
-                type="button"
-                class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-current/60 transition hover:bg-white/60 hover:text-current"
-                aria-label="关闭补充文献导入结果"
-                title="关闭"
-                @click="supplementFeedback = null"
-              >
-                <XMarkIcon class="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <div v-if="supplementFeedback.importedItems.length" class="mt-1.5 space-y-1">
-              <p
-                v-for="(item, index) in supplementFeedback.importedItems.slice(0, 4)"
-                :key="`${supplementImportedItemName(item)}-${index}`"
-                class="truncate text-current/80"
-                :title="supplementImportedItemText(item)"
-              >
-                {{ supplementImportedItemText(item) }}
-              </p>
-              <p v-if="supplementFeedback.importedItems.length > 4" class="text-current/70">
-                另有 {{ supplementFeedback.importedItems.length - 4 }} 项已导入。
-              </p>
-            </div>
-            <div v-if="supplementFeedback.failedItems.length" class="mt-1.5 space-y-1 border-t border-current/15 pt-1.5">
-              <p
-                v-for="(item, index) in supplementFeedback.failedItems.slice(0, 4)"
-                :key="`${supplementFailedItemName(item)}-${index}`"
-                class="truncate text-current/80"
-                :title="supplementFailedItemText(item)"
-              >
-                {{ supplementFailedItemText(item) }}
-              </p>
-              <p v-if="supplementFeedback.failedItems.length > 4" class="text-current/70">
-                另有 {{ supplementFeedback.failedItems.length - 4 }} 项失败。
-              </p>
-            </div>
-          </div>
           <AiSearchComposerPanel
             v-if="!showInvalidSessionState"
             v-model="composer"
@@ -250,11 +203,7 @@
             :mode="composerMode"
             :hint="composerHint"
             :hint-tone="composerHintTone"
-            :can-supplement="!!currentSession"
-            :supplement-disabled="streaming || activePhase === 'running'"
-            :supplement-busy="supplementBusy"
             @submit="submitMessage"
-            @supplement="supplementDocuments"
           />
         </div>
       </section>
@@ -328,6 +277,9 @@
           :streaming="streaming"
           :has-session="!!currentSession"
           :phase="activePhase"
+          :supplement-disabled="streaming || activePhase === 'running'"
+          :supplement-busy="supplementBusy"
+          :supplement-feedback="supplementFeedback"
           closable
           @apply-stop-policy="applyStopPolicy"
           @select-document="requestDocumentReview"
@@ -335,6 +287,8 @@
           @quick-prompt="sendQuickPrompt"
           @cancel-run="cancelCurrentRun"
           @export-report="exportReport"
+          @supplement="supplementDocuments"
+          @clear-supplement-feedback="supplementFeedback = null"
           @close="closeContextPanel"
         />
       </aside>
@@ -428,41 +382,6 @@ const activePlanVersion = computed(() => {
   const value = Number(candidate || 0)
   return Number.isFinite(value) && value > 0 ? value : 0
 })
-
-const supplementFeedbackText = computed(() => {
-  const feedback = supplementFeedback.value
-  if (!feedback) return ''
-  const parts = [
-    `已导入 ${feedback.importedCount} 篇`,
-    `公开号 ${feedback.patentCount} 项`,
-    `PDF ${feedback.pdfCount} 份`,
-  ]
-  if (feedback.failedItems.length) parts.push(`失败 ${feedback.failedItems.length} 项`)
-  return `${parts.join('，')}。`
-})
-
-const supplementImportedItemName = (item: Record<string, any>): string => (
-  String(item.pn || item.filename || item.title || '补充文献').trim()
-)
-
-const supplementImportedItemText = (item: Record<string, any>): string => {
-  const name = supplementImportedItemName(item)
-  const source = String(item.sourceType || '').trim() === 'user_pdf' ? 'PDF' : '公开号'
-  if (String(item.status || '').trim() === 'target_detail') {
-    return `${source} ${name}：已更新目标专利详情`
-  }
-  return `${source} ${name}：已导入候选文献`
-}
-
-const supplementFailedItemName = (item: Record<string, any>): string => (
-  String(item.pn || item.filename || item.title || '补充文献').trim()
-)
-
-const supplementFailedItemText = (item: Record<string, any>): string => {
-  const name = supplementFailedItemName(item)
-  const reason = String(item.error || item.reason || item.message || '导入失败').trim()
-  return `${name}：${reason}`
-}
 
 const workspaceTitle = computed(() => String(currentSession.value?.session.title || 'AI 检索工作台'))
 const requestedSessionId = computed(() => String(route.query.session || '').trim())

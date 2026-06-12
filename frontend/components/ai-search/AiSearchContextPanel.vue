@@ -109,6 +109,141 @@
 
         <section class="border-t border-slate-200 pt-3">
           <div class="flex items-center justify-between gap-3">
+            <p class="context-section-title">补充文献</p>
+            <button
+              type="button"
+              class="panel-action gap-1.5"
+              :disabled="!hasSession || supplementDisabled || supplementBusy"
+              :title="supplementDisabled ? '当前轮次结束后可补充文献' : '补充公开号或 PDF 文献'"
+              @click="supplementOpen = !supplementOpen"
+            >
+              <PaperClipIcon class="h-3.5 w-3.5" />
+              <span>{{ supplementOpen ? '收起' : '添加' }}</span>
+            </button>
+          </div>
+
+          <div
+            v-if="supplementFeedback"
+            class="mt-2 rounded-lg border px-2.5 py-2 text-[11px] leading-5"
+            :class="supplementFeedback.failedItems.length ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-cyan-100 bg-cyan-50 text-cyan-900'"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <p class="font-semibold">导入结果</p>
+                <p class="mt-0.5 text-current/80">{{ supplementFeedbackText }}</p>
+              </div>
+              <button
+                type="button"
+                class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-current/60 transition hover:bg-white/60 hover:text-current"
+                aria-label="关闭补充文献导入结果"
+                title="关闭"
+                @click="$emit('clear-supplement-feedback')"
+              >
+                <XMarkIcon class="h-3 w-3" />
+              </button>
+            </div>
+            <div v-if="supplementFeedback.importedItems.length" class="mt-1.5 space-y-1">
+              <p
+                v-for="(item, index) in supplementFeedback.importedItems.slice(0, 4)"
+                :key="`${supplementImportedItemName(item)}-${index}`"
+                class="truncate text-current/80"
+                :title="supplementImportedItemText(item)"
+              >
+                {{ supplementImportedItemText(item) }}
+              </p>
+              <p v-if="supplementFeedback.importedItems.length > 4" class="text-current/70">
+                另有 {{ supplementFeedback.importedItems.length - 4 }} 项已导入。
+              </p>
+            </div>
+            <div v-if="supplementFeedback.failedItems.length" class="mt-1.5 space-y-1 border-t border-current/15 pt-1.5">
+              <p
+                v-for="(item, index) in supplementFeedback.failedItems.slice(0, 4)"
+                :key="`${supplementFailedItemName(item)}-${index}`"
+                class="truncate text-current/80"
+                :title="supplementFailedItemText(item)"
+              >
+                {{ supplementFailedItemText(item) }}
+              </p>
+              <p v-if="supplementFeedback.failedItems.length > 4" class="text-current/70">
+                另有 {{ supplementFeedback.failedItems.length - 4 }} 项失败。
+              </p>
+            </div>
+          </div>
+
+          <div v-if="supplementOpen" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2.5">
+            <input
+              v-model.trim="supplementPatentNumbers"
+              type="text"
+              class="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              :disabled="supplementDisabled || supplementBusy"
+              placeholder="公开号：CN107219079A、CN106596008B"
+            />
+            <div class="mt-2">
+              <button
+                type="button"
+                class="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-[12px] font-medium text-slate-600 transition hover:border-cyan-200 hover:text-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="supplementDisabled || supplementBusy"
+                @click="fileInputRef?.click()"
+              >
+                <PaperClipIcon class="h-3.5 w-3.5" />
+                <span>选择 PDF</span>
+              </button>
+            </div>
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="application/pdf,.pdf"
+              multiple
+              class="hidden"
+              @change="onSupplementFilesChange"
+            />
+            <div v-if="supplementFiles.length" class="mt-2 flex flex-wrap gap-1.5">
+              <span
+                v-for="file in supplementFiles"
+                :key="`${file.name}-${file.size}-${file.lastModified}`"
+                class="inline-flex max-w-full items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+              >
+                <span class="truncate">{{ file.name }}</span>
+                <button
+                  type="button"
+                  class="text-slate-400 hover:text-rose-600"
+                  title="移除"
+                  @click="removeSupplementFile(file)"
+                >
+                  <XMarkIcon class="h-3 w-3" />
+                </button>
+              </span>
+            </div>
+            <textarea
+              v-model.trim="supplementReviewGoal"
+              rows="2"
+              class="mt-2 min-h-[3.5rem] w-full resize-none rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[12px] leading-5 text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              :disabled="supplementDisabled || supplementBusy"
+              placeholder="筛查目标：判断命中点、缺口和是否应选为对比文献"
+            />
+            <div class="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                class="inline-flex h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-medium text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="supplementBusy"
+                @click="resetSupplementDraft"
+              >
+                清空
+              </button>
+              <button
+                type="button"
+                class="inline-flex h-8 items-center justify-center rounded-lg bg-cyan-700 px-3 text-[12px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                :disabled="!canSubmitSupplement"
+                @click="submitSupplement"
+              >
+                {{ supplementBusy ? '导入中...' : '导入并筛查' }}
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="border-t border-slate-200 pt-3">
+          <div class="flex items-center justify-between gap-3">
             <p class="context-section-title">证据池</p>
             <div class="segmented-control">
               <button
@@ -235,12 +370,20 @@
 </template>
 
 <script setup lang="ts">
-import { AdjustmentsHorizontalIcon, ArrowPathIcon, ChevronDownIcon, DocumentTextIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { AdjustmentsHorizontalIcon, ArrowPathIcon, ChevronDownIcon, DocumentTextIcon, MagnifyingGlassIcon, PaperClipIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { computed, ref } from 'vue'
 
 type DatabaseOption = {
   value: string
   label: string
+}
+
+type SupplementFeedback = {
+  importedCount: number
+  patentCount: number
+  pdfCount: number
+  importedItems: Array<Record<string, any>>
+  failedItems: Array<Record<string, any>>
 }
 
 const props = withDefaults(defineProps<{
@@ -252,20 +395,28 @@ const props = withDefaults(defineProps<{
   hasSession?: boolean
   phase?: string
   closable?: boolean
+  supplementDisabled?: boolean
+  supplementBusy?: boolean
+  supplementFeedback?: SupplementFeedback | null
 }>(), {
   streaming: false,
   hasSession: false,
   phase: 'idle',
   closable: false,
+  supplementDisabled: false,
+  supplementBusy: false,
+  supplementFeedback: null,
 })
 
-defineEmits<{
+const emit = defineEmits<{
   'apply-stop-policy': []
   'select-document': [documentId: string]
   'remove-document': [documentId: string]
   'quick-prompt': [key: string]
   'cancel-run': []
   'export-report': []
+  supplement: [payload: { patentNumbers: string, reviewGoal: string, files: File[] }]
+  'clear-supplement-feedback': []
   'close': []
 }>()
 
@@ -277,12 +428,39 @@ const quickActions = [
 ]
 
 const documentBucket = ref<'selected' | 'candidate'>('selected')
+const supplementOpen = ref(false)
+const supplementPatentNumbers = ref('')
+const supplementReviewGoal = ref('')
+const supplementFiles = ref<File[]>([])
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const visibleDocuments = computed(() => (
   documentBucket.value === 'selected'
     ? props.selectedDocuments
     : props.candidateDocuments
 ))
+
+const canSubmitSupplement = computed(() => (
+  props.hasSession
+  && !props.supplementDisabled
+  && !props.supplementBusy
+  && (
+    !!supplementPatentNumbers.value.trim()
+    || supplementFiles.value.length > 0
+  )
+))
+
+const supplementFeedbackText = computed(() => {
+  const feedback = props.supplementFeedback
+  if (!feedback) return ''
+  const parts = [
+    `已导入 ${feedback.importedCount} 篇`,
+    `公开号 ${feedback.patentCount} 项`,
+    `PDF ${feedback.pdfCount} 份`,
+  ]
+  if (feedback.failedItems.length) parts.push(`失败 ${feedback.failedItems.length} 项`)
+  return `${parts.join('，')}。`
+})
 
 const statusLabel = computed(() => (props.phase === 'running' ? '检索中' : '空闲'))
 const statusClass = computed(() => (props.phase === 'running'
@@ -306,6 +484,61 @@ const documentMeta = (doc: Record<string, any>): string => {
 const documentReason = (doc: Record<string, any>): string => (
   String(doc.evidence_summary || doc.reviewReason || doc.agent_reason || '').trim()
 )
+
+const onSupplementFilesChange = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || []).filter(file => file.type === 'application/pdf' || /\.pdf$/i.test(file.name))
+  const existing = new Map(supplementFiles.value.map(file => [`${file.name}-${file.size}-${file.lastModified}`, file]))
+  files.forEach((file) => {
+    existing.set(`${file.name}-${file.size}-${file.lastModified}`, file)
+  })
+  supplementFiles.value = Array.from(existing.values()).slice(0, 8)
+  input.value = ''
+}
+
+const removeSupplementFile = (target: File) => {
+  supplementFiles.value = supplementFiles.value.filter(file => file !== target)
+}
+
+const resetSupplementDraft = () => {
+  supplementPatentNumbers.value = ''
+  supplementReviewGoal.value = ''
+  supplementFiles.value = []
+}
+
+const submitSupplement = () => {
+  if (!canSubmitSupplement.value) return
+  emit('supplement', {
+    patentNumbers: supplementPatentNumbers.value.trim(),
+    reviewGoal: supplementReviewGoal.value.trim(),
+    files: [...supplementFiles.value],
+  })
+  resetSupplementDraft()
+  supplementOpen.value = false
+}
+
+const supplementImportedItemName = (item: Record<string, any>): string => (
+  String(item.pn || item.filename || item.title || '补充文献').trim()
+)
+
+const supplementImportedItemText = (item: Record<string, any>): string => {
+  const name = supplementImportedItemName(item)
+  const source = String(item.sourceType || '').trim() === 'user_pdf' ? 'PDF' : '公开号'
+  if (String(item.status || '').trim() === 'target_detail') {
+    return `${source} ${name}：已更新目标专利详情`
+  }
+  return `${source} ${name}：已导入候选文献`
+}
+
+const supplementFailedItemName = (item: Record<string, any>): string => (
+  String(item.pn || item.filename || item.title || '补充文献').trim()
+)
+
+const supplementFailedItemText = (item: Record<string, any>): string => {
+  const name = supplementFailedItemName(item)
+  const reason = String(item.error || item.reason || item.message || '导入失败').trim()
+  return `${name}：${reason}`
+}
 </script>
 
 <style scoped>
