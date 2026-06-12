@@ -203,7 +203,11 @@
             :mode="composerMode"
             :hint="composerHint"
             :hint-tone="composerHintTone"
+            :can-supplement="!!currentSession"
+            :supplement-disabled="streaming || activePhase === 'running'"
+            :supplement-busy="supplementBusy"
             @submit="submitMessage"
+            @supplement="supplementDocuments"
           />
         </div>
       </section>
@@ -348,6 +352,7 @@ const stopPolicyDraft = ref({
   stopWhen: '',
   databases: ['zhihuiya', 'openalex', 'semanticscholar', 'crossref'] as string[],
 })
+const supplementBusy = ref(false)
 
 const activePhase = computed(() => String(currentSession.value?.run?.phase || currentSession.value?.session?.phase || 'idle'))
 const messages = computed(() => currentSession.value?.conversation?.messages || [])
@@ -715,6 +720,24 @@ const exportReport = async () => {
   if (!currentSession.value || streaming.value) return
   await aiSearchStore.exportReport()
   showMessage('success', '检索报告已导出。')
+}
+
+const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal: string, files: File[] }) => {
+  if (!currentSession.value || supplementBusy.value || streaming.value || activePhase.value === 'running') return
+  supplementBusy.value = true
+  try {
+    const result = await aiSearchStore.supplementDocuments(payload)
+    if (!result) return
+    const importedCount = Number(result.importedCount || 0)
+    showMessage('success', `已导入 ${importedCount} 篇补充文献。`)
+    if (String(result.reviewPrompt || '').trim()) {
+      await aiSearchStore.sendMessage(String(result.reviewPrompt || '').trim())
+    }
+  } catch (_error) {
+    return
+  } finally {
+    supplementBusy.value = false
+  }
 }
 
 

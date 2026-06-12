@@ -35,6 +35,7 @@ class AiSearchService:
         from .reply_seed_service import AiSearchReplySeedService
         from .session_service import AiSearchSessionService
         from .snapshot_service import AiSearchSnapshotService
+        from .supplement_service import AiSearchSupplementService
 
         self.task_manager = task_manager
         self.sessions = AiSearchSessionService(self)
@@ -43,6 +44,7 @@ class AiSearchService:
         self.analysis_seeds = AiSearchAnalysisSeedService(self)
         self.reply_seeds = AiSearchReplySeedService(self)
         self.agent_runs = AiSearchAgentRunService(self)
+        self.supplements = AiSearchSupplementService(self)
 
     @property
     def storage(self):
@@ -190,6 +192,23 @@ class AiSearchService:
         task = self.sessions._get_owned_session_task(session_id, owner_id)
         self.artifacts.export_session_report(task)
         return self.snapshots.get_snapshot(session_id, owner_id)
+
+    async def supplement_documents(
+        self,
+        session_id: str,
+        owner_id: str,
+        *,
+        patent_numbers: str = "",
+        files: Optional[List[Any]] = None,
+        review_goal: str = "",
+    ) -> Dict[str, Any]:
+        return await self.supplements.supplement_documents(
+            session_id,
+            owner_id,
+            patent_numbers=patent_numbers,
+            files=files,
+            review_goal=review_goal,
+        )
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         async for event in self._stream_with_task_usage(

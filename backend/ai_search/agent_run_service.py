@@ -10,7 +10,7 @@ import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from backend.storage import TaskStatus
-from backend.time_utils import utc_now_z
+from backend.time_utils import parse_storage_ts, utc_now, utc_now_z
 from patent_agents.ai_search.src.state import (
     PHASE_IDLE,
     PHASE_RUNNING,
@@ -27,6 +27,10 @@ from patent_agents.ai_search.src.runtime import (
     run_search_agent_stream,
     set_task_phase,
 )
+
+STOP_SATISFIED_COMPLETION_GRACE_SECONDS = 12.0
+STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS = 30.0
+STOP_SATISFIED_MESSAGE = "停止条件已满足，本轮已停止继续检索。可查看当前候选/已选证据，或发送新指令调整范围。"
 
 
 class AiSearchAgentRunService:
@@ -119,6 +123,148 @@ class AiSearchAgentRunService:
             return None
         self.storage.update_ai_search_message(message_id, content=content, stream_status=stream_status)
         return self.storage.get_ai_search_message(message_id)
+
+    def _truthy_value(self, value: Any) -> bool:
+        return value is True or str(value or "").strip().lower() == "true"
+
+    def _payload_indicates_stop_satisfied(self, payload: Dict[str, Any]) -> bool:
+        label = str(payload.get("label") or "").strip()
+        if "停止条件已满足" in label:
+            return True
+        for key in ("output", "result"):
+            value = payload.get(key)
+            if not isinstance(value, dict):
+                continue
+            if self._truthy_value(value.get("blocked")):
+                return True
+        return False
+
+    def _payload_indicates_stop_condition_met(self, payload: Dict[str, Any]) -> bool:
+        for key in ("output", "result"):
+            value = payload.get(key)
+            if not isinstance(value, dict):
+                continue
+            stop = value.get("stop")
+            if isinstance(stop, dict) and self._truthy_value(stop.get("should_stop")):
+                return True
+        return False
+
+    def _event_indicates_report_saved(self, event: Dict[str, Any]) -> bool:
+        if str(event.get("event_type") or "").strip() != "trace.completed":
+            return False
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if str(payload.get("toolName") or "").strip() != "save_search_report":
+            return False
+        output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+        return self._truthy_value(output.get("saved")) or "检索报告已保存" in str(payload.get("label") or "")
+
+    def _event_indicates_stop_satisfied(self, event: Dict[str, Any]) -> bool:
+        if str(event.get("event_type") or "").strip() != "trace.completed":
+            return False
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        return self._payload_indicates_stop_satisfied(payload)
+
+    def _event_indicates_stop_condition_met(self, event: Dict[str, Any]) -> bool:
+        if str(event.get("event_type") or "").strip() != "trace.completed":
+            return False
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        return self._payload_indicates_stop_condition_met(payload)
+
+    def _latest_stop_satisfied_event(self, task_id: str) -> Optional[Dict[str, Any]]:
+        latest: Optional[Dict[str, Any]] = None
+        stop_condition_event: Optional[Dict[str, Any]] = None
+        report_saved_event: Optional[Dict[str, Any]] = None
+        for event in self.storage.list_ai_search_stream_events(task_id, after_seq=0):
+            if self._event_indicates_stop_satisfied(event):
+                latest = event
+            if self._event_indicates_stop_condition_met(event):
+                stop_condition_event = event
+                if report_saved_event:
+                    latest = event
+            if self._event_indicates_report_saved(event):
+                report_saved_event = event
+                if stop_condition_event:
+                    latest = event
+        return latest
+
+    def _event_age_seconds(self, event: Dict[str, Any]) -> float:
+        created_at = parse_storage_ts(str(event.get("created_at") or ""), naive_strategy="utc")
+        if created_at is None:
+            return 0.0
+        return max(0.0, (utc_now() - created_at).total_seconds())
+
+    def _active_run_id(self, task_id: str) -> str:
+        task = self.storage.get_task(task_id)
+        meta = get_ai_search_meta(task)
+        plan_version = int(meta.get("active_plan_version") or 1)
+        run = self.storage.get_ai_search_run(task_id, plan_version=plan_version) or self.storage.get_ai_search_run(task_id)
+        return str((run or {}).get("run_id") or meta.get("current_run_id") or "").strip()
+
+    def _finish_stop_satisfied_run(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        runtime: Optional[AiSearchRuntimeContext] = None,
+        assistant_message_id: str = "",
+        assistant_parts: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not run_id or self._current_phase_value(task_id) != PHASE_RUNNING:
+            return []
+        events: List[Dict[str, Any]] = []
+        content = "".join(assistant_parts or []).strip() or STOP_SATISFIED_MESSAGE
+        if assistant_message_id:
+            assistant_message = self._update_message_content(
+                assistant_message_id,
+                content,
+                stream_status="completed",
+            )
+            if assistant_message:
+                events.append(
+                    self._append_event(
+                        task_id,
+                        "message.completed",
+                        assistant_message,
+                        run_id=run_id,
+                        entity_id=assistant_message_id,
+                    )
+                )
+        else:
+            assistant_message = self._append_message(
+                task_id,
+                "assistant",
+                content,
+                metadata={"render_mode": "markdown"},
+            )
+            if assistant_message:
+                events.append(
+                    self._append_event(
+                        task_id,
+                        "message.created",
+                        assistant_message,
+                        run_id=run_id,
+                        entity_id=str(assistant_message.get("message_id") or ""),
+                    )
+                )
+        task = self.storage.get_task(task_id)
+        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
+        resolved_runtime = runtime or AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
+        events.append(self._append_event(task_id, "documents.updated", documents_payload(resolved_runtime), run_id=run_id))
+        self._mark_idle(task_id, run_id)
+        events.append(
+            self._append_event(
+                task_id,
+                "run.completed",
+                {
+                    "phase": PHASE_IDLE,
+                    "completionReason": "stop_satisfied",
+                    "awaitingUserAction": False,
+                    "message": STOP_SATISFIED_MESSAGE,
+                },
+                run_id=run_id,
+            )
+        )
+        return events
 
     def _ensure_run(self, task_id: str) -> Dict[str, Any]:
         task = self.storage.get_task(task_id)
@@ -347,18 +493,29 @@ class AiSearchAgentRunService:
             assistant_message_id = ""
             assistant_parts: List[str] = []
             latest_seq = start_seq
+            stop_satisfied_since: Optional[float] = None
+            stop_condition_met_seen = False
+            report_saved_seen = False
 
             async def on_delta(delta: str) -> None:
                 if delta:
                     await delta_queue.put(delta)
 
             def flush_runtime_events() -> List[str]:
-                nonlocal latest_seq
+                nonlocal latest_seq, stop_satisfied_since, stop_condition_met_seen, report_saved_seen
                 chunks: List[str] = []
                 for event in self.storage.list_ai_search_stream_events(task.id, after_seq=latest_seq, limit=500):
                     seq = int(event.get("seq") or 0)
                     if seq <= latest_seq:
                         continue
+                    if self._event_indicates_stop_satisfied(event) and stop_satisfied_since is None:
+                        stop_satisfied_since = time.monotonic()
+                    if self._event_indicates_stop_condition_met(event):
+                        stop_condition_met_seen = True
+                    if self._event_indicates_report_saved(event):
+                        report_saved_seen = True
+                    if stop_condition_met_seen and report_saved_seen and stop_satisfied_since is None:
+                        stop_satisfied_since = time.monotonic()
                     chunks.append(self._format_event(event))
                     latest_seq = seq
                 return chunks
@@ -438,6 +595,7 @@ class AiSearchAgentRunService:
             started_monotonic = time.monotonic()
             timed_out = False
             cancel_requested = False
+            stop_satisfied_timeout = False
             while not agent_task.done():
                 for chunk in flush_runtime_events():
                     yield chunk
@@ -455,9 +613,16 @@ class AiSearchAgentRunService:
                     cancel_requested = True
                     agent_task.cancel()
                     break
+                if (
+                    stop_satisfied_since is not None
+                    and time.monotonic() - stop_satisfied_since >= STOP_SATISFIED_COMPLETION_GRACE_SECONDS
+                ):
+                    stop_satisfied_timeout = True
+                    agent_task.cancel()
+                    break
                 await asyncio.sleep(0.1)
 
-            if timed_out or cancel_requested:
+            if timed_out or cancel_requested or stop_satisfied_timeout:
                 with contextlib.suppress(asyncio.CancelledError):
                     await agent_task
                 assistant_text = ""
@@ -490,6 +655,18 @@ class AiSearchAgentRunService:
                     run_id=run_id,
                 )
                 yield self._format_event(cancelled)
+                terminal_event_written = True
+                return
+            if stop_satisfied_timeout:
+                self._clear_run_cancel_request(task.id)
+                for event in self._finish_stop_satisfied_run(
+                    task.id,
+                    run_id,
+                    runtime=runtime,
+                    assistant_message_id=assistant_message_id,
+                    assistant_parts=assistant_parts,
+                ):
+                    yield self._format_event(event)
                 terminal_event_written = True
                 return
             if timed_out:
@@ -634,6 +811,12 @@ class AiSearchAgentRunService:
                     yield self._format_event(event)
                 continue
             if self._current_phase_value(session_id) != PHASE_RUNNING:
+                break
+            stop_event = self._latest_stop_satisfied_event(session_id)
+            if stop_event and self._event_age_seconds(stop_event) >= STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS:
+                run_id = self._active_run_id(session_id)
+                for event in self._finish_stop_satisfied_run(session_id, run_id):
+                    yield self._format_event(event)
                 break
             idle_ticks += 1
             if idle_ticks % 10 == 0:

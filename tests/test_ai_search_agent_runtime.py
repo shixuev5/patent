@@ -4,7 +4,7 @@ import importlib
 import asyncio
 
 from patent_agents.ai_search.src import runtime as agent_runtime_module
-from patent_agents.ai_search.src.runtime import _patent_items_from_response, _stream_text_delta, normalize_stop_policy
+from patent_agents.ai_search.src.runtime import _patent_items_from_response, _reasoning_summary_text, _stream_text_delta, normalize_stop_policy
 from patent_agents.ai_search.src.analysis_seed import seed_prompt_from_analysis, seed_search_elements_from_analysis
 from patent_agents.ai_search.src.reply_seed import seed_prompt_from_reply, seed_search_elements_from_reply
 from patent_agents.ai_search.src.search_elements import normalize_search_elements_payload
@@ -93,6 +93,25 @@ def test_stream_text_delta_accepts_responses_text_delta() -> None:
             delta = "增量文本"
 
     assert _stream_text_delta(RawEvent()) == "增量文本"
+
+
+def test_reasoning_summary_text_uses_public_summary_only() -> None:
+    class Summary:
+        text = "公开思考摘要"
+
+    class RawItem:
+        summary = [Summary()]
+        content = [{"text": "不应读取的 reasoning content"}]
+
+    class Item:
+        raw_item = RawItem()
+
+    class Event:
+        type = "run_item_stream_event"
+        name = "reasoning_item_created"
+        item = Item()
+
+    assert _reasoning_summary_text(Event()) == "公开思考摘要"
 
 
 def test_search_agent_registers_controlled_subagent_tools(monkeypatch) -> None:

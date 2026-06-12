@@ -90,6 +90,15 @@ export interface AiSearchCreateSessionResponse {
   sourceTaskId?: string | null
 }
 
+export interface AiSearchSupplementResponse {
+  importedCount: number
+  patentCount: number
+  pdfCount: number
+  failedItems: Array<Record<string, any>>
+  reviewPrompt: string
+  snapshot: AiSearchSnapshot
+}
+
 export interface AiSearchStreamEvent {
   type: string
   sessionId: string

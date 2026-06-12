@@ -46,8 +46,8 @@ const buildWaitingTraceLabel = (phase: string, stopSatisfied: boolean = false): 
   if (stopSatisfied) return '停止条件已满足，正在整理结论。'
   const normalized = String(phase || '').trim()
   const phaseLabel = aiSearchPhaseLabel(normalized)
-  if (!normalized) return '正在继续处理，请稍候。'
-  if (normalized === 'running') return '正在整理结果，请稍候。'
+  if (!normalized) return '正在同步会话进度，请稍候。'
+  if (normalized === 'running') return '正在同步检索进度，请稍候。'
   return `正在${phaseLabel}，请稍候。`
 }
 

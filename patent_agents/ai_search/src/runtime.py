@@ -2067,6 +2067,22 @@ def _agent_name(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _reasoning_summary_text(event: Any) -> str:
+    """Extract public reasoning summary text from an Agents SDK reasoning item."""
+    if _agent_event_name(event) != "reasoning_item_created":
+        return ""
+    raw_item = getattr(getattr(event, "item", None), "raw_item", None)
+    summary = raw_item.get("summary") if isinstance(raw_item, dict) else getattr(raw_item, "summary", None)
+    if not isinstance(summary, list):
+        return ""
+    parts: List[str] = []
+    for item in summary:
+        text = str(item.get("text") if isinstance(item, dict) else getattr(item, "text", "")).strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
 def _run_item_agent_label(event: Any) -> str:
     name = _agent_event_name(event)
     item = getattr(event, "item", None)
@@ -2098,26 +2114,40 @@ async def run_search_agent_stream(
             thinking_trace = context.start_trace(
                 tool_name="agent_thinking",
                 label="理解任务并规划下一步",
-                detail="展示的是面向用户的执行摘要，不包含原始隐藏推理。",
+                detail="正在分析任务并规划下一步。",
                 trace_type="thinking",
                 actor_name="ai-search-agent",
-                metadata={"visibility": "public_summary"},
+                metadata={"visibility": "public_thinking"},
             )
             thinking_open = True
+            thinking_notes: List[str] = []
 
             def finish_thinking(label: str, output: Optional[Dict[str, Any]] = None) -> None:
                 nonlocal thinking_open
                 if not thinking_open:
                     return
+                next_step = str((output or {}).get("next_step") or "").strip()
+                summary = str((output or {}).get("summary") or "").strip()
+                text_parts = [item for item in thinking_notes if item]
+                if summary:
+                    text_parts.append(summary)
+                if next_step:
+                    text_parts.append(f"下一步：{next_step}")
+                text = "\n".join(dict.fromkeys(text_parts)).strip() or label
+                trace_output = {
+                    **(output or {}),
+                    "text": text,
+                    "summary": text,
+                }
                 context.finish_trace(
                     thinking_trace,
                     tool_name="agent_thinking",
                     label=label,
-                    detail="已完成公开执行摘要；原始隐藏推理不会展示。",
+                    detail=text,
                     trace_type="thinking",
                     actor_name="ai-search-agent",
-                    output=output or {"visibility": "public_summary"},
-                    metadata={"visibility": "public_summary"},
+                    output=trace_output,
+                    metadata={"visibility": "public_thinking"},
                 )
                 thinking_open = False
 
@@ -2133,6 +2163,9 @@ async def run_search_agent_stream(
                     result.cancel()
                     return ""
                 if str(getattr(event, "type", "") or "") == "run_item_stream_event":
+                    reasoning_summary = _reasoning_summary_text(event)
+                    if reasoning_summary:
+                        thinking_notes.append(reasoning_summary)
                     label = _run_item_agent_label(event)
                     if label:
                         if _agent_event_name(event) == "tool_called":

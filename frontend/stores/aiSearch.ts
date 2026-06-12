@@ -12,6 +12,7 @@ import type {
   AiSearchSessionListResponse,
   AiSearchSnapshot,
   AiSearchStopPolicy,
+  AiSearchSupplementResponse,
   AiSearchStreamEvent,
 } from '~/types/aiSearch'
 
@@ -1061,6 +1062,43 @@ export const useAiSearchStore = defineStore('aiSearch', {
         headers: payload ? { 'Content-Type': 'application/json' } : undefined,
         body: payload ? JSON.stringify(payload) : undefined,
       })
+    },
+
+    async supplementDocuments(payload: { patentNumbers?: string, reviewGoal?: string, files?: File[] }) {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return null
+      this._setRuntimeError(sessionId, '')
+      const formData = new FormData()
+      const patentNumbers = String(payload.patentNumbers || '').trim()
+      const reviewGoal = String(payload.reviewGoal || '').trim()
+      if (patentNumbers) formData.append('patentNumbers', patentNumbers)
+      if (reviewGoal) formData.append('reviewGoal', reviewGoal)
+      ;(payload.files || []).forEach((file) => {
+        if (file) formData.append('files', file, file.name)
+      })
+      try {
+        const token = await this._ensureToken()
+        const config = useRuntimeConfig()
+        const response = await requestRaw({
+          baseUrl: config.public.apiBaseUrl,
+          path: `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/documents/supplement`,
+          method: 'POST',
+          token,
+          body: formData,
+        })
+        if (!response.ok) {
+          throw new Error(await parseErrorMessage(response))
+        }
+        const data = await response.json() as AiSearchSupplementResponse
+        if (data?.snapshot) {
+          this._applySnapshot(data.snapshot, { activate: sessionId === this.currentSessionId })
+        }
+        return data
+      } catch (error: any) {
+        this._setRuntimeError(sessionId, error?.message || '补充文献失败')
+        throw error
+      }
     },
 
     async sendMessage(content: string) {

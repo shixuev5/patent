@@ -119,6 +119,91 @@ def test_stream_message_persists_agent_reply_and_documents(monkeypatch, tmp_path
     assert activity_traces[0]["status"] == "completed"
 
 
+def test_stream_message_completes_when_stop_satisfied_agent_stalls(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    monkeypatch.setattr(agent_run_service_module, "STOP_SATISFIED_COMPLETION_GRACE_SECONDS", 0.01)
+
+    async def fake_run_search_agent_stream(runtime, _text: str, *, on_delta=None, should_cancel=None) -> str:
+        trace = runtime.start_trace(
+            tool_name="search_patents",
+            label="检索前检查停止条件",
+            input={"query": "固态电池隔膜"},
+        )
+        runtime.finish_trace(
+            trace,
+            tool_name="search_patents",
+            label="停止条件已满足，未继续检索",
+            output={"blocked": True, "stop": {"should_stop": True, "reasons": ["达到最大候选数量"]}},
+        )
+        await asyncio.sleep(2)
+        return "这段不应写入会话"
+
+    monkeypatch.setattr(agent_run_service_module, "run_search_agent_stream", fake_run_search_agent_stream)
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "继续检索")))
+    completed = next(event for event in events if event["type"] == "run.completed")
+
+    assert completed["payload"]["completionReason"] == "stop_satisfied"
+    assert completed["payload"]["phase"] == PHASE_IDLE
+    assert any(
+        item["role"] == "assistant" and "停止条件已满足" in str(item.get("content") or "")
+        for item in storage.list_ai_search_messages(created.sessionId)
+    )
+    assert all("这段不应写入会话" not in str(item.get("content") or "") for item in storage.list_ai_search_messages(created.sessionId))
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    assert snapshot.session.phase == PHASE_IDLE
+    assert snapshot.run["phase"] == PHASE_IDLE
+
+
+def test_stream_message_completes_after_report_saved_when_stop_condition_met_agent_stalls(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    monkeypatch.setattr(agent_run_service_module, "STOP_SATISFIED_COMPLETION_GRACE_SECONDS", 0.01)
+
+    async def fake_run_search_agent_stream(runtime, _text: str, *, on_delta=None, should_cancel=None) -> str:
+        select_trace = runtime.start_trace(
+            tool_name="select_documents",
+            label="选中文献 1 篇",
+            input={"document_ids": ["doc-1"]},
+        )
+        runtime.finish_trace(
+            select_trace,
+            tool_name="select_documents",
+            label="已选中文献 1 篇",
+            output={"selected": 1, "selected_count": 1, "stop": {"should_stop": True, "reasons": ["达到最大选中文献数量"]}},
+        )
+        await asyncio.sleep(0.05)
+        report_trace = runtime.start_trace(
+            tool_name="save_search_report",
+            label="保存检索报告",
+            input={"markdown_chars": 12},
+        )
+        runtime.finish_trace(
+            report_trace,
+            tool_name="save_search_report",
+            label="检索报告已保存",
+            output={"saved": True, "markdown_chars": 12},
+        )
+        await asyncio.sleep(2)
+        return "报告保存后卡住时不应继续写入。"
+
+    monkeypatch.setattr(agent_run_service_module, "run_search_agent_stream", fake_run_search_agent_stream)
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "继续检索")))
+    completed = next(event for event in events if event["type"] == "run.completed")
+
+    assert completed["payload"]["completionReason"] == "stop_satisfied"
+    assert any(
+        event["type"] == "trace.completed"
+        and (event.get("payload") or {}).get("toolName") == "save_search_report"
+        for event in events
+    )
+    assert all("报告保存后卡住" not in str(item.get("content") or "") for item in storage.list_ai_search_messages(created.sessionId))
+    assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
+    assert storage.get_ai_search_run(created.sessionId)["phase"] == PHASE_IDLE
+
+
 def test_cancel_current_run_stops_stream_from_writing_completion(monkeypatch, tmp_path) -> None:
     service, storage = _build_service(tmp_path)
     created, _task = _create_session(service)
@@ -172,6 +257,75 @@ def test_document_selection_updates_selected_and_candidate_sets(tmp_path) -> Non
     assert doc_review["document_id"] in selected_ids
     assert doc_remove["document_id"] in candidate_ids
     assert snapshot.run["selectedDocumentCount"] == 1
+
+
+def test_supplement_documents_imports_user_patent_numbers(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+
+    class FakeClient:
+        def get_patent_detail(self, pn: str):
+            return {
+                "basic_info": {
+                    "title": f"{pn} 用户补充专利",
+                    "abstract": "用户已知相关专利摘要",
+                },
+                "claims_text": "一种补充专利权利要求。",
+                "description_text": "补充专利说明书。",
+                "full_text_combined": "补充专利全文。",
+            }
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+
+    result = asyncio.run(
+        service.supplement_documents(
+            created.sessionId,
+            "guest_ai_search",
+            patent_numbers="CN500001A; CN500002A",
+            review_goal="判断是否覆盖当前区别特征。",
+        )
+    )
+
+    docs = storage.list_ai_search_documents(created.sessionId, 1)
+    assert result["importedCount"] == 2
+    assert result["patentCount"] == 2
+    assert "判断是否覆盖当前区别特征" in result["reviewPrompt"]
+    assert {item["pn"] for item in docs} == {"CN500001A", "CN500002A"}
+    assert all(item["stage"] == "candidate" for item in docs)
+    assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
+
+
+def test_supplement_documents_imports_user_pdf(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+
+    class FakeUpload:
+        filename = "user-doc.pdf"
+
+        async def read(self):
+            return b"%PDF fake content"
+
+    monkeypatch.setattr(
+        service.supplements,
+        "_extract_pdf_text",
+        lambda _path: "用户上传 PDF 文本，公开了侧挂支架和振动试验装置。",
+    )
+
+    result = asyncio.run(
+        service.supplement_documents(
+            created.sessionId,
+            "guest_ai_search",
+            files=[FakeUpload()],
+        )
+    )
+
+    docs = storage.list_ai_search_documents(created.sessionId, 1)
+    assert result["importedCount"] == 1
+    assert result["pdfCount"] == 1
+    assert docs[0]["source_type"] == "user_pdf"
+    assert docs[0]["title"] == "user-doc"
+    assert docs[0]["user_pinned"] is True
+    assert "侧挂支架" in docs[0]["evidence_summary"]
 
 
 def test_running_message_is_saved_and_interrupts_current_run(tmp_path) -> None:
@@ -238,6 +392,36 @@ def test_subscribe_stream_waits_for_new_events_while_session_is_running(tmp_path
     events = asyncio.run(run_scenario())
 
     assert any(event["type"] == "trace.completed" for event in events)
+
+
+def test_subscribe_stream_recovers_stale_stop_satisfied_run(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    monkeypatch.setattr(agent_run_service_module, "STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS", 0.0)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    service.agent_runs._mark_running(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, run_id, 1)
+    trace = runtime.start_trace(
+        tool_name="search_patents",
+        label="检索前检查停止条件",
+        input={"query": "固态电池隔膜"},
+    )
+    runtime.finish_trace(
+        trace,
+        tool_name="search_patents",
+        label="停止条件已满足，未继续检索",
+        output={"blocked": True, "stop": {"should_stop": True, "reasons": ["达到最大候选数量"]}},
+    )
+    latest = storage.get_latest_ai_search_stream_event(created.sessionId)
+    after_seq = int((latest or {}).get("seq") or 0)
+
+    events = asyncio.run(_collect_stream(service.subscribe_stream(created.sessionId, "guest_ai_search", after_seq=after_seq)))
+    completed = next(event for event in events if event["type"] == "run.completed")
+
+    assert completed["payload"]["completionReason"] == "stop_satisfied"
+    assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
+    assert storage.get_ai_search_run(created.sessionId, run_id)["phase"] == PHASE_IDLE
 
 
 def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_path) -> None:

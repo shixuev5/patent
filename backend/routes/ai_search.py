@@ -4,7 +4,9 @@ AI search routes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
 
 from backend.auth import _get_current_user
@@ -166,6 +168,23 @@ async def export_ai_search_report(
     current_user: CurrentUser = Depends(_get_current_user),
 ):
     return service.export_report(session_id, current_user.user_id)
+
+
+@router.post("/api/ai-search/sessions/{session_id}/documents/supplement")
+async def supplement_ai_search_documents(
+    session_id: str,
+    patentNumbers: str = Form(""),
+    reviewGoal: str = Form(""),
+    files: Optional[List[UploadFile]] = File(None),
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return await service.supplement_documents(
+        session_id,
+        current_user.user_id,
+        patent_numbers=patentNumbers,
+        files=files,
+        review_goal=reviewGoal,
+    )
 
 
 @router.post("/api/ai-search/sessions/{session_id}/documents/selection/stream")

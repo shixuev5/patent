@@ -449,7 +449,22 @@ const stringifyTraceValue = (value: any): string => {
   }
 }
 
+const traceThinkingSummary = (entry: ConversationEntry): string => {
+  if (normalizedTraceType(entry) !== 'thinking') return ''
+  const output = entry.result ?? entry.output
+  if (typeof output === 'string') return output.trim()
+  if (!output || typeof output !== 'object') return ''
+  const summary = String(output.text || output.summary || output.message || '').trim()
+  if (summary) return summary
+  const nextStep = String(output.next_step || '').trim()
+  return nextStep
+}
+
 const traceDetailBlocks = (entry: ConversationEntry): Array<{ label: string, value: string }> => {
+  if (normalizedTraceType(entry) === 'thinking') {
+    const summary = traceThinkingSummary(entry)
+    return summary ? [{ label: '思考摘要', value: summary }] : []
+  }
   const candidates = [
     ['输入参数', entry.arguments ?? entry.input],
     ['执行结果', entry.result ?? entry.output],
