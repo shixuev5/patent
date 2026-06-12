@@ -214,7 +214,20 @@
                 <XMarkIcon class="h-3.5 w-3.5" />
               </button>
             </div>
-            <div v-if="supplementFeedback.failedItems.length" class="mt-1.5 space-y-1">
+            <div v-if="supplementFeedback.importedItems.length" class="mt-1.5 space-y-1">
+              <p
+                v-for="(item, index) in supplementFeedback.importedItems.slice(0, 4)"
+                :key="`${supplementImportedItemName(item)}-${index}`"
+                class="truncate text-current/80"
+                :title="supplementImportedItemText(item)"
+              >
+                {{ supplementImportedItemText(item) }}
+              </p>
+              <p v-if="supplementFeedback.importedItems.length > 4" class="text-current/70">
+                另有 {{ supplementFeedback.importedItems.length - 4 }} 项已导入。
+              </p>
+            </div>
+            <div v-if="supplementFeedback.failedItems.length" class="mt-1.5 space-y-1 border-t border-current/15 pt-1.5">
               <p
                 v-for="(item, index) in supplementFeedback.failedItems.slice(0, 4)"
                 :key="`${supplementFailedItemName(item)}-${index}`"
@@ -355,6 +368,7 @@ type SupplementFeedback = {
   importedCount: number
   patentCount: number
   pdfCount: number
+  importedItems: Array<Record<string, any>>
   failedItems: Array<Record<string, any>>
 }
 
@@ -426,6 +440,19 @@ const supplementFeedbackText = computed(() => {
   if (feedback.failedItems.length) parts.push(`失败 ${feedback.failedItems.length} 项`)
   return `${parts.join('，')}。`
 })
+
+const supplementImportedItemName = (item: Record<string, any>): string => (
+  String(item.pn || item.filename || item.title || '补充文献').trim()
+)
+
+const supplementImportedItemText = (item: Record<string, any>): string => {
+  const name = supplementImportedItemName(item)
+  const source = String(item.sourceType || '').trim() === 'user_pdf' ? 'PDF' : '公开号'
+  if (String(item.status || '').trim() === 'target_detail') {
+    return `${source} ${name}：已更新目标专利详情`
+  }
+  return `${source} ${name}：已导入候选文献`
+}
 
 const supplementFailedItemName = (item: Record<string, any>): string => (
   String(item.pn || item.filename || item.title || '补充文献').trim()
@@ -793,11 +820,13 @@ const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal:
     const result = await aiSearchStore.supplementDocuments(payload) as AiSearchSupplementResponse | null
     if (!result) return
     const importedCount = Number(result.importedCount || 0)
+    const importedItems = Array.isArray(result.importedItems) ? result.importedItems : []
     const failedItems = Array.isArray(result.failedItems) ? result.failedItems : []
     supplementFeedback.value = {
       importedCount,
       patentCount: Number(result.patentCount || 0),
       pdfCount: Number(result.pdfCount || 0),
+      importedItems,
       failedItems,
     }
     const failedCount = failedItems.length

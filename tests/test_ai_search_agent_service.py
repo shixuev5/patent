@@ -289,6 +289,8 @@ def test_supplement_documents_imports_user_patent_numbers(monkeypatch, tmp_path)
     docs = storage.list_ai_search_documents(created.sessionId, 1)
     assert result["importedCount"] == 2
     assert result["patentCount"] == 2
+    assert [item["pn"] for item in result["importedItems"]] == ["CN500001A", "CN500002A"]
+    assert all(item["status"] == "candidate" for item in result["importedItems"])
     assert "判断是否覆盖当前区别特征" in result["reviewPrompt"]
     assert {item["pn"] for item in docs} == {"CN500001A", "CN500002A"}
     assert all(item["stage"] == "candidate" for item in docs)
@@ -322,6 +324,8 @@ def test_supplement_documents_imports_user_pdf(monkeypatch, tmp_path) -> None:
     docs = storage.list_ai_search_documents(created.sessionId, 1)
     assert result["importedCount"] == 1
     assert result["pdfCount"] == 1
+    assert result["importedItems"][0]["filename"] == "user-doc.pdf"
+    assert result["importedItems"][0]["sourceType"] == "user_pdf"
     assert docs[0]["source_type"] == "user_pdf"
     assert docs[0]["title"] == "user-doc"
     assert docs[0]["user_pinned"] is True

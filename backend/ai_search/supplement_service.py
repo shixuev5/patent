@@ -245,6 +245,25 @@ class AiSearchSupplementService:
         goal = _safe_text(review_goal) or "请筛查这些用户补充文献与当前检索目标/已选证据的相关性，指出命中点、缺口，并建议是否选为对比文献。"
         return f"{'；'.join(segments) or '用户补充了文献'}。{goal}"
 
+    def _imported_item(self, item: Dict[str, Any], *, source_type: str) -> Optional[Dict[str, Any]]:
+        if not (item.get("stored_as_candidate") or item.get("target_detail")):
+            return None
+        title = _safe_text(item.get("title")) or _safe_text(item.get("filename")) or _safe_text(item.get("pn")) or "补充文献"
+        status = "target_detail" if item.get("target_detail") else "candidate"
+        payload = {
+            "sourceType": source_type,
+            "status": status,
+            "title": title,
+            "documentId": item.get("document_id") or None,
+        }
+        if item.get("pn"):
+            payload["pn"] = item.get("pn")
+        if item.get("filename"):
+            payload["filename"] = item.get("filename")
+        if item.get("text_chars"):
+            payload["textChars"] = item.get("text_chars")
+        return payload
+
     async def supplement_documents(
         self,
         session_id: str,
@@ -312,6 +331,14 @@ class AiSearchSupplementService:
             for item in [*patent_results, *pdf_results]
             if item.get("error") or item.get("blocked")
         ]
+        imported_items = [
+            item
+            for item in [
+                *[self._imported_item(item, source_type="patent") for item in patent_results],
+                *[self._imported_item(item, source_type="user_pdf") for item in pdf_results],
+            ]
+            if item
+        ]
         self._append_event(task.id, "documents.updated", documents_payload(runtime), run_id=runtime.run_id)
         prompt = self._review_prompt(patent_numbers=numbers, pdf_results=pdf_results, review_goal=review_goal)
         task = self.storage.get_task(task.id)
@@ -343,6 +370,7 @@ class AiSearchSupplementService:
                 "patent_count": len(numbers),
                 "pdf_count": len([item for item in pdf_results if item.get("stored_as_candidate")]),
                 "failed_count": len(failed_items),
+                "imported_items": imported_items,
                 "review_prompt": prompt,
             },
             metadata={"source": "user_supplement"},
@@ -351,6 +379,7 @@ class AiSearchSupplementService:
             "importedCount": imported_count,
             "patentCount": len(numbers),
             "pdfCount": len([item for item in pdf_results if item.get("stored_as_candidate")]),
+            "importedItems": imported_items,
             "failedItems": failed_items,
             "reviewPrompt": prompt,
             "snapshot": self.facade.snapshots.get_snapshot(session_id, owner_id),

@@ -94,6 +94,7 @@ export interface AiSearchSupplementResponse {
   importedCount: number
   patentCount: number
   pdfCount: number
+  importedItems?: Array<Record<string, any>>
   failedItems: Array<Record<string, any>>
   reviewPrompt: string
   snapshot: AiSearchSnapshot
