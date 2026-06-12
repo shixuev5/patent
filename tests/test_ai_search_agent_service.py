@@ -294,6 +294,8 @@ def test_supplement_documents_imports_user_patent_numbers(monkeypatch, tmp_path)
     assert "判断是否覆盖当前区别特征" in result["reviewPrompt"]
     assert {item["pn"] for item in docs} == {"CN500001A", "CN500002A"}
     assert all(item["stage"] == "candidate" for item in docs)
+    assert all(item["user_pinned"] is True for item in docs)
+    assert {item["detail_source"] for item in docs} == {"user_supplement_patent"}
     assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
 
 
@@ -302,10 +304,12 @@ def test_supplement_documents_imports_user_pdf(monkeypatch, tmp_path) -> None:
     created, _task = _create_session(service)
 
     class FakeUpload:
-        filename = "user-doc.pdf"
+        def __init__(self, filename: str, content: bytes) -> None:
+            self.filename = filename
+            self._content = content
 
         async def read(self):
-            return b"%PDF fake content"
+            return self._content
 
     monkeypatch.setattr(
         service.supplements,
@@ -317,7 +321,7 @@ def test_supplement_documents_imports_user_pdf(monkeypatch, tmp_path) -> None:
         service.supplement_documents(
             created.sessionId,
             "guest_ai_search",
-            files=[FakeUpload()],
+            files=[FakeUpload("user-doc.pdf", b"%PDF fake content")],
         )
     )
 
@@ -330,6 +334,41 @@ def test_supplement_documents_imports_user_pdf(monkeypatch, tmp_path) -> None:
     assert docs[0]["title"] == "user-doc"
     assert docs[0]["user_pinned"] is True
     assert "侧挂支架" in docs[0]["evidence_summary"]
+
+    asyncio.run(
+        service.supplement_documents(
+            created.sessionId,
+            "guest_ai_search",
+            files=[FakeUpload("second-doc.pdf", b"%PDF fake content 2")],
+        )
+    )
+    meta = get_ai_search_meta(storage.get_task(created.sessionId))
+    assert [item["filename"] for item in meta["supplemental_files"]] == ["user-doc.pdf", "second-doc.pdf"]
+
+
+def test_supplement_documents_returns_friendly_pdf_text_failure(monkeypatch, tmp_path) -> None:
+    service, _storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+
+    class FakeUpload:
+        filename = "scan.pdf"
+
+        async def read(self):
+            return b"%PDF scan content"
+
+    monkeypatch.setattr(service.supplements, "_extract_pdf_text", lambda _path: "")
+
+    result = asyncio.run(
+        service.supplement_documents(
+            created.sessionId,
+            "guest_ai_search",
+            files=[FakeUpload()],
+        )
+    )
+
+    assert result["importedCount"] == 0
+    assert result["failedItems"][0]["filename"] == "scan.pdf"
+    assert "扫描件" in result["failedItems"][0]["error"]
 
 
 def test_running_message_is_saved_and_interrupts_current_run(tmp_path) -> None:

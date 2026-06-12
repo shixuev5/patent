@@ -132,6 +132,18 @@ class AiSearchSupplementService:
                 parts.append(text.strip())
         return "\n\n".join(parts).strip()
 
+    def _friendly_error_message(self, exc: Exception | str) -> str:
+        raw = str(exc or "").strip()
+        if "PDF 未解析出可用文本" in raw:
+            return "PDF 未解析出可用文本，可能是扫描件或图片版 PDF。"
+        if "补充文献目前仅支持 PDF" in raw:
+            return "文件格式不支持，目前仅支持 PDF。"
+        if "补充文献为空" in raw:
+            return raw.split(":", 1)[-1].strip() or "补充文献为空。"
+        if "404" in raw or "not found" in raw.lower() or "不存在" in raw:
+            return "未查询到该公开号的详情。"
+        return raw or "导入失败。"
+
     def _pdf_record(
         self,
         runtime: AiSearchRuntimeContext,
@@ -221,7 +233,12 @@ class AiSearchSupplementService:
             )
             return result
         except Exception as exc:
-            result = {"filename": original_name, "error": str(exc), "stored_as_candidate": False}
+            result = {
+                "filename": original_name,
+                "error": self._friendly_error_message(exc),
+                "raw_error": str(exc),
+                "stored_as_candidate": False,
+            }
             runtime.finish_trace(
                 trace,
                 tool_name="ingest_user_pdf",
@@ -245,6 +262,24 @@ class AiSearchSupplementService:
         goal = _safe_text(review_goal) or "请筛查这些用户补充文献与当前检索目标/已选证据的相关性，指出命中点、缺口，并建议是否选为对比文献。"
         return f"{'；'.join(segments) or '用户补充了文献'}。{goal}"
 
+    def _mark_user_supplement_patents(
+        self,
+        runtime: AiSearchRuntimeContext,
+        patent_results: List[Dict[str, Any]],
+    ) -> None:
+        for item in patent_results:
+            document_id = _safe_text(item.get("document_id"))
+            if not document_id or not item.get("stored_as_candidate"):
+                continue
+            self.storage.update_ai_search_document(
+                runtime.task_id,
+                runtime.plan_version,
+                document_id,
+                user_pinned=True,
+                detail_source="user_supplement_patent",
+                agent_reason="用户补充公开号，待 agent 筛查对比。",
+            )
+
     def _imported_item(self, item: Dict[str, Any], *, source_type: str) -> Optional[Dict[str, Any]]:
         if not (item.get("stored_as_candidate") or item.get("target_detail")):
             return None
@@ -262,6 +297,23 @@ class AiSearchSupplementService:
             payload["filename"] = item.get("filename")
         if item.get("text_chars"):
             payload["textChars"] = item.get("text_chars")
+        return payload
+
+    def _failed_item(self, item: Dict[str, Any], *, source_type: str) -> Optional[Dict[str, Any]]:
+        if not (item.get("error") or item.get("blocked")):
+            return None
+        message = _safe_text(item.get("error") or item.get("reason") or item.get("message")) or "导入失败。"
+        payload = {
+            "sourceType": source_type,
+            "title": _safe_text(item.get("title")) or _safe_text(item.get("filename")) or _safe_text(item.get("pn")) or "补充文献",
+            "error": self._friendly_error_message(message),
+        }
+        if item.get("pn"):
+            payload["pn"] = item.get("pn")
+        if item.get("filename"):
+            payload["filename"] = item.get("filename")
+        if item.get("raw_error"):
+            payload["rawError"] = item.get("raw_error")
         return payload
 
     async def supplement_documents(
@@ -324,12 +376,21 @@ class AiSearchSupplementService:
         pdf_results = await asyncio.gather(
             *[self._ingest_pdf(runtime, upload, parent_trace_id=parent_trace[0]) for upload in uploads]
         ) if uploads else []
+        self._mark_user_supplement_patents(runtime, patent_results)
 
         imported_count = len([item for item in [*patent_results, *pdf_results] if item.get("stored_as_candidate") or item.get("target_detail")])
         failed_items = [
             item
             for item in [*patent_results, *pdf_results]
             if item.get("error") or item.get("blocked")
+        ]
+        normalized_failed_items = [
+            item
+            for item in [
+                *[self._failed_item(item, source_type="patent") for item in patent_results],
+                *[self._failed_item(item, source_type="user_pdf") for item in pdf_results],
+            ]
+            if item
         ]
         imported_items = [
             item
@@ -343,8 +404,8 @@ class AiSearchSupplementService:
         prompt = self._review_prompt(patent_numbers=numbers, pdf_results=pdf_results, review_goal=review_goal)
         task = self.storage.get_task(task.id)
         existing_files = []
-        if task and isinstance(task.metadata, dict):
-            existing_files = list(task.metadata.get("supplemental_files") or [])
+        if task:
+            existing_files = list(get_ai_search_meta(task).get("supplemental_files") or [])
         stored_files = [
             {
                 "filename": item.get("filename"),
@@ -371,6 +432,7 @@ class AiSearchSupplementService:
                 "pdf_count": len([item for item in pdf_results if item.get("stored_as_candidate")]),
                 "failed_count": len(failed_items),
                 "imported_items": imported_items,
+                "failed_items": normalized_failed_items,
                 "review_prompt": prompt,
             },
             metadata={"source": "user_supplement"},
@@ -380,7 +442,7 @@ class AiSearchSupplementService:
             "patentCount": len(numbers),
             "pdfCount": len([item for item in pdf_results if item.get("stored_as_candidate")]),
             "importedItems": imported_items,
-            "failedItems": failed_items,
+            "failedItems": normalized_failed_items,
             "reviewPrompt": prompt,
             "snapshot": self.facade.snapshots.get_snapshot(session_id, owner_id),
         }

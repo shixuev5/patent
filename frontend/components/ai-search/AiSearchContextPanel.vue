@@ -3,7 +3,7 @@
     <div class="border-b border-slate-200 px-3 py-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <p class="text-[13px] font-semibold text-slate-900">审查上下文</p>
+          <p class="text-[13px] font-semibold text-slate-900">证据与条件</p>
           <p class="mt-0.5 text-[11px] text-slate-500">
             已选 {{ selectedDocuments.length }} · 候选 {{ candidateDocuments.length }}
           </p>
@@ -33,7 +33,7 @@
             v-if="closable"
             type="button"
             class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-700"
-            aria-label="关闭审查上下文"
+            aria-label="关闭证据与条件"
             title="关闭"
             @click="$emit('close')"
           >
@@ -168,6 +168,16 @@
                 另有 {{ supplementFeedback.failedItems.length - 4 }} 项失败。
               </p>
             </div>
+            <div v-if="canReviewSupplementFeedback" class="mt-2 flex justify-end border-t border-current/15 pt-2">
+              <button
+                type="button"
+                class="inline-flex h-7 items-center justify-center rounded-lg bg-cyan-700 px-2.5 text-[11px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                :disabled="streaming || supplementBusy"
+                @click="$emit('review-supplement', supplementFeedback.reviewPrompt)"
+              >
+                筛查这些文献
+              </button>
+            </div>
           </div>
 
           <div v-if="supplementOpen" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2.5">
@@ -236,7 +246,7 @@
                 :disabled="!canSubmitSupplement"
                 @click="submitSupplement"
               >
-                {{ supplementBusy ? '导入中...' : '导入并筛查' }}
+                {{ supplementBusy ? '导入中...' : '导入文献' }}
               </button>
             </div>
           </div>
@@ -272,6 +282,15 @@
           >
             <p class="line-clamp-2 text-[12px] font-semibold leading-5 text-slate-900">{{ documentTitle(doc) }}</p>
             <p class="mt-1 truncate text-[11px] text-slate-500">{{ documentMeta(doc) }}</p>
+            <div v-if="documentTags(doc).length" class="mt-1.5 flex flex-wrap gap-1">
+              <span
+                v-for="tag in documentTags(doc)"
+                :key="tag"
+                class="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-medium text-slate-600"
+              >
+                {{ tag }}
+              </span>
+            </div>
             <p v-if="documentReason(doc)" class="mt-1 line-clamp-3 whitespace-pre-wrap text-[11px] leading-5 text-slate-600">
               {{ documentReason(doc) }}
             </p>
@@ -384,6 +403,7 @@ type SupplementFeedback = {
   pdfCount: number
   importedItems: Array<Record<string, any>>
   failedItems: Array<Record<string, any>>
+  reviewPrompt: string
 }
 
 const props = withDefaults(defineProps<{
@@ -416,6 +436,7 @@ const emit = defineEmits<{
   'cancel-run': []
   'export-report': []
   supplement: [payload: { patentNumbers: string, reviewGoal: string, files: File[] }]
+  'review-supplement': [prompt: string]
   'clear-supplement-feedback': []
   'close': []
 }>()
@@ -462,6 +483,12 @@ const supplementFeedbackText = computed(() => {
   return `${parts.join('，')}。`
 })
 
+const canReviewSupplementFeedback = computed(() => (
+  !!props.supplementFeedback
+  && Number(props.supplementFeedback.importedCount || 0) > 0
+  && !!String(props.supplementFeedback.reviewPrompt || '').trim()
+))
+
 const statusLabel = computed(() => (props.phase === 'running' ? '检索中' : '空闲'))
 const statusClass = computed(() => (props.phase === 'running'
   ? 'bg-cyan-50 text-cyan-700'
@@ -479,6 +506,18 @@ const documentMeta = (doc: Record<string, any>): string => {
     String(doc.source_type || '').trim(),
   ].filter(Boolean)
   return segments.join(' · ') || '未提供来源信息'
+}
+
+const documentTags = (doc: Record<string, any>): string[] => {
+  const tags: string[] = []
+  const sourceType = String(doc.source_type || '').trim()
+  const detailSource = String(doc.detail_source || '').trim()
+  if (doc.user_pinned || detailSource.startsWith('user_') || sourceType === 'user_pdf') tags.push('用户补充')
+  if (sourceType === 'user_pdf') tags.push('PDF')
+  else if (sourceType === 'patent' || doc.pn) tags.push('专利')
+  else if (doc.doi) tags.push('论文')
+  if (String(doc.stage || '').trim() === 'selected') tags.push('已选')
+  return [...new Set(tags)]
 }
 
 const documentReason = (doc: Record<string, any>): string => (

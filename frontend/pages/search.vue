@@ -139,12 +139,12 @@
                 type="button"
                 class="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border px-2.5 text-[12px] font-semibold transition"
                 :class="contextPanelOpen ? 'border-cyan-200 bg-cyan-50 text-cyan-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'"
-                aria-label="打开审查上下文"
-                title="审查上下文"
+                aria-label="打开证据与条件"
+                title="证据与条件"
                 @click="toggleContextPanel"
               >
                 <AdjustmentsHorizontalIcon class="h-4 w-4" />
-                <span class="hidden sm:inline">审查上下文</span>
+                <span class="hidden sm:inline">证据与条件</span>
                 <span class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
                   {{ selectedDocuments.length }}/{{ candidateDocuments.length }}
                 </span>
@@ -288,6 +288,7 @@
           @cancel-run="cancelCurrentRun"
           @export-report="exportReport"
           @supplement="supplementDocuments"
+          @review-supplement="reviewSupplementDocuments"
           @clear-supplement-feedback="supplementFeedback = null"
           @close="closeContextPanel"
         />
@@ -324,6 +325,7 @@ type SupplementFeedback = {
   pdfCount: number
   importedItems: Array<Record<string, any>>
   failedItems: Array<Record<string, any>>
+  reviewPrompt: string
 }
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ai-search-sidebar-collapsed'
@@ -747,6 +749,7 @@ const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal:
       pdfCount: Number(result.pdfCount || 0),
       importedItems,
       failedItems,
+      reviewPrompt: String(result.reviewPrompt || '').trim(),
     }
     const failedCount = failedItems.length
     if (importedCount > 0 && failedCount > 0) {
@@ -756,9 +759,6 @@ const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal:
     } else {
       showMessage('warning', '补充文献未导入成功，请查看失败原因。')
     }
-    if (importedCount > 0 && String(result.reviewPrompt || '').trim()) {
-      await aiSearchStore.sendMessage(String(result.reviewPrompt || '').trim())
-    }
   } catch (_error) {
     return
   } finally {
@@ -766,6 +766,14 @@ const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal:
   }
 }
 
+const reviewSupplementDocuments = async (prompt: string) => {
+  const text = String(prompt || supplementFeedback.value?.reviewPrompt || '').trim()
+  if (!text || !currentSession.value || streaming.value || activePhase.value === 'running') return
+  await aiSearchStore.sendMessage(text)
+  if (supplementFeedback.value) {
+    supplementFeedback.value = { ...supplementFeedback.value, reviewPrompt: '' }
+  }
+}
 
 const requestDocumentReview = async (documentId: string) => {
   const version = activePlanVersion.value || 1
