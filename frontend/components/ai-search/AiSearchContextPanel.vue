@@ -47,7 +47,7 @@
       <div class="space-y-4">
         <section>
           <div class="flex items-center justify-between gap-3">
-            <p class="context-section-title">核心关注</p>
+            <p class="context-section-title">检索目标与停止</p>
             <button
               type="button"
               class="inline-flex h-7 items-center justify-center rounded-lg bg-cyan-700 px-2.5 text-[11px] font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:bg-slate-300"
@@ -59,21 +59,21 @@
           </div>
           <div class="mt-2 space-y-2">
             <label class="core-field">
-              <span>待覆盖审查要点</span>
+              <span>本轮覆盖问题</span>
               <textarea
                 v-model.trim="stopPolicyDraft.targetCoverage"
                 rows="2"
                 class="context-textarea"
-                placeholder="例如：区别特征、技术效果、组合动机"
+                placeholder="例如：覆盖 A+C 区别特征、技术效果、组合动机"
               />
             </label>
             <label class="core-field">
-              <span>可停止的判断口径</span>
+              <span>满足即停止</span>
               <textarea
                 v-model.trim="stopPolicyDraft.stopWhen"
                 rows="2"
                 class="context-textarea"
-                placeholder="例如：找到强相关主文献和可组合辅文献"
+                placeholder="例如：找到强相关主文献和可组合辅文献即可停止"
               />
             </label>
           </div>
@@ -90,7 +90,7 @@
         </section>
 
         <section class="border-t border-slate-200 pt-3">
-          <p class="context-section-title">常用动作</p>
+          <p class="context-section-title">快捷指令</p>
           <div class="mt-2 grid grid-cols-2 gap-2">
             <button
               v-for="action in quickActions"
@@ -98,6 +98,7 @@
               type="button"
               class="quick-action"
               :disabled="!hasSession"
+              :title="action.title"
               @click="$emit('quick-prompt', action.key)"
             >
               <component :is="action.icon" class="h-3.5 w-3.5" />
@@ -269,10 +270,10 @@ defineEmits<{
 }>()
 
 const quickActions = [
-  { key: 'direct-search', label: '直接检索', icon: MagnifyingGlassIcon },
-  { key: 'continue-search', label: '继续扩展', icon: ArrowPathIcon },
-  { key: 'summarize-selected', label: '总结已选', icon: DocumentTextIcon },
-  { key: 'tighten-stop', label: '收紧边界', icon: AdjustmentsHorizontalIcon },
+  { key: 'direct-search', label: '直接检索', title: '目标已清楚时，立即开始检索。', icon: MagnifyingGlassIcon },
+  { key: 'continue-search', label: '继续扩展', title: '已有候选但还不够时，从新方向补检。', icon: ArrowPathIcon },
+  { key: 'summarize-selected', label: '总结已选', title: '汇总已选文献的命中点、证据差距和下一步。', icon: DocumentTextIcon },
+  { key: 'tighten-stop', label: '收紧边界', title: '候选过多或范围发散时，缩小检索范围。', icon: AdjustmentsHorizontalIcon },
 ]
 
 const documentBucket = ref<'selected' | 'candidate'>('selected')
