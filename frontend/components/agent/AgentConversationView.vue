@@ -20,25 +20,21 @@
               class="group/agent-card w-full rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2"
               :open="traceDefaultOpen(entry)"
             >
-              <summary class="agent-summary flex cursor-pointer items-start gap-2">
-                <span class="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white text-cyan-700 ring-1 ring-slate-200">
+              <summary class="agent-summary flex cursor-pointer items-center gap-2">
+                <span class="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white text-cyan-700 ring-1 ring-slate-200">
                   <CpuChipIcon class="h-3.5 w-3.5" />
                 </span>
-                <div class="min-w-0 flex-1">
-                  <div class="flex min-w-0 items-center gap-2">
-                    <span class="shrink-0 text-[12px] font-semibold text-slate-700">子 Agent</span>
-                    <span v-if="traceActorText(entry)" class="min-w-0 truncate text-[11px] text-slate-400">
-                      {{ traceActorText(entry) }}
-                    </span>
-                    <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
-                      {{ traceDurationText(entry) }}
-                    </span>
-                  </div>
-                  <p class="mt-0.5 break-words text-[13px] leading-5 text-slate-600">
-                    {{ traceInlineText(entry) }}
-                  </p>
-                </div>
-                <ChevronRightIcon class="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/agent-card:rotate-90" />
+                <span class="shrink-0 text-[12px] font-semibold text-slate-700">子 Agent</span>
+                <span v-if="traceActorText(entry)" class="min-w-0 truncate text-[11px] text-slate-400">
+                  {{ traceActorText(entry) }}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-[13px] leading-5 text-slate-600">
+                  {{ traceInlineText(entry) }}
+                </span>
+                <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
+                  {{ traceDurationText(entry) }}
+                </span>
+                <ChevronRightIcon class="h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/agent-card:rotate-90" />
               </summary>
 
               <div class="mt-2 space-y-2 border-t border-slate-200 pt-2">
@@ -64,10 +60,10 @@
               :open="traceDefaultOpen(entry)"
             >
               <summary
-                class="agent-summary flex cursor-pointer items-start gap-2 rounded-lg px-1 py-1.5 transition"
+                class="agent-summary flex cursor-pointer items-center gap-2 rounded-lg px-1 py-1.5 transition"
                 :class="traceSummaryClass(entry)"
               >
-                <span class="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center">
                   <ArrowPathIcon
                     v-if="entry.status === 'running'"
                     class="h-4 w-4 animate-spin text-cyan-600"
@@ -79,23 +75,19 @@
                     :class="traceIconClass(entry)"
                   />
                 </span>
-                <div class="min-w-0 flex-1">
-                  <div class="flex min-w-0 items-center gap-2">
-                    <span class="shrink-0 text-[12px] font-semibold text-slate-700" :class="tracePrimaryLabelClass(entry)">
-                      {{ tracePrimaryLabel(entry) }}
-                    </span>
-                    <span v-if="traceSecondaryText(entry)" class="min-w-0 truncate text-[11px] text-slate-400" :class="traceSecondaryTextClass(entry)">
-                      {{ traceSecondaryText(entry) }}
-                    </span>
-                    <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
-                      {{ traceDurationText(entry) }}
-                    </span>
-                  </div>
-                  <p class="mt-0.5 min-w-0 break-words text-[13px] leading-6">
-                    {{ traceInlineText(entry) }}
-                  </p>
-                </div>
-                <ChevronRightIcon class="mt-1 h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/trace:rotate-90" />
+                <span class="shrink-0 text-[12px] font-semibold text-slate-700" :class="tracePrimaryLabelClass(entry)">
+                  {{ tracePrimaryLabel(entry) }}
+                </span>
+                <span v-if="traceSecondaryText(entry)" class="min-w-0 truncate text-[11px] text-slate-400" :class="traceSecondaryTextClass(entry)">
+                  {{ traceSecondaryText(entry) }}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-[13px] leading-5">
+                  {{ traceInlineText(entry) }}
+                </span>
+                <span v-if="traceDurationText(entry)" class="shrink-0 text-[11px] text-slate-400">
+                  {{ traceDurationText(entry) }}
+                </span>
+                <ChevronRightIcon class="h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/trace:rotate-90" />
               </summary>
 
               <div class="ml-3 mt-1 space-y-2 border-l border-slate-100 pl-4">
@@ -112,24 +104,42 @@
                 </div>
                 <div v-if="traceChildren(entry).length" class="space-y-1.5">
                   <p class="text-[11px] font-semibold text-slate-500">子步骤</p>
-                  <div
+                  <details
                     v-for="child in traceChildren(entry)"
                     :key="child.traceId || child.id"
-                    class="rounded-lg border border-slate-200 bg-white px-3 py-2"
+                    class="group/child rounded-lg border border-slate-200 bg-white px-3 py-2"
+                    :open="traceDefaultOpen(child)"
                   >
-                    <div class="flex items-start gap-2 text-[12px] leading-5 text-slate-600">
-                      <component :is="traceIcon(child)" class="mt-0.5 h-4 w-4 shrink-0" :class="traceIconClass(child)" />
-                      <div class="min-w-0 flex-1">
-                        <p class="break-words">
-                          <span class="font-medium">{{ traceTypeLabel(child) }}</span>
-                          <span> · {{ traceInlineText(child) }}</span>
-                        </p>
-                        <p v-if="traceDetailText(child)" class="mt-0.5 break-words text-[11px] text-slate-400">
-                          {{ traceDetailText(child) }}
-                        </p>
+                    <summary class="agent-summary flex cursor-pointer items-center gap-2 text-[12px] leading-5 text-slate-600">
+                      <component :is="traceIcon(child)" class="h-4 w-4 shrink-0" :class="traceIconClass(child)" />
+                      <span class="shrink-0 font-medium" :class="tracePrimaryLabelClass(child)">
+                        {{ tracePrimaryLabel(child) }}
+                      </span>
+                      <span v-if="traceSecondaryText(child)" class="min-w-0 truncate text-[11px] text-slate-400" :class="traceSecondaryTextClass(child)">
+                        {{ traceSecondaryText(child) }}
+                      </span>
+                      <span class="min-w-0 flex-1 truncate">
+                        {{ traceInlineText(child) }}
+                      </span>
+                      <span v-if="traceDurationText(child)" class="shrink-0 text-[11px] text-slate-400">
+                        {{ traceDurationText(child) }}
+                      </span>
+                      <ChevronRightIcon class="h-3.5 w-3.5 shrink-0 text-slate-300 transition group-open/child:rotate-90" />
+                    </summary>
+                    <div v-if="traceCanExpand(child)" class="mt-2 space-y-2 border-t border-slate-100 pt-2">
+                      <p v-if="traceDetailText(child)" class="whitespace-pre-wrap break-words text-[12px] leading-5 text-slate-500">
+                        {{ traceDetailText(child) }}
+                      </p>
+                      <div
+                        v-for="block in traceDetailBlocks(child)"
+                        :key="block.label"
+                        class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+                      >
+                        <p class="text-[11px] font-semibold text-slate-500">{{ block.label }}</p>
+                        <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600">{{ block.value }}</pre>
                       </div>
                     </div>
-                  </div>
+                  </details>
                 </div>
               </div>
             </details>
@@ -441,6 +451,7 @@ const stringifyTraceValue = (value: any): string => {
 
 const traceDetailBlocks = (entry: ConversationEntry): Array<{ label: string, value: string }> => {
   const candidates = [
+    ['输入参数', entry.arguments ?? entry.input],
     ['执行结果', entry.result ?? entry.output],
   ] as Array<[string, any]>
   return candidates
@@ -449,13 +460,11 @@ const traceDetailBlocks = (entry: ConversationEntry): Array<{ label: string, val
 }
 
 const traceCanExpand = (entry: ConversationEntry): boolean => {
-  const traceType = normalizedTraceType(entry)
-  if (traceType === 'agent') return true
-  if (String(entry.status || '').trim() === 'running') return false
+  if (normalizedTraceType(entry) === 'agent') return true
   return !!traceDetailText(entry) || traceDetailBlocks(entry).length > 0 || traceChildren(entry).length > 0
 }
 
-const traceDefaultOpen = (entry: ConversationEntry): boolean => String(entry.status || '').trim() === 'running'
+const traceDefaultOpen = (_entry: ConversationEntry): boolean => false
 
 const isAgentTrace = (entry: ConversationEntry): boolean => normalizedTraceType(entry) === 'agent'
 

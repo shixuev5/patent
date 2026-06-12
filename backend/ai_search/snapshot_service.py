@@ -44,9 +44,37 @@ class AiSearchSnapshotService:
             updatedAt=utc_now_z() if not getattr(task, "updated_at", None) else task.updated_at.isoformat(),
         )
 
-    def _display_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _message_event_index(self, task_id: str) -> Dict[str, Dict[str, Any]]:
+        indexed: Dict[str, Dict[str, Any]] = {}
+        message_event_types = {"message.created", "message.delta", "message.completed"}
+
+        for event in self.storage.list_ai_search_stream_events(task_id, after_seq=0):
+            event_type = str(event.get("event_type") or "").strip()
+            if event_type not in message_event_types:
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            message_id = str(payload.get("message_id") or event.get("entity_id") or "").strip()
+            if not message_id:
+                continue
+            seq = int(event.get("seq") or 0)
+            existing = indexed.get(message_id, {})
+            indexed[message_id] = {
+                "_eventStartedSeq": int(existing.get("_eventStartedSeq") or seq),
+                "_eventSeq": seq,
+                "_eventAt": event.get("created_at"),
+            }
+        return indexed
+
+    def _display_messages(self, task_id: str, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         visible_kinds = {"chat", "question", "answer"}
-        return [item for item in messages if str(item.get("kind") or "") in visible_kinds]
+        event_index = self._message_event_index(task_id)
+        visible: List[Dict[str, Any]] = []
+        for item in messages:
+            if str(item.get("kind") or "") not in visible_kinds:
+                continue
+            message_id = str(item.get("message_id") or "").strip()
+            visible.append({**item, **event_index.get(message_id, {})})
+        return visible
 
     def _stream_state(self, task_id: str) -> Dict[str, Any]:
         latest = self.storage.get_latest_ai_search_stream_event(task_id)
@@ -69,6 +97,7 @@ class AiSearchSnapshotService:
             if not trace_id:
                 continue
             existing = traces.get(trace_id, {})
+            seq = int(event.get("seq") or 0)
             next_trace: Dict[str, Any] = {
                 **existing,
                 **payload,
@@ -77,7 +106,14 @@ class AiSearchSnapshotService:
                     payload.get("status")
                     or ("running" if event_type == "trace.started" else "completed")
                 ).strip(),
+                "_eventOrder": int(existing.get("_eventOrder") or seq or index),
+                "_eventSeq": seq or int(existing.get("_eventSeq") or 0),
+                "_eventAt": event.get("created_at"),
             }
+            if event_type == "trace.started":
+                next_trace["_eventStartedSeq"] = seq or int(existing.get("_eventStartedSeq") or 0)
+            elif existing.get("_eventStartedSeq"):
+                next_trace["_eventStartedSeq"] = existing.get("_eventStartedSeq")
             if not next_trace.get("startedAt"):
                 next_trace["startedAt"] = existing.get("startedAt") or event.get("created_at")
             if event_type == "trace.completed" and not next_trace.get("endedAt"):
@@ -165,7 +201,7 @@ class AiSearchSnapshotService:
             session=self._session_summary(task),
             run=run_payload,
             conversation={
-                "messages": self._display_messages(messages),
+                "messages": self._display_messages(task.id, messages),
                 "stopPolicy": meta.get("stop_policy") if isinstance(meta.get("stop_policy"), dict) else {},
             },
             stream=self._stream_state(task.id),

@@ -105,7 +105,11 @@ def test_search_agent_registers_controlled_subagent_tools(monkeypatch) -> None:
 
     assert "run_retrieval_agent" in tool_names
     assert "run_review_agent" in tool_names
+    assert "run_detail_agent" in tool_names
     assert "read_candidate_summaries" in tool_names
+    assert "search_patents" not in tool_names
+    assert "search_academic" not in tool_names
+    assert "fetch_patent_detail" not in tool_names
     assert agent_runtime_module._default_model_name() == "default-model"
 
 

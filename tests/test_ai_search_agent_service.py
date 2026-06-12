@@ -11,6 +11,7 @@ from backend.ai_search import agent_run_service as agent_run_service_module
 from patent_agents.ai_search.src.runtime import (
     AiSearchRuntimeContext,
     read_workspace_context,
+    run_detail_agent,
     run_retrieval_agent,
     run_review_agent,
     search_patents,
@@ -183,14 +184,16 @@ def test_running_message_is_saved_and_interrupts_current_run(tmp_path) -> None:
     events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "改查时间常数补偿")))
     event_types = [event["type"] for event in events]
 
-    assert event_types[:2] == ["message.created", "run.interrupt_requested"]
+    assert event_types[:3] == ["message.created", "run.interrupt_requested", "run.cancelled"]
     messages = storage.list_ai_search_messages(created.sessionId)
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "改查时间常数补偿"
     assert messages[-1]["metadata"]["message_variant"] == "mid_run_instruction"
     meta = get_ai_search_meta(storage.get_task(created.sessionId))
-    assert meta["cancel_requested"] is True
-    assert meta["cancel_requested_run_id"] == run_id
+    assert meta["cancel_requested"] is False
+    assert meta["cancel_requested_run_id"] == ""
+    assert meta["current_phase"] == PHASE_IDLE
+    assert storage.get_ai_search_run(created.sessionId, run_id)["status"] == TaskStatus.CANCELLED.value
 
 
 def test_subscribe_stream_waits_for_new_events_while_session_is_running(tmp_path) -> None:
@@ -404,6 +407,64 @@ def test_review_agent_shortlists_and_close_reads_with_agent_trace(monkeypatch, t
     assert {item["stage"] for item in docs} == {"shortlisted"}
     assert any(item["close_read_status"] == "completed" for item in docs)
     assert agent_events
+
+
+def test_detail_agent_fetches_patents_under_agent_trace(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+    calls: list[str] = []
+
+    class FakeClient:
+        def get_patent_detail(self, pn: str):
+            calls.append(pn)
+            return {
+                "title": f"{pn} 详情标题",
+                "abstract": "详情摘要",
+                "claims_text": f"{pn} 的权利要求片段。",
+                "description_text": f"{pn} 的说明书片段。",
+                "full_text_combined": f"{pn} 的完整文本。",
+            }
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+
+    result = asyncio.run(
+        run_detail_agent.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps(
+                {
+                    "patent_numbers": "CN500001A; CN500002A",
+                    "detail_goal": "补齐候选详情",
+                    "max_patents": 4,
+                }
+            ),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+    docs = storage.list_ai_search_documents(created.sessionId, 1)
+    events = storage.list_ai_search_stream_events(created.sessionId, after_seq=0)
+    agent_completed = next(
+        event
+        for event in events
+        if event["event_type"] == "trace.completed"
+        and event["payload"].get("traceType") == "agent"
+        and event["payload"].get("actorName") == "detail-agent"
+    )
+    child_completed = [
+        event
+        for event in events
+        if event["event_type"] == "trace.completed"
+        and event["payload"].get("traceType") == "tool"
+        and event["payload"].get("actorName") == "detail-agent"
+    ]
+
+    assert parsed["fetched_count"] == 2
+    assert parsed["stored_count"] == 2
+    assert calls == ["CN500001A", "CN500002A"]
+    assert {item["pn"] for item in docs} == {"CN500001A", "CN500002A"}
+    assert len(child_completed) == 2
+    assert all(item["payload"].get("parentTraceId") == agent_completed["payload"]["traceId"] for item in child_completed)
 
 
 def test_search_patents_filters_target_patent(monkeypatch, tmp_path) -> None:

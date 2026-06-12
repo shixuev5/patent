@@ -61,7 +61,7 @@ SYSTEM_PROMPT = """
 
 每次正式检索前先确认当前检索目标。如果目标足够明确，直接检索；如果缺少核心技术特征、时间范围或检索对象，先简短追问。检索后应把有价值候选保存，并说明下一步建议。
 
-你仍然负责检索策略和是否继续检索的最终判断。需要批量召回时，优先调用 retrieval-agent 工具，让它执行语义/布尔/学术多路召回并只返回压缩态势；需要候选粗筛或少量精读时，调用 review-agent 工具。只有在你明确需要单点补检、拉详情或人工指定操作时，才直接调用底层检索工具。
+你仍然负责检索策略和是否继续检索的最终判断。需要批量召回或补检时，调用 retrieval-agent 工具，让它执行语义/布尔/学术多路召回并只返回压缩态势；当检索目标能拆成多个互不依赖的方向时，可以并行发起多个 retrieval-agent 子 Agent。需要候选粗筛或少量精读时，调用 review-agent 工具。用户明确指定公开号、或你需要补齐少量专利详情时，调用 detail-agent 工具。
 
 不要要求工具返回完整候选池；需要更多候选信息时按 topK 或阶段读取候选摘要。
 
@@ -1589,11 +1589,282 @@ async def run_review_agent(
     return result
 
 
+def _parse_patent_number_list(value: Any, *, limit: int) -> List[str]:
+    numbers = _extract_patent_numbers(value)
+    if not numbers:
+        tokens = re.split(r"[\s,，;；、|]+", str(value or "").upper())
+        numbers = [
+            _normalize_patent_number(token)
+            for token in tokens
+            if re.match(r"^[A-Z]{2}\s*\d{5,}[A-Z0-9]*$", token.strip())
+        ]
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for number in numbers:
+        normalized = _normalize_patent_number(number)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _patent_detail_record(normalized_pn: str, detail: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    basic_info = detail.get("basic_info") if isinstance(detail.get("basic_info"), dict) else {}
+    record = _normalize_patent_item(
+        {
+            **detail,
+            "pn": normalized_pn,
+            "title": detail.get("title") or basic_info.get("title"),
+            "abstract": detail.get("abstract") or basic_info.get("abstract"),
+        }
+    )
+    canonical_id = build_ai_search_canonical_id(source_type="patent", external_id=normalized_pn, pn=normalized_pn)
+    result = {
+        "pn": normalized_pn,
+        "title": record.get("title"),
+        "abstract_preview": _safe_text(record.get("abstract"))[:500],
+        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:800],
+        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:800],
+    }
+    return canonical_id, record, result
+
+
+def _apply_patent_detail(
+    runtime: AiSearchRuntimeContext,
+    normalized_pn: str,
+    detail: Dict[str, Any],
+    *,
+    allow_new_candidate: bool = True,
+    append_documents_event: bool = True,
+) -> Dict[str, Any]:
+    detail = detail if isinstance(detail, dict) else {}
+    canonical_id, record, result = _patent_detail_record(normalized_pn, detail)
+    if _is_target_patent(runtime, record):
+        runtime.update_meta(
+            source_pn=normalized_pn,
+            source_title=record.get("title") or runtime.meta().get("source_title") or normalized_pn,
+            target_detail_preview=result,
+        )
+        return {**result, "stored_as_candidate": False, "target_detail": True}
+
+    document_id = stable_ai_search_document_id(runtime.task_id, runtime.plan_version, canonical_id)
+    exists = any(_safe_text(item.get("document_id")) == document_id for item in runtime.documents())
+    if not exists and not allow_new_candidate:
+        return {
+            **result,
+            "stored_as_candidate": False,
+            "blocked": True,
+            "reason": "候选数量已达上限，未新增候选。",
+        }
+
+    runtime.storage.upsert_ai_search_documents(
+        [
+            {
+                **record,
+                "run_id": runtime.run_id,
+                "task_id": runtime.task_id,
+                "plan_version": runtime.plan_version,
+                "document_id": document_id,
+                "stage": "candidate",
+                "detail_source": "zhihuiya_detail",
+                "key_passages_json": [],
+                "evidence_summary": _safe_text(detail.get("full_text_combined"))[:2000],
+            }
+        ]
+    )
+    if append_documents_event:
+        runtime.append_event("documents.updated", documents_payload(runtime))
+    return {**result, "stored_as_candidate": True, "document_id": document_id}
+
+
+async def _fetch_patent_detail_for_detail_agent(
+    runtime: AiSearchRuntimeContext,
+    normalized_pn: str,
+    *,
+    parent_trace_id: str,
+    allow_new_candidate: bool,
+) -> Dict[str, Any]:
+    trace = runtime.start_trace(
+        tool_name="fetch_patent_detail",
+        label=f"拉取专利详情：{normalized_pn}",
+        trace_type="tool",
+        actor_name="detail-agent",
+        input={"pn": normalized_pn},
+        parent_trace_id=parent_trace_id,
+    )
+    if not allow_new_candidate:
+        result = {
+            "pn": normalized_pn,
+            "blocked": True,
+            "stored_as_candidate": False,
+            "reason": "候选数量已达上限，未新增候选。",
+        }
+        runtime.finish_trace(
+            trace,
+            tool_name="fetch_patent_detail",
+            label=f"跳过详情读取：{normalized_pn}",
+            detail=result["reason"],
+            trace_type="tool",
+            actor_name="detail-agent",
+            output=result,
+            parent_trace_id=parent_trace_id,
+        )
+        return result
+    try:
+        detail = await asyncio.to_thread(SearchClientFactory.get_client("zhihuiya").get_patent_detail, normalized_pn)
+        result = _apply_patent_detail(
+            runtime,
+            normalized_pn,
+            detail if isinstance(detail, dict) else {},
+            allow_new_candidate=True,
+            append_documents_event=False,
+        )
+        runtime.finish_trace(
+            trace,
+            tool_name="fetch_patent_detail",
+            label=(
+                f"目标专利详情已读取：{normalized_pn}"
+                if result.get("target_detail")
+                else f"专利详情已更新：{normalized_pn}"
+            ),
+            trace_type="tool",
+            actor_name="detail-agent",
+            output=result,
+            parent_trace_id=parent_trace_id,
+        )
+        return result
+    except Exception as exc:
+        result = {"pn": normalized_pn, "error": str(exc)}
+        runtime.finish_trace(
+            trace,
+            tool_name="fetch_patent_detail",
+            label=f"专利详情拉取失败：{normalized_pn}",
+            detail=str(exc),
+            status="failed",
+            trace_type="tool",
+            actor_name="detail-agent",
+            output=result,
+            parent_trace_id=parent_trace_id,
+        )
+        return result
+
+
+@function_tool
+async def run_detail_agent(
+    ctx: RunContextWrapper[AiSearchRuntimeContext],
+    patent_numbers: str,
+    detail_goal: str = "",
+    max_patents: int = 6,
+) -> Dict[str, Any]:
+    """运行 detail-agent 批量读取指定公开号的专利详情。"""
+    runtime = ctx.context
+    resolved_limit = _limit(max_patents, default=6, upper=10)
+    numbers = _parse_patent_number_list(patent_numbers, limit=resolved_limit)
+    goal = _safe_text(detail_goal)
+    trace = runtime.start_trace(
+        tool_name="detail_agent",
+        label=f"子 Agent 详情读取：{goal[:80] or '指定公开号'}",
+        detail=f"patents={len(numbers)}",
+        trace_type="agent",
+        actor_name="detail-agent",
+        input={"detail_goal": goal, "patent_numbers": numbers, "max_patents": resolved_limit},
+        metadata={"model_tier": "default"},
+    )
+    if not numbers:
+        result = {
+            "summary": "未识别到有效公开号，detail-agent 未读取详情。",
+            "fetched_count": 0,
+            "stored_count": 0,
+            "failed_count": 0,
+            "blocked_count": 0,
+            "details": [],
+        }
+        runtime.finish_trace(
+            trace,
+            tool_name="detail_agent",
+            label="子 Agent 详情读取无有效公开号",
+            trace_type="agent",
+            actor_name="detail-agent",
+            output=result,
+            metadata={"model_tier": "default"},
+        )
+        return result
+
+    _ensure_policy_databases(runtime, ["zhihuiya"])
+    existing_ids = {_safe_text(item.get("document_id")) for item in runtime.documents()}
+    remaining_capacity = _remaining_candidate_capacity(runtime)
+    target_numbers = _target_patent_numbers(runtime)
+    new_candidate_slots = 0
+    allowed_by_number: Dict[str, bool] = {}
+    for normalized_pn in numbers:
+        canonical_id = build_ai_search_canonical_id(source_type="patent", external_id=normalized_pn, pn=normalized_pn)
+        document_id = stable_ai_search_document_id(runtime.task_id, runtime.plan_version, canonical_id)
+        if document_id in existing_ids or normalized_pn in target_numbers:
+            allowed_by_number[normalized_pn] = True
+            continue
+        if new_candidate_slots < remaining_capacity:
+            allowed_by_number[normalized_pn] = True
+            new_candidate_slots += 1
+        else:
+            allowed_by_number[normalized_pn] = False
+
+    detail_results = await asyncio.gather(
+        *[
+            _fetch_patent_detail_for_detail_agent(
+                runtime,
+                number,
+                parent_trace_id=trace[0],
+                allow_new_candidate=bool(allowed_by_number.get(number)),
+            )
+            for number in numbers
+        ]
+    )
+    stored_count = len([item for item in detail_results if item.get("stored_as_candidate")])
+    failed_count = len([item for item in detail_results if item.get("error")])
+    blocked_count = len([item for item in detail_results if item.get("blocked")])
+    fetched_count = len([item for item in detail_results if not item.get("error") and not item.get("blocked")])
+    if stored_count:
+        runtime.append_event("documents.updated", documents_payload(runtime))
+    summary = f"已读取 {fetched_count} 篇专利详情，更新候选 {stored_count} 篇"
+    if blocked_count:
+        summary += f"，因候选上限跳过 {blocked_count} 篇"
+    if failed_count:
+        summary += f"，失败 {failed_count} 篇"
+    summary += "。"
+    result = {
+        "summary": summary,
+        "fetched_count": fetched_count,
+        "stored_count": stored_count,
+        "failed_count": failed_count,
+        "blocked_count": blocked_count,
+        "details": detail_results,
+        "stop": _stop_status(runtime),
+    }
+    runtime.finish_trace(
+        trace,
+        tool_name="detail_agent",
+        label=f"子 Agent 详情读取完成，读取 {fetched_count} 篇",
+        trace_type="agent",
+        actor_name="detail-agent",
+        output={
+            "summary": summary,
+            "fetched_count": fetched_count,
+            "stored_count": stored_count,
+            "failed_count": failed_count,
+            "blocked_count": blocked_count,
+        },
+        metadata={"model_tier": "default"},
+    )
+    return result
+
+
 @function_tool
 def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str) -> Dict[str, Any]:
     """按公开号拉取专利详情，并更新候选文献详情。"""
     runtime = ctx.context
-    normalized_pn = _safe_text(pn).upper()
+    normalized_pn = _normalize_patent_number(pn)
     if not normalized_pn:
         return {"error": "pn 不能为空。"}
     trace = runtime.start_trace(
@@ -1614,58 +1885,15 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
             output={"error": str(exc)},
         )
         raise
-    detail = detail if isinstance(detail, dict) else {}
-    canonical_id = build_ai_search_canonical_id(source_type="patent", external_id=normalized_pn, pn=normalized_pn)
-    basic_info = detail.get("basic_info") if isinstance(detail.get("basic_info"), dict) else {}
-    record = _normalize_patent_item(
-        {
-            **detail,
-            "pn": normalized_pn,
-            "title": detail.get("title") or basic_info.get("title"),
-            "abstract": detail.get("abstract") or basic_info.get("abstract"),
-        }
-    )
-    result = {
-        "pn": normalized_pn,
-        "title": record.get("title"),
-        "abstract_preview": _safe_text(record.get("abstract"))[:500],
-        "claims_preview": _safe_text(detail.get("claims_text") or detail.get("claims"))[:800],
-        "description_preview": _safe_text(detail.get("description_text") or detail.get("description"))[:800],
-    }
-    if _is_target_patent(runtime, record):
-        runtime.update_meta(
-            source_pn=normalized_pn,
-            source_title=record.get("title") or runtime.meta().get("source_title") or normalized_pn,
-            target_detail_preview=result,
-        )
-        runtime.finish_trace(
-            trace,
-            tool_name="fetch_patent_detail",
-            label=f"目标专利详情已读取：{normalized_pn}",
-            output={**result, "stored_as_candidate": False},
-        )
-        return {**result, "stored_as_candidate": False}
-    document_id = stable_ai_search_document_id(runtime.task_id, runtime.plan_version, canonical_id)
-    runtime.storage.upsert_ai_search_documents(
-        [
-            {
-                **record,
-                "run_id": runtime.run_id,
-                "task_id": runtime.task_id,
-                "plan_version": runtime.plan_version,
-                "document_id": document_id,
-                "stage": "candidate",
-                "detail_source": "zhihuiya_detail",
-                "key_passages_json": [],
-                "evidence_summary": _safe_text(detail.get("full_text_combined"))[:2000],
-            }
-        ]
-    )
-    runtime.append_event("documents.updated", documents_payload(runtime))
+    result = _apply_patent_detail(runtime, normalized_pn, detail if isinstance(detail, dict) else {})
     runtime.finish_trace(
         trace,
         tool_name="fetch_patent_detail",
-        label=f"专利详情已更新：{normalized_pn}",
+        label=(
+            f"目标专利详情已读取：{normalized_pn}"
+            if result.get("target_detail")
+            else f"专利详情已更新：{normalized_pn}"
+        ),
         output=result,
     )
     return result
@@ -1749,7 +1977,7 @@ def build_search_agent() -> Agent[AiSearchRuntimeContext]:
         name="ai-search-agent",
         instructions=SYSTEM_PROMPT,
         model=OpenAIChatCompletionsModel(model=model_name, openai_client=client),
-        model_settings=ModelSettings(temperature=0, parallel_tool_calls=False),
+        model_settings=ModelSettings(temperature=0, parallel_tool_calls=True),
         tools=[
             read_workspace_context,
             read_candidate_summaries,
@@ -1757,9 +1985,7 @@ def build_search_agent() -> Agent[AiSearchRuntimeContext]:
             evaluate_stop_conditions,
             run_retrieval_agent,
             run_review_agent,
-            search_patents,
-            search_academic,
-            fetch_patent_detail,
+            run_detail_agent,
             select_documents,
             save_search_report,
         ],

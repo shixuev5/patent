@@ -327,7 +327,6 @@ const {
   currentSession,
   error,
   loading,
-  phaseMarkers,
   sessions,
   streaming,
 } = storeToRefs(aiSearchStore)
@@ -427,7 +426,6 @@ const canSubmitHeaderRename = computed(() => {
 const { conversationRenderEntries } = useAiSearchConversation({
   messages,
   activityTraces,
-  phaseMarkers,
   streaming,
   phase: activePhase,
 })

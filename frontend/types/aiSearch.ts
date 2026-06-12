@@ -119,6 +119,10 @@ export interface AiSearchActivityTrace {
   metadata?: Record<string, any> | null
   startedAt?: string | null
   endedAt?: string | null
+  _eventOrder?: number | null
+  _eventStartedSeq?: number | null
+  _eventSeq?: number | null
+  _eventAt?: string | null
 }
 
 export interface AiSearchActiveRun {

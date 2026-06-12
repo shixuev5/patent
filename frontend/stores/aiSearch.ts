@@ -73,6 +73,24 @@ const toMillis = (value?: string | null): number => {
   return Number.isFinite(ts) ? ts : 0
 }
 
+const toFiniteNumber = (value: any): number => {
+  const numeric = Number(value || 0)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+const traceSortTime = (trace: Record<string, any>): number => (
+  toMillis(trace.startedAt || trace._eventAt || trace.endedAt || '')
+)
+
+const traceSortSeq = (trace: Record<string, any>): number => (
+  toFiniteNumber(trace._eventOrder || trace._eventStartedSeq || trace._eventSeq)
+)
+
+const entryMetadata = (entry: Record<string, any>): Record<string, any> => {
+  const value = entry?.metadata
+  return value && typeof value === 'object' ? value as Record<string, any> : {}
+}
+
 const nowIso = (): string => new Date().toISOString()
 
 const activePhase = (snapshot?: AiSearchSnapshot | null): string => String(snapshot?.run?.phase || snapshot?.session?.phase || '').trim()
@@ -228,14 +246,22 @@ export const useAiSearchStore = defineStore('aiSearch', {
         traceId,
       }
       if (index >= 0) {
+        const previous = traces[index]
+        nextTrace._eventOrder = trace._eventOrder || previous._eventOrder || previous._eventStartedSeq || trace._eventSeq || null
+        nextTrace._eventStartedSeq = trace._eventStartedSeq || previous._eventStartedSeq || null
+      }
+      if (index >= 0) {
         traces[index] = nextTrace
       } else {
         traces.push(nextTrace)
       }
       traces.sort((left, right) => {
-        const leftTime = toMillis(left.startedAt || left.endedAt || '')
-        const rightTime = toMillis(right.startedAt || right.endedAt || '')
+        const leftTime = traceSortTime(left)
+        const rightTime = traceSortTime(right)
         if (leftTime !== rightTime) return leftTime - rightTime
+        const leftSeq = traceSortSeq(left)
+        const rightSeq = traceSortSeq(right)
+        if (leftSeq !== rightSeq) return leftSeq - rightSeq
         return String(left.traceId || '').localeCompare(String(right.traceId || ''))
       })
       runtime.activityTraces = traces
@@ -417,6 +443,31 @@ export const useAiSearchStore = defineStore('aiSearch', {
           return
         }
       }
+      const isServerUserMessage = (
+        messageId
+        && String(message.role || '').trim() === 'user'
+        && !entryMetadata(message).optimistic
+      )
+      if (isServerUserMessage) {
+        const optimisticIndex = messages.findIndex((item) => (
+          String(item.role || '').trim() === 'user'
+          && !!entryMetadata(item).optimistic
+          && String(item.content || '').trim() === String(message.content || '').trim()
+        ))
+        if (optimisticIndex >= 0) {
+          messages[optimisticIndex] = {
+            ...messages[optimisticIndex],
+            ...message,
+            metadata: {
+              ...entryMetadata(messages[optimisticIndex]),
+              ...entryMetadata(message),
+              optimistic: false,
+            },
+          }
+          snapshot.conversation.messages = [...messages]
+          return
+        }
+      }
       snapshot.conversation.messages = [...messages, message]
     },
 
@@ -575,12 +626,20 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (!snapshot) return
 
       if (event.type === 'message.created' || event.type === 'message.completed') {
-        this._pushMessage(sessionId, payload)
+        this._pushMessage(sessionId, {
+          ...payload,
+          _eventSeq: seq,
+          _eventAt: event.timestamp || payload?.created_at || null,
+        })
         return
       }
 
       if (event.type === 'message.delta') {
-        this._applyMessageDelta(sessionId, payload)
+        this._applyMessageDelta(sessionId, {
+          ...payload,
+          _eventSeq: seq,
+          _eventAt: event.timestamp || null,
+        })
         return
       }
 
@@ -608,6 +667,11 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (event.type === 'trace.started' || event.type === 'trace.completed' || event.type === 'trace.updated') {
         const traceId = String(payload?.traceId || event.entityId || '').trim()
         if (!traceId) return
+        const traceEventOrder = toFiniteNumber(
+          payload?._eventOrder
+          || payload?._eventStartedSeq
+          || (event.type === 'trace.started' ? seq : 0),
+        )
         this._upsertActivityTrace(sessionId, {
           traceId,
           traceType: String(payload?.traceType || '').trim() || 'tool',
@@ -625,6 +689,10 @@ export const useAiSearchStore = defineStore('aiSearch', {
           metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : null,
           startedAt: String(payload?.startedAt || event.timestamp || '').trim() || null,
           endedAt: String(payload?.endedAt || '').trim() || null,
+          _eventOrder: traceEventOrder || null,
+          _eventStartedSeq: toFiniteNumber(payload?._eventStartedSeq || (event.type === 'trace.started' ? seq : 0)) || null,
+          _eventSeq: seq,
+          _eventAt: event.timestamp || null,
         })
         return
       }
@@ -1001,6 +1069,18 @@ export const useAiSearchStore = defineStore('aiSearch', {
       const text = String(content || '').trim()
       if (!text || !sessionId || !snapshot) return
       this._setRuntimeError(sessionId, '')
+      const createdAt = nowIso()
+      this._pushMessage(sessionId, {
+        message_id: `optimistic-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        task_id: sessionId,
+        role: 'user',
+        kind: 'chat',
+        content: text,
+        stream_status: 'completed',
+        metadata: { optimistic: true },
+        created_at: createdAt,
+        _eventAt: createdAt,
+      })
       this._setStreaming(sessionId, true)
       try {
         await this._postStream(

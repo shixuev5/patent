@@ -186,6 +186,9 @@ class AiSearchAgentRunService:
         return self.facade.sessions._get_owned_session_task(session_id, owner_id)
 
     def _run_cancel_requested(self, task_id: str, run_id: str) -> bool:
+        run = self.storage.get_ai_search_run(task_id, run_id) if run_id else None
+        if str((run or {}).get("status") or "").strip() == TaskStatus.CANCELLED.value:
+            return True
         meta = get_ai_search_meta(self.storage.get_task(task_id))
         return (
             bool(meta.get("cancel_requested"))
@@ -224,16 +227,51 @@ class AiSearchAgentRunService:
         )
         return {"cancelled": True, "event": event}
 
+    def _cancel_running_run(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        completion_reason: str,
+        message: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not run_id:
+            return None
+        self._mark_idle(task_id, run_id)
+        self.storage.update_ai_search_run(
+            task_id,
+            run_id,
+            phase=PHASE_IDLE,
+            status=TaskStatus.CANCELLED.value,
+            completed_at=utc_now_z(),
+        )
+        task = self.storage.get_task(task_id)
+        self.storage.update_task(
+            task_id,
+            metadata=merge_ai_search_meta(
+                task,
+                cancel_requested=False,
+                cancel_requested_run_id="",
+                cancel_reason=completion_reason,
+            ),
+        )
+        return self._append_event(
+            task_id,
+            "run.cancelled",
+            {
+                "phase": PHASE_IDLE,
+                "completionReason": completion_reason,
+                "message": message,
+            },
+            run_id=run_id,
+        )
+
     def _run_deadline_seconds(self, runtime: AiSearchRuntimeContext) -> int:
         try:
             value = int((runtime.stop_policy() or {}).get("deadline_seconds") or DEFAULT_STOP_POLICY["deadline_seconds"])
         except Exception:
             value = int(DEFAULT_STOP_POLICY["deadline_seconds"])
         return max(30, value)
-
-    async def _yield_events_after(self, session_id: str, after_seq: int) -> AsyncIterator[str]:
-        for event in self.storage.list_ai_search_stream_events(session_id, after_seq=after_seq, limit=500):
-            yield self._format_event(event)
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self._owned_task(session_id, owner_id)
@@ -268,8 +306,14 @@ class AiSearchAgentRunService:
             if isinstance(event, dict):
                 yield self._format_event(event)
                 start_seq = max(start_seq, int(event.get("seq") or 0))
-            async for chunk in self._yield_events_after(task.id, start_seq):
-                yield chunk
+            cancelled = self._cancel_running_run(
+                task.id,
+                run_id,
+                completion_reason="interrupted",
+                message="已根据新指令停止当前检索轮次。",
+            )
+            if isinstance(cancelled, dict):
+                yield self._format_event(cancelled)
             return
         user_message = self._append_message(task.id, "user", text)
         run = self._ensure_run(task.id)
@@ -295,6 +339,8 @@ class AiSearchAgentRunService:
             msg_event = self._append_event(task.id, "message.created", user_message, run_id=run_id, entity_id=str(user_message.get("message_id") or ""))
             yield self._format_event(msg_event)
             start_seq = int(msg_event.get("seq") or start_seq)
+        agent_task: Optional[asyncio.Task[str]] = None
+        terminal_event_written = False
         try:
             runtime = AiSearchRuntimeContext(self.storage, task.id, run_id, int(run.get("plan_version") or 1))
             delta_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -391,6 +437,7 @@ class AiSearchAgentRunService:
             deadline_seconds = self._run_deadline_seconds(runtime)
             started_monotonic = time.monotonic()
             timed_out = False
+            cancel_requested = False
             while not agent_task.done():
                 for chunk in flush_runtime_events():
                     yield chunk
@@ -404,9 +451,13 @@ class AiSearchAgentRunService:
                     timed_out = True
                     agent_task.cancel()
                     break
+                if self._run_cancel_requested(task.id, run_id):
+                    cancel_requested = True
+                    agent_task.cancel()
+                    break
                 await asyncio.sleep(0.1)
 
-            if timed_out:
+            if timed_out or cancel_requested:
                 with contextlib.suppress(asyncio.CancelledError):
                     await agent_task
                 assistant_text = ""
@@ -424,6 +475,7 @@ class AiSearchAgentRunService:
                 run_state = self.storage.get_ai_search_run(task.id, run_id) or {}
                 self._clear_run_cancel_request(task.id)
                 if str(run_state.get("status") or "").strip() == TaskStatus.CANCELLED.value:
+                    terminal_event_written = True
                     return
                 self._mark_idle(task.id, run_id)
                 cancelled = self._append_event(
@@ -438,6 +490,7 @@ class AiSearchAgentRunService:
                     run_id=run_id,
                 )
                 yield self._format_event(cancelled)
+                terminal_event_written = True
                 return
             if timed_out:
                 self._clear_run_cancel_request(task.id)
@@ -472,6 +525,7 @@ class AiSearchAgentRunService:
                     run_id=run_id,
                 )
                 yield self._format_event(completed)
+                terminal_event_written = True
                 return
             if assistant_text:
                 if assistant_message_id:
@@ -536,6 +590,20 @@ class AiSearchAgentRunService:
                 run_id=run_id,
             )
             yield self._format_event(completed)
+            terminal_event_written = True
+        except asyncio.CancelledError:
+            if agent_task and not agent_task.done():
+                agent_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await agent_task
+            if not terminal_event_written:
+                self._cancel_running_run(
+                    task.id,
+                    run_id,
+                    completion_reason="stream_disconnected",
+                    message="流式连接已断开，本轮检索已停止。",
+                )
+            raise
         except Exception as exc:
             set_task_phase(self.storage, task.id, "failed", error_message=str(exc))
             self.storage.update_ai_search_run(
@@ -597,34 +665,11 @@ class AiSearchAgentRunService:
         run_id = str((run or {}).get("run_id") or meta.get("current_run_id") or "").strip()
         if str(meta.get("current_phase") or "").strip() != PHASE_RUNNING or not run_id:
             return {"cancelled": False, "reason": "not_running"}
-        self.storage.update_task(
-            task.id,
-            metadata=merge_ai_search_meta(
-                task,
-                current_phase=PHASE_IDLE,
-                cancel_requested=True,
-                cancel_requested_run_id=run_id,
-            ),
-            status=TaskStatus.PROCESSING.value,
-            progress=phase_progress(PHASE_IDLE),
-            current_step=phase_step(PHASE_IDLE),
-        )
-        self.storage.update_ai_search_run(
+        event = self._cancel_running_run(
             task.id,
             run_id,
-            phase=PHASE_IDLE,
-            status=TaskStatus.CANCELLED.value,
-            completed_at=utc_now_z(),
-        )
-        event = self._append_event(
-            task.id,
-            "run.cancelled",
-            {
-                "phase": PHASE_IDLE,
-                "completionReason": "cancelled",
-                "message": "本轮检索已取消。",
-            },
-            run_id=run_id,
+            completion_reason="cancelled",
+            message="本轮检索已取消。",
         )
         return {"cancelled": True, "event": event}
 
