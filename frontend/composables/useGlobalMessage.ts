@@ -1,4 +1,4 @@
-type GlobalMessageType = 'success' | 'error' | 'info'
+type GlobalMessageType = 'success' | 'error' | 'info' | 'warning'
 
 type GlobalMessageState = {
   show: boolean

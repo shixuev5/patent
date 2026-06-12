@@ -108,6 +108,7 @@ class AiSearchService:
             persist_task_usage(self.storage, usage_collector, merge=True)
 
     def get_snapshot(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
+        self.agent_runs.repair_stale_running_state(session_id, owner_id)
         return self.snapshots.get_snapshot(session_id, owner_id)
 
     def _append_message(

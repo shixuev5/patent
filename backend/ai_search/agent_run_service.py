@@ -30,7 +30,9 @@ from patent_agents.ai_search.src.runtime import (
 
 STOP_SATISFIED_COMPLETION_GRACE_SECONDS = 12.0
 STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS = 30.0
+SNAPSHOT_STALE_RUNNING_REPAIR_GRACE_SECONDS = 60.0
 STOP_SATISFIED_MESSAGE = "停止条件已满足，本轮已停止继续检索。可查看当前候选/已选证据，或发送新指令调整范围。"
+STALE_RUNNING_REPAIR_MESSAGE = "会话恢复时发现上一轮长时间无进展，已自动结束本轮。可查看当前候选/已选证据，或发送新指令继续检索。"
 
 
 class AiSearchAgentRunService:
@@ -193,12 +195,45 @@ class AiSearchAgentRunService:
             return 0.0
         return max(0.0, (utc_now() - created_at).total_seconds())
 
+    def _timestamp_age_seconds(self, value: Any) -> float:
+        created_at = parse_storage_ts(str(value or ""), naive_strategy="utc")
+        if created_at is None:
+            return 0.0
+        return max(0.0, (utc_now() - created_at).total_seconds())
+
     def _active_run_id(self, task_id: str) -> str:
         task = self.storage.get_task(task_id)
         meta = get_ai_search_meta(task)
         plan_version = int(meta.get("active_plan_version") or 1)
         run = self.storage.get_ai_search_run(task_id, plan_version=plan_version) or self.storage.get_ai_search_run(task_id)
         return str((run or {}).get("run_id") or meta.get("current_run_id") or "").strip()
+
+    def _latest_terminal_run_event(self, task_id: str, run_id: str = "") -> Optional[Dict[str, Any]]:
+        latest: Optional[Dict[str, Any]] = None
+        terminal_types = {"run.completed", "run.cancelled", "run.failed"}
+        for event in self.storage.list_ai_search_stream_events(task_id, after_seq=0):
+            if str(event.get("event_type") or "").strip() not in terminal_types:
+                continue
+            if run_id and str(event.get("run_id") or "").strip() != run_id:
+                continue
+            latest = event
+        return latest
+
+    def _mark_task_idle_preserving_run(self, task_id: str) -> None:
+        task = self.storage.get_task(task_id)
+        meta = get_ai_search_meta(task)
+        plan_version = int(meta.get("active_plan_version") or 1)
+        selected_count = len(self.storage.list_ai_search_documents(task_id, plan_version, stages=["selected"]))
+        self.storage.update_task(
+            task_id,
+            metadata=merge_ai_search_meta(task, current_phase=PHASE_IDLE, selected_document_count=selected_count),
+            status=TaskStatus.PROCESSING.value,
+            progress=phase_progress(PHASE_IDLE),
+            current_step=phase_step(PHASE_IDLE),
+        )
+
+    def _mark_task_failed_preserving_run(self, task_id: str, message: str = "") -> None:
+        set_task_phase(self.storage, task_id, "failed", error_message=message)
 
     def _finish_stop_satisfied_run(
         self,
@@ -260,6 +295,46 @@ class AiSearchAgentRunService:
                     "completionReason": "stop_satisfied",
                     "awaitingUserAction": False,
                     "message": STOP_SATISFIED_MESSAGE,
+                },
+                run_id=run_id,
+            )
+        )
+        return events
+
+    def _finish_stale_running_run(self, task_id: str, run_id: str) -> List[Dict[str, Any]]:
+        if not run_id or self._current_phase_value(task_id) != PHASE_RUNNING:
+            return []
+        events: List[Dict[str, Any]] = []
+        assistant_message = self._append_message(
+            task_id,
+            "assistant",
+            STALE_RUNNING_REPAIR_MESSAGE,
+            metadata={"render_mode": "markdown", "message_variant": "run_repair_notice"},
+        )
+        if assistant_message:
+            events.append(
+                self._append_event(
+                    task_id,
+                    "message.created",
+                    assistant_message,
+                    run_id=run_id,
+                    entity_id=str(assistant_message.get("message_id") or ""),
+                )
+            )
+        task = self.storage.get_task(task_id)
+        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
+        runtime = AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
+        events.append(self._append_event(task_id, "documents.updated", documents_payload(runtime), run_id=run_id))
+        self._mark_idle(task_id, run_id)
+        events.append(
+            self._append_event(
+                task_id,
+                "run.completed",
+                {
+                    "phase": PHASE_IDLE,
+                    "completionReason": "stale_running_repaired",
+                    "awaitingUserAction": False,
+                    "message": STALE_RUNNING_REPAIR_MESSAGE,
                 },
                 run_id=run_id,
             )
@@ -418,6 +493,64 @@ class AiSearchAgentRunService:
         except Exception:
             value = int(DEFAULT_STOP_POLICY["deadline_seconds"])
         return max(30, value)
+
+    def repair_stale_running_state(self, session_id: str, owner_id: str) -> Dict[str, Any]:
+        task = self._owned_task(session_id, owner_id)
+        if self._current_phase_value(task.id) != PHASE_RUNNING:
+            return {"repaired": False, "reason": "not_running"}
+
+        run_id = self._active_run_id(task.id)
+        run = self.storage.get_ai_search_run(task.id, run_id) if run_id else None
+        terminal_event = self._latest_terminal_run_event(task.id, run_id)
+        if terminal_event:
+            event_type = str(terminal_event.get("event_type") or "").strip()
+            payload = terminal_event.get("payload") if isinstance(terminal_event.get("payload"), dict) else {}
+            if event_type == "run.failed":
+                self._mark_task_failed_preserving_run(task.id, str(payload.get("message") or "当前流式轮次执行失败。"))
+                return {"repaired": True, "reason": "terminal_failed_event"}
+            self._mark_task_idle_preserving_run(task.id)
+            return {"repaired": True, "reason": f"terminal_{event_type}"}
+
+        if run:
+            run_phase = str(run.get("phase") or "").strip()
+            run_status = str(run.get("status") or "").strip()
+            if run_phase and run_phase != PHASE_RUNNING:
+                if run_phase == "failed" or run_status == TaskStatus.FAILED.value:
+                    self._mark_task_failed_preserving_run(task.id, "当前流式轮次执行失败。")
+                    return {"repaired": True, "reason": "run_failed_phase"}
+                self._mark_task_idle_preserving_run(task.id)
+                return {"repaired": True, "reason": "run_not_running_phase"}
+            if run_status in {TaskStatus.CANCELLED.value, TaskStatus.COMPLETED.value}:
+                self._mark_task_idle_preserving_run(task.id)
+                return {"repaired": True, "reason": f"run_{run_status}_status"}
+            if run_status == TaskStatus.FAILED.value:
+                self._mark_task_failed_preserving_run(task.id, "当前流式轮次执行失败。")
+                return {"repaired": True, "reason": "run_failed_status"}
+
+        stop_event = self._latest_stop_satisfied_event(task.id)
+        if stop_event and self._event_age_seconds(stop_event) >= STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS:
+            for _event in self._finish_stop_satisfied_run(task.id, run_id):
+                pass
+            return {"repaired": True, "reason": "stale_stop_satisfied"}
+
+        if run_id:
+            task = self.storage.get_task(task.id)
+            meta = get_ai_search_meta(task)
+            plan_version = int(meta.get("active_plan_version") or (run.get("plan_version") if run else 1) or 1)
+            runtime = AiSearchRuntimeContext(self.storage, task.id, run_id, plan_version)
+            deadline_seconds = self._run_deadline_seconds(runtime)
+            latest_event = self.storage.get_latest_ai_search_stream_event(task.id)
+            age_seconds = (
+                self._event_age_seconds(latest_event)
+                if isinstance(latest_event, dict)
+                else self._timestamp_age_seconds((run or {}).get("created_at"))
+            )
+            if age_seconds >= deadline_seconds + SNAPSHOT_STALE_RUNNING_REPAIR_GRACE_SECONDS:
+                for _event in self._finish_stale_running_run(task.id, run_id):
+                    pass
+                return {"repaired": True, "reason": "deadline_stale_running"}
+
+        return {"repaired": False, "reason": "running_recent"}
 
     async def stream_message(self, session_id: str, owner_id: str, content: str) -> AsyncIterator[str]:
         task = self._owned_task(session_id, owner_id)

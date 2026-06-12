@@ -31,6 +31,9 @@ const messageClass = computed(() => {
   if (globalMessage.value.type === 'error') {
     return 'border-rose-200/70 bg-rose-50/95 text-rose-700 shadow-rose-200/60'
   }
+  if (globalMessage.value.type === 'warning') {
+    return 'border-amber-200/70 bg-amber-50/95 text-amber-800 shadow-amber-200/60'
+  }
   return 'border-cyan-200/70 bg-cyan-50/95 text-cyan-700 shadow-cyan-200/60'
 })
 </script>

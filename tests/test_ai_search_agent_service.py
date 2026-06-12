@@ -424,6 +424,61 @@ def test_subscribe_stream_recovers_stale_stop_satisfied_run(monkeypatch, tmp_pat
     assert storage.get_ai_search_run(created.sessionId, run_id)["phase"] == PHASE_IDLE
 
 
+def test_snapshot_repairs_stale_stop_satisfied_running_session(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    monkeypatch.setattr(agent_run_service_module, "STOP_SATISFIED_SUBSCRIBE_STALE_SECONDS", 0.0)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    service.agent_runs._mark_running(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, run_id, 1)
+    trace = runtime.start_trace(
+        tool_name="search_patents",
+        label="检索前检查停止条件",
+        input={"query": "固态电池隔膜"},
+    )
+    runtime.finish_trace(
+        trace,
+        tool_name="search_patents",
+        label="停止条件已满足，未继续检索",
+        output={"blocked": True, "stop": {"should_stop": True, "reasons": ["达到最大候选数量"]}},
+    )
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.session.phase == PHASE_IDLE
+    assert snapshot.session.activityState == "none"
+    assert snapshot.run["phase"] == PHASE_IDLE
+    assert storage.get_ai_search_run(created.sessionId, run_id)["phase"] == PHASE_IDLE
+    assert any(
+        event["event_type"] == "run.completed"
+        and (event.get("payload") or {}).get("completionReason") == "stop_satisfied"
+        for event in storage.list_ai_search_stream_events(created.sessionId)
+    )
+
+
+def test_snapshot_repairs_running_session_when_run_already_cancelled(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    service.agent_runs._mark_running(created.sessionId)
+    storage.update_ai_search_run(
+        created.sessionId,
+        run_id,
+        phase=PHASE_IDLE,
+        status=TaskStatus.CANCELLED.value,
+    )
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+
+    assert snapshot.session.phase == PHASE_IDLE
+    assert snapshot.session.activityState == "none"
+    assert snapshot.run["phase"] == PHASE_IDLE
+    assert snapshot.run["status"] == TaskStatus.CANCELLED.value
+    assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
+
+
 def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_path) -> None:
     service, storage = _build_service(tmp_path)
     created, _task = _create_session(service)
