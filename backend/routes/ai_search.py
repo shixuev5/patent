@@ -170,6 +170,14 @@ async def export_ai_search_report(
     return service.export_report(session_id, current_user.user_id)
 
 
+@router.post("/api/ai-search/sessions/{session_id}/office-action/export")
+async def export_ai_search_office_action(
+    session_id: str,
+    current_user: CurrentUser = Depends(_get_current_user),
+):
+    return service.export_office_action(session_id, current_user.user_id)
+
+
 @router.post("/api/ai-search/sessions/{session_id}/documents/supplement")
 async def supplement_ai_search_documents(
     session_id: str,

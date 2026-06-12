@@ -15,7 +15,16 @@
             :disabled="streaming || !hasSession"
             @click="$emit('export-report')"
           >
-            导出
+            导出报告
+          </button>
+          <button
+            type="button"
+            class="panel-action"
+            :disabled="streaming || !hasSession || selectedDocuments.length === 0"
+            :title="selectedDocuments.length === 0 ? '选中至少 1 篇对比文献后生成通知书' : '基于已选文献生成审查意见通知书'"
+            @click="$emit('export-office-action')"
+          >
+            生成通知书
           </button>
           <button
             v-if="phase === 'running'"
@@ -435,6 +444,7 @@ const emit = defineEmits<{
   'quick-prompt': [key: string]
   'cancel-run': []
   'export-report': []
+  'export-office-action': []
   supplement: [payload: { patentNumbers: string, reviewGoal: string, files: File[] }]
   'review-supplement': [prompt: string]
   'clear-supplement-feedback': []
@@ -503,7 +513,6 @@ const documentMeta = (doc: Record<string, any>): string => {
   const segments = [
     String(doc.pn || doc.doi || doc.external_id || '').trim(),
     String(doc.publication_date || doc.application_date || '').trim(),
-    String(doc.source_type || '').trim(),
   ].filter(Boolean)
   return segments.join(' · ') || '未提供来源信息'
 }
@@ -516,7 +525,6 @@ const documentTags = (doc: Record<string, any>): string[] => {
   if (sourceType === 'user_pdf') tags.push('PDF')
   else if (sourceType === 'patent' || doc.pn) tags.push('专利')
   else if (doc.doi) tags.push('论文')
-  if (String(doc.stage || '').trim() === 'selected') tags.push('已选')
   return [...new Set(tags)]
 }
 

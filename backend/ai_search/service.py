@@ -194,6 +194,11 @@ class AiSearchService:
         self.artifacts.export_session_report(task)
         return self.snapshots.get_snapshot(session_id, owner_id)
 
+    def export_office_action(self, session_id: str, owner_id: str) -> AiSearchSnapshotResponse:
+        task = self.sessions._get_owned_session_task(session_id, owner_id)
+        self.artifacts.export_office_action(task)
+        return self.snapshots.get_snapshot(session_id, owner_id)
+
     async def supplement_documents(
         self,
         session_id: str,

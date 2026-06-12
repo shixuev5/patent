@@ -677,7 +677,7 @@ def _build_task_download_filename(task_type: str, task: Any) -> str:
     artifact_name = str(getattr(task, "pn", None) or getattr(task, "title", None) or getattr(task, "id", "")).strip()
     artifact_name = artifact_name or str(getattr(task, "id", ""))
     if task_type == TaskType.AI_SEARCH.value:
-        return f"AI 检索结果_{artifact_name}.zip"
+        return f"AI 检索报告_{artifact_name}.pdf"
     if task_type == TaskType.AI_REPLY.value:
         return f"AI 答复报告_{artifact_name}.pdf"
     if task_type == TaskType.AI_REVIEW.value:
@@ -2394,14 +2394,14 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
     filename = _build_task_download_filename(task_type, task)
 
     if task_type == TaskType.AI_SEARCH.value:
-        bundle_path_text = str(output_files.get("bundle_zip") or "").strip()
-        bundle_path = Path(bundle_path_text) if bundle_path_text else Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "ai_search_result_bundle.zip"
-        if not bundle_path.exists():
+        report_path_text = str(output_files.get("ai_search_report_pdf") or "").strip()
+        report_path = Path(report_path_text) if report_path_text else Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "ai_search_report.pdf"
+        if not report_path.exists():
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": "检索结果文件不存在",
-                    "message": f"未找到检索结果文件：{bundle_path}",
+                    "error": "检索报告文件不存在",
+                    "message": f"未找到检索报告文件：{report_path}",
                     "task_id": task_id,
                     "suggestion": "请稍后重试或联系管理员。",
                 },
@@ -2413,13 +2413,13 @@ async def download_result(task_id: str, current_user: CurrentUser = Depends(_get
             task_id=task_id,
             task_type=task_type,
             success=True,
-            message="下载 AI 检索结果",
+            message="下载 AI 检索报告",
             payload={"filename": filename},
         )
         return FileResponse(
-            path=str(bundle_path),
+            path=str(report_path),
             filename=filename,
-            media_type="application/zip",
+            media_type="application/pdf",
         )
 
     r2_storage = _build_r2_storage()

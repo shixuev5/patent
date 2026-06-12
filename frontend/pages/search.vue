@@ -287,6 +287,7 @@
           @quick-prompt="sendQuickPrompt"
           @cancel-run="cancelCurrentRun"
           @export-report="exportReport"
+          @export-office-action="exportOfficeAction"
           @supplement="supplementDocuments"
           @review-supplement="reviewSupplementDocuments"
           @clear-supplement-feedback="supplementFeedback = null"
@@ -496,7 +497,7 @@ const downloadCurrentResult = async (attachment: AiSearchArtifactAttachment) => 
     link.click()
     document.body.removeChild(link)
   } catch (error) {
-    console.error('下载 AI 检索结果失败：', error)
+    console.error('下载 AI 检索附件失败：', error)
     showMessage('error', '下载失败，请稍后重试。')
     window.open(rawDownloadUrl, '_blank')
   }
@@ -732,6 +733,12 @@ const exportReport = async () => {
   if (!currentSession.value || streaming.value) return
   await aiSearchStore.exportReport()
   showMessage('success', '检索报告已导出。')
+}
+
+const exportOfficeAction = async () => {
+  if (!currentSession.value || streaming.value || selectedDocuments.value.length === 0) return
+  await aiSearchStore.exportOfficeAction()
+  showMessage('success', '审查意见通知书已生成。')
 }
 
 const supplementDocuments = async (payload: { patentNumbers: string, reviewGoal: string, files: File[] }) => {

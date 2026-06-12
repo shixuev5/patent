@@ -98,9 +98,12 @@ const formatCreatedAt = (value?: string): string => {
 
 const mediaTypeLabel = computed(() => {
   const mediaType = String(props.attachment.mediaType || '').toLowerCase()
+  const extension = normalizedExtension.value
   if (mediaType.includes('zip')) return 'ZIP'
   if (mediaType.includes('csv')) return 'CSV'
   if (mediaType.includes('pdf')) return 'PDF'
+  if (mediaType.includes('json') || extension === 'json') return 'JSON'
+  if (mediaType.includes('markdown') || ['md', 'markdown'].includes(extension)) return 'Markdown'
   return '附件'
 })
 

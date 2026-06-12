@@ -97,7 +97,7 @@ def test_build_task_download_filename_prefers_pn_then_title_then_task_id() -> No
     task = SimpleNamespace(id="task-3", pn=None, title="检索会话")
     assert (
         tasks_route._build_task_download_filename(TaskType.AI_SEARCH.value, task)
-        == "AI 检索结果_检索会话.zip"
+        == "AI 检索报告_检索会话.pdf"
     )
 
     task = SimpleNamespace(id="task-3", pn=None, title=None)

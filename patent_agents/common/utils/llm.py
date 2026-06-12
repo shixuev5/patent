@@ -66,6 +66,7 @@ class LLMService:
         "oar_rejection_drafting": {"tier": "large", "thinking": True},
         "oar_claim_review_drafting": {"tier": "large", "thinking": True},
         "oar_search_followup_generation": {"tier": "large", "thinking": True},
+        "ai_search_office_action_drafting": {"tier": "large", "thinking": True},
         "vision_ocr_correction": {"tier": "default", "thinking": True},
         "vision_single_figure_explain": {"tier": "default", "thinking": True},
         "vision_multi_figure_synthesis": {"tier": "large", "thinking": True},

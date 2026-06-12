@@ -1227,6 +1227,25 @@ export const useAiSearchStore = defineStore('aiSearch', {
       }
     },
 
+    async exportOfficeAction() {
+      const sessionId = String(this.currentSessionId || '').trim()
+      const snapshot = this._getSnapshot(sessionId)
+      if (!sessionId || !snapshot) return
+      this._setRuntimeError(sessionId, '')
+      try {
+        const data = await this._postJson<AiSearchSnapshot>(
+          `/api/ai-search/sessions/${encodeURIComponent(sessionId)}/office-action/export`,
+          {},
+          'POST',
+        )
+        this._applySnapshot(data, { activate: sessionId === this.currentSessionId })
+      } catch (error: any) {
+        const message = error?.message || '生成审查意见通知书失败'
+        this._setRuntimeError(sessionId, message)
+        throw error instanceof Error ? error : new Error(message)
+      }
+    },
+
     async updateStopPolicy(payload: Partial<AiSearchStopPolicy> & Record<string, any>) {
       const sessionId = String(this.currentSessionId || '').trim()
       const snapshot = this._getSnapshot(sessionId)

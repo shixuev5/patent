@@ -9,7 +9,7 @@ from backend.storage.pipeline_adapter import PipelineTaskManager
 from backend.storage import SQLiteTaskStorage
 
 
-def test_download_result_returns_ai_search_zip(monkeypatch, tmp_path) -> None:
+def test_download_result_returns_ai_search_pdf(monkeypatch, tmp_path) -> None:
     storage = SQLiteTaskStorage(tmp_path / "tasks_download.db")
     manager = PipelineTaskManager(storage)
     monkeypatch.setattr(tasks_route, "task_manager", manager)
@@ -20,17 +20,17 @@ def test_download_result_returns_ai_search_zip(monkeypatch, tmp_path) -> None:
         task_type=TaskType.AI_SEARCH.value,
         title="检索会话",
     )
-    bundle_path = tmp_path / "ai_search_result_bundle.zip"
-    bundle_path.write_bytes(b"PK\x03\x04")
+    report_path = tmp_path / "ai_search_report.pdf"
+    report_path.write_bytes(b"%PDF-1.4\n")
     storage.update_task(
         task.id,
         status=TaskStatus.COMPLETED.value,
-        metadata={"output_files": {"bundle_zip": str(bundle_path)}},
+        metadata={"output_files": {"ai_search_report_pdf": str(report_path)}},
     )
 
     response = asyncio.run(
         tasks_route.download_result(task.id, SimpleNamespace(user_id="guest_ai_search"))
     )
 
-    assert response.media_type == "application/zip"
-    assert response.filename == "AI 检索结果_检索会话.zip"
+    assert response.media_type == "application/pdf"
+    assert response.filename == "AI 检索报告_检索会话.pdf"

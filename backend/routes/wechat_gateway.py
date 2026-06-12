@@ -67,11 +67,11 @@ async def get_internal_wechat_task_download(
     filename = _build_task_download_filename(task_type, task)
 
     if task_type == TaskType.AI_SEARCH.value:
-        bundle_path_text = str(output_files.get("bundle_zip") or "").strip()
-        bundle_path = Path(bundle_path_text) if bundle_path_text else Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "ai_search_result_bundle.zip"
-        if not bundle_path.exists():
-            raise HTTPException(status_code=404, detail="ai search bundle not found")
-        return FileResponse(path=str(bundle_path), filename=filename, media_type="application/zip")
+        report_path_text = str(output_files.get("ai_search_report_pdf") or "").strip()
+        report_path = Path(report_path_text) if report_path_text else Path(task.output_dir or settings.OUTPUT_DIR / task_id) / "ai_search_report.pdf"
+        if not report_path.exists():
+            raise HTTPException(status_code=404, detail="ai search report not found")
+        return FileResponse(path=str(report_path), filename=filename, media_type="application/pdf")
 
     r2_storage = _build_r2_storage()
     r2_key = _build_task_pdf_r2_key(task_type, task.pn, r2_storage)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import zipfile
 from typing import Any, AsyncIterator
 
+import pytest
 from agents import RunContextWrapper
 
 from backend.ai_search import agent_run_service as agent_run_service_module
@@ -800,11 +800,17 @@ def test_snapshot_uses_idle_task_phase_when_run_was_left_running(tmp_path) -> No
     assert snapshot.run["phase"] == PHASE_IDLE
 
 
-def test_export_report_writes_markdown_json_csv_and_bundle(tmp_path) -> None:
+def test_export_report_writes_markdown_json_csv_and_pdf(monkeypatch, tmp_path) -> None:
     service, storage = _build_service(tmp_path)
     created, _task = _create_session(service)
     run = service.agent_runs._ensure_run(created.sessionId)
     run_id = str(run["run_id"])
+
+    def fake_render_pdf(*, output_path, **_kwargs):
+        output_path.write_bytes(b"%PDF-1.4\n")
+        return output_path
+
+    monkeypatch.setattr("backend.ai_search.artifacts_service.render_markdown_to_pdf", fake_render_pdf)
     storage.upsert_ai_search_documents(
         [
             _document(created.sessionId, run_id, "CN300001A", stage="selected", title="核心对比文件"),
@@ -826,10 +832,106 @@ def test_export_report_writes_markdown_json_csv_and_bundle(tmp_path) -> None:
     snapshot = service.export_report(created.sessionId, "guest_ai_search")
     attachment_ids = {item.attachmentId for item in snapshot.artifacts.attachments}
 
-    assert attachment_ids == {"result_bundle", "report_markdown", "selected_documents_csv", "report_json"}
+    assert attachment_ids == {"search_report_pdf", "search_report_markdown", "selected_documents_csv", "search_report_json"}
 
     output_files = storage.get_task(created.sessionId).metadata["output_files"]
-    assert "阶段性报告内容" in open(output_files["ai_search_report_markdown"], encoding="utf-8").read()
+    report_markdown = open(output_files["ai_search_report_markdown"], encoding="utf-8").read()
+    assert "## 检索目标" in report_markdown
+    assert "## 统计概览" in report_markdown
+    assert "## 已选证据" in report_markdown
+    assert "## 候选概览" in report_markdown
+    assert "阶段性报告内容" in report_markdown
     assert "核心对比文件" in open(output_files["ai_search_selected_documents_csv"], encoding="utf-8-sig").read()
-    with zipfile.ZipFile(output_files["ai_search_bundle"]) as archive:
-        assert set(archive.namelist()) == {"ai_search_report.md", "ai_search_report.json", "selected_documents.csv"}
+    assert open(output_files["ai_search_report_pdf"], "rb").read().startswith(b"%PDF")
+
+
+def test_export_office_action_writes_markdown_json_and_pdf(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+
+    storage.update_task(
+        created.sessionId,
+        metadata=merge_ai_search_meta(task, source_pn="CN300001A", source_title="测试发明"),
+    )
+    storage.upsert_ai_search_documents(
+        [_document(created.sessionId, run_id, "CN300002A", stage="selected", title="核心对比文件")]
+    )
+
+    def fake_render_pdf(*, output_path, **_kwargs):
+        output_path.write_bytes(b"%PDF-1.4\n")
+        return output_path
+
+    def fake_generate(input_payload):
+        assert input_payload["target"]["application_number"] == "CN300001A"
+        assert input_payload["selected_documents"][0]["doc_id"] == "D1"
+        return {
+            "schema_version": "ai_search.office_action.v1",
+            "title": "审查意见通知书",
+            "bibliographic": {
+                "application_number": "CN300001A",
+                "application_title": "测试发明",
+                "applicant": "【申请人】",
+            },
+            "target_files": "本通知书针对申请人于【提交日】提交的权利要求书、说明书及其摘要。",
+            "comparison_documents": [
+                {"doc_id": "D1", "title": "核心对比文件", "identifier": "CN300002A", "publication_date": "2024-01-01"}
+            ],
+            "office_action_body": [
+                {
+                    "claim_ids": ["1"],
+                    "legal_basis": "专利法第二十二条第三款",
+                    "defect_type": "创造性",
+                    "text": "权利要求1不具备专利法第二十二条第三款规定的创造性。对比文件D1公开了相关技术特征，相当于本申请权利要求1中的对应技术特征。因此，权利要求1不具备突出的实质性特点和显著的进步。",
+                }
+            ],
+            "conclusion": "经审查，上述权利要求存在不符合专利法及其实施细则有关规定的缺陷。申请人应当在指定期限内对上述审查意见作出答复。",
+            "response_deadline": "答复期限：【指定期限】。期满未答复的，本申请将依照专利法及其实施细则的有关规定处理。",
+            "manual_review_items": [],
+        }
+
+    monkeypatch.setattr("backend.ai_search.artifacts_service.render_markdown_to_pdf", fake_render_pdf)
+    monkeypatch.setattr("backend.ai_search.artifacts_service.generate_office_action_payload", fake_generate)
+
+    snapshot = service.export_office_action(created.sessionId, "guest_ai_search")
+    attachment_ids = {item.attachmentId for item in snapshot.artifacts.attachments}
+
+    assert attachment_ids == {"office_action_pdf", "office_action_markdown", "office_action_json"}
+    output_files = storage.get_task(created.sessionId).metadata["output_files"]
+    markdown = open(output_files["ai_search_office_action_markdown"], encoding="utf-8").read()
+    assert "审查意见通知书" in markdown
+    assert "权利要求1不具备专利法第二十二条第三款规定的创造性" in markdown
+    assert "对比文件D1" in markdown
+    assert "申请人应当在指定期限内对上述审查意见作出答复" in markdown
+    assert open(output_files["ai_search_office_action_pdf"], "rb").read().startswith(b"%PDF")
+
+
+def test_export_office_action_requires_selected_documents(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, task = _create_session(service)
+    storage.update_task(
+        created.sessionId,
+        metadata=merge_ai_search_meta(task, source_pn="CN300001A", source_title="测试发明"),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        service.export_office_action(created.sessionId, "guest_ai_search")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "AI_SEARCH_OFFICE_ACTION_NO_SELECTED_DOCUMENTS"
+
+
+def test_export_office_action_requires_source_context(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    storage.upsert_ai_search_documents(
+        [_document(created.sessionId, str(run["run_id"]), "CN300002A", stage="selected", title="核心对比文件")]
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        service.export_office_action(created.sessionId, "guest_ai_search")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "AI_SEARCH_OFFICE_ACTION_SOURCE_CONTEXT_REQUIRED"
