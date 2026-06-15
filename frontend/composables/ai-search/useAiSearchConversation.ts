@@ -15,7 +15,7 @@ const toFiniteNumber = (value: any): number => {
 }
 
 const entrySortSeq = (entry: ConversationEntryLike): number => (
-  toFiniteNumber(entry.sortSeq || entry._eventSeq || entry._eventOrder || entry._eventStartedSeq || 0)
+  toFiniteNumber(entry.sortSeq || entry._eventStartedSeq || entry._eventOrder || entry._eventSeq || 0)
 )
 
 const compareEntries = (left: ConversationEntryLike, right: ConversationEntryLike): number => {

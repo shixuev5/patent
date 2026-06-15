@@ -439,7 +439,14 @@ export const useAiSearchStore = defineStore('aiSearch', {
       if (messageId) {
         const index = messages.findIndex((item) => String(item.message_id || '').trim() === messageId)
         if (index >= 0) {
-          messages[index] = { ...messages[index], ...message }
+          const previous = messages[index]
+          messages[index] = {
+            ...previous,
+            ...message,
+            _eventStartedSeq: previous._eventStartedSeq || message._eventStartedSeq || message._eventSeq || null,
+            _eventAt: previous._eventAt || message._eventAt || message.created_at || null,
+            _eventSeq: message._eventSeq || previous._eventSeq || null,
+          }
           snapshot.conversation.messages = [...messages]
           return
         }
@@ -456,11 +463,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
           && String(item.content || '').trim() === String(message.content || '').trim()
         ))
         if (optimisticIndex >= 0) {
+          const previous = messages[optimisticIndex]
           messages[optimisticIndex] = {
-            ...messages[optimisticIndex],
+            ...previous,
             ...message,
+            _eventStartedSeq: previous._eventStartedSeq || message._eventStartedSeq || message._eventSeq || null,
+            _eventAt: previous._eventAt || message._eventAt || message.created_at || null,
+            _eventSeq: message._eventSeq || previous._eventSeq || null,
             metadata: {
-              ...entryMetadata(messages[optimisticIndex]),
+              ...entryMetadata(previous),
               ...entryMetadata(message),
               optimistic: false,
             },
@@ -469,7 +480,15 @@ export const useAiSearchStore = defineStore('aiSearch', {
           return
         }
       }
-      snapshot.conversation.messages = [...messages, message]
+      snapshot.conversation.messages = [
+        ...messages,
+        {
+          ...message,
+          _eventStartedSeq: message._eventStartedSeq || message._eventSeq || null,
+          _eventAt: message._eventAt || message.created_at || null,
+          _eventSeq: message._eventSeq || null,
+        },
+      ]
     },
 
     _applyMessageDelta(sessionId: string, payload: Record<string, any>) {
@@ -489,6 +508,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           message_id: messageId,
           content: explicitContent ?? `${String(current.content || '')}${delta}`,
           stream_status: String(payload.stream_status || 'streaming'),
+          _eventStartedSeq: current._eventStartedSeq || payload._eventStartedSeq || payload._eventSeq || null,
+          _eventAt: current._eventAt || payload._eventAt || payload.created_at || null,
+          _eventSeq: payload._eventSeq || current._eventSeq || null,
         }
         snapshot.conversation.messages = [...messages]
         return
@@ -504,6 +526,9 @@ export const useAiSearchStore = defineStore('aiSearch', {
           stream_status: String(payload.stream_status || 'streaming'),
           metadata: payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : { render_mode: 'markdown' },
           created_at: String(payload.created_at || new Date().toISOString()),
+          _eventStartedSeq: payload._eventStartedSeq || payload._eventSeq || null,
+          _eventAt: payload._eventAt || payload.created_at || null,
+          _eventSeq: payload._eventSeq || null,
         },
       ]
     },

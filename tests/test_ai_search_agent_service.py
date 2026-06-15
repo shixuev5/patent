@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, AsyncIterator
 
 import pytest
@@ -10,6 +11,7 @@ from agents import RunContextWrapper
 from backend.ai_search import agent_run_service as agent_run_service_module
 from patent_agents.ai_search.src.runtime import (
     AiSearchRuntimeContext,
+    SYSTEM_PROMPT,
     read_workspace_context,
     run_detail_agent,
     run_retrieval_agent,
@@ -45,6 +47,32 @@ def _create_session(service: AiSearchService, owner_id: str = "guest_ai_search")
     task = service.storage.get_task(created.sessionId)
     assert task is not None
     return created, task
+
+
+def _append_stream_event(
+    storage: SQLiteTaskStorage,
+    task_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    run_id: str = "",
+    entity_id: str = "",
+    created_at: str = "",
+) -> dict[str, Any]:
+    event = storage.append_ai_search_stream_event(
+        {
+            "event_id": uuid.uuid4().hex,
+            "session_id": task_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "event_type": event_type,
+            "entity_id": entity_id,
+            "payload": payload,
+            "created_at": created_at,
+        }
+    )
+    assert event is not None
+    return event
 
 
 def _document(task_id: str, run_id: str, canonical_id: str, *, stage: str = "candidate", title: str = "候选文献") -> dict[str, Any]:
@@ -227,6 +255,158 @@ def test_cancel_current_run_stops_stream_from_writing_completion(monkeypatch, tm
     assert snapshot.run["phase"] == PHASE_IDLE
     assert snapshot.run["status"] == TaskStatus.CANCELLED.value
     assert get_ai_search_meta(storage.get_task(created.sessionId)).get("cancel_requested") is False
+
+
+def test_snapshot_preserves_message_start_anchor_and_filters_terminal_dirty_traces(tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    message_id = "assistant-main-anchor"
+    first_event_at = "2026-06-15T02:25:00Z"
+    completed_event_at = "2026-06-15T02:48:00Z"
+    assert storage.create_ai_search_message(
+        {
+            "message_id": message_id,
+            "task_id": created.sessionId,
+            "role": "assistant",
+            "kind": "chat",
+            "content": "目标已经足够清晰，开始多路检索。",
+            "stream_status": "completed",
+            "created_at": completed_event_at,
+            "metadata": {"render_mode": "markdown"},
+        }
+    )
+    message = storage.get_ai_search_message(message_id)
+    assert message is not None
+
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "run.started",
+        {"phase": PHASE_RUNNING},
+        run_id=run_id,
+        created_at="2026-06-15T02:24:00Z",
+    )
+    created_event = _append_stream_event(
+        storage,
+        created.sessionId,
+        "message.created",
+        message,
+        run_id=run_id,
+        entity_id=message_id,
+        created_at=first_event_at,
+    )
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "trace.completed",
+        {
+            "traceId": "trace-before-terminal",
+            "traceType": "tool",
+            "status": "completed",
+            "label": "终止前可见 trace",
+            "toolName": "search_patents",
+            "phase": PHASE_RUNNING,
+        },
+        run_id=run_id,
+        entity_id="trace-before-terminal",
+        created_at="2026-06-15T02:30:00Z",
+    )
+    completed_message_event = _append_stream_event(
+        storage,
+        created.sessionId,
+        "message.completed",
+        message,
+        run_id=run_id,
+        entity_id=message_id,
+        created_at=completed_event_at,
+    )
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "run.completed",
+        {"phase": PHASE_IDLE, "completionReason": "stop_satisfied"},
+        run_id=run_id,
+        created_at="2026-06-15T02:49:00Z",
+    )
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "trace.completed",
+        {
+            "traceId": "trace-after-terminal",
+            "traceType": "tool",
+            "status": "completed",
+            "label": "终止后脏 trace",
+            "toolName": "search_patents",
+            "phase": PHASE_RUNNING,
+        },
+        run_id=run_id,
+        entity_id="trace-after-terminal",
+        created_at="2026-06-15T02:50:00Z",
+    )
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "run.started",
+        {"phase": PHASE_RUNNING},
+        run_id=run_id,
+        created_at="2026-06-15T03:00:00Z",
+    )
+    _append_stream_event(
+        storage,
+        created.sessionId,
+        "trace.completed",
+        {
+            "traceId": "trace-after-restart",
+            "traceType": "tool",
+            "status": "completed",
+            "label": "新一轮可见 trace",
+            "toolName": "search_patents",
+            "phase": PHASE_RUNNING,
+        },
+        run_id=run_id,
+        entity_id="trace-after-restart",
+        created_at="2026-06-15T03:01:00Z",
+    )
+
+    snapshot = service.get_snapshot(created.sessionId, "guest_ai_search")
+    assistant_message = next(item for item in snapshot.conversation["messages"] if item["message_id"] == message_id)
+    trace_ids = {item["traceId"] for item in snapshot.stream["activityTraces"]}
+
+    assert assistant_message["_eventAt"] == first_event_at
+    assert assistant_message["_eventStartedSeq"] == created_event["seq"]
+    assert assistant_message["_eventSeq"] == completed_message_event["seq"]
+    assert "trace-before-terminal" in trace_ids
+    assert "trace-after-restart" in trace_ids
+    assert "trace-after-terminal" not in trace_ids
+
+
+def test_stream_message_writes_summary_when_agent_returns_empty_output(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+
+    async def fake_run_search_agent_stream(_runtime, _text: str, *, on_delta=None, should_cancel=None) -> str:
+        return ""
+
+    monkeypatch.setattr(agent_run_service_module, "run_search_agent_stream", fake_run_search_agent_stream)
+
+    events = asyncio.run(_collect_stream(service.stream_message(created.sessionId, "guest_ai_search", "检索但没有输出")))
+    event_types = [event["type"] for event in events]
+    messages = storage.list_ai_search_messages(created.sessionId)
+    assistant_messages = [item for item in messages if item["role"] == "assistant" and item["content"]]
+    summary = str(assistant_messages[-1]["content"])
+
+    assert event_types[-1] == "run.completed"
+    assert event_types.count("message.created") == 2
+    assert "message.completed" not in event_types
+    assert "本轮检索已结束" in summary
+    assert "停止原因：" in summary
+    assert "当前结果：候选 0 篇，已选 0 篇" in summary
+    assert "运行统计：" in summary
+    assert "下一步：" in summary
+    assert get_ai_search_meta(storage.get_task(created.sessionId))["current_phase"] == PHASE_IDLE
 
 
 def test_document_selection_updates_selected_and_candidate_sets(tmp_path) -> None:
@@ -553,6 +733,37 @@ def test_search_patents_respects_remaining_candidate_capacity(monkeypatch, tmp_p
     assert "zhihuiya" in get_ai_search_meta(storage.get_task(created.sessionId))["stop_policy"]["databases"]
 
 
+def test_search_patents_skips_writes_after_run_is_no_longer_active(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    run_id = str(run["run_id"])
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, run_id, 1)
+    storage.update_ai_search_run(created.sessionId, run_id, phase=PHASE_IDLE, status=TaskStatus.PROCESSING.value)
+
+    class FakeClient:
+        def search(self, _query: str, limit: int = 20):
+            raise AssertionError("run 结束后不应继续访问外部检索")
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+
+    result = asyncio.run(
+        search_patents.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps({"query": "固态电池隔膜", "limit": 20, "mode": "boolean", "to_date": ""}),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+
+    assert parsed["blocked"] is True
+    assert parsed["reason"] == "run_not_active"
+    assert storage.list_ai_search_documents(created.sessionId, 1) == []
+    assert storage.list_ai_search_stream_events(created.sessionId, after_seq=0) == []
+    meta = get_ai_search_meta(storage.get_task(created.sessionId))
+    assert int(meta.get("query_count") or 0) == 0
+    assert int(meta.get("search_rounds") or 0) == 0
+
+
 def test_workspace_context_returns_compact_candidate_summaries(tmp_path) -> None:
     service, storage = _build_service(tmp_path)
     created, _task = _create_session(service)
@@ -634,10 +845,72 @@ def test_retrieval_agent_batches_searches_and_emits_agent_trace(monkeypatch, tmp
 
     assert parsed["summary"] == "本轮召回新增候选。"
     assert {item[0] for item in calls} == {"semantic", "boolean"}
+    semantic_call = next(item for item in calls if item[0] == "semantic")
+    boolean_call = next(item for item in calls if item[0] == "boolean")
+    assert semantic_call[1] == "固态电池 隔膜 陶瓷涂层"
+    assert boolean_call[1] == '"solid electrolyte" AND separator'
     assert parsed["lanes"][0]["top_documents"]
     assert "abstract" not in parsed["lanes"][0]["top_documents"][0]
     assert len(storage.list_ai_search_documents(created.sessionId, 1)) == 2
     assert agent_events
+
+
+def test_retrieval_agent_counts_no_new_once_per_parallel_batch(monkeypatch, tmp_path) -> None:
+    service, storage = _build_service(tmp_path)
+    created, _task = _create_session(service)
+    run = service.agent_runs._ensure_run(created.sessionId)
+    runtime = AiSearchRuntimeContext(storage, created.sessionId, str(run["run_id"]), 1)
+    calls: list[tuple[str, str, int]] = []
+
+    class FakeClient:
+        def search_semantic(self, query: str, to_date: str = "", limit: int = 20):
+            calls.append(("semantic", query, limit))
+            return {"results": []}
+
+        def search(self, query: str, limit: int = 20):
+            calls.append(("boolean", query, limit))
+            return {"results": []}
+
+    async def fake_summary(_agent_name, _instructions, _payload):
+        return ""
+
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime.SearchClientFactory.get_client", lambda _name: FakeClient())
+    monkeypatch.setattr("patent_agents.ai_search.src.runtime._run_default_child_summary", fake_summary)
+
+    result = asyncio.run(
+        run_retrieval_agent.on_invoke_tool(
+            RunContextWrapper(runtime),
+            json.dumps(
+                {
+                    "search_goal": "车辆诊断指令智能检索",
+                    "semantic_queries": "语义检索文本",
+                    "boolean_queries": "诊断 指令 检索",
+                    "academic_queries": "",
+                    "per_query_limit": 5,
+                    "include_academic": False,
+                }
+            ),
+        )
+    )
+    parsed = json.loads(result) if isinstance(result, str) else result
+    meta = get_ai_search_meta(storage.get_task(created.sessionId))
+
+    assert [item[0] for item in calls] == ["semantic", "boolean"]
+    assert calls[0][1] == "语义检索文本"
+    assert calls[1][1] == "诊断 指令 检索"
+    assert [item["new_count"] for item in parsed["lanes"]] == [0, 0]
+    assert int(meta.get("query_count") or 0) == 2
+    assert int(meta.get("search_rounds") or 0) == 1
+    assert int(meta.get("no_new_result_rounds") or 0) == 1
+    assert parsed["stats"]["queries"] == 2
+    assert parsed["stop"]["stats"]["no_new_result_rounds"] == 1
+
+
+def test_search_agent_prompt_requires_natural_language_semantic_queries() -> None:
+    assert "semantic_queries 必须写成自然语言技术场景/机制描述" in SYSTEM_PROMPT
+    assert "不能只是关键词罗列" in SYSTEM_PROMPT
+    assert "boolean_queries 才用于关键词" in SYSTEM_PROMPT
+    assert "semantic_queries 必须是自然语言技术场景/机制描述" in str(getattr(run_retrieval_agent, "description", ""))
 
 
 def test_review_agent_shortlists_and_close_reads_with_agent_trace(monkeypatch, tmp_path) -> None:

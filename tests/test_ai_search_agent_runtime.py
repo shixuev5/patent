@@ -218,10 +218,15 @@ def test_reply_seed_prompt_uses_open_search_language() -> None:
     assert '"objective": "围绕新增特征继续补检"' in prompt
 
 
-def test_analysis_seed_prompt_uses_only_structured_seed_payload() -> None:
+def test_analysis_seed_prompt_includes_effect_grouped_semantic_context() -> None:
     analysis_payload = {
         "metadata": {"task_id": "analysis-1", "resolved_pn": "CN123456A"},
-        "report_core": {"ai_title": "测试专利"},
+        "report_core": {
+            "ai_title": "测试专利",
+            "technical_effects": [
+                {"effect": "提升二维图像转换准确率", "tcs_score": 5, "contributing_features": ["二维图像转换"]}
+            ],
+        },
         "search_strategy": {
             "search_matrix": [
                 {
@@ -229,8 +234,25 @@ def test_analysis_seed_prompt_uses_only_structured_seed_payload() -> None:
                     "keywords_zh": ["二维图像"],
                     "keywords_en": ["2D image"],
                     "block_id": "A",
-                }
-            ]
+                },
+                {
+                    "element_name": "特征向量编码",
+                    "keywords_zh": ["特征向量"],
+                    "keywords_en": ["feature vector"],
+                    "block_id": "B1",
+                    "effect_cluster_ids": ["E1"],
+                },
+            ],
+            "semantic_strategy": {
+                "queries": [
+                    {
+                        "block_id": "B1",
+                        "effect_cluster_ids": ["E1"],
+                        "effect": "提升二维图像转换准确率",
+                        "content": "将二维图像转换为特征向量并提升识别准确率。",
+                    }
+                ]
+            },
         },
     }
     patent_payload = {
@@ -245,7 +267,22 @@ def test_analysis_seed_prompt_uses_only_structured_seed_payload() -> None:
     prompt = seed_prompt_from_analysis(analysis_payload, patent_payload, elements)
 
     assert elements["objective"].startswith("围绕专利 CN123456A")
+    group = elements["effect_search_groups"][0]
+    group_element_ids = {item["search_element_id"] for item in group["search_elements"]}
+    assert "search_elements" not in elements
+    assert group["retrieval_target"] == "提升二维图像转换准确率"
+    assert group["semantic_query_text"] == "将二维图像转换为特征向量并提升识别准确率。"
+    assert group["search_elements"]
+    assert group_element_ids
+    assert set(group["conditional_search_element_refs"]).issubset(group_element_ids)
+    assert "conditional_search_elements" not in elements["effect_search_groups"][0]
+    assert "search_element_refs" not in group
+    assert "query_blueprints" not in elements["effect_search_groups"][0]
     assert "user_context_markdown" not in prompt
     assert "source_context" not in prompt
     assert "seeded_search_elements" not in prompt
-    assert '"element_name": "二维图像转换"' in prompt
+    assert "语义检索文本" in prompt
+    assert "5分效果检索要素表" in prompt
+    assert "将二维图像转换为特征向量并提升识别准确率。" in prompt
+    assert "二维图像转换" in prompt
+    assert "结构化检索种子 JSON" not in prompt

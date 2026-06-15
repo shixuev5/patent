@@ -63,6 +63,11 @@ SYSTEM_PROMPT = """
 
 你仍然负责检索策略和是否继续检索的最终判断。需要批量召回或补检时，调用 retrieval-agent 工具，让它执行语义/布尔/学术多路召回并只返回压缩态势；当检索目标能拆成多个互不依赖的方向时，可以并行发起多个 retrieval-agent 子 Agent。需要候选粗筛或少量精读时，调用 review-agent 工具。用户明确指定公开号、或你需要补齐少量专利详情时，调用 detail-agent 工具。
 
+调用 retrieval-agent 时必须区分语义检索和关键词/布尔检索：
+- semantic_queries 必须写成自然语言技术场景/机制描述，说明对象、处理流程、功能关系和预期技术效果，不能只是关键词罗列。
+- boolean_queries 才用于关键词、同义词、分类号、AND/OR 组合或短语检索。
+- 如果分析 seed 给了语义检索文本，优先直接使用该自然语言文本；如果只有检索要素表，需要先把要素组织成一句完整技术方案描述，再填入 semantic_queries。
+
 不要要求工具返回完整候选池；需要更多候选信息时按 topK 或阶段读取候选摘要。
 
 输出要求：
@@ -148,11 +153,29 @@ class AiSearchRuntimeContext:
         policy = self.meta().get("stop_policy")
         return normalize_stop_policy(policy if isinstance(policy, dict) else {})
 
+    def is_run_active(self) -> bool:
+        if not self.run_id:
+            return True
+        run = self.storage.get_ai_search_run(self.task_id, self.run_id)
+        if not run:
+            return True
+        phase = str(run.get("phase") or "").strip()
+        status = str(run.get("status") or "").strip()
+        if phase and phase != PHASE_RUNNING:
+            return False
+        if status in {"cancelled", "completed", "failed"}:
+            return False
+        return True
+
     def update_meta(self, **updates: Any) -> None:
+        if not self.is_run_active():
+            return
         task = self.task()
         self.storage.update_task(task.id, metadata=merge_ai_search_meta(task, **updates))
 
     def append_event(self, event_type: str, payload: Dict[str, Any], *, entity_id: str = "") -> Optional[Dict[str, Any]]:
+        if not self.is_run_active():
+            return None
         return self.storage.append_ai_search_stream_event(
             {
                 "event_id": uuid.uuid4().hex,
@@ -177,6 +200,8 @@ class AiSearchRuntimeContext:
         metadata: Optional[Dict[str, Any]] = None,
         parent_trace_id: str = "",
     ) -> Tuple[str, str]:
+        if not self.is_run_active():
+            return "", ""
         trace_id = uuid.uuid4().hex
         started_at = utc_now_z()
         payload: Dict[str, Any] = {
@@ -216,6 +241,8 @@ class AiSearchRuntimeContext:
         parent_trace_id: str = "",
     ) -> None:
         trace_id, started_at = trace
+        if not trace_id or not self.is_run_active():
+            return
         payload: Dict[str, Any] = {
             "traceId": trace_id,
             "traceType": trace_type,
@@ -573,6 +600,8 @@ async def _run_default_child_summary(agent_name: str, instructions: str, payload
 
 
 def _upsert_candidates(ctx: AiSearchRuntimeContext, raw_items: List[Dict[str, Any]], *, source_label: str, query: str) -> Dict[str, Any]:
+    if not ctx.is_run_active():
+        return {"stored": 0, "new": 0, "total": len(ctx.documents()), "skipped_target": 0, "blocked": True}
     existing = {
         str(item.get("canonical_id") or "").strip(): item
         for item in ctx.documents()
@@ -629,6 +658,8 @@ def documents_payload(ctx: AiSearchRuntimeContext) -> Dict[str, Any]:
 
 
 def _record_query(ctx: AiSearchRuntimeContext, *, query_count: int = 1, new_count: int = 0) -> None:
+    if not ctx.is_run_active():
+        return
     meta = ctx.meta()
     total_queries = int(meta.get("query_count") or 0) + max(int(query_count or 0), 0)
     search_rounds = int(meta.get("search_rounds") or 0) + 1
@@ -784,6 +815,8 @@ def set_stop_conditions(
 ) -> Dict[str, Any]:
     """设置本会话的检索停止条件。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "stop_policy": runtime.stop_policy()}
     current = runtime.stop_policy()
     updates: Dict[str, Any] = {}
     for key, value in {
@@ -844,6 +877,8 @@ def search_patents(
 ) -> Dict[str, Any]:
     """执行专利检索并保存候选。mode 支持 boolean 或 semantic。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "stop": _stop_status(runtime)}
     stop = _stop_status(runtime)
     if stop["should_stop"]:
         trace = runtime.start_trace(
@@ -940,6 +975,8 @@ def search_academic(
 ) -> Dict[str, Any]:
     """执行论文/非专利文献检索并保存候选。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "stop": _stop_status(runtime)}
     stop = _stop_status(runtime)
     if stop["should_stop"]:
         trace = runtime.start_trace(
@@ -1161,8 +1198,13 @@ async def run_retrieval_agent(
     per_query_limit: int = 15,
     include_academic: bool = False,
 ) -> Dict[str, Any]:
-    """运行 retrieval-agent 批量召回。主 agent 决定检索目标和查询，子 agent 只执行并压缩态势。"""
+    """运行 retrieval-agent 批量召回。
+
+    semantic_queries 必须是自然语言技术场景/机制描述，不要传关键词罗列；关键词、短语、分类号和 AND/OR 组合应放入 boolean_queries。
+    """
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "summary": "本轮已结束，retrieval-agent 未继续召回。", "stop": _stop_status(runtime)}
     goal = _safe_text(search_goal)
     resolved_limit = _limit(per_query_limit, default=15, upper=25)
     semantic = _parse_query_list(semantic_queries, limit=3)
@@ -1243,11 +1285,14 @@ async def run_retrieval_agent(
         *[_fetch_retrieval_lane(runtime, lane, parent_trace_id=trace[0]) for lane in lanes]
     )
     reports: List[Dict[str, Any]] = []
+    executed_query_count = 0
     for lane_result in lane_results:
         lane_trace = lane_result["trace"]
         query = _safe_text(lane_result.get("query"))
         kind = str(lane_result.get("kind") or "").strip()
+        query_count = len(_source_list(lane_result.get("sources"))) if kind == "academic" else 1
         if lane_result.get("failed"):
+            executed_query_count += query_count
             reports.append(
                 {
                     "kind": kind,
@@ -1285,8 +1330,7 @@ async def run_retrieval_agent(
         normalized = list(lane_result.get("retrieved") or [])[:remaining_capacity]
         source_label = "zhihuiya" if kind == "patent" else "academic"
         stored = _upsert_candidates(runtime, normalized, source_label=source_label, query=query)
-        query_count = len(_source_list(lane_result.get("sources"))) if kind == "academic" else 1
-        _record_query(runtime, query_count=query_count, new_count=int(stored.get("new") or 0))
+        executed_query_count += query_count
         top_documents = _stored_document_summaries(runtime, normalized, limit=5, include_abstract=False)
         lane_report = {
             "kind": kind,
@@ -1313,6 +1357,9 @@ async def run_retrieval_agent(
         )
         reports.append(lane_report)
 
+    total_new_count = sum(int(item.get("new_count") or 0) for item in reports)
+    if executed_query_count > 0:
+        _record_query(runtime, query_count=executed_query_count, new_count=total_new_count)
     summary_payload = {"search_goal": goal, "lanes": reports, "stats": _stop_status(runtime)["stats"]}
     summary = ""
     summary_error = ""
@@ -1336,7 +1383,7 @@ async def run_retrieval_agent(
         output={
             "summary": result["summary"],
             "lane_count": len(reports),
-            "new_count": sum(int(item.get("new_count") or 0) for item in reports),
+            "new_count": total_new_count,
             "candidate_total": result["stats"].get("candidates"),
             "summary_error": summary_error,
         },
@@ -1475,6 +1522,8 @@ async def run_review_agent(
 ) -> Dict[str, Any]:
     """运行 review-agent 对候选做粗筛和少量精读；只返回压缩审阅摘要。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "summary": "本轮已结束，review-agent 未继续筛选。", "stop": _stop_status(runtime)}
     goal = _safe_text(review_goal)
     resolved_top_k = _limit(top_k, default=12, upper=30)
     try:
@@ -1760,6 +1809,8 @@ async def run_detail_agent(
 ) -> Dict[str, Any]:
     """运行 detail-agent 批量读取指定公开号的专利详情。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "summary": "本轮已结束，detail-agent 未继续读取详情。", "stop": _stop_status(runtime)}
     resolved_limit = _limit(max_patents, default=6, upper=10)
     numbers = _parse_patent_number_list(patent_numbers, limit=resolved_limit)
     goal = _safe_text(detail_goal)
@@ -1864,6 +1915,8 @@ async def run_detail_agent(
 def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str) -> Dict[str, Any]:
     """按公开号拉取专利详情，并更新候选文献详情。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "stop": _stop_status(runtime)}
     normalized_pn = _normalize_patent_number(pn)
     if not normalized_pn:
         return {"error": "pn 不能为空。"}
@@ -1903,6 +1956,8 @@ def fetch_patent_detail(ctx: RunContextWrapper[AiSearchRuntimeContext], pn: str)
 def select_documents(ctx: RunContextWrapper[AiSearchRuntimeContext], document_ids: str, reason: str = "") -> Dict[str, Any]:
     """把候选文献标记为已选对比文献。document_ids 用逗号分隔。"""
     runtime = ctx.context
+    if not runtime.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "selected": 0, "selected_count": len(runtime.selected_documents()), "stop": _stop_status(runtime)}
     ids = [item.strip() for item in str(document_ids or "").split(",") if item.strip()]
     trace = runtime.start_trace(
         tool_name="select_documents",
@@ -1936,6 +1991,8 @@ def select_documents(ctx: RunContextWrapper[AiSearchRuntimeContext], document_id
 @function_tool
 def save_search_report(ctx: RunContextWrapper[AiSearchRuntimeContext], markdown: str) -> Dict[str, Any]:
     """保存当前检索阶段性报告。"""
+    if not ctx.context.is_run_active():
+        return {"blocked": True, "reason": "run_not_active", "saved": False}
     text = str(markdown or "").strip()
     if not text:
         return {"error": "报告内容不能为空。"}

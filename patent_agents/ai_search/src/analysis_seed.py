@@ -169,6 +169,41 @@ def _dedupe_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return deduped
 
 
+def _element_identity_key(item: Dict[str, Any]) -> tuple[str, str]:
+    return (_safe_text(item.get("block_id")).upper(), _safe_text(item.get("element_name")))
+
+
+def _ensure_search_element_ids(elements: List[Dict[str, Any]]) -> Dict[tuple[str, str], str]:
+    element_id_by_key: Dict[tuple[str, str], str] = {}
+    used_ids: set[str] = set()
+    for index, item in enumerate(elements, start=1):
+        if not isinstance(item, dict):
+            continue
+        existing_id = _safe_text(item.get("search_element_id"))
+        element_id = existing_id or f"se_{index}"
+        suffix = 2
+        while element_id in used_ids:
+            element_id = f"{existing_id or f'se_{index}'}_{suffix}"
+            suffix += 1
+        item["search_element_id"] = element_id
+        used_ids.add(element_id)
+        key = _element_identity_key(item)
+        if key[1]:
+            element_id_by_key[key] = element_id
+    return element_id_by_key
+
+
+def _element_refs(elements: List[Dict[str, Any]], element_id_by_key: Dict[tuple[str, str], str]) -> List[str]:
+    refs: List[str] = []
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        element_id = element_id_by_key.get(_element_identity_key(item))
+        if element_id and element_id not in refs:
+            refs.append(element_id)
+    return refs
+
+
 def _elements_for_blocks(elements: List[Dict[str, Any]], *block_prefixes: str) -> List[Dict[str, Any]]:
     prefixes = tuple(str(value or "").strip().upper() for value in block_prefixes if str(value or "").strip())
     if not prefixes:
@@ -299,6 +334,27 @@ def _effect_plan_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]
     return groups
 
 
+def build_effect_search_groups(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    groups = _effect_plan_groups(analysis_payload)
+    outputs: List[Dict[str, Any]] = []
+    for index, group in enumerate(groups, start=1):
+        main_elements = _dedupe_elements(list(group.get("main_elements") or []))
+        local_element_id_by_key = _ensure_search_element_ids(main_elements)
+        block_c_elements = _elements_for_blocks(main_elements, "C")
+        outputs.append(
+            {
+                "index": int(group.get("index") or index),
+                "block_id": _safe_text(group.get("block_id")).upper(),
+                "effect_cluster_ids": list(group.get("effect_cluster_ids") or []),
+                "retrieval_target": _safe_text(group.get("effect_text")),
+                "semantic_query_text": _safe_text(group.get("semantic_query_text")),
+                "search_elements": main_elements,
+                "conditional_search_element_refs": _element_refs(block_c_elements, local_element_id_by_key),
+            }
+        )
+    return outputs
+
+
 def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     patent_data = patent_payload if isinstance(patent_payload, dict) else {}
     biblio = patent_data.get("bibliographic_data") if isinstance(patent_data.get("bibliographic_data"), dict) else {}
@@ -313,8 +369,8 @@ def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_
         else f"围绕《{invention_title}》检索可能构成对比文件的现有技术。"
     )
 
-    mapped_elements = [mapped for mapped in (_mapped_element(item) for item in _search_matrix_items(analysis_payload)) if mapped]
-    return normalize_search_elements_payload(
+    mapped_elements = _dedupe_elements([mapped for mapped in (_mapped_element(item) for item in _search_matrix_items(analysis_payload)) if mapped])
+    normalized = normalize_search_elements_payload(
         {
             "status": "complete" if objective and mapped_elements else "needs_answer",
             "objective": objective,
@@ -325,6 +381,12 @@ def seed_search_elements_from_analysis(analysis_payload: Dict[str, Any], patent_
             "missing_items": [],
         }
     )
+    _ensure_search_element_ids(normalized.get("search_elements") or [])
+    effect_search_groups = build_effect_search_groups(analysis_payload)
+    if effect_search_groups:
+        normalized.pop("search_elements", None)
+        normalized["effect_search_groups"] = effect_search_groups
+    return normalized
 
 
 def build_analysis_sub_plans(analysis_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -622,9 +684,10 @@ def seed_prompt_from_analysis(
     patent_payload: Optional[Dict[str, Any]],
     seeded_search_elements: Dict[str, Any],
 ) -> str:
+    user_message = build_analysis_seed_user_message(analysis_payload, patent_payload, seeded_search_elements)
     return (
         "请根据以下上下文直接开展 AI 检索。"
         "要求：用自由对话式检索方式推进；先判断目标是否足够清晰，足够则直接检索并保存候选，不再生成待确认计划。"
-        "以下 JSON 是唯一的种子上下文，请不要再寻找或复述其他 seed 文本。\n\n"
-        f"{json.dumps(seeded_search_elements, ensure_ascii=False, indent=2)}"
+        "优先按 5 分核心效果拆分不同检索目标，分别使用对应语义检索文本和检索要素表。\n\n"
+        f"{user_message}"
     )

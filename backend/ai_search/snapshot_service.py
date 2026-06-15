@@ -44,11 +44,31 @@ class AiSearchSnapshotService:
             updatedAt=utc_now_z() if not getattr(task, "updated_at", None) else task.updated_at.isoformat(),
         )
 
+    def _visible_stream_events(self, task_id: str) -> List[Dict[str, Any]]:
+        events = self.storage.list_ai_search_stream_events(task_id, after_seq=0)
+        terminated_runs: set[str] = set()
+        visible: List[Dict[str, Any]] = []
+        terminal_event_types = {"run.completed", "run.cancelled", "run.failed"}
+
+        for event in events:
+            event_type = str(event.get("event_type") or "").strip()
+            run_id = str(event.get("run_id") or "").strip()
+            if event_type == "run.started" and run_id:
+                terminated_runs.discard(run_id)
+                visible.append(event)
+                continue
+            if run_id and run_id in terminated_runs:
+                continue
+            visible.append(event)
+            if run_id and event_type in terminal_event_types:
+                terminated_runs.add(run_id)
+        return visible
+
     def _message_event_index(self, task_id: str) -> Dict[str, Dict[str, Any]]:
         indexed: Dict[str, Dict[str, Any]] = {}
         message_event_types = {"message.created", "message.delta", "message.completed"}
 
-        for event in self.storage.list_ai_search_stream_events(task_id, after_seq=0):
+        for event in self._visible_stream_events(task_id):
             event_type = str(event.get("event_type") or "").strip()
             if event_type not in message_event_types:
                 continue
@@ -61,7 +81,7 @@ class AiSearchSnapshotService:
             indexed[message_id] = {
                 "_eventStartedSeq": int(existing.get("_eventStartedSeq") or seq),
                 "_eventSeq": seq,
-                "_eventAt": event.get("created_at"),
+                "_eventAt": existing.get("_eventAt") or event.get("created_at"),
             }
         return indexed
 
@@ -88,7 +108,7 @@ class AiSearchSnapshotService:
         trace_order: Dict[str, int] = {}
         trace_event_types = {"trace.started", "trace.updated", "trace.completed"}
 
-        for index, event in enumerate(self.storage.list_ai_search_stream_events(task_id, after_seq=0)):
+        for index, event in enumerate(self._visible_stream_events(task_id)):
             event_type = str(event.get("event_type") or "").strip()
             if event_type not in trace_event_types:
                 continue

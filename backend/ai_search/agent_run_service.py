@@ -23,6 +23,7 @@ from patent_agents.ai_search.src.state import (
 from patent_agents.ai_search.src.runtime import (
     AiSearchRuntimeContext,
     DEFAULT_STOP_POLICY,
+    _stop_status,
     documents_payload,
     run_search_agent_stream,
     set_task_phase,
@@ -151,6 +152,59 @@ class AiSearchAgentRunService:
                 return True
         return False
 
+    def _completion_summary(
+        self,
+        runtime: AiSearchRuntimeContext,
+        *,
+        completion_reason: str,
+        fallback_message: str = "",
+    ) -> str:
+        stop = _stop_status(runtime)
+        stats = stop.get("stats") if isinstance(stop.get("stats"), dict) else {}
+        reasons = [str(item or "").strip() for item in stop.get("reasons", []) if str(item or "").strip()]
+        documents = runtime.documents()
+        candidate_count = len([item for item in documents if str(item.get("stage") or "") not in {"selected", "rejected"}])
+        selected_count = len(runtime.selected_documents())
+        reason_label = {
+            "stop_satisfied": "停止条件已满足",
+            "deadline_seconds": "达到检索时间上限",
+            "completed": "本轮正常结束",
+            "stale_running_repaired": "上一轮长时间无进展，已自动结束",
+        }.get(completion_reason, str(completion_reason or "").strip() or "本轮已结束")
+        if reasons:
+            reason_label = "；".join(reasons)
+
+        if candidate_count <= 0 and selected_count <= 0:
+            next_step = "当前没有候选或已选文献。建议放宽语义目标/关键词，调高连续无新增阈值，或补充已知公开号、PDF 后继续检索。"
+        elif selected_count <= 0:
+            next_step = "当前已有候选但尚未选中重点文献。建议先让 agent 粗筛候选，或手动选择最相关候选后生成报告。"
+        else:
+            next_step = "当前已有已选文献。建议查看证据摘要，必要时继续补检缺口，或按当前结果导出报告。"
+
+        lines = [
+            fallback_message.strip() or "本轮检索已结束。",
+            "",
+            f"- 停止原因：{reason_label}。",
+            f"- 当前结果：候选 {candidate_count} 篇，已选 {selected_count} 篇。",
+            (
+                "- 运行统计："
+                f"检索轮次 {int(stats.get('rounds') or 0)}，"
+                f"检索式 {int(stats.get('queries') or 0)}，"
+                f"连续无新增 {int(stats.get('no_new_result_rounds') or 0)}。"
+            ),
+            f"- 下一步：{next_step}",
+        ]
+        return "\n".join(lines).strip()
+
+    def _merge_completion_summary(self, existing_text: str, summary: str) -> str:
+        existing = str(existing_text or "").strip()
+        summary_text = str(summary or "").strip()
+        if not existing:
+            return summary_text
+        if not summary_text or summary_text in existing:
+            return existing
+        return f"{existing}\n\n{summary_text}"
+
     def _event_indicates_report_saved(self, event: Dict[str, Any]) -> bool:
         if str(event.get("event_type") or "").strip() != "trace.completed":
             return False
@@ -247,7 +301,15 @@ class AiSearchAgentRunService:
         if not run_id or self._current_phase_value(task_id) != PHASE_RUNNING:
             return []
         events: List[Dict[str, Any]] = []
-        content = "".join(assistant_parts or []).strip() or STOP_SATISFIED_MESSAGE
+        task = self.storage.get_task(task_id)
+        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
+        resolved_runtime = runtime or AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
+        summary = self._completion_summary(
+            resolved_runtime,
+            completion_reason="stop_satisfied",
+            fallback_message=STOP_SATISFIED_MESSAGE,
+        )
+        content = self._merge_completion_summary("".join(assistant_parts or ""), summary)
         if assistant_message_id:
             assistant_message = self._update_message_content(
                 assistant_message_id,
@@ -279,11 +341,8 @@ class AiSearchAgentRunService:
                         assistant_message,
                         run_id=run_id,
                         entity_id=str(assistant_message.get("message_id") or ""),
-                    )
                 )
-        task = self.storage.get_task(task_id)
-        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
-        resolved_runtime = runtime or AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
+            )
         events.append(self._append_event(task_id, "documents.updated", documents_payload(resolved_runtime), run_id=run_id))
         self._mark_idle(task_id, run_id)
         events.append(
@@ -305,10 +364,17 @@ class AiSearchAgentRunService:
         if not run_id or self._current_phase_value(task_id) != PHASE_RUNNING:
             return []
         events: List[Dict[str, Any]] = []
+        task = self.storage.get_task(task_id)
+        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
+        runtime = AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
         assistant_message = self._append_message(
             task_id,
             "assistant",
-            STALE_RUNNING_REPAIR_MESSAGE,
+            self._completion_summary(
+                runtime,
+                completion_reason="stale_running_repaired",
+                fallback_message=STALE_RUNNING_REPAIR_MESSAGE,
+            ),
             metadata={"render_mode": "markdown", "message_variant": "run_repair_notice"},
         )
         if assistant_message:
@@ -321,9 +387,6 @@ class AiSearchAgentRunService:
                     entity_id=str(assistant_message.get("message_id") or ""),
                 )
             )
-        task = self.storage.get_task(task_id)
-        plan_version = int(get_ai_search_meta(task).get("active_plan_version") or 1)
-        runtime = AiSearchRuntimeContext(self.storage, task_id, run_id, plan_version)
         events.append(self._append_event(task_id, "documents.updated", documents_payload(runtime), run_id=run_id))
         self._mark_idle(task_id, run_id)
         events.append(
@@ -769,6 +832,9 @@ class AiSearchAgentRunService:
                     yield chunk
                 for chunk in append_delta_event(delta_text):
                     yield chunk
+            if not runtime.is_run_active():
+                terminal_event_written = True
+                return
             if self._run_cancel_requested(task.id, run_id):
                 run_state = self.storage.get_ai_search_run(task.id, run_id) or {}
                 self._clear_run_cancel_request(task.id)
@@ -804,10 +870,15 @@ class AiSearchAgentRunService:
                 return
             if timed_out:
                 self._clear_run_cancel_request(task.id)
+                summary = self._completion_summary(
+                    runtime,
+                    completion_reason="deadline_seconds",
+                    fallback_message="本轮达到时间上限，已停止检索。",
+                )
                 if assistant_message_id:
                     assistant_message = self._update_message_content(
                         assistant_message_id,
-                        "".join(assistant_parts),
+                        self._merge_completion_summary("".join(assistant_parts), summary),
                         stream_status="completed",
                     )
                     if assistant_message:
@@ -817,6 +888,23 @@ class AiSearchAgentRunService:
                             assistant_message,
                             run_id=run_id,
                             entity_id=assistant_message_id,
+                        )
+                        latest_seq = max(latest_seq, int(event.get("seq") or 0))
+                        yield self._format_event(event)
+                else:
+                    assistant_message = self._append_message(
+                        task.id,
+                        "assistant",
+                        summary,
+                        metadata={"render_mode": "markdown"},
+                    )
+                    if assistant_message:
+                        event = self._append_event(
+                            task.id,
+                            "message.created",
+                            assistant_message,
+                            run_id=run_id,
+                            entity_id=str(assistant_message.get("message_id") or ""),
                         )
                         latest_seq = max(latest_seq, int(event.get("seq") or 0))
                         yield self._format_event(event)
@@ -872,9 +960,18 @@ class AiSearchAgentRunService:
                         latest_seq = max(latest_seq, int(event.get("seq") or 0))
                         yield self._format_event(event)
             elif assistant_message_id:
+                current_text = "".join(assistant_parts)
+                current_text = self._merge_completion_summary(
+                    current_text,
+                    self._completion_summary(
+                        runtime,
+                        completion_reason="completed",
+                        fallback_message="本轮检索已结束。",
+                    ),
+                )
                 assistant_message = self._update_message_content(
                     assistant_message_id,
-                    "".join(assistant_parts),
+                    current_text,
                     stream_status="completed",
                 )
                 if assistant_message:
@@ -886,6 +983,28 @@ class AiSearchAgentRunService:
                         entity_id=assistant_message_id,
                     )
                     yield self._format_event(event)
+            else:
+                summary = self._completion_summary(
+                    runtime,
+                    completion_reason="completed",
+                    fallback_message="本轮检索已结束。",
+                )
+                assistant_message = self._append_message(
+                    task.id,
+                    "assistant",
+                    summary,
+                    metadata={"render_mode": "markdown"},
+                )
+                if assistant_message:
+                    event = self._append_event(
+                        task.id,
+                        "message.created",
+                        assistant_message,
+                        run_id=run_id,
+                        entity_id=str(assistant_message.get("message_id") or ""),
+                    )
+                    latest_seq = max(latest_seq, int(event.get("seq") or 0))
+                    yield self._format_event(event)
             docs_event = self._append_event(task.id, "documents.updated", documents_payload(runtime), run_id=run_id)
             yield self._format_event(docs_event)
             self._mark_idle(task.id, run_id)
@@ -896,6 +1015,7 @@ class AiSearchAgentRunService:
                     "phase": PHASE_IDLE,
                     "completionReason": "completed",
                     "awaitingUserAction": False,
+                    "message": "本轮检索已结束。",
                 },
                 run_id=run_id,
             )
