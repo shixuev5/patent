@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from time import perf_counter
 from typing import Any, Dict, List, Optional
@@ -80,6 +81,17 @@ class D1Backend:
         except ValueError:
             return None
 
+    def _safe_exception_summary(self, exc: Exception) -> str:
+        text = str(exc or "")
+        text = text.replace(self.endpoint, "<d1-query-endpoint>")
+        text = re.sub(
+            r"/accounts/[^/\s]+/d1/database/[^/\s]+/query",
+            "/accounts/<account>/d1/database/<database>/query",
+            text,
+        )
+        text = re.sub(r"\bBearer\s+[A-Za-z0-9._\-~+/]+=*", "Bearer ***", text, flags=re.IGNORECASE)
+        return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
+
     def _request(self, sql: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"sql": sql}
         if params:
@@ -87,6 +99,7 @@ class D1Backend:
 
         attempts = self.max_retries + 1
         last_error: Optional[Exception] = None
+        last_cause = ""
         for attempt in range(1, attempts + 1):
             try:
                 with suppress_outbound_request_logging():
@@ -100,10 +113,12 @@ class D1Backend:
                 break
             except requests.exceptions.Timeout as exc:
                 last_error = StorageUnavailableError("D1 request timed out")
+                last_cause = self._safe_exception_summary(exc)
             except requests.exceptions.HTTPError as exc:
                 response = exc.response
                 status_code = int(getattr(response, "status_code", 0) or 0)
                 retry_after_seconds = self._parse_retry_after_seconds(response)
+                last_cause = self._safe_exception_summary(exc)
                 if status_code == 429:
                     last_error = StorageRateLimitedError(
                         "D1 request rate limited",
@@ -118,20 +133,25 @@ class D1Backend:
                     raise StorageError(f"D1 request failed with status {status_code or 'unknown'}") from exc
             except requests.exceptions.ConnectionError as exc:
                 last_error = StorageUnavailableError("D1 request failed")
+                last_cause = self._safe_exception_summary(exc)
             except requests.exceptions.RequestException as exc:
+                logger.warning("D1 request failed without retry: cause={}", self._safe_exception_summary(exc))
                 raise StorageUnavailableError("D1 request failed") from exc
 
             if attempt >= attempts or not isinstance(last_error, StorageUnavailableError):
                 assert last_error is not None
+                if last_cause:
+                    logger.warning("D1 request failed after retries: error={} cause={}", last_error, last_cause)
                 raise last_error
 
             delay_seconds = self._retry_delay_seconds(attempt, last_error.retry_after_seconds)
             logger.warning(
-                "D1 request retry scheduled: attempt={}/{} delay_seconds={} error={}",
+                "D1 request retry scheduled: attempt={}/{} delay_seconds={} error={} cause={}",
                 attempt,
                 attempts,
                 delay_seconds,
                 last_error,
+                last_cause or "-",
             )
             time.sleep(delay_seconds)
         else:

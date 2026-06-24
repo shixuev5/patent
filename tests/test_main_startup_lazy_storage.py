@@ -30,6 +30,7 @@ def test_importing_main_and_entering_lifespan_does_not_initialize_storage(monkey
     monkeypatch.setattr(main_module, "configure_system_log_storage", configured.append)
     monkeypatch.setattr(main_module, "set_system_log_db_persistence_ready", lambda ready: None)
     monkeypatch.setattr(main_module, "start_system_log_cleanup_loop", lambda: None)
+    monkeypatch.setattr(main_module, "schedule_background_refresh", lambda force=False: False)
 
     async def _stop_cleanup_loop():
         return None

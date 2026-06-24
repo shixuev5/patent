@@ -59,11 +59,13 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> TaskStorage:
                             "D1_API_BASE_URL",
                             "https://api.cloudflare.com/client/v4",
                         ).strip()
+                        timeout_seconds = int(os.getenv("D1_TIMEOUT_SECONDS", "20") or "20")
                         _storage_instance = D1TaskStorage(
                             account_id=account_id,
                             database_id=database_id,
                             api_token=api_token,
                             api_base_url=api_base_url,
+                            timeout_seconds=timeout_seconds,
                         )
                     elif backend in {"", "sqlite"}:
                         from .facade import SQLiteTaskStorage

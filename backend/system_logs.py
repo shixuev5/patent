@@ -765,7 +765,7 @@ def cleanup_system_logs_by_policy() -> Dict[str, int]:
 
 async def _cleanup_loop() -> None:
     while True:
-        cleanup_expired_system_logs()
+        await asyncio.to_thread(cleanup_expired_system_logs)
         await asyncio.sleep(max(60, SYSTEM_LOG_CLEANUP_INTERVAL_SECONDS))
 
 
