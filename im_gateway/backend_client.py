@@ -85,6 +85,18 @@ class BackendClient:
         )
         return await self._parse_json(response)
 
+    async def await_runtime_event(self, *, cursor: int = 0, timeout_seconds: float = 60.0) -> Dict[str, Any]:
+        try:
+            response = await self._client.get(
+                f"{self.api_base_url}/api/internal/wechat/runtime-events/await",
+                headers=self._headers,
+                params={"cursor": cursor, "timeoutSeconds": timeout_seconds},
+                timeout=max(5.0, float(timeout_seconds or 0.0) + 5.0),
+            )
+        except httpx.TimeoutException:
+            return {"cursor": cursor, "hasEvent": False, "timedOut": True}
+        return await self._parse_json(response)
+
     async def update_login_session_state(
         self,
         *,
@@ -119,12 +131,15 @@ class BackendClient:
         return await self._parse_json(response)
 
     async def await_delivery_event(self, *, cursor: int = 0, timeout_seconds: float = 30.0) -> Dict[str, Any]:
-        response = await self._client.get(
-            f"{self.api_base_url}/api/internal/wechat/delivery-events/await",
-            headers=self._headers,
-            params={"cursor": cursor, "timeoutSeconds": timeout_seconds},
-            timeout=max(5.0, float(timeout_seconds or 0.0) + 5.0),
-        )
+        try:
+            response = await self._client.get(
+                f"{self.api_base_url}/api/internal/wechat/delivery-events/await",
+                headers=self._headers,
+                params={"cursor": cursor, "timeoutSeconds": timeout_seconds},
+                timeout=max(5.0, float(timeout_seconds or 0.0) + 5.0),
+            )
+        except httpx.TimeoutException:
+            return {"cursor": cursor, "hasEvent": False, "timedOut": True}
         return await self._parse_json(response)
 
     async def update_delivery_job_progress(

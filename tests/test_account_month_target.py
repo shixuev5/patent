@@ -903,6 +903,9 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
             events.append('snapshot:fetch')
             return {}
 
+        async def await_runtime_event(self, *, cursor: int = 0, timeout_seconds: float = 60.0):
+            raise asyncio.CancelledError()
+
         async def close(self):
             events.append('backend:close')
 
@@ -938,6 +941,104 @@ def test_im_gateway_waits_for_backend_before_starting_poller(monkeypatch):
     assert events.index('backend:ready') < events.index('reconcile')
     if 'poller:start' in events:
         assert events.index('backend:ready') < events.index('poller:start')
+
+
+def test_im_gateway_does_not_refetch_runtime_snapshot_without_runtime_event(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    monkeypatch.setattr(im_gateway_main, 'RUNTIME_SNAPSHOT_REFRESH_SECONDS', 9999.0)
+    snapshots = 0
+    runtime_waits = 0
+
+    class FakeBackend:
+        async def wait_until_ready(self):
+            return None
+
+        async def fetch_runtime_snapshot(self):
+            nonlocal snapshots
+            snapshots += 1
+            return {}
+
+        async def await_runtime_event(self, *, cursor: int = 0, timeout_seconds: float = 60.0):
+            nonlocal runtime_waits
+            runtime_waits += 1
+            if runtime_waits == 1:
+                return {'cursor': cursor, 'hasEvent': False}
+            raise asyncio.CancelledError()
+
+        async def close(self):
+            return None
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    async def fake_reconcile(snapshot):
+        assert snapshot == {}
+
+    async def fake_listen_delivery_events():
+        await asyncio.Event().wait()
+
+    async def fake_poll_delivery_jobs_fallback():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gateway, '_reconcile', fake_reconcile)
+    monkeypatch.setattr(gateway, '_listen_delivery_events', fake_listen_delivery_events)
+    monkeypatch.setattr(gateway, '_poll_delivery_jobs_fallback', fake_poll_delivery_jobs_fallback)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway.run())
+
+    assert snapshots == 1
+    assert runtime_waits == 2
+
+
+def test_im_gateway_refetches_runtime_snapshot_when_runtime_event_arrives(monkeypatch):
+    im_gateway_main = _load_im_gateway_main()
+    monkeypatch.delenv('IM_GATEWAY_CRED_R2_PREFIX', raising=False)
+    monkeypatch.delenv('IM_GATEWAY_CRED_ENCRYPTION_KEY', raising=False)
+    monkeypatch.setattr(im_gateway_main, 'RUNTIME_SNAPSHOT_REFRESH_SECONDS', 9999.0)
+    snapshots = 0
+    runtime_waits = 0
+
+    class FakeBackend:
+        async def wait_until_ready(self):
+            return None
+
+        async def fetch_runtime_snapshot(self):
+            nonlocal snapshots
+            snapshots += 1
+            return {}
+
+        async def await_runtime_event(self, *, cursor: int = 0, timeout_seconds: float = 60.0):
+            nonlocal runtime_waits
+            runtime_waits += 1
+            if runtime_waits == 1:
+                return {'cursor': cursor + 1, 'hasEvent': True}
+            raise asyncio.CancelledError()
+
+        async def close(self):
+            return None
+
+    gateway = im_gateway_main.WeChatGateway(backend=FakeBackend())
+
+    async def fake_reconcile(snapshot):
+        assert snapshot == {}
+
+    async def fake_listen_delivery_events():
+        await asyncio.Event().wait()
+
+    async def fake_poll_delivery_jobs_fallback():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gateway, '_reconcile', fake_reconcile)
+    monkeypatch.setattr(gateway, '_listen_delivery_events', fake_listen_delivery_events)
+    monkeypatch.setattr(gateway, '_poll_delivery_jobs_fallback', fake_poll_delivery_jobs_fallback)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(gateway.run())
+
+    assert snapshots == 2
+    assert runtime_waits == 2
 
 
 def test_im_gateway_delivery_listener_skips_claim_when_no_event(monkeypatch):

@@ -44,7 +44,7 @@ from backend.utils import _build_r2_storage
 from backend.storage import TaskType, WeChatBinding, WeChatLoginSession, get_pipeline_manager
 from backend.storage.errors import StorageUnavailableError
 from backend.time_utils import APP_TZ, local_day_start_end_to_utc, utc_now
-from backend.wechat_delivery_events import delivery_event_broker
+from backend.wechat_delivery_events import delivery_event_broker, runtime_event_broker
 from config import settings
 
 
@@ -163,6 +163,10 @@ def _internal_wechat_storage_fallback(endpoint: str, exc: StorageUnavailableErro
     )
 
 
+def _publish_wechat_runtime_event() -> None:
+    runtime_event_broker.publish()
+
+
 def _mask_wechat_id(value: str | None) -> str | None:
     text = _sanitize_profile_text(value)
     if not text:
@@ -260,6 +264,7 @@ def _expire_login_session_if_needed(session: WeChatLoginSession | None) -> WeCha
             status="expired",
             updated_at=utc_now(),
         )
+        _publish_wechat_runtime_event()
         return updated or session
     return session
 
@@ -656,9 +661,11 @@ async def post_account_wechat_login_session(
             status="cancelled",
             updated_at=utc_now(),
         )
+        _publish_wechat_runtime_event()
     existing_binding = task_manager.storage.get_wechat_binding_by_owner(user.owner_id)
     if existing_binding and str(existing_binding.status or "").strip() == "active":
         task_manager.storage.disconnect_wechat_binding(user.owner_id)
+        _publish_wechat_runtime_event()
 
     login_session_id = f"wls-{uuid.uuid4().hex[:12]}"
     now_dt = utc_now()
@@ -672,6 +679,7 @@ async def post_account_wechat_login_session(
             updated_at=now_dt,
         )
     )
+    _publish_wechat_runtime_event()
     return _build_wechat_login_session_response(created)
 
 
@@ -715,9 +723,11 @@ async def post_account_wechat_disconnect(
     _ensure_wechat_integration_enabled()
     user = _ensure_authing_user_or_403(current_user)
     task_manager.storage.disconnect_wechat_binding(user.owner_id)
+    _publish_wechat_runtime_event()
     current = task_manager.storage.get_current_wechat_login_session(user.owner_id)
     if current and current.status in {"pending", "qr_ready", "scanned", "online"}:
         task_manager.storage.update_wechat_login_session(current.login_session_id, status="cancelled", updated_at=utc_now())
+        _publish_wechat_runtime_event()
     return _build_wechat_integration_response(user.owner_id)
 
 
@@ -776,10 +786,12 @@ async def post_internal_wechat_login_session_state(
                 updated_at=now_dt,
             )
         )
+        _publish_wechat_runtime_event()
         return {
             "binding": _build_wechat_binding_response(binding).model_dump(),
             "loginSession": _build_wechat_login_session_response(updated_session or session).model_dump(),
         }
+    _publish_wechat_runtime_event()
     return {"loginSession": _build_wechat_login_session_response(updated_session or session).model_dump()}
 
 
@@ -812,6 +824,17 @@ async def get_internal_wechat_runtime_snapshot(
             for session in pending_sessions
         ],
     }
+
+
+@router.get("/api/internal/wechat/runtime-events/await")
+def get_internal_wechat_runtime_event_wait(
+    cursor: int = Query(default=0),
+    timeoutSeconds: float = Query(default=30.0, ge=0.0, le=300.0),
+    _token: str = Depends(_ensure_internal_gateway_token),
+):
+    _ensure_wechat_integration_enabled()
+    next_cursor = runtime_event_broker.wait_for_event(cursor, timeoutSeconds)
+    return {"cursor": next_cursor, "hasEvent": next_cursor > int(cursor or 0)}
 
 
 @router.get("/api/internal/wechat/bindings/by-peer")

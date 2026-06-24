@@ -28,10 +28,15 @@ DEFAULT_BACKEND_PORT = str(os.getenv("PORT", "7860") or "7860").strip() or "7860
 API_BASE_URL = os.getenv("API_BASE_URL", f"http://127.0.0.1:{DEFAULT_BACKEND_PORT}")
 INTERNAL_GATEWAY_TOKEN = os.getenv("INTERNAL_GATEWAY_TOKEN", "").strip()
 POLL_INTERVAL_SECONDS = max(2, int(os.getenv("IM_GATEWAY_POLL_INTERVAL_SECONDS", "8")))
+RUNTIME_EVENT_WAIT_SECONDS = max(10.0, float(os.getenv("IM_GATEWAY_RUNTIME_EVENT_WAIT_SECONDS", "60") or "60"))
+RUNTIME_SNAPSHOT_REFRESH_SECONDS = max(
+    RUNTIME_EVENT_WAIT_SECONDS,
+    float(os.getenv("IM_GATEWAY_RUNTIME_SNAPSHOT_REFRESH_SECONDS", "300") or "300"),
+)
 DELIVERY_EVENT_WAIT_SECONDS = max(5.0, float(os.getenv("IM_GATEWAY_DELIVERY_EVENT_WAIT_SECONDS", "5") or "5"))
 DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS = max(
     POLL_INTERVAL_SECONDS,
-    int(os.getenv("IM_GATEWAY_DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS", "30") or "30"),
+    int(os.getenv("IM_GATEWAY_DELIVERY_FALLBACK_POLL_INTERVAL_SECONDS", "300") or "300"),
 )
 LOGIN_RETRY_SECONDS = max(3, int(os.getenv("IM_GATEWAY_LOGIN_RETRY_SECONDS", "5")))
 INBOUND_REPLY_WAIT_SECONDS = max(1.0, float(os.getenv("IM_GATEWAY_INBOUND_REPLY_WAIT_SECONDS", "5") or "5"))
@@ -825,15 +830,31 @@ class WeChatGateway:
         self._track_background_task(poller)
         await asyncio.sleep(0)
         try:
+            snapshot = await self.backend.fetch_runtime_snapshot()
+            await self._reconcile(snapshot)
+            runtime_cursor = 0
+            last_snapshot_refresh = asyncio.get_running_loop().time()
             while True:
                 try:
+                    payload = await self.backend.await_runtime_event(
+                        cursor=runtime_cursor,
+                        timeout_seconds=RUNTIME_EVENT_WAIT_SECONDS,
+                    )
+                    previous_cursor = runtime_cursor
+                    runtime_cursor = int(payload.get("cursor") or runtime_cursor)
+                    has_event = bool(payload.get("hasEvent")) or runtime_cursor > previous_cursor
+                    now = asyncio.get_running_loop().time()
+                    should_refresh = has_event or (now - last_snapshot_refresh) >= RUNTIME_SNAPSHOT_REFRESH_SECONDS
+                    if not should_refresh:
+                        continue
                     snapshot = await self.backend.fetch_runtime_snapshot()
                     await self._reconcile(snapshot)
+                    last_snapshot_refresh = now
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     print(f"[im-gateway] reconcile failed: {AccountRuntime._describe_exception(exc)}")
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                    await asyncio.sleep(POLL_INTERVAL_SECONDS)
         finally:
             event_listener.cancel()
             poller.cancel()

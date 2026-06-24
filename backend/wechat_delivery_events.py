@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from threading import Condition
-from typing import Optional
 
 
-class WeChatDeliveryEventBroker:
+class WeChatEventBroker:
     def __init__(self) -> None:
         self._condition = Condition()
         self._cursor = 0
@@ -29,4 +28,13 @@ class WeChatDeliveryEventBroker:
             return self._cursor
 
 
+class WeChatDeliveryEventBroker(WeChatEventBroker):
+    pass
+
+
+class WeChatRuntimeEventBroker(WeChatEventBroker):
+    pass
+
+
 delivery_event_broker = WeChatDeliveryEventBroker()
+runtime_event_broker = WeChatRuntimeEventBroker()
