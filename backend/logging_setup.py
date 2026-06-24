@@ -30,15 +30,8 @@ FILE_LOG_FORMAT = (
 )
 QUIET_UVICORN_ACCESS_PATHS = frozenset((
     "/api/health",
-    "/api/account/wechat-integration",
-    "/api/internal/wechat/delivery-jobs/claim",
-    "/api/internal/wechat/delivery-events/await",
-    "/api/internal/wechat/runtime-snapshot",
 ))
-QUIET_UVICORN_ACCESS_PATH_PREFIXES = (
-    "/api/account/wechat-integration/login-session/",
-    "/api/internal/wechat/login-sessions/",
-)
+QUIET_UVICORN_ACCESS_PATH_PREFIXES = ()
 
 
 def configure_process_timezone_to_utc8() -> None:

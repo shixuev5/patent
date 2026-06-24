@@ -124,7 +124,7 @@ def test_system_logs_policy_cleanup_queries_and_delete(tmp_path):
         True,
         now_iso,
         method="POST",
-        path="/api/internal/wechat/messages",
+        path="/api/internal/runtime/messages",
     )
     _insert_sample(
         storage,
@@ -181,7 +181,7 @@ def test_emit_system_log_is_async_and_non_blocking(monkeypatch):
         target_host="example.com",
         success=True,
         message="ok",
-        payload={"request": {"task_kind": "wechat_intent_routing"}},
+        payload={"request": {"task_kind": "intent_routing"}},
     )
     elapsed = time.perf_counter() - started
 

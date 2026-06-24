@@ -10,11 +10,6 @@ from .models import (
     TaskStatus,
     TaskType,
     User,
-    WeChatBinding,
-    WeChatConversationSession,
-    WeChatDeliveryJob,
-    WeChatFlowSession,
-    WeChatLoginSession,
 )
 from .pipeline_adapter import PipelineTaskManager, get_pipeline_manager, DEFAULT_PIPELINE_STEPS
 from .task_storage import get_task_storage
@@ -34,11 +29,6 @@ __all__ = [
     "TaskType",
     "User",
     "RefreshSession",
-    "WeChatBinding",
-    "WeChatLoginSession",
-    "WeChatConversationSession",
-    "WeChatFlowSession",
-    "WeChatDeliveryJob",
     # Pipeline Adapter
     "PipelineTaskManager",
     "get_pipeline_manager",

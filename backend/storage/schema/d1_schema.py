@@ -16,20 +16,6 @@ CREATE TABLE IF NOT EXISTS _schema_meta (
 D1_EXTRA_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_patent_analyses_sha256 ON patent_analyses(sha256)",
     "CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_owner_status ON wechat_bindings(owner_id, status)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_account_status ON wechat_bindings(bot_account_id, status)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_delivery_peer_status ON wechat_bindings(bot_account_id, delivery_peer_id, status)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_bindings_status_updated_at ON wechat_bindings(status, updated_at DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_owner_status ON wechat_login_sessions(owner_id, status)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_expires_at ON wechat_login_sessions(expires_at)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_login_sessions_status_created_at ON wechat_login_sessions(status, created_at ASC)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_flow_sessions_owner_type_status ON wechat_flow_sessions(owner_id, flow_type, status)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_owner_status ON wechat_conversation_sessions(owner_id, status)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_binding_peer ON wechat_conversation_sessions(binding_id, peer_id)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_conversation_sessions_context ON wechat_conversation_sessions(active_context_kind, active_context_session_id)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_next_attempt ON wechat_delivery_jobs(status, next_attempt_at)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_status_created_at ON wechat_delivery_jobs(status, created_at ASC)",
-    "CREATE INDEX IF NOT EXISTS idx_wechat_delivery_jobs_owner_status ON wechat_delivery_jobs(owner_id, status)",
 )
 
 D1_CREATE_TABLES_SQL = """
@@ -174,89 +160,10 @@ CREATE TABLE IF NOT EXISTS refresh_sessions (
     replaced_by_token_hash TEXT
 );
 
-CREATE TABLE IF NOT EXISTS wechat_bindings (
-    binding_id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    bot_account_id TEXT,
-    wechat_user_id TEXT,
-    wechat_display_name TEXT,
-    delivery_peer_id TEXT,
-    delivery_peer_name TEXT,
-    push_task_completed INTEGER NOT NULL DEFAULT 1,
-    push_task_failed INTEGER NOT NULL DEFAULT 1,
-    bound_at TEXT,
-    disconnected_at TEXT,
-    last_inbound_at TEXT,
-    last_outbound_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS wechat_login_sessions (
-    login_session_id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    status TEXT NOT NULL,
-    qr_url TEXT,
-    expires_at TEXT NOT NULL,
-    bot_account_id TEXT,
-    wechat_user_id TEXT,
-    wechat_display_name TEXT,
-    error_message TEXT,
-    online_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS wechat_flow_sessions (
-    flow_session_id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    flow_type TEXT NOT NULL,
-    status TEXT NOT NULL,
-    current_step TEXT,
-    draft_payload_json TEXT,
-    expires_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS wechat_conversation_sessions (
-    conversation_id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    binding_id TEXT NOT NULL,
-    peer_id TEXT NOT NULL,
-    peer_name TEXT,
-    status TEXT NOT NULL,
-    active_context_kind TEXT NOT NULL DEFAULT 'none',
-    active_context_session_id TEXT,
-    active_context_title TEXT,
-    memory_json TEXT,
-    last_inbound_at TEXT,
-    last_outbound_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
-CREATE TABLE IF NOT EXISTS wechat_delivery_jobs (
-    delivery_job_id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    binding_id TEXT,
-    task_id TEXT,
-    event_type TEXT NOT NULL,
-    status TEXT NOT NULL,
-    delivery_stage TEXT NOT NULL DEFAULT 'queued',
-    payload_json TEXT,
-    stage_details_json TEXT,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
-    next_attempt_at TEXT,
-    claimed_at TEXT,
-    completed_at TEXT,
-    failed_at TEXT,
-    last_error TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
 
 CREATE INDEX IF NOT EXISTS idx_tasks_owner_id ON tasks(owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_pn ON tasks(pn);

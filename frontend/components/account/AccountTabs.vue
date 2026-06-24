@@ -17,27 +17,17 @@
     >
       邮件通知
     </button>
-    <button
-      v-if="hasWechatTab"
-      type="button"
-      class="account-tab-btn"
-      :class="activeTab === 'wechat' ? 'is-active' : ''"
-      @click="emit('update:activeTab', 'wechat')"
-    >
-      微信接入
-    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 defineProps<{
-  activeTab: 'overview' | 'notifications' | 'wechat'
+  activeTab: 'overview' | 'notifications'
   hasNotificationTab: boolean
-  hasWechatTab: boolean
 }>()
 
 const emit = defineEmits<{
-  'update:activeTab': [value: 'overview' | 'notifications' | 'wechat']
+  'update:activeTab': [value: 'overview' | 'notifications']
 }>()
 </script>
 

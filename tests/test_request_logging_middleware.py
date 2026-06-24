@@ -155,16 +155,16 @@ def test_request_logging_middleware_keeps_internal_request_failures(tmp_path, mo
     app = FastAPI()
     app.middleware("http")(system_logs.request_logging_middleware)
 
-    @app.post("/api/internal/wechat/login-sessions/{login_session_id}/state")
-    async def login_session_state_error(login_session_id: str):
-        assert login_session_id == "wls-test-001"
+    @app.post("/api/internal/runtime/jobs/{job_id}/state")
+    async def runtime_job_state_error(job_id: str):
+        assert job_id == "job-test-001"
         raise RuntimeError("boom")
 
     client = TestClient(app, raise_server_exceptions=False)
-    response = client.post("/api/internal/wechat/login-sessions/wls-test-001/state", json={"status": "online"})
+    response = client.post("/api/internal/runtime/jobs/job-test-001/state", json={"status": "online"})
     assert response.status_code == 500
     assert system_logs.flush_system_log_queue(timeout_seconds=1.0)
     assert len(storage.rows) == 1
     row = storage.rows[0]
-    assert row["path"] == "/api/internal/wechat/login-sessions/wls-test-001/state"
+    assert row["path"] == "/api/internal/runtime/jobs/job-test-001/state"
     assert row["success"] == 0

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from .task_email_service import build_task_email_notification_service
-from .task_wechat_service import build_task_wechat_notification_service
 
 
 SystemLogEmitter = Callable[..., None]
@@ -38,18 +37,8 @@ class TaskNotificationDispatcher:
             task_type=task_type,
             error_message=error_message,
         )
-        wechat_result = build_task_wechat_notification_service(
-            storage=self.storage,
-            system_log_emitter=self.system_log_emitter,
-        ).notify_task_terminal_status(
-            task_id,
-            terminal_status=terminal_status,
-            task_type=task_type,
-            error_message=error_message,
-        )
         return {
             "email": email_result,
-            "wechat": wechat_result,
         }
 
 

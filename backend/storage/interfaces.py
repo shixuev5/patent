@@ -7,7 +7,6 @@ from .protocols import (
     TaskStorage,
     UsageStorage,
     UserStorage,
-    WeChatStorage,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "TaskStorage",
     "UsageStorage",
     "UserStorage",
-    "WeChatStorage",
 ]

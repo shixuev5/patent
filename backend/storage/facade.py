@@ -8,7 +8,6 @@ from .repositories.system_logs import SystemLogsRepositoryMixin
 from .repositories.tasks import TaskRepositoryMixin
 from .repositories.usage import UsageRepositoryMixin
 from .repositories.users import UserRepositoryMixin
-from .repositories.wechat import WeChatRepositoryMixin
 
 
 class TaskStorageFacade(
@@ -16,7 +15,6 @@ class TaskStorageFacade(
     UsageRepositoryMixin,
     SystemLogsRepositoryMixin,
     UserRepositoryMixin,
-    WeChatRepositoryMixin,
     TaskRepositoryMixin,
     AiSearchRepositoryMixin,
 ):

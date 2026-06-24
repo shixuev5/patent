@@ -5,13 +5,11 @@ from .system_logs import SystemLogsStorage
 from .tasks import TaskDomainStorage
 from .usage import UsageStorage
 from .users import UserStorage
-from .wechat import WeChatStorage
 
 
 class TaskStorage(
     TaskDomainStorage,
     UserStorage,
-    WeChatStorage,
     UsageStorage,
     SystemLogsStorage,
     AiSearchStorage,
@@ -28,5 +26,4 @@ __all__ = [
     "TaskStorage",
     "UsageStorage",
     "UserStorage",
-    "WeChatStorage",
 ]

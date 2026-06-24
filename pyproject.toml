@@ -26,8 +26,6 @@ dependencies = [
     "requests>=2.32.5",
     "sqlite-vec>=0.1.6",
     "uvicorn>=0.40.0",
-    "wechatbot-sdk",
-    "qrcode>=8.2",
     "openai-agents>=0.4.2",
     "socksio>=1.0.0",
     "pytest>=9.0.3",
