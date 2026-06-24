@@ -16,7 +16,7 @@ class BackendClient:
     ) -> None:
         self.api_base_url = api_base_url.rstrip("/")
         self.internal_gateway_token = internal_gateway_token
-        self._client = httpx.AsyncClient(timeout=60.0)
+        self._client = httpx.AsyncClient(timeout=60.0, trust_env=False)
         self.inbound_request_timeout_seconds = max(6.0, float(inbound_request_timeout_seconds or 0.0))
 
     async def close(self) -> None:
@@ -79,10 +79,13 @@ class BackendClient:
         return await self._parse_json(response)
 
     async def fetch_runtime_snapshot(self) -> Dict[str, Any]:
-        response = await self._client.get(
-            f"{self.api_base_url}/api/internal/wechat/runtime-snapshot",
-            headers=self._headers,
-        )
+        try:
+            response = await self._client.get(
+                f"{self.api_base_url}/api/internal/wechat/runtime-snapshot",
+                headers=self._headers,
+            )
+        except httpx.TimeoutException:
+            return {"activeBindings": [], "pendingLoginSessions": [], "timedOut": True}
         return await self._parse_json(response)
 
     async def await_runtime_event(self, *, cursor: int = 0, timeout_seconds: float = 60.0) -> Dict[str, Any]:
@@ -123,11 +126,14 @@ class BackendClient:
         return await self._parse_json(response)
 
     async def claim_delivery_jobs(self, limit: int = 5) -> Dict[str, Any]:
-        response = await self._client.post(
-            f"{self.api_base_url}/api/internal/wechat/delivery-jobs/claim",
-            headers=self._headers,
-            json={"limit": limit},
-        )
+        try:
+            response = await self._client.post(
+                f"{self.api_base_url}/api/internal/wechat/delivery-jobs/claim",
+                headers=self._headers,
+                json={"limit": limit},
+            )
+        except httpx.TimeoutException:
+            return {"items": [], "total": 0, "timedOut": True}
         return await self._parse_json(response)
 
     async def await_delivery_event(self, *, cursor: int = 0, timeout_seconds: float = 30.0) -> Dict[str, Any]:
