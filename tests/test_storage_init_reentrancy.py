@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from backend import system_logs
 from backend.storage import task_storage
 from backend.storage import facade as storage_facade
+from backend.storage.errors import StorageUnavailableError
 
 
 def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
@@ -48,5 +51,38 @@ def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
     assert not worker.is_alive(), "get_task_storage re-entrant initialization deadlocked"
     assert "exc" not in error
     assert isinstance(result.get("storage"), _DummyD1Storage)
+
+    task_storage.reset_storage_instance()
+
+
+def test_get_task_storage_cools_down_after_d1_init_failure(monkeypatch):
+    task_storage.reset_storage_instance()
+    monkeypatch.setenv("TASK_STORAGE_BACKEND", "d1")
+    monkeypatch.setenv("D1_ACCOUNT_ID", "acc")
+    monkeypatch.setenv("D1_DATABASE_ID", "db")
+    monkeypatch.setenv("D1_API_TOKEN", "token")
+    monkeypatch.setenv("D1_INIT_FAILURE_COOLDOWN_SECONDS", "30")
+
+    calls = {"count": 0}
+
+    class _FailingD1Storage:
+        def __init__(self, *args, **kwargs):
+            calls["count"] += 1
+            raise StorageUnavailableError("D1 request failed")
+
+    monkeypatch.setattr(storage_facade, "D1TaskStorage", _FailingD1Storage)
+
+    with pytest.raises(StorageUnavailableError) as first_exc:
+        task_storage.get_task_storage()
+
+    assert str(first_exc.value) == "D1 request failed"
+    assert calls["count"] == 1
+
+    with pytest.raises(StorageUnavailableError) as second_exc:
+        task_storage.get_task_storage()
+
+    assert "cooling down" in str(second_exc.value)
+    assert second_exc.value.retry_after_seconds is not None
+    assert calls["count"] == 1
 
     task_storage.reset_storage_instance()
