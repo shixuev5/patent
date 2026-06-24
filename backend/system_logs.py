@@ -231,6 +231,14 @@ def is_outbound_request_logging_suppressed() -> bool:
     return bool(_SUPPRESS_OUTBOUND_REQUEST_LOGGING.get())
 
 
+def _is_storage_temporarily_unavailable(exc: Exception) -> bool:
+    try:
+        from backend.storage.errors import StorageUnavailableError
+    except Exception:
+        return False
+    return isinstance(exc, StorageUnavailableError)
+
+
 def get_request_context() -> Dict[str, Any]:
     data = _REQUEST_CONTEXT.get()
     return dict(data) if isinstance(data, dict) else {}
@@ -713,7 +721,10 @@ def cleanup_expired_system_logs(retention_days: Optional[int] = None) -> Dict[st
             with internal_log_write_context():
                 deleted_db = int(storage.cleanup_system_logs_before(cutoff_iso) or 0)
         except Exception as exc:
-            logger.warning(f"[系统日志] 清理数据库失败：{exc}")
+            if _is_storage_temporarily_unavailable(exc):
+                logger.debug("[系统日志] 存储暂不可用，跳过数据库清理：{}", exc)
+            else:
+                logger.warning(f"[系统日志] 清理数据库失败：{exc}")
 
     deleted_files = 0
     if SYSTEM_LOG_PAYLOAD_DIR.exists():
@@ -748,7 +759,10 @@ def cleanup_system_logs_by_policy() -> Dict[str, int]:
                     ]
                 deleted_db = int(storage.cleanup_system_logs_by_policy() or 0)
         except Exception as exc:
-            logger.warning(f"[系统日志] 策略清理数据库失败：{exc}")
+            if _is_storage_temporarily_unavailable(exc):
+                logger.debug("[系统日志] 存储暂不可用，跳过策略数据库清理：{}", exc)
+            else:
+                logger.warning(f"[系统日志] 策略清理数据库失败：{exc}")
 
     deleted_files = 0
     for payload_file_path in sorted(set(payload_paths)):

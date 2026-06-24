@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend import system_logs
+from backend.storage.errors import StorageUnavailableError
 
 
 class _PolicyCleanupStorage:
@@ -40,3 +41,15 @@ def test_cleanup_system_logs_by_policy_removes_files(tmp_path, monkeypatch):
     assert storage.delete_calls == 1
     assert not payload1.exists()
     assert not payload2.exists()
+
+
+def test_cleanup_system_logs_by_policy_skips_when_storage_unavailable(monkeypatch):
+    class _UnavailableStorage:
+        def cleanup_system_logs_by_policy(self):
+            raise StorageUnavailableError("D1 storage initialization is cooling down")
+
+    monkeypatch.setattr(system_logs, "_STORAGE_REF", _UnavailableStorage())
+
+    summary = system_logs.cleanup_system_logs_by_policy()
+
+    assert summary == {"deleted_db": 0, "deleted_payload_files": 0}

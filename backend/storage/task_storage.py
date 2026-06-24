@@ -87,7 +87,7 @@ def get_task_storage(db_path: Optional[Union[str, Path]] = None) -> TaskStorage:
                             "D1_API_BASE_URL",
                             "https://api.cloudflare.com/client/v4",
                         ).strip()
-                        timeout_seconds = int(os.getenv("D1_TIMEOUT_SECONDS", "20") or "20")
+                        timeout_seconds = int(os.getenv("D1_TIMEOUT_SECONDS", "8") or "8")
                         _storage_instance = D1TaskStorage(
                             account_id=account_id,
                             database_id=database_id,

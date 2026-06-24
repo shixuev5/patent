@@ -23,9 +23,11 @@ def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
     monkeypatch.setenv("D1_ACCOUNT_ID", "acc")
     monkeypatch.setenv("D1_DATABASE_ID", "db")
     monkeypatch.setenv("D1_API_TOKEN", "token")
+    monkeypatch.delenv("D1_TIMEOUT_SECONDS", raising=False)
 
     class _DummyD1Storage:
         def __init__(self, *args, **kwargs):
+            result["timeout_seconds"] = kwargs.get("timeout_seconds")
             system_logs.emit_system_log(
                 category="external_api",
                 event_name="requests_call",
@@ -51,6 +53,7 @@ def test_get_task_storage_avoids_reentrant_init_deadlock(tmp_path, monkeypatch):
     assert not worker.is_alive(), "get_task_storage re-entrant initialization deadlocked"
     assert "exc" not in error
     assert isinstance(result.get("storage"), _DummyD1Storage)
+    assert result["timeout_seconds"] == 8
 
     task_storage.reset_storage_instance()
 

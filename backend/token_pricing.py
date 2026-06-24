@@ -383,6 +383,14 @@ def configure_pricing_storage(provider: Optional[Callable[[], Any]]) -> None:
     _STORAGE_PROVIDER = provider
 
 
+def _is_storage_temporarily_unavailable(exc: Exception) -> bool:
+    try:
+        from backend.storage.errors import StorageUnavailableError
+    except Exception:
+        return False
+    return isinstance(exc, StorageUnavailableError)
+
+
 def reset_pricing_runtime_cache() -> None:
     global _CACHE_LOADED, _CACHE_ROWS, _CACHE_STATE, _REFRESH_THREAD
     with _CACHE_LOCK:
@@ -627,7 +635,10 @@ def _background_refresh_worker(force: bool) -> None:
     try:
         refresh_pricing_cache(force=force)
     except Exception as exc:
-        logger.warning("后台价格同步失败：{}", exc)
+        if _is_storage_temporarily_unavailable(exc):
+            logger.info("后台价格同步跳过：存储暂不可用 error={}", exc)
+        else:
+            logger.warning("后台价格同步失败：{}", exc)
     finally:
         global _REFRESH_THREAD
         with _CACHE_LOCK:
